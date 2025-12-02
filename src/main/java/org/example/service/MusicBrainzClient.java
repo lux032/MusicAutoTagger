@@ -99,57 +99,101 @@ public class MusicBrainzClient {
     }
 
     /**
-     * 获取封面图片 URL
+     * 获取封面图片 URL(带重试机制)
      */
     private String getCoverArtUrl(String releaseGroupId) {
-        try {
-            rateLimit();
-            String url = String.format("%s/release-group/%s", config.getCoverArtApiUrl(), releaseGroupId);
-            
-            HttpGet httpGet = new HttpGet(url);
-            httpGet.setHeader("User-Agent", config.getUserAgent());
-            httpGet.setHeader("Accept", "application/json");
-            
-            try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
-                if (response.getCode() == 200) {
-                    String json = EntityUtils.toString(response.getEntity());
-                    JsonNode root = objectMapper.readTree(json);
-                    JsonNode images = root.path("images");
-                    
-                    if (images.isArray()) {
-                        for (JsonNode image : images) {
-                            if (image.path("front").asBoolean()) {
-                                return image.path("image").asText();
+        int retryCount = 0;
+        
+        while (retryCount <= MAX_RETRIES) {
+            try {
+                rateLimit();
+                String url = String.format("%s/release-group/%s", config.getCoverArtApiUrl(), releaseGroupId);
+                
+                HttpGet httpGet = new HttpGet(url);
+                httpGet.setHeader("User-Agent", config.getUserAgent());
+                httpGet.setHeader("Accept", "application/json");
+                
+                try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
+                    if (response.getCode() == 200) {
+                        String json = EntityUtils.toString(response.getEntity());
+                        JsonNode root = objectMapper.readTree(json);
+                        JsonNode images = root.path("images");
+                        
+                        if (images.isArray()) {
+                            for (JsonNode image : images) {
+                                if (image.path("front").asBoolean()) {
+                                    return image.path("image").asText();
+                                }
                             }
                         }
                     }
                 }
+                // 请求成功但未找到封面,不需要重试
+                return null;
+                
+            } catch (Exception e) {
+                retryCount++;
+                
+                if (retryCount <= MAX_RETRIES) {
+                    log.warn("获取封面失败(第{}/{}次尝试): {} - {}秒后重试",
+                        retryCount, MAX_RETRIES, e.getMessage(), RETRY_DELAY_MS / 1000);
+                    
+                    try {
+                        Thread.sleep(RETRY_DELAY_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        log.error("重试等待被中断");
+                        return null;
+                    }
+                } else {
+                    log.error("获取封面失败,已达最大重试次数({}/{}): {}", retryCount, MAX_RETRIES, releaseGroupId);
+                }
             }
-        } catch (Exception e) {
-            log.warn("获取封面失败: {}", releaseGroupId, e);
         }
         return null;
     }
 
     /**
-     * 下载封面图片
+     * 下载封面图片(带重试机制)
      */
     public byte[] downloadCoverArt(String url) {
         if (url == null || url.isEmpty()) {
             return null;
         }
 
-        try {
-            HttpGet httpGet = new HttpGet(url);
-            httpGet.setHeader("User-Agent", config.getUserAgent());
-            
-            try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
-                if (response.getCode() == 200) {
-                    return EntityUtils.toByteArray(response.getEntity());
+        int retryCount = 0;
+        
+        while (retryCount <= MAX_RETRIES) {
+            try {
+                HttpGet httpGet = new HttpGet(url);
+                httpGet.setHeader("User-Agent", config.getUserAgent());
+                
+                try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
+                    if (response.getCode() == 200) {
+                        return EntityUtils.toByteArray(response.getEntity());
+                    }
+                }
+                // 请求成功但状态码不是200,不需要重试
+                return null;
+                
+            } catch (Exception e) {
+                retryCount++;
+                
+                if (retryCount <= MAX_RETRIES) {
+                    log.warn("下载封面图片失败(第{}/{}次尝试): {} - {}秒后重试",
+                        retryCount, MAX_RETRIES, e.getMessage(), RETRY_DELAY_MS / 1000);
+                    
+                    try {
+                        Thread.sleep(RETRY_DELAY_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        log.error("重试等待被中断");
+                        return null;
+                    }
+                } else {
+                    log.error("下载封面图片失败,已达最大重试次数({}/{}): {}", retryCount, MAX_RETRIES, url);
                 }
             }
-        } catch (Exception e) {
-            log.warn("下载封面图片失败: {}", url, e);
         }
         return null;
     }
