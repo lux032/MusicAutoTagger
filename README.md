@@ -18,6 +18,9 @@
 - 🖼️ **高清封面**：自动从 Cover Art Archive 下载并内嵌高清专辑封面。
 - 📁 **自动化整理**：按照 `艺术家/专辑/歌曲名` 的结构自动重命名和归档文件。
 - 🤖 **无人值守**：配合 qBittorrent/Transmission 使用，下载完成后自动处理，无需人工干预。
+- 💾 **双模式持久化**：
+    - **文本模式 (默认)**：无需数据库，使用 CSV 文件记录已处理文件，开箱即用，适合个人用户。
+    - **MySQL 模式**：支持连接外部数据库，适合海量文件和高性能并发场景。
 - 🐳 **Docker 部署**：提供轻量级 Docker 镜像，支持 Synology/QNAP/Unraid 等 NAS 系统。
 
 ## 🚀 快速开始 (Docker Compose)
@@ -90,6 +93,23 @@ java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 | `musicbrainz.userAgent` | 用于 API 请求的 User-Agent | `MusicTagTool/1.0` |
 | `file.autoRename` | 是否自动重命名文件 | `true` |
 | `cover.download` | 是否下载封面 | `true` |
+
+### 💾 数据持久化配置 (可选)
+
+本项目默认使用 **文本文件 (CSV)** 记录已处理的文件，无需任何额外配置即可运行。如果您希望使用 MySQL 数据库：
+
+1.  在 `docker-compose.yml` 中添加 MySQL 服务（参考 `docs/DATABASE_SETUP.md`）。
+2.  在 `config.properties` 中添加以下配置：
+
+```properties
+# 数据库类型: file (默认) 或 mysql
+db.type=mysql
+db.mysql.host=db
+db.mysql.port=3306
+db.mysql.database=music_tagger
+db.mysql.username=root
+db.mysql.password=example
+```
 
 ## 🤝 贡献与支持
 
