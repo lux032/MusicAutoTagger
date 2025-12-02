@@ -5,6 +5,9 @@ import org.example.config.MusicConfig;
 import org.example.service.*;
 
 import java.io.File;
+import org.jaudiotagger.audio.AudioFile;
+import org.jaudiotagger.tag.images.Artwork;
+import java.nio.file.Files;
 import java.io.IOException;
 
 /**
@@ -170,28 +173,8 @@ public class Main {
                 detailedMetadata = convertToMusicMetadata(bestMatch);
             }
             
-            // 4. 下载并压缩封面图片(使用缓存)
-            byte[] coverArtData = null;
-            if (detailedMetadata.getCoverArtUrl() != null) {
-                // 首先检查缓存
-                coverArtData = coverArtCache.getCachedCover(detailedMetadata.getCoverArtUrl());
-                
-                if (coverArtData == null) {
-                    // 缓存未命中,下载并压缩
-                    log.info("正在下载封面图片: {}", detailedMetadata.getCoverArtUrl());
-                    byte[] rawCoverArt = musicBrainzClient.downloadCoverArt(detailedMetadata.getCoverArtUrl());
-                    
-                    if (rawCoverArt != null && rawCoverArt.length > 0) {
-                        // 压缩图片到2MB以内
-                        coverArtData = ImageCompressor.compressImage(rawCoverArt);
-                        
-                        // 保存到缓存
-                        coverArtCache.cacheCover(detailedMetadata.getCoverArtUrl(), coverArtData);
-                    }
-                }
-            } else {
-                log.info("未找到封面图片");
-            }
+            // 4. 获取封面图片(多层降级策略)
+            byte[] coverArtData = getCoverArtWithFallback(audioFile, detailedMetadata);
             
             // 4.5 获取歌词 (LrcLib)
             log.info("正在获取歌词...");
@@ -242,6 +225,140 @@ public class Main {
         }
         
         log.info("========================================");
+    }
+    
+    /**
+     * 获取封面图片(多层降级策略)
+     * 优先级:
+     * 1. 尝试从网络下载(使用缓存)
+     * 2. 如果下载失败,检查音频文件是否自带封面
+     * 3. 如果没有自带封面,在音频文件所在目录查找cover图片
+     */
+    private static byte[] getCoverArtWithFallback(File audioFile, MusicBrainzClient.MusicMetadata metadata) {
+        byte[] coverArtData = null;
+        
+        // 策略1: 尝试从网络下载
+        if (metadata.getCoverArtUrl() != null) {
+            log.info("策略1: 尝试从网络下载封面");
+            coverArtData = downloadCoverFromNetwork(metadata.getCoverArtUrl());
+            
+            if (coverArtData != null && coverArtData.length > 0) {
+                log.info("✓ 成功从网络下载封面");
+                return coverArtData;
+            }
+            log.warn("✗ 网络下载失败,尝试降级策略");
+        }
+        
+        // 策略2: 检查音频文件是否自带封面
+        log.info("策略2: 检查音频文件是否自带封面");
+        coverArtData = extractCoverFromAudioFile(audioFile);
+        
+        if (coverArtData != null && coverArtData.length > 0) {
+            log.info("✓ 成功从音频文件提取封面");
+            return coverArtData;
+        }
+        log.info("✗ 音频文件无封面,尝试降级策略");
+        
+        // 策略3: 在音频文件所在目录查找cover图片
+        log.info("策略3: 在音频文件所在目录查找cover图片");
+        coverArtData = findCoverInDirectory(audioFile.getParentFile());
+        
+        if (coverArtData != null && coverArtData.length > 0) {
+            log.info("✓ 成功从目录找到封面图片");
+            return coverArtData;
+        }
+        
+        log.warn("✗ 所有策略均失败,未找到封面图片");
+        return null;
+    }
+    
+    /**
+     * 从网络下载封面(使用缓存)
+     */
+    private static byte[] downloadCoverFromNetwork(String coverArtUrl) {
+        try {
+            // 首先检查缓存
+            byte[] coverArtData = coverArtCache.getCachedCover(coverArtUrl);
+            
+            if (coverArtData != null) {
+                log.info("从缓存获取封面");
+                return coverArtData;
+            }
+            
+            // 缓存未命中,下载并压缩
+            log.info("正在下载封面图片: {}", coverArtUrl);
+            byte[] rawCoverArt = musicBrainzClient.downloadCoverArt(coverArtUrl);
+            
+            if (rawCoverArt != null && rawCoverArt.length > 0) {
+                // 压缩图片到2MB以内
+                coverArtData = ImageCompressor.compressImage(rawCoverArt);
+                
+                // 保存到缓存
+                coverArtCache.cacheCover(coverArtUrl, coverArtData);
+                return coverArtData;
+            }
+        } catch (Exception e) {
+            log.warn("从网络下载封面失败", e);
+        }
+        return null;
+    }
+    
+    /**
+     * 从音频文件提取封面
+     */
+    private static byte[] extractCoverFromAudioFile(File audioFile) {
+        try {
+            AudioFile audioFileObj = org.jaudiotagger.audio.AudioFileIO.read(audioFile);
+            org.jaudiotagger.tag.Tag tag = audioFileObj.getTag();
+            
+            if (tag != null) {
+                Artwork artwork = tag.getFirstArtwork();
+                if (artwork != null) {
+                    byte[] imageData = artwork.getBinaryData();
+                    if (imageData != null && imageData.length > 0) {
+                        // 压缩图片到2MB以内
+                        return ImageCompressor.compressImage(imageData);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("从音频文件提取封面失败: {}", e.getMessage());
+        }
+        return null;
+    }
+    
+    /**
+     * 在目录中查找封面图片
+     * 支持的文件名: cover.jpg, cover.png, folder.jpg, folder.png, album.jpg, album.png
+     */
+    private static byte[] findCoverInDirectory(File directory) {
+        if (directory == null || !directory.exists() || !directory.isDirectory()) {
+            return null;
+        }
+        
+        // 支持的封面文件名(优先级顺序)
+        String[] coverNames = {"cover", "folder", "album", "front"};
+        String[] extensions = {".jpg", ".jpeg", ".png", ".webp"};
+        
+        for (String coverName : coverNames) {
+            for (String ext : extensions) {
+                File coverFile = new File(directory, coverName + ext);
+                if (coverFile.exists() && coverFile.isFile()) {
+                    try {
+                        byte[] imageData = Files.readAllBytes(coverFile.toPath());
+                        if (imageData != null && imageData.length > 0) {
+                            log.info("找到封面文件: {}", coverFile.getName());
+                            // 压缩图片到2MB以内
+                            return ImageCompressor.compressImage(imageData);
+                        }
+                    } catch (Exception e) {
+                        log.debug("读取封面文件失败: {} - {}", coverFile.getName(), e.getMessage());
+                    }
+                }
+            }
+        }
+        
+        return null;
     }
     
     /**
