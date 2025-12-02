@@ -450,30 +450,68 @@ public class MusicBrainzClient {
      * 优先级逻辑：
      * - 如果文件夹音乐文件数≤2，优先匹配Single（可能是单曲+伴奏）
      * - 如果文件夹音乐文件数3-6，优先匹配EP，其次匹配Album
+     * - 如果文件夹音乐文件数≥15，优先匹配大型合辑（曲目数接近的专辑）
      * - 否则按原逻辑：Album > EP > Single > Compilation > Others
-     * 同类型下：曲目数多优先 > 发行时间早优先
+     * 同类型下：曲目数匹配度 > 发行时间早优先
      * @param releases 所有发行版本
      * @param musicFilesInFolder 文件所在文件夹的音乐文件数量
      */
     private JsonNode selectBestRelease(JsonNode releases, int musicFilesInFolder) {
         JsonNode bestRelease = null;
         int bestScore = -1;
+        int bestTrackCountDiff = Integer.MAX_VALUE;
+
+        // 判断是否为大型合辑场景
+        boolean isLargeCollection = musicFilesInFolder >= 15;
+        
+        if (isLargeCollection) {
+            log.info("检测到大型合辑（{}个文件），优先匹配曲目数接近的专辑", musicFilesInFolder);
+        }
 
         for (JsonNode release : releases) {
             int currentScore = calculateReleaseScore(release, musicFilesInFolder);
+            int trackCount = release.path("track-count").asInt(0);
+            int trackCountDiff = Math.abs(trackCount - musicFilesInFolder);
             
-            if (bestRelease == null || currentScore > bestScore) {
-                bestRelease = release;
-                bestScore = currentScore;
-            } else if (currentScore == bestScore) {
-                // 分数相同，优先选择发行时间早的
-                String date1 = bestRelease.path("date").asText("");
-                String date2 = release.path("date").asText("");
-                if (date2.compareTo(date1) < 0 && !date2.isEmpty()) {
+            // 大型合辑场景：曲目数匹配度是最重要的因素
+            if (isLargeCollection) {
+                // 如果曲目数差异更小，直接选择
+                if (trackCountDiff < bestTrackCountDiff) {
                     bestRelease = release;
+                    bestScore = currentScore;
+                    bestTrackCountDiff = trackCountDiff;
+                    log.debug("选择曲目数更接近的专辑: {} ({}首 vs 文件夹{}首)",
+                        release.path("title").asText(), trackCount, musicFilesInFolder);
+                }
+                // 曲目数差异相同时，比较分数
+                else if (trackCountDiff == bestTrackCountDiff && currentScore > bestScore) {
+                    bestRelease = release;
+                    bestScore = currentScore;
+                }
+            }
+            // 非大型合辑场景：使用原有逻辑
+            else {
+                if (bestRelease == null || currentScore > bestScore) {
+                    bestRelease = release;
+                    bestScore = currentScore;
+                    bestTrackCountDiff = trackCountDiff;
+                } else if (currentScore == bestScore) {
+                    // 分数相同，优先选择发行时间早的
+                    String date1 = bestRelease.path("date").asText("");
+                    String date2 = release.path("date").asText("");
+                    if (date2.compareTo(date1) < 0 && !date2.isEmpty()) {
+                        bestRelease = release;
+                    }
                 }
             }
         }
+        
+        if (bestRelease != null && isLargeCollection) {
+            int finalTrackCount = bestRelease.path("track-count").asInt(0);
+            log.info("为大型合辑选择了: {} ({}首曲目)",
+                bestRelease.path("title").asText(), finalTrackCount);
+        }
+        
         return bestRelease != null ? bestRelease : releases.get(0);
     }
 
@@ -487,11 +525,13 @@ public class MusicBrainzClient {
         
         JsonNode releaseGroup = release.path("release-group");
         String type = releaseGroup.path("primary-type").asText("").toLowerCase();
+        int trackCount = release.path("track-count").asInt(0);
         
         // 1. 类型评分 (0-100)
-        // 关键改动：根据文件夹内音乐文件数量,优先匹配对应类型
+        // 根据文件夹内音乐文件数量,优先匹配对应类型
         boolean isMiniCD = (musicFilesInFolder <= 2);        // 单曲或单曲+伴奏
         boolean isEPSized = (musicFilesInFolder >= 3 && musicFilesInFolder <= 6);  // EP大小
+        boolean isLargeCollection = (musicFilesInFolder >= 15); // 大型合辑
         
         switch (type) {
             case "album":
@@ -499,6 +539,9 @@ public class MusicBrainzClient {
                     score += 50;  // 迷你CD,降低Album权重
                 } else if (isEPSized) {
                     score += 90;  // EP大小,略微降低Album权重,优先匹配EP
+                } else if (isLargeCollection) {
+                    // 大型合辑场景：优先匹配Album和Compilation类型
+                    score += 120;
                 } else {
                     score += 100; // 正常情况,Album优先
                 }
@@ -508,6 +551,9 @@ public class MusicBrainzClient {
                     score += 70;
                 } else if (isEPSized) {
                     score += 150; // EP大小,大幅提升EP权重
+                } else if (isLargeCollection && trackCount >= musicFilesInFolder * 0.7) {
+                    // 如果EP曲目数接近文件夹数量,也可能是合辑的一部分
+                    score += 90;
                 } else {
                     score += 80;
                 }
@@ -516,17 +562,26 @@ public class MusicBrainzClient {
                 score += isMiniCD ? 150 : 60;  // 迷你CD,大幅提升Single权重
                 break;
             case "compilation":
-                score += 40;
+                if (isLargeCollection) {
+                    // 大型合辑场景：Compilation类型也是很好的选择
+                    score += 110;
+                } else {
+                    score += 40;
+                }
                 break;
             default:
                 score += 20;
         }
         
         if (isMiniCD && type.equals("single")) {
-            log.info("检测到迷你CD（文件夹内{}个文件），优先匹配Single类型", musicFilesInFolder);
+            log.debug("检测到迷你CD（文件夹内{}个文件），优先匹配Single类型", musicFilesInFolder);
         }
         if (isEPSized && type.equals("ep")) {
-            log.info("检测到EP大小（文件夹内{}个文件），优先匹配EP类型", musicFilesInFolder);
+            log.debug("检测到EP大小（文件夹内{}个文件），优先匹配EP类型", musicFilesInFolder);
+        }
+        if (isLargeCollection && (type.equals("album") || type.equals("compilation"))) {
+            log.debug("检测到大型合辑（文件夹内{}个文件），当前专辑{}首，类型{}",
+                musicFilesInFolder, trackCount, type.toUpperCase());
         }
         
         // 二级类型降权 (如 Live, Remix)
@@ -551,11 +606,23 @@ public class MusicBrainzClient {
             }
         }
         
-        // 3. 完整性评分 (曲目数量)
-        int trackCount = release.path("track-count").asInt(0);
+        // 3. 曲目数量匹配度评分
         if (trackCount > 0) {
-            // 轻微加分，防止单曲被错误识别为大专辑，但也避免选到只有1首歌的"专辑"
-            score += Math.min(trackCount, 20);
+            if (isLargeCollection) {
+                // 大型合辑：曲目数越接近文件夹数量,分数越高
+                int trackDiff = Math.abs(trackCount - musicFilesInFolder);
+                int matchScore = Math.max(0, 50 - trackDiff * 2); // 差异越小分数越高
+                score += matchScore;
+                
+                // 额外奖励：如果曲目数在文件夹数量的80%-120%范围内
+                if (trackCount >= musicFilesInFolder * 0.8 && trackCount <= musicFilesInFolder * 1.2) {
+                    score += 30;
+                    log.debug("曲目数匹配度高: {}首 vs 文件夹{}首 (+30分)", trackCount, musicFilesInFolder);
+                }
+            } else {
+                // 非大型合辑：轻微加分
+                score += Math.min(trackCount, 20);
+            }
         }
 
         return score;
