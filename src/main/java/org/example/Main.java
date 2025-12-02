@@ -31,6 +31,9 @@ public class Main {
     private static CoverArtCache coverArtCache;
     private static MusicConfig config;
     
+    // 文件夹级别的封面缓存: 文件夹路径 -> 封面数据
+    private static java.util.Map<String, byte[]> folderCoverCache = new java.util.concurrent.ConcurrentHashMap<>();
+    
     public static void main(String[] args) {
         System.out.println("========================================");
         System.out.println("音乐文件自动标签系统");
@@ -228,14 +231,23 @@ public class Main {
     }
     
     /**
-     * 获取封面图片(多层降级策略)
+     * 获取封面图片(多层降级策略 + 文件夹级别缓存)
      * 优先级:
+     * 0. 检查同文件夹是否已有其他文件获取过封面
      * 1. 尝试从网络下载(使用缓存)
      * 2. 如果下载失败,检查音频文件是否自带封面
      * 3. 如果没有自带封面,在音频文件所在目录查找cover图片
      */
     private static byte[] getCoverArtWithFallback(File audioFile, MusicBrainzClient.MusicMetadata metadata) {
         byte[] coverArtData = null;
+        String folderPath = audioFile.getParentFile().getAbsolutePath();
+        
+        // 策略0: 检查文件夹级别缓存
+        coverArtData = folderCoverCache.get(folderPath);
+        if (coverArtData != null && coverArtData.length > 0) {
+            log.info("策略0: 使用同文件夹已获取的封面");
+            return coverArtData;
+        }
         
         // 策略1: 尝试从网络下载
         if (metadata.getCoverArtUrl() != null) {
@@ -243,7 +255,8 @@ public class Main {
             coverArtData = downloadCoverFromNetwork(metadata.getCoverArtUrl());
             
             if (coverArtData != null && coverArtData.length > 0) {
-                log.info("✓ 成功从网络下载封面");
+                log.info("✓ 成功从网络下载封面,缓存到文件夹级别");
+                folderCoverCache.put(folderPath, coverArtData);
                 return coverArtData;
             }
             log.warn("✗ 网络下载失败,尝试降级策略");
@@ -254,7 +267,8 @@ public class Main {
         coverArtData = extractCoverFromAudioFile(audioFile);
         
         if (coverArtData != null && coverArtData.length > 0) {
-            log.info("✓ 成功从音频文件提取封面");
+            log.info("✓ 成功从音频文件提取封面,缓存到文件夹级别");
+            folderCoverCache.put(folderPath, coverArtData);
             return coverArtData;
         }
         log.info("✗ 音频文件无封面,尝试降级策略");
@@ -264,7 +278,8 @@ public class Main {
         coverArtData = findCoverInDirectory(audioFile.getParentFile());
         
         if (coverArtData != null && coverArtData.length > 0) {
-            log.info("✓ 成功从目录找到封面图片");
+            log.info("✓ 成功从目录找到封面图片,缓存到文件夹级别");
+            folderCoverCache.put(folderPath, coverArtData);
             return coverArtData;
         }
         
