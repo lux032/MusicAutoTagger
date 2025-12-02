@@ -23,8 +23,8 @@ WORKDIR /app
 # 从构建阶段复制 JAR 文件
 COPY --from=builder /app/target/MusicDemo-*.jar app.jar
 
-# 复制配置文件
-COPY config.properties .
+# 复制配置文件模板
+COPY config.properties.example config.properties
 
 # 创建数据目录（用于挂载音乐文件）
 RUN mkdir -p /music
