@@ -38,6 +38,7 @@ public class MusicConfig {
     private String coverArtCacheDirectory; // 封面缓存目录
     
     // 数据库配置
+    private String dbType; // file (默认) 或 mysql
     private String dbHost;
     private int dbPort;
     private String dbDatabase;
@@ -73,6 +74,7 @@ public class MusicConfig {
         this.coverArtCacheDirectory = null; // 默认为null,后续会设置为 outputDirectory + "/.cover_cache"
         
         // 数据库默认配置
+        this.dbType = "file";
         this.dbHost = "localhost";
         this.dbPort = 3306;
         this.dbDatabase = "music_demo";
@@ -167,6 +169,9 @@ public class MusicConfig {
             }
             
             // 加载数据库配置
+            if (props.containsKey("db.type")) {
+                this.dbType = props.getProperty("db.type");
+            }
             if (props.containsKey("db.mysql.host")) {
                 this.dbHost = props.getProperty("db.mysql.host");
             }

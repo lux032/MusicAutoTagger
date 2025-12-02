@@ -52,6 +52,19 @@ public class CoverArtCache {
         
         try {
             String urlHash = calculateHash(coverArtUrl);
+            
+            // 如果没有数据库服务，直接检查文件系统
+            if (databaseService == null) {
+                String cacheFileName = urlHash + ".jpg";
+                Path cacheFilePath = Paths.get(cacheDirectory, cacheFileName);
+                File cacheFile = cacheFilePath.toFile();
+                if (cacheFile.exists()) {
+                    log.info("使用缓存的封面(File): {}", coverArtUrl);
+                    return Files.readAllBytes(cacheFilePath);
+                }
+                return null;
+            }
+
             String sql = "SELECT cache_file_path FROM cover_art_cache WHERE url_hash = ?";
             
             try (Connection conn = databaseService.getConnection();
@@ -65,7 +78,7 @@ public class CoverArtCache {
                         File cacheFile = new File(cacheFilePath);
                         
                         if (cacheFile.exists()) {
-                            log.info("使用缓存的封面: {}", coverArtUrl);
+                            log.info("使用缓存的封面(DB): {}", coverArtUrl);
                             return Files.readAllBytes(cacheFile.toPath());
                         } else {
                             log.warn("缓存文件不存在: {}", cacheFilePath);
@@ -104,6 +117,11 @@ public class CoverArtCache {
             Files.write(cacheFilePath, coverData);
             log.info("封面已缓存到文件: {}", cacheFilePath);
             
+            // 如果没有数据库服务，到此结束
+            if (databaseService == null) {
+                return true;
+            }
+
             // 保存数据库记录
             String sql = "INSERT INTO cover_art_cache (url_hash, cover_url, cache_file_path, file_size, cached_time) " +
                         "VALUES (?, ?, ?, ?, NOW()) " +

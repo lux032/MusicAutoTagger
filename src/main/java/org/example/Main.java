@@ -80,18 +80,23 @@ public class Main {
     private static void initializeServices() throws IOException {
         log.info("初始化服务...");
         
-        // Level 1: 初始化数据库服务
-        log.info("初始化数据库服务...");
-        databaseService = new DatabaseService(config);
+        // Level 1: 初始化数据库服务 (如果配置为 MySQL)
+        if ("mysql".equalsIgnoreCase(config.getDbType())) {
+            log.info("初始化数据库服务...");
+            databaseService = new DatabaseService(config);
+        } else {
+            log.info("使用文件模式，跳过数据库初始化");
+        }
         
         // Level 2: 初始化依赖数据库的服务
-        log.info("初始化数据库相关服务...");
-        processedLogger = new ProcessedFileLogger(databaseService);
+        log.info("初始化日志服务...");
+        processedLogger = new ProcessedFileLogger(config, databaseService);
         
         String cacheDir = config.getCoverArtCacheDirectory();
         if (cacheDir == null || cacheDir.isEmpty()) {
             cacheDir = config.getOutputDirectory() + "/.cover_cache";
         }
+        // 在文件模式下, databaseService 为 null, CoverArtCache 会自动降级为文件系统缓存
         coverArtCache = new CoverArtCache(databaseService, cacheDir);
         
         // Level 2: 初始化其他服务
