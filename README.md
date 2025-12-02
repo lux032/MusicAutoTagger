@@ -41,7 +41,7 @@
     version: '3.8'
     services:
       music-tagger:
-        image: ghcr.io/lux032/musicautotagger:latest # 或者 build: .
+        image: ghcr.io/lux032/musicautotagger:latest
         container_name: music-tagger
         volumes:
           - /path/to/downloads:/music           # 你的下载目录
