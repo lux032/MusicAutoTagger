@@ -1,5 +1,5 @@
 # 使用多阶段构建
-FROM maven:3.9-eclipse-temurin-17-alpine AS builder
+FROM maven:3.9-eclipse-temurin-17 AS builder
 
 # 设置工作目录
 WORKDIR /app
@@ -12,10 +12,10 @@ COPY src ./src
 RUN mvn clean package -DskipTests
 
 # 运行阶段
-FROM eclipse-temurin:17-jre-alpine
+FROM eclipse-temurin:17-jre
 
 # 安装 chromaprint (fpcalc)
-RUN apk add --no-cache chromaprint
+RUN apt-get update && apt-get install -y libchromaprint-tools && rm -rf /var/lib/apt/lists/*
 
 # 创建应用目录
 WORKDIR /app
