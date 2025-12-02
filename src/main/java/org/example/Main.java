@@ -29,6 +29,7 @@ public class Main {
     private static LyricsService lyricsService;
     private static ProcessedFileLogger processedLogger;
     private static CoverArtCache coverArtCache;
+    private static FolderAlbumCache folderAlbumCache;
     private static MusicConfig config;
     
     // 文件夹级别的封面缓存: 文件夹路径 -> 封面数据
@@ -111,6 +112,7 @@ public class Main {
         musicBrainzClient = new MusicBrainzClient(config);
         lyricsService = new LyricsService(config);
         tagWriter = new TagWriterService(config);
+        folderAlbumCache = new FolderAlbumCache();
         
         // Level 3: 初始化文件监控服务
         log.info("初始化文件监控服务...");
@@ -175,6 +177,9 @@ public class Main {
                 log.warn("无法获取详细元数据");
                 detailedMetadata = convertToMusicMetadata(bestMatch);
             }
+            
+            // 3.5 文件夹级别专辑统一处理
+            detailedMetadata = applyFolderAlbumCache(audioFile, detailedMetadata, musicFilesInFolder);
             
             // 4. 获取封面图片(多层降级策略)
             byte[] coverArtData = getCoverArtWithFallback(audioFile, detailedMetadata);
@@ -509,6 +514,89 @@ public class Main {
     }
     
     /**
+     * 应用文件夹级别的专辑缓存
+     * 核心逻辑：
+     * 1. 如果文件夹已经确定了专辑，直接使用缓存的专辑信息
+     * 2. 如果正在收集样本，添加当前识别结果作为样本
+     * 3. 如果样本收集完成，确定最佳专辑并缓存
+     * 4. 验证识别结果是否与缓存专辑匹配，不匹配时触发回退
+     */
+    private static MusicBrainzClient.MusicMetadata applyFolderAlbumCache(
+            File audioFile,
+            MusicBrainzClient.MusicMetadata originalMetadata,
+            int musicFilesInFolder) {
+        
+        String folderPath = audioFile.getParentFile().getAbsolutePath();
+        
+        // 检查是否已有缓存的专辑信息
+        FolderAlbumCache.CachedAlbumInfo cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder);
+        
+        if (cachedAlbum != null) {
+            // 已经确定了文件夹专辑，验证当前识别结果
+            FolderAlbumCache.AlbumIdentificationInfo currentAlbum = new FolderAlbumCache.AlbumIdentificationInfo(
+                originalMetadata.getReleaseGroupId(),
+                originalMetadata.getAlbum(),
+                originalMetadata.getAlbumArtist() != null ? originalMetadata.getAlbumArtist() : originalMetadata.getArtist(),
+                0, // trackCount在这里不重要
+                originalMetadata.getReleaseDate()
+            );
+            
+            boolean matches = folderAlbumCache.validateAgainstCache(folderPath, audioFile.getName(), currentAlbum);
+            
+            if (matches) {
+                // 匹配，使用缓存的专辑信息
+                log.info("✓ 使用文件夹统一专辑: {} (置信度: {:.1f}%)",
+                    cachedAlbum.getAlbumTitle(), cachedAlbum.getConfidence() * 100);
+                
+                // 覆盖专辑信息
+                originalMetadata.setAlbum(cachedAlbum.getAlbumTitle());
+                originalMetadata.setAlbumArtist(cachedAlbum.getAlbumArtist());
+                originalMetadata.setReleaseGroupId(cachedAlbum.getReleaseGroupId());
+                if (cachedAlbum.getReleaseDate() != null && !cachedAlbum.getReleaseDate().isEmpty()) {
+                    originalMetadata.setReleaseDate(cachedAlbum.getReleaseDate());
+                }
+                
+                return originalMetadata;
+            } else {
+                // 不匹配，可能已触发重新评估，使用原始识别结果
+                log.warn("⚠ 识别结果与缓存不匹配，使用原始识别结果");
+            }
+        }
+        
+        // 没有缓存或已清除缓存，添加样本
+        if (musicFilesInFolder >= 10) { // 只对大型专辑（10首以上）启用文件夹统一
+            FolderAlbumCache.AlbumIdentificationInfo albumInfo = new FolderAlbumCache.AlbumIdentificationInfo(
+                originalMetadata.getReleaseGroupId(),
+                originalMetadata.getAlbum(),
+                originalMetadata.getAlbumArtist() != null ? originalMetadata.getAlbumArtist() : originalMetadata.getArtist(),
+                0, // 这里不需要trackCount，MusicBrainz已经选择了最佳版本
+                originalMetadata.getReleaseDate()
+            );
+            
+            FolderAlbumCache.CachedAlbumInfo determinedAlbum = folderAlbumCache.addSample(
+                folderPath,
+                audioFile.getName(),
+                musicFilesInFolder,
+                albumInfo
+            );
+            
+            if (determinedAlbum != null) {
+                // 刚刚确定了专辑，应用到当前文件
+                log.info("✓ 文件夹专辑已确定，应用到当前文件: {}", determinedAlbum.getAlbumTitle());
+                
+                originalMetadata.setAlbum(determinedAlbum.getAlbumTitle());
+                originalMetadata.setAlbumArtist(determinedAlbum.getAlbumArtist());
+                originalMetadata.setReleaseGroupId(determinedAlbum.getReleaseGroupId());
+                if (determinedAlbum.getReleaseDate() != null && !determinedAlbum.getReleaseDate().isEmpty()) {
+                    originalMetadata.setReleaseDate(determinedAlbum.getReleaseDate());
+                }
+            }
+        }
+        
+        return originalMetadata;
+    }
+    
+    /**
      * 优雅关闭所有服务
      */
     private static void shutdown() {
@@ -536,6 +624,11 @@ public class Main {
                 CoverArtCache.CacheStatistics stats = coverArtCache.getStatistics();
                 log.info("封面缓存统计: {}", stats);
                 coverArtCache.close();
+            }
+            
+            if (folderAlbumCache != null) {
+                FolderAlbumCache.CacheStatistics stats = folderAlbumCache.getStatistics();
+                log.info("文件夹专辑缓存统计: {}", stats);
             }
             
             if (processedLogger != null) {
