@@ -1,0 +1,201 @@
+# ========================================
+# 音乐文件自动标签系统配置文件模板
+# ========================================
+# 
+# 使用说明：
+# 1. 复制此文件为 config.properties
+# 2. 根据你的实际环境修改配置项
+# 3. 将配置文件放在项目根目录（与 pom.xml 同级）
+#
+
+# ========================================
+# 监控目录配置
+# ========================================
+
+# 设置要监控的下载目录路径
+# Docker环境：使用容器内路径 /music
+# Windows本地：使用绝对路径，例如 D:/MusicTest/Download
+monitor.directory=/music
+
+# 设置处理后的文件输出目录
+# Docker环境：使用容器内路径 /app/tagged_music
+# Windows本地：使用绝对路径，例如 D:/MusicTest/Music
+monitor.outputDirectory=/app/tagged_music
+
+# 扫描间隔（秒）
+# 建议值：30-60秒，根据下载频率调整
+monitor.scanInterval=30
+
+# ========================================
+# MusicBrainz API 配置
+# ========================================
+
+# MusicBrainz API 地址（通常不需要修改）
+musicbrainz.apiUrl=https://musicbrainz.org/ws/2
+musicbrainz.coverArtApiUrl=https://coverartarchive.org
+
+# User Agent（必须修改为你的邮箱）
+# 格式：ApplicationName/Version ( contact@email.com )
+musicbrainz.userAgent=MusicDemo/1.0 ( your-email@example.com )
+
+# ========================================
+# AcoustID API 配置
+# ========================================
+
+# AcoustID API Key（必须配置！）
+# 请在 https://acoustid.org/new-application 注册获取
+# 注册步骤：
+#   1. 访问上述网址
+#   2. 填写应用名称和邮箱
+#   3. 获取 API Key 并填入下方
+acoustid.apiKey=YOUR_API_KEY_HERE
+
+# AcoustID API 地址（通常不需要修改）
+acoustid.apiUrl=https://api.acoustid.org/v2/lookup
+
+# ========================================
+# 文件处理配置
+# ========================================
+
+# 是否根据元数据自动重命名文件
+# true：重命名为 "艺术家 - 歌曲名.扩展名"
+# false：保持原文件名
+file.autoRename=true
+
+# 是否创建备份文件（已废弃，现在使用复制模式）
+# 程序会将处理后的文件复制到输出目录，原文件保持不变
+file.createBackup=false
+
+# ========================================
+# 日志配置
+# ========================================
+
+# 是否启用详细日志
+# true：输出详细的处理信息
+# false：只输出关键信息
+logging.detailed=true
+
+# 已处理文件日志路径（用于防止重复处理）
+# Docker环境：使用容器内路径 /app/logs/processed_files.log
+# Windows本地：使用绝对路径，例如 D:/MusicTest/processed_files.log
+# 也可以使用默认位置：用户主目录下的 .musicdemo/processed_files.log
+logging.processedFileLogPath=/app/logs/processed_files.log
+
+# ========================================
+# 封面缓存配置
+# ========================================
+
+# 封面缓存目录
+# 用于存储已下载和压缩的封面图片，避免重复下载
+# Docker环境：使用容器内路径 /app/.cover_cache
+# Windows本地：使用绝对路径，例如 D:/MusicTest/CoverCache
+cache.coverArtDirectory=/app/.cover_cache
+
+# ========================================
+# 数据库配置
+# ========================================
+
+# 数据库类型：file（文本文件）或 mysql（MySQL数据库）
+# 推荐使用 mysql 以获得更好的性能和可靠性
+db.type=mysql
+
+# ===== MySQL 数据库配置 =====
+# 如果 db.type=mysql，需要配置以下项
+
+# MySQL 服务器地址
+# Docker环境：使用宿主机IP或容器名
+# Windows本地：使用 localhost 或 127.0.0.1
+# QNAP环境：使用 QNAP 的 IP 地址，例如 192.168.1.100
+db.mysql.host=localhost
+
+# MySQL 端口（默认 3306）
+db.mysql.port=3306
+
+# 数据库名称
+# 请先在MySQL中创建此数据库：
+# CREATE DATABASE music_demo CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+db.mysql.database=music_demo
+
+# MySQL 用户名
+db.mysql.username=root
+
+# MySQL 密码（请修改为你的实际密码）
+db.mysql.password=YOUR_MYSQL_PASSWORD
+
+# 连接池配置（通常不需要修改）
+db.mysql.pool.maxPoolSize=10
+db.mysql.pool.minIdle=2
+db.mysql.pool.connectionTimeout=30000
+
+# ========================================
+# HTTP 代理配置（可选）
+# ========================================
+
+# 是否启用HTTP代理
+# 如果需要通过代理访问 MusicBrainz 和 AcoustID API，设置为 true
+proxy.enabled=false
+
+# 代理服务器地址
+# 例如：127.0.0.1 或 proxy.example.com
+proxy.host=127.0.0.1
+
+# 代理服务器端口
+# 例如：7890（Clash）、1080（V2Ray）
+proxy.port=7890
+
+# 代理用户名（如果代理需要认证）
+proxy.username=
+
+# 代理密码（如果代理需要认证）
+proxy.password=
+
+# ========================================
+# 配置示例
+# ========================================
+
+# === QNAP Docker 环境示例 ===
+# monitor.directory=/music
+# monitor.outputDirectory=/app/tagged_music
+# logging.processedFileLogPath=/app/logs/processed_files.log
+# cache.coverArtDirectory=/app/.cover_cache
+# db.mysql.host=192.168.1.100
+# db.mysql.password=your_qnap_mysql_password
+
+# === Windows 本地开发环境示例 ===
+# monitor.directory=D:/MusicTest/Download
+# monitor.outputDirectory=D:/MusicTest/Music
+# logging.processedFileLogPath=D:/MusicTest/processed_files.log
+# cache.coverArtDirectory=D:/MusicTest/CoverCache
+# db.mysql.host=localhost
+# db.mysql.password=your_local_mysql_password
+
+# ========================================
+# 重要提示
+# ========================================
+# 
+# 1. 必须配置项：
+#    - monitor.directory
+#    - monitor.outputDirectory
+#    - acoustid.apiKey（从 https://acoustid.org 获取）
+#    - musicbrainz.userAgent（填入你的邮箱）
+#    - db.mysql.* （如果使用 MySQL）
+# 
+# 2. 路径格式：
+#    - Windows：使用正斜杠 / 或双反斜杠 \\
+#    - 正确：D:/Music 或 D:\\Music
+#    - 错误：D:\Music
+# 
+# 3. 数据库设置：
+#    - 首次使用需要创建数据库和表结构
+#    - 执行 src/main/resources/schema.sql 中的 SQL 语句
+#    - 或参考 DATABASE_SETUP.md 文档
+# 
+# 4. 代理设置：
+#    - 如果在中国大陆使用，建议启用代理
+#    - 确保代理服务器可以访问国际网络
+# 
+# 5. 性能优化：
+#    - 根据NAS性能调整 monitor.scanInterval
+#    - 如果内存有限，可以在 docker-compose.yml 中调整 JAVA_OPTS
+#
+# ========================================

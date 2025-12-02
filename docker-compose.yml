@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  music-tagger:
+    build: .
+    container_name: music-tagger
+    restart: unless-stopped
+    
+    # 环境变量
+    environment:
+      - JAVA_OPTS=-Xmx512m -Xms256m
+      - TZ=Asia/Shanghai
+    
+    # 挂载卷
+    # 注意：在QNAP上部署时，请修改为你的实际路径
+    # 示例路径说明：
+    # - /share/Download/Music：你的qBittorrent下载目录
+    # - /share/Music：处理后的音乐存储目录
+    # - ./config.properties：配置文件（相对于docker-compose.yml的位置）
+    # - ./logs：日志目录（可选）
+    volumes:
+      # 监控目录（输入）- 修改为你的QNAP实际下载目录
+      - /share/Download/Music:/music
+      # 输出目录（处理后的文件）- 修改为你的QNAP音乐库目录
+      - /share/Music:/app/tagged_music
+      # 配置文件（相对路径，保持不变）
+      - ./config.properties:/app/config.properties:ro
+      # 日志目录（可选，用于持久化日志）
+      - ./logs:/app/logs
+      # 封面缓存目录（可选，提升性能）
+      - ./cover_cache:/app/.cover_cache
+    
+    # 网络配置
+    network_mode: bridge
+    
+    # 资源限制（适配QNAP硬件）
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # 日志配置（防止日志文件过大）
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # 健康检查（可选）
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ps aux | grep -v grep | grep java || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+# 如果需要与其他容器通信，可以取消注释以下网络配置
+# networks:
+#   music-network:
+#     driver: bridge

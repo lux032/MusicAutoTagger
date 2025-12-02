@@ -1,0 +1,35 @@
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Build
+target/
+dependency-reduced-pom.xml
+*.class
+
+# Logs
+*.log
+logs/
+
+# Config & Secrets (Important!)
+config.properties
+*.key
+*.token
+*.jks
+
+# System & Misc
+.DS_Store
+Thumbs.db
+fpcalc.exe
+fpcalc
+01
+*.backup_*
+.cover_cache/
+
+# Local data
+data/
+db/
