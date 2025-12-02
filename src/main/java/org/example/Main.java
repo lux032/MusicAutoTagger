@@ -179,6 +179,12 @@ public class Main {
             // 4. 获取封面图片(多层降级策略)
             byte[] coverArtData = getCoverArtWithFallback(audioFile, detailedMetadata);
             
+            if (coverArtData != null && coverArtData.length > 0) {
+                log.info("✓ 成功获取封面图片");
+            } else {
+                log.info("未找到封面图片");
+            }
+            
             // 4.5 获取歌词 (LrcLib)
             log.info("正在获取歌词...");
             // 使用详细元数据的信息查询歌词，如果没有则回退到指纹识别信息
@@ -260,6 +266,8 @@ public class Main {
                 return coverArtData;
             }
             log.warn("✗ 网络下载失败,尝试降级策略");
+        } else {
+            log.warn("未获取到封面URL,跳过网络下载,尝试降级策略");
         }
         
         // 策略2: 检查音频文件是否自带封面
