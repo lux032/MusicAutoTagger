@@ -465,12 +465,7 @@ public class MusicBrainzClient {
         int bestScore = -1;
         int bestTrackCountDiff = Integer.MAX_VALUE;
 
-        // 判断是否为大型合辑场景
-        boolean isLargeCollection = musicFilesInFolder >= 15;
-        
-        if (isLargeCollection) {
-            log.info("检测到大型合辑（{}个文件），优先匹配曲目数接近的专辑", musicFilesInFolder);
-        }
+        log.info("开始选择最佳专辑版本（文件夹内{}个文件），优先匹配曲目数接近的版本", musicFilesInFolder);
 
         for (JsonNode release : releases) {
             int currentScore = calculateReleaseScore(release, musicFilesInFolder);
@@ -479,43 +474,43 @@ public class MusicBrainzClient {
             int trackCount = calculateTrackCount(release);
             int trackCountDiff = Math.abs(trackCount - musicFilesInFolder);
             
-            // 大型合辑场景：曲目数匹配度是最重要的因素
-            if (isLargeCollection) {
-                // 如果曲目数差异更小，直接选择
-                if (trackCountDiff < bestTrackCountDiff) {
-                    bestRelease = release;
-                    bestScore = currentScore;
-                    bestTrackCountDiff = trackCountDiff;
-                    log.debug("选择曲目数更接近的专辑: {} ({}首 vs 文件夹{}首)",
-                        release.path("title").asText(), trackCount, musicFilesInFolder);
-                }
-                // 曲目数差异相同时，比较分数
-                else if (trackCountDiff == bestTrackCountDiff && currentScore > bestScore) {
-                    bestRelease = release;
-                    bestScore = currentScore;
-                }
+            // 统一策略：所有专辑都优先考虑曲目数匹配度
+            // 曲目数差异最小的优先
+            if (trackCountDiff < bestTrackCountDiff) {
+                bestRelease = release;
+                bestScore = currentScore;
+                bestTrackCountDiff = trackCountDiff;
+                log.debug("选择曲目数更接近的专辑: {} ({}首 vs 文件夹{}首)",
+                    release.path("title").asText(), trackCount, musicFilesInFolder);
             }
-            // 非大型合辑场景：使用原有逻辑
-            else {
-                if (bestRelease == null || currentScore > bestScore) {
+            // 曲目数差异相同时，比较类型评分
+            else if (trackCountDiff == bestTrackCountDiff) {
+                if (currentScore > bestScore) {
                     bestRelease = release;
                     bestScore = currentScore;
-                    bestTrackCountDiff = trackCountDiff;
+                    log.debug("曲目数相同，选择评分更高的: {} (评分: {})",
+                        release.path("title").asText(), currentScore);
                 } else if (currentScore == bestScore) {
-                    // 分数相同，优先选择发行时间早的
+                    // 评分也相同，优先选择发行时间早的
                     String date1 = bestRelease.path("date").asText("");
                     String date2 = release.path("date").asText("");
-                    if (date2.compareTo(date1) < 0 && !date2.isEmpty()) {
+                    if (!date2.isEmpty() && date2.compareTo(date1) < 0) {
                         bestRelease = release;
+                        log.debug("曲目数和评分相同，选择发行时间更早的: {} ({})",
+                            release.path("title").asText(), date2);
                     }
                 }
             }
         }
         
-        if (bestRelease != null && isLargeCollection) {
+        if (bestRelease != null) {
             int finalTrackCount = calculateTrackCount(bestRelease);
-            log.info("为大型合辑选择了: {} ({}首曲目)",
-                bestRelease.path("title").asText(), finalTrackCount);
+            String releaseType = bestRelease.path("release-group").path("primary-type").asText("Unknown");
+            log.info("最终选择: {} - {} ({}首曲目，类型: {})",
+                bestRelease.path("title").asText(),
+                bestRelease.path("artist-credit").get(0).path("artist").path("name").asText("Unknown"),
+                finalTrackCount,
+                releaseType);
         }
         
         return bestRelease != null ? bestRelease : releases.get(0);

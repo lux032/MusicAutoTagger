@@ -212,17 +212,29 @@ public class Main {
                 log.info("未找到歌词");
             }
             
-            // 5. 两阶段处理逻辑
-            if (musicFilesInFolder < 10) {
-                // 小型专辑/EP/单曲：直接处理，不需要两阶段
-                log.info("小型专辑/EP/单曲（{}首），直接处理", musicFilesInFolder);
+            // 5. 文件夹级别的专辑锁定处理（所有专辑类型）
+            // 无论是EP、普通专辑还是大合集，都启用文件夹级别的锁定
+            log.info("启用文件夹级别专辑锁定（{}首音乐文件）", musicFilesInFolder);
+            
+            // 检查是否已有缓存的专辑信息
+            FolderAlbumCache.CachedAlbumInfo cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder);
+            
+            if (cachedAlbum != null) {
+                // 已确定专辑：直接使用缓存的专辑信息
+                log.info("使用已缓存的文件夹专辑信息: {}", cachedAlbum.getAlbumTitle());
+                
+                // 应用统一的专辑信息
+                detailedMetadata.setAlbum(cachedAlbum.getAlbumTitle());
+                detailedMetadata.setAlbumArtist(cachedAlbum.getAlbumArtist());
+                detailedMetadata.setReleaseGroupId(cachedAlbum.getReleaseGroupId());
+                if (cachedAlbum.getReleaseDate() != null && !cachedAlbum.getReleaseDate().isEmpty()) {
+                    detailedMetadata.setReleaseDate(cachedAlbum.getReleaseDate());
+                }
+                
+                // 直接处理文件
                 processAndWriteFile(audioFile, detailedMetadata, coverArtData);
             } else {
-                // 大型专辑：两阶段处理
-                log.info("大型专辑（{}首），启用两阶段处理", musicFilesInFolder);
-                
-                // 阶段1: 收集专辑识别信息
-                // 从MusicBrainz获取曲目数
+                // 未确定专辑：收集样本
                 int trackCount = detailedMetadata.getTrackCount();
                 
                 FolderAlbumCache.AlbumIdentificationInfo albumInfo = new FolderAlbumCache.AlbumIdentificationInfo(
@@ -245,7 +257,7 @@ public class Main {
                 );
                 
                 if (determinedAlbum != null) {
-                    // 阶段2: 专辑已确定，批量处理所有待处理文件
+                    // 专辑已确定，批量处理所有待处理文件
                     log.info("========================================");
                     log.info("✓ 文件夹专辑已确定: {}", determinedAlbum.getAlbumTitle());
                     log.info("开始批量处理文件夹内的所有文件...");

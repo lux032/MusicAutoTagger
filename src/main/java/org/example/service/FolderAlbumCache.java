@@ -29,7 +29,7 @@ public class FolderAlbumCache {
     private final Map<String, AlbumSampleCollector> folderSampleCollectors = new ConcurrentHashMap<>();
     
     // 配置参数
-    private static final int SAMPLE_SIZE = 5; // 收集前5首歌作为样本
+    private static final int SAMPLE_SIZE = 3; // 收集前3首歌作为样本（降低以适应小型专辑）
     private static final double CONFIDENCE_THRESHOLD = 0.6; // 60%以上的歌曲匹配同一专辑才认为可信
     private static final int LARGE_ALBUM_THRESHOLD = 10; // 10首以上认为是大型专辑
     private static final double TRACK_COUNT_TOLERANCE = 0.3; // 曲目数容差30%
@@ -86,12 +86,14 @@ public class FolderAlbumCache {
         
         // 添加样本
         collector.addSample(fileName, albumInfo);
+        
+        // 动态计算所需样本数：对于小型专辑，使用更少的样本
+        int requiredSamples = calculateRequiredSamples(musicFilesCount);
         log.info("添加专辑识别样本: {} - {} (样本数: {}/{})",
-            fileName, albumInfo.getAlbumTitle(), collector.getSamples().size(), SAMPLE_SIZE);
+            fileName, albumInfo.getAlbumTitle(), collector.getSamples().size(), requiredSamples);
         
         // 检查是否收集足够样本
-        if (collector.getSamples().size() >= SAMPLE_SIZE || 
-            collector.getSamples().size() >= Math.min(musicFilesCount, SAMPLE_SIZE)) {
+        if (collector.getSamples().size() >= requiredSamples) {
             
             // 分析样本，确定最佳专辑
             CachedAlbumInfo bestAlbum = analyzeSamplesAndDetermineAlbum(folderPath, collector, musicFilesCount);
@@ -147,6 +149,25 @@ public class FolderAlbumCache {
         }
         
         return matches;
+    }
+    
+    /**
+     * 计算所需样本数
+     * - 单曲（1-2首）: 需要1个样本
+     * - 迷你专辑/EP（3-6首）: 需要2个样本
+     * - 小型专辑（7-12首）: 需要3个样本
+     * - 大型专辑（13首以上）: 需要3-5个样本
+     */
+    private int calculateRequiredSamples(int musicFilesCount) {
+        if (musicFilesCount <= 2) {
+            return 1; // 单曲
+        } else if (musicFilesCount <= 6) {
+            return 2; // EP
+        } else if (musicFilesCount <= 12) {
+            return 3; // 小型专辑
+        } else {
+            return Math.min(5, Math.max(3, musicFilesCount / 4)); // 大型专辑
+        }
     }
     
     /**
