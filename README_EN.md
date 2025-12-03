@@ -1,0 +1,144 @@
+# 🎵 Music Auto Tagger | Automated Music Library Organizer
+
+<div align="center">
+
+[![Java](https://img.shields.io/badge/Java-17%2B-orange.svg)](https://www.java.com/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
+[![MusicBrainz](https://img.shields.io/badge/Data-MusicBrainz-purple.svg)](https://musicbrainz.org/)
+[![LrcLib](https://img.shields.io/badge/Lyrics-LrcLib-green.svg)](https://lrclib.net/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+[简体中文](README.md) | [English](README_EN.md)
+
+</div>
+
+**Music Auto Tagger** is an automated music library organizer based on audio fingerprinting. Designed for NAS and server environments, it monitors your download folder, identifies music files, fetches comprehensive metadata (including lyrics), and organizes them into a clean structure.
+
+> **Core Value**: Say goodbye to messy music folders. Automatically tag, cover, and organize your music library to perfection.
+
+## ✨ Key Features
+
+- 🎧 **Audio Fingerprinting**: Uses **Chromaprint (AcoustID)** to accurately identify files even with garbled filenames (e.g., `track01.mp3`).
+- 📝 **Authoritative Metadata**: Sources data from **MusicBrainz** to automatically complete Title, Artist, Album, Year, **Composer**, **Lyricist**, and more.
+- 📜 **Synced Lyrics**: 🆕 Integrates with **LrcLib** to automatically download and embed **synced lyrics (.lrc)**, perfect for modern players.
+- 🖼️ **HD Cover Art**: Automatically downloads and embeds high-quality album art from the Cover Art Archive.
+- 📁 **Automated Organization**: Automatically renames and sorts files into a `Artist/Album/Title` structure.
+- 🤖 **Unattended Operation**: Works seamlessly with qBittorrent/Transmission to process downloads automatically upon completion.
+- 💾 **Dual Persistence Modes**:
+    - **File Mode (Default)**: Uses a CSV file to track processed files. Zero config, ready out of the box for personal use.
+    - **MySQL Mode**: Supports external database connection for massive libraries and high concurrency.
+- 🐳 **Docker Ready**: Provides lightweight Docker images compatible with Synology, QNAP, Unraid, and other NAS systems.
+- 🔄 **Smart Retry**: Automatically handles network failures with retry logic and isolates failed files for later inspection.
+
+## 🚀 Quick Start (Docker Compose)
+
+The easiest way to run the application. No Java installation required.
+
+1.  **Download Config Template**
+    Download `config.properties.example` from the repository and rename it to `config.properties`.
+
+2.  **Get API Key (Free)**
+    Visit [AcoustID](https://acoustid.org/new-application) to apply for an API Key and add it to your config:
+    ```properties
+    acoustid.apiKey=YOUR_API_KEY_HERE
+    ```
+
+3.  **Create `docker-compose.yml`**
+    ```yaml
+    version: '3.8'
+    services:
+      music-tagger:
+        image: ghcr.io/lux032/musicautotagger:latest
+        container_name: music-tagger
+        volumes:
+          - /path/to/downloads:/music           # Your download folder
+          - /path/to/music_library:/app/tagged_music # Target music library
+          - ./config.properties:/app/config.properties
+        restart: unless-stopped
+    ```
+
+4.  **Start Service**
+    ```bash
+    docker-compose up -d
+    ```
+
+## 💻 Local Installation
+
+If you prefer to run it locally for development or testing:
+
+### Prerequisites
+- JDK 17+
+- Maven 3.6+
+- [Chromaprint (fpcalc)](https://acoustid.org/chromaprint) (Must be added to system PATH)
+
+### Build & Run
+```bash
+# 1. Build
+mvn clean package
+
+# 2. Config
+cp config.properties.example config.properties
+# Edit config.properties and fill in API Key
+
+# 3. Run
+java -jar target/MusicDemo-1.0-SNAPSHOT.jar
+```
+
+## 📚 Documentation
+
+- **QNAP NAS Users**: See [QNAP Deployment Guide](docs/QNAP_DEPLOYMENT_GUIDE.md) (Chinese)
+- **Database Setup**: Default is file-based. For MySQL setup, see [Database Setup](docs/DATABASE_SETUP.md)
+- **Windows Guide**: [Windows Build & Test](docs/WINDOWS_BUILD_GUIDE.md)
+
+## ⚙️ Configuration Reference
+
+For a complete template, see `config.properties.example`. Here are the most common settings:
+
+### 📁 Paths
+| Setting | Description | Default |
+|--------|------|--------|
+| `monitor.directory` | Source directory to monitor (Inside Docker) | `/music` |
+| `monitor.outputDirectory` | Target output directory (Inside Docker) | `/app/tagged_music` |
+| `file.failedDirectory` | Directory for failed files (Optional) | `/app/failed_files` |
+| `cache.coverArtDirectory` | Cover art cache directory | `/app/.cover_cache` |
+| `logging.processedFileLogPath` | Processed file log path | `/app/logs/processed_files.log` |
+
+### 🔑 API
+| Setting | Description | Default |
+|--------|------|--------|
+| `acoustid.apiKey` | **[Required]** AcoustID API Key | - |
+| `musicbrainz.userAgent` | User-Agent for API requests | `MusicDemo/1.0 ( your-email@example.com )` |
+| `monitor.scanInterval` | Scan interval (seconds) | `30` |
+
+### 🛠️ Features
+| Setting | Description | Default |
+|--------|------|--------|
+| `file.autoRename` | Rename files automatically | `true` |
+| `file.maxRetries` | Max retries for network errors | `3` |
+| `logging.detailed` | Enable detailed logging | `true` |
+
+### 💾 Database
+| Setting | Description | Default |
+|--------|------|--------|
+| `db.type` | Database type (`file` or `mysql`) | `mysql` |
+| `db.mysql.host` | MySQL Host | `localhost` |
+| `db.mysql.port` | MySQL Port | `3306` |
+| `db.mysql.database` | Database Name | `music_demo` |
+| `db.mysql.username` | Username | `root` |
+| `db.mysql.password` | Password | - |
+
+### 🌐 Proxy (Optional)
+| Setting | Description | Default |
+|--------|------|--------|
+| `proxy.enabled` | Enable HTTP Proxy | `false` |
+| `proxy.host` | Proxy Host | `127.0.0.1` |
+| `proxy.port` | Proxy Port | `7890` |
+
+## 🤝 Contribution
+
+Issues and Pull Requests are welcome!
+
+If this project helps you, please consider giving it a ⭐ **Star**!
+
+---
+**Disclaimer**: This tool relies on third-party services (MusicBrainz, AcoustID, LrcLib). Please respect their Terms of Service.

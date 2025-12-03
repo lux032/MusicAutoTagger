@@ -1,14 +1,20 @@
 # 🎵 Music Auto Tagger | 音乐文件自动整理工具
 
+<div align="center">
+
 [![Java](https://img.shields.io/badge/Java-17%2B-orange.svg)](https://www.java.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
 [![MusicBrainz](https://img.shields.io/badge/Data-MusicBrainz-purple.svg)](https://musicbrainz.org/)
 [![LrcLib](https://img.shields.io/badge/Lyrics-LrcLib-green.svg)](https://lrclib.net/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+[简体中文](README.md) | [English](README_EN.md)
+
+</div>
+
 **Music Auto Tagger** 是一个基于音频指纹的自动化音乐整理工具。它专为 NAS 和服务器环境设计，能够“监听”下载目录，自动识别音乐文件，补全元数据（包括歌词），并整理归档。
 
-> **English Description**: A fully automated music tagger based on audio fingerprinting. It monitors your download folder, identifies music files using AcoustID & MusicBrainz, fetches lyrics from LrcLib, and organizes them into a clean structure.
+> **核心价值**: 告别杂乱无章的音乐文件夹，让你的音乐库自动拥有完美的标签、封面和歌词。
 
 ## ✨ 核心特性
 
@@ -22,6 +28,7 @@
     - **文本模式 (默认)**：无需数据库，使用 CSV 文件记录已处理文件，开箱即用，适合个人用户。
     - **MySQL 模式**：支持连接外部数据库，适合海量文件和高性能并发场景。
 - 🐳 **Docker 部署**：提供轻量级 Docker 镜像，支持 Synology/QNAP/Unraid 等 NAS 系统。
+- 🔄 **智能重试机制**：自动处理网络波动导致的识别失败，并提供失败文件隔离。
 
 ## 🚀 快速开始 (Docker Compose)
 
@@ -83,33 +90,49 @@ java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 - **数据库配置**：默认使用文件记录处理状态，如需使用 MySQL 请参阅 [数据库设置](docs/DATABASE_SETUP.md)
 - **Windows 指南**：[Windows 构建与测试](docs/WINDOWS_BUILD_GUIDE.md)
 
-## ⚙️ 配置文件说明
+## ⚙️ 详细配置文件说明
 
+完整的配置模板请参考 `config.properties.example`。以下是常用配置项说明：
+
+### 📁 路径配置
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | `monitor.directory` | 监控的源目录 (Docker内路径) | `/music` |
 | `monitor.outputDirectory` | 输出目标目录 (Docker内路径) | `/app/tagged_music` |
+| `file.failedDirectory` | 识别失败文件存放目录 (可选) | `/app/failed_files` |
+| `cache.coverArtDirectory` | 封面图片缓存目录 | `/app/.cover_cache` |
+| `logging.processedFileLogPath` | 已处理文件日志路径 | `/app/logs/processed_files.log` |
+
+### 🔑 API 配置
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
 | `acoustid.apiKey` | **[必填]** AcoustID API 密钥 | - |
-| `musicbrainz.userAgent` | 用于 API 请求的 User-Agent | `MusicTagTool/1.0` |
+| `musicbrainz.userAgent` | 用于 API 请求的 User-Agent | `MusicDemo/1.0 ( your-email@example.com )` |
+| `monitor.scanInterval` | 目录扫描间隔 (秒) | `30` |
+
+### 🛠️ 功能开关
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
 | `file.autoRename` | 是否自动重命名文件 | `true` |
-| `cover.download` | 是否下载封面 | `true` |
+| `file.maxRetries` | 网络错误最大重试次数 | `3` |
+| `logging.detailed` | 是否启用详细日志 | `true` |
 
-### 💾 数据持久化配置 (可选)
+### 💾 数据库配置
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `db.type` | 数据库类型 (`file` 或 `mysql`) | `mysql` |
+| `db.mysql.host` | MySQL 主机地址 | `localhost` |
+| `db.mysql.port` | MySQL 端口 | `3306` |
+| `db.mysql.database` | 数据库名 | `music_demo` |
+| `db.mysql.username` | 数据库用户名 | `root` |
+| `db.mysql.password` | 数据库密码 | - |
 
-本项目默认使用 **文本文件 (CSV)** 记录已处理的文件，无需任何额外配置即可运行。如果您希望使用 MySQL 数据库：
-
-1.  在 `docker-compose.yml` 中添加 MySQL 服务（参考 `docs/DATABASE_SETUP.md`）。
-2.  在 `config.properties` 中添加以下配置：
-
-```properties
-# 数据库类型: file (默认) 或 mysql
-db.type=mysql
-db.mysql.host=db
-db.mysql.port=3306
-db.mysql.database=music_tagger
-db.mysql.username=root
-db.mysql.password=example
-```
+### 🌐 代理配置 (可选)
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `proxy.enabled` | 是否启用代理 | `false` |
+| `proxy.host` | 代理主机 | `127.0.0.1` |
+| `proxy.port` | 代理端口 | `7890` |
 
 ## 🤝 贡献与支持
 
