@@ -150,7 +150,7 @@ public class AudioFingerprintService {
                 params.add(new BasicNameValuePair("client", config.getAcoustIdApiKey()));
                 params.add(new BasicNameValuePair("duration", String.valueOf(fingerprint.getDuration())));
                 params.add(new BasicNameValuePair("fingerprint", fingerprint.getFingerprint()));
-                params.add(new BasicNameValuePair("meta", "recordings releasegroups compress"));
+                params.add(new BasicNameValuePair("meta", "recordings releasegroups"));
                 
                 if (retryCount == 0) {
                     log.info("AcoustID API 请求参数 - duration: {}, meta: recordings releasegroups compress",

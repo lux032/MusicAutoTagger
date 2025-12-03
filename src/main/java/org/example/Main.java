@@ -164,7 +164,19 @@ public class Main {
             
             if (acoustIdResult.getRecordings() == null || acoustIdResult.getRecordings().isEmpty()) {
                 log.warn("无法通过音频指纹识别文件: {}", audioFile.getName());
-                // 记录识别失败的文件，避免数据库记录缺失
+                log.info("该文件的 AcoustID 未关联到 MusicBrainz 录音信息");
+                log.info("建议：手动添加标签或等待 MusicBrainz 社区完善数据");
+                
+                // 如果配置了失败目录，复制整个文件夹到失败目录
+                if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
+                    try {
+                        copyFailedFolderToFailedDirectory(audioFile);
+                    } catch (Exception e) {
+                        log.error("复制失败文件夹到失败目录时出错: {}", e.getMessage());
+                    }
+                }
+                
+                // 记录识别失败的文件，避免重复识别
                 processedLogger.markFileAsProcessed(
                     audioFile,
                     "UNKNOWN",
@@ -658,6 +670,70 @@ public class Main {
         tagMetadata.setLyrics(musicMetadata.getLyrics());
         
         return tagMetadata;
+    }
+    
+    /**
+     * 复制失败文件所在的整个文件夹到失败目录
+     * 保留文件夹结构，方便用户手动处理
+     */
+    private static void copyFailedFolderToFailedDirectory(File audioFile) throws IOException {
+        File sourceFolder = audioFile.getParentFile();
+        if (sourceFolder == null || !sourceFolder.exists()) {
+            log.warn("源文件夹不存在，无法复制");
+            return;
+        }
+        
+        // 构建目标路径：失败目录/原文件夹名
+        String folderName = sourceFolder.getName();
+        File targetFolder = new File(config.getFailedDirectory(), folderName);
+        
+        // 检查是否已经复制过该文件夹
+        if (targetFolder.exists()) {
+            log.debug("失败文件夹已存在，跳过复制: {}", targetFolder.getAbsolutePath());
+            return;
+        }
+        
+        log.info("========================================");
+        log.info("识别失败，复制整个文件夹到失败目录");
+        log.info("源文件夹: {}", sourceFolder.getAbsolutePath());
+        log.info("目标位置: {}", targetFolder.getAbsolutePath());
+        
+        // 创建目标文件夹
+        if (!targetFolder.mkdirs()) {
+            log.error("无法创建目标文件夹: {}", targetFolder.getAbsolutePath());
+            return;
+        }
+        
+        // 复制文件夹中的所有文件
+        File[] files = sourceFolder.listFiles();
+        if (files == null) {
+            log.warn("无法列出源文件夹内容");
+            return;
+        }
+        
+        int copiedCount = 0;
+        int skippedCount = 0;
+        
+        for (File file : files) {
+            if (!file.isFile()) {
+                continue; // 跳过子目录
+            }
+            
+            File targetFile = new File(targetFolder, file.getName());
+            try {
+                Files.copy(file.toPath(), targetFile.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                copiedCount++;
+                log.debug("已复制: {}", file.getName());
+            } catch (IOException e) {
+                log.warn("复制文件失败: {} - {}", file.getName(), e.getMessage());
+                skippedCount++;
+            }
+        }
+        
+        log.info("文件夹复制完成: 成功 {} 个文件, 跳过 {} 个", copiedCount, skippedCount);
+        log.info("失败文件夹位置: {}", targetFolder.getAbsolutePath());
+        log.info("========================================");
     }
     
     /**
