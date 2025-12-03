@@ -10,14 +10,17 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 文件夹级别的专辑缓存管理器
  * 用于统一文件夹内所有音乐文件的专辑信息，避免同一专辑的歌曲分散到不同版本
- * 
+ *
  * 核心功能：
  * 1. 文件夹专辑分析：收集文件夹内前N首歌的识别结果，投票选出最佳专辑版本
  * 2. 专辑统一应用：确定专辑后，文件夹内所有歌曲统一使用该专辑信息
- * 3. 异常检测与回退：如果后续歌曲识别结果差异过大，触发重新评估
+ * 3. 两阶段处理：先收集识别，确定专辑后再批量写入文件
  */
 @Slf4j
 public class FolderAlbumCache {
+    
+    // 文件夹路径 -> 待处理文件列表
+    private final Map<String, List<PendingFile>> folderPendingFiles = new ConcurrentHashMap<>();
     
     // 文件夹路径 -> 专辑信息缓存
     private final Map<String, CachedAlbumInfo> folderAlbumCache = new ConcurrentHashMap<>();
@@ -62,21 +65,28 @@ public class FolderAlbumCache {
      * @return 如果样本收集完成并确定了专辑，返回确定的专辑信息，否则返回null
      */
     public CachedAlbumInfo addSample(String folderPath, String fileName, int musicFilesCount, AlbumIdentificationInfo albumInfo) {
-        // 如果已经确定了专辑，直接返回
+        // 如果已经确定了专辑，直接返回（不再收集样本）
         CachedAlbumInfo cached = folderAlbumCache.get(folderPath);
         if (cached != null) {
+            log.debug("文件夹专辑已确定，跳过样本收集: {} - {}", fileName, cached.getAlbumTitle());
             return cached;
         }
         
         // 获取或创建样本收集器
         AlbumSampleCollector collector = folderSampleCollectors.computeIfAbsent(
-            folderPath, 
+            folderPath,
             k -> new AlbumSampleCollector(musicFilesCount)
         );
         
+        // 检查样本收集器是否已标记为完成（双重检查）
+        if (collector.isComplete() && folderAlbumCache.containsKey(folderPath)) {
+            log.debug("样本收集已完成，使用缓存: {}", folderAlbumCache.get(folderPath).getAlbumTitle());
+            return folderAlbumCache.get(folderPath);
+        }
+        
         // 添加样本
         collector.addSample(fileName, albumInfo);
-        log.info("添加专辑识别样本: {} - {} (样本数: {}/{})", 
+        log.info("添加专辑识别样本: {} - {} (样本数: {}/{})",
             fileName, albumInfo.getAlbumTitle(), collector.getSamples().size(), SAMPLE_SIZE);
         
         // 检查是否收集足够样本
@@ -89,11 +99,15 @@ public class FolderAlbumCache {
             if (bestAlbum != null) {
                 // 缓存确定的专辑信息
                 folderAlbumCache.put(folderPath, bestAlbum);
-                // 移除样本收集器
+                // 标记收集器为完成
+                collector.markComplete();
+                // 移除样本收集器（节省内存）
                 folderSampleCollectors.remove(folderPath);
                 
-                log.info("✓ 确定文件夹专辑: {} - {} ({}首曲目)", 
-                    bestAlbum.getAlbumArtist(), bestAlbum.getAlbumTitle(), bestAlbum.getTrackCount());
+                log.info("✓ 确定文件夹专辑: {} - {} ({}首曲目，置信度: {:.1f}%)",
+                    bestAlbum.getAlbumArtist(), bestAlbum.getAlbumTitle(),
+                    bestAlbum.getTrackCount(), bestAlbum.getConfidence() * 100);
+                log.info("✓ 文件夹专辑已锁定，后续文件将统一使用此专辑信息");
                 
                 return bestAlbum;
             }
@@ -266,6 +280,7 @@ public class FolderAlbumCache {
     private static class AlbumSampleCollector {
         private final int totalMusicFiles;
         private final Map<String, AlbumIdentificationInfo> samples = new LinkedHashMap<>();
+        private boolean completed = false; // 标记是否已完成分析
         
         public AlbumSampleCollector(int totalMusicFiles) {
             this.totalMusicFiles = totalMusicFiles;
@@ -280,7 +295,11 @@ public class FolderAlbumCache {
         }
         
         public boolean isComplete() {
-            return samples.size() >= SAMPLE_SIZE || samples.size() >= totalMusicFiles;
+            return completed || samples.size() >= SAMPLE_SIZE || samples.size() >= totalMusicFiles;
+        }
+        
+        public void markComplete() {
+            this.completed = true;
         }
     }
     
@@ -374,5 +393,58 @@ public class FolderAlbumCache {
         public String toString() {
             return String.format("已缓存%d个文件夹, 收集中%d个文件夹", cachedFolders, collectingFolders);
         }
+    }
+    
+    /**
+     * 待处理文件信息
+     */
+    @Data
+    public static class PendingFile {
+        private final File audioFile;
+        private final Object metadata; // MusicBrainzClient.MusicMetadata
+        private final byte[] coverArtData;
+        private final long addTime;
+        
+        public PendingFile(File audioFile, Object metadata, byte[] coverArtData) {
+            this.audioFile = audioFile;
+            this.metadata = metadata;
+            this.coverArtData = coverArtData;
+            this.addTime = System.currentTimeMillis();
+        }
+    }
+    
+    /**
+     * 添加待处理文件到文件夹队列
+     */
+    public void addPendingFile(String folderPath, File audioFile, Object metadata, byte[] coverArtData) {
+        List<PendingFile> pending = folderPendingFiles.computeIfAbsent(
+            folderPath,
+            k -> Collections.synchronizedList(new ArrayList<>())
+        );
+        pending.add(new PendingFile(audioFile, metadata, coverArtData));
+        log.debug("添加待处理文件: {} (文件夹待处理数: {})", audioFile.getName(), pending.size());
+    }
+    
+    /**
+     * 获取文件夹的待处理文件列表
+     */
+    public List<PendingFile> getPendingFiles(String folderPath) {
+        return folderPendingFiles.get(folderPath);
+    }
+    
+    /**
+     * 清除文件夹的待处理文件列表
+     */
+    public void clearPendingFiles(String folderPath) {
+        folderPendingFiles.remove(folderPath);
+        log.debug("已清除文件夹待处理列表: {}", folderPath);
+    }
+    
+    /**
+     * 检查文件夹是否有待处理文件
+     */
+    public boolean hasPendingFiles(String folderPath) {
+        List<PendingFile> pending = folderPendingFiles.get(folderPath);
+        return pending != null && !pending.isEmpty();
     }
 }

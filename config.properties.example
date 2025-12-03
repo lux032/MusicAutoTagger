@@ -82,6 +82,21 @@ logging.detailed=true
 logging.processedFileLogPath=/app/logs/processed_files.log
 
 # ========================================
+# 失败文件处理配置
+# ========================================
+
+# 识别失败文件存放目录
+# 当文件识别失败且重试次数用尽后，会被移动到此目录
+# Docker环境：使用容器内路径 /app/failed_files
+# Windows本地：使用绝对路径，例如 D:/MusicTest/FailedFiles
+# 留空则不移动失败文件
+file.failedDirectory=/app/failed_files
+
+# 最大重试次数（网络错误时）
+# 默认值：3
+file.maxRetries=3
+
+# ========================================
 # 封面缓存配置
 # ========================================
 

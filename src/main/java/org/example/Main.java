@@ -117,7 +117,7 @@ public class Main {
         // Level 3: 初始化文件监控服务
         log.info("初始化文件监控服务...");
         fileMonitor = new FileMonitorService(config, processedLogger);
-        fileMonitor.setFileReadyCallback(Main::processAudioFile);
+        fileMonitor.setFileReadyCallbackWithResult(Main::processAudioFileWithResult);
         
         log.info("所有服务初始化完成");
     }
@@ -131,9 +131,12 @@ public class Main {
     }
     
     /**
-     * 处理音频文件的核心逻辑
+     * 处理音频文件的核心逻辑（带返回值）- 两阶段处理
+     * 阶段1: 识别收集阶段 - 收集专辑信息，不写文件
+     * 阶段2: 批量写入阶段 - 确定专辑后统一批量处理
+     * @return true表示成功，false表示失败（会加入重试队列）
      */
-    private static void processAudioFile(File audioFile) {
+    private static boolean processAudioFileWithResult(File audioFile) {
         log.info("========================================");
         log.info("处理音频文件: {}", audioFile.getName());
         
@@ -141,17 +144,18 @@ public class Main {
             // 0. 检查文件是否已处理过
             if (processedLogger.isFileProcessed(audioFile)) {
                 log.info("文件已处理过，跳过: {}", audioFile.getName());
-                return;
+                return true; // 已处理，返回成功
             }
             
             // 0.3. 检查文件夹是否有临时文件(下载未完成)
             if (hasTempFilesInFolder(audioFile)) {
                 log.warn("检测到文件夹中有临时文件,可能正在下载中,跳过处理: {}", audioFile.getParentFile().getName());
-                return;
+                return false; // 返回false以触发重试，而不是永久跳过
             }
             
             // 0.5. 统计文件夹内音乐文件数量（用于判断是否为单曲/EP/专辑）
             int musicFilesInFolder = countMusicFilesInFolder(audioFile);
+            String folderPath = audioFile.getParentFile().getAbsolutePath();
             
             // 1. 使用音频指纹识别
             log.info("正在进行音频指纹识别...");
@@ -160,7 +164,15 @@ public class Main {
             
             if (acoustIdResult.getRecordings() == null || acoustIdResult.getRecordings().isEmpty()) {
                 log.warn("无法通过音频指纹识别文件: {}", audioFile.getName());
-                return;
+                // 记录识别失败的文件，避免数据库记录缺失
+                processedLogger.markFileAsProcessed(
+                    audioFile,
+                    "UNKNOWN",
+                    "识别失败",
+                    audioFile.getName(),
+                    "Unknown Album"
+                );
+                return true; // 识别失败，不重试但记录
             }
             
             // 2. 获取最佳匹配的录音信息
@@ -168,7 +180,6 @@ public class Main {
             log.info("识别成功: {} - {}", bestMatch.getArtist(), bestMatch.getTitle());
             
             // 3. 通过 MusicBrainz 获取详细元数据（包含封面 URL）
-            // 传入文件夹音乐文件数量，用于优化单曲匹配
             log.info("正在获取详细元数据...");
             MusicBrainzClient.MusicMetadata detailedMetadata =
                 musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesInFolder);
@@ -177,9 +188,6 @@ public class Main {
                 log.warn("无法获取详细元数据");
                 detailedMetadata = convertToMusicMetadata(bestMatch);
             }
-            
-            // 3.5 文件夹级别专辑统一处理
-            detailedMetadata = applyFolderAlbumCache(audioFile, detailedMetadata, musicFilesInFolder);
             
             // 4. 获取封面图片(多层降级策略)
             byte[] coverArtData = getCoverArtWithFallback(audioFile, detailedMetadata);
@@ -192,31 +200,88 @@ public class Main {
             
             // 4.5 获取歌词 (LrcLib)
             log.info("正在获取歌词...");
-            // 使用详细元数据的信息查询歌词，如果没有则回退到指纹识别信息
-            String searchTitle = detailedMetadata.getTitle();
-            String searchArtist = detailedMetadata.getArtist();
-            String searchAlbum = detailedMetadata.getAlbum();
-            
-            // 计算音频时长(秒)
-            int duration = 0;
-            if (acoustIdResult != null && !acoustIdResult.getRecordings().isEmpty()) {
-                // 如果有指纹信息，可以用指纹的时长，或者直接读取文件时长(这里简化用指纹时长，通常够用)
-                // 实际上 AudioFingerprintService 里的 duration 是 int
-                // 但这里我们没有直接访问 fingerprint 对象。
-                // 暂时传 0 让 API 自己模糊匹配，或者如果能获取到文件时长更好。
-                // 为了简单起见，这里先尝试不传时长，或者如果您有办法获取文件时长
-            }
-
-            String lyrics = lyricsService.getLyrics(searchTitle, searchArtist, searchAlbum, 0);
+            String lyrics = lyricsService.getLyrics(
+                detailedMetadata.getTitle(),
+                detailedMetadata.getArtist(),
+                detailedMetadata.getAlbum(),
+                0
+            );
             if (lyrics != null && !lyrics.isEmpty()) {
                 detailedMetadata.setLyrics(lyrics);
             } else {
                 log.info("未找到歌词");
             }
-
-            // 5. 处理文件（复制并更新标签）
-            log.info("正在处理文件...");
-            TagWriterService.MusicMetadata tagMetadata = convertToTagMetadata(detailedMetadata);
+            
+            // 5. 两阶段处理逻辑
+            if (musicFilesInFolder < 10) {
+                // 小型专辑/EP/单曲：直接处理，不需要两阶段
+                log.info("小型专辑/EP/单曲（{}首），直接处理", musicFilesInFolder);
+                processAndWriteFile(audioFile, detailedMetadata, coverArtData);
+            } else {
+                // 大型专辑：两阶段处理
+                log.info("大型专辑（{}首），启用两阶段处理", musicFilesInFolder);
+                
+                // 阶段1: 收集专辑识别信息
+                // 从MusicBrainz获取曲目数
+                int trackCount = detailedMetadata.getTrackCount();
+                
+                FolderAlbumCache.AlbumIdentificationInfo albumInfo = new FolderAlbumCache.AlbumIdentificationInfo(
+                    detailedMetadata.getReleaseGroupId(),
+                    detailedMetadata.getAlbum(),
+                    detailedMetadata.getAlbumArtist() != null ? detailedMetadata.getAlbumArtist() : detailedMetadata.getArtist(),
+                    trackCount,
+                    detailedMetadata.getReleaseDate()
+                );
+                
+                // 添加到待处理队列
+                folderAlbumCache.addPendingFile(folderPath, audioFile, detailedMetadata, coverArtData);
+                
+                // 尝试确定专辑
+                FolderAlbumCache.CachedAlbumInfo determinedAlbum = folderAlbumCache.addSample(
+                    folderPath,
+                    audioFile.getName(),
+                    musicFilesInFolder,
+                    albumInfo
+                );
+                
+                if (determinedAlbum != null) {
+                    // 阶段2: 专辑已确定，批量处理所有待处理文件
+                    log.info("========================================");
+                    log.info("✓ 文件夹专辑已确定: {}", determinedAlbum.getAlbumTitle());
+                    log.info("开始批量处理文件夹内的所有文件...");
+                    log.info("========================================");
+                    
+                    processPendingFilesWithAlbum(folderPath, determinedAlbum);
+                } else {
+                    log.info("专辑收集中，待处理文件已加入队列: {}", audioFile.getName());
+                }
+            }
+            
+            return true; // 处理成功
+            
+        } catch (java.io.IOException e) {
+            // 网络异常（包括 SocketException），返回false以触发重试
+            log.error("网络错误导致处理文件失败: {} - {}", audioFile.getName(), e.getMessage());
+            log.info("文件将被加入重试队列");
+            return false;
+            
+        } catch (Exception e) {
+            // 其他异常（如识别失败），不重试
+            log.error("处理文件失败: {}", audioFile.getName(), e);
+            return true; // 返回true避免重试（非网络问题）
+            
+        } finally {
+            log.info("========================================");
+        }
+    }
+    
+    /**
+     * 处理并写入单个文件
+     */
+    private static void processAndWriteFile(File audioFile, MusicBrainzClient.MusicMetadata metadata, byte[] coverArtData) {
+        try {
+            log.info("正在写入文件标签: {}", audioFile.getName());
+            TagWriterService.MusicMetadata tagMetadata = convertToTagMetadata(metadata);
             boolean success = tagWriter.processFile(audioFile, tagMetadata, coverArtData);
             
             if (success) {
@@ -225,20 +290,90 @@ public class Main {
                 // 记录文件已处理
                 processedLogger.markFileAsProcessed(
                     audioFile,
-                    detailedMetadata.getRecordingId(),
-                    detailedMetadata.getArtist(),
-                    detailedMetadata.getTitle(),
-                    detailedMetadata.getAlbum()
+                    metadata.getRecordingId(),
+                    metadata.getArtist(),
+                    metadata.getTitle(),
+                    metadata.getAlbum()
                 );
             } else {
                 log.error("✗ 文件处理失败: {}", audioFile.getName());
             }
-            
         } catch (Exception e) {
-            log.error("处理文件失败: {}", audioFile.getName(), e);
+            log.error("写入文件失败: {}", audioFile.getName(), e);
+        }
+    }
+    
+    /**
+     * 批量处理文件夹内的待处理文件，统一应用确定的专辑信息
+     */
+    private static void processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo) {
+        java.util.List<FolderAlbumCache.PendingFile> pendingFiles = folderAlbumCache.getPendingFiles(folderPath);
+        
+        if (pendingFiles == null || pendingFiles.isEmpty()) {
+            log.warn("文件夹没有待处理文件: {}", folderPath);
+            return;
+        }
+        
+        log.info("开始批量处理 {} 个待处理文件", pendingFiles.size());
+        
+        int successCount = 0;
+        int failCount = 0;
+        java.util.List<File> failedFiles = new java.util.ArrayList<>();
+        
+        for (FolderAlbumCache.PendingFile pending : pendingFiles) {
+            try {
+                File audioFile = pending.getAudioFile();
+                MusicBrainzClient.MusicMetadata metadata = (MusicBrainzClient.MusicMetadata) pending.getMetadata();
+                byte[] coverArtData = pending.getCoverArtData();
+                
+                // 应用统一的专辑信息
+                metadata.setAlbum(albumInfo.getAlbumTitle());
+                metadata.setAlbumArtist(albumInfo.getAlbumArtist());
+                metadata.setReleaseGroupId(albumInfo.getReleaseGroupId());
+                if (albumInfo.getReleaseDate() != null && !albumInfo.getReleaseDate().isEmpty()) {
+                    metadata.setReleaseDate(albumInfo.getReleaseDate());
+                }
+                
+                log.info("批量处理文件 [{}/{}]: {}",
+                    successCount + failCount + 1, pendingFiles.size(), audioFile.getName());
+                
+                // 写入文件
+                processAndWriteFile(audioFile, metadata, coverArtData);
+                successCount++;
+                
+            } catch (Exception e) {
+                log.error("批量处理文件失败: {}", pending.getAudioFile().getName(), e);
+                failCount++;
+                failedFiles.add(pending.getAudioFile());
+                // 对于失败的文件，也记录到数据库，避免数据缺失
+                try {
+                    MusicBrainzClient.MusicMetadata metadata = (MusicBrainzClient.MusicMetadata) pending.getMetadata();
+                    processedLogger.markFileAsProcessed(
+                        pending.getAudioFile(),
+                        metadata.getRecordingId() != null ? metadata.getRecordingId() : "UNKNOWN",
+                        metadata.getArtist() != null ? metadata.getArtist() : "Unknown Artist",
+                        metadata.getTitle() != null ? metadata.getTitle() : pending.getAudioFile().getName(),
+                        albumInfo.getAlbumTitle()
+                    );
+                    log.info("已记录失败文件到数据库: {}", pending.getAudioFile().getName());
+                } catch (Exception recordError) {
+                    log.error("记录失败文件到数据库失败: {}", pending.getAudioFile().getName(), recordError);
+                }
+            }
         }
         
         log.info("========================================");
+        log.info("批量处理完成: 成功 {} 个, 失败 {} 个", successCount, failCount);
+        if (!failedFiles.isEmpty()) {
+            log.warn("失败文件列表:");
+            for (File file : failedFiles) {
+                log.warn("  - {}", file.getName());
+            }
+        }
+        log.info("========================================");
+        
+        // 清除待处理列表
+        folderAlbumCache.clearPendingFiles(folderPath);
     }
     
     /**
@@ -511,89 +646,6 @@ public class Main {
         tagMetadata.setLyrics(musicMetadata.getLyrics());
         
         return tagMetadata;
-    }
-    
-    /**
-     * 应用文件夹级别的专辑缓存
-     * 核心逻辑：
-     * 1. 如果文件夹已经确定了专辑，直接使用缓存的专辑信息
-     * 2. 如果正在收集样本，添加当前识别结果作为样本
-     * 3. 如果样本收集完成，确定最佳专辑并缓存
-     * 4. 验证识别结果是否与缓存专辑匹配，不匹配时触发回退
-     */
-    private static MusicBrainzClient.MusicMetadata applyFolderAlbumCache(
-            File audioFile,
-            MusicBrainzClient.MusicMetadata originalMetadata,
-            int musicFilesInFolder) {
-        
-        String folderPath = audioFile.getParentFile().getAbsolutePath();
-        
-        // 检查是否已有缓存的专辑信息
-        FolderAlbumCache.CachedAlbumInfo cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder);
-        
-        if (cachedAlbum != null) {
-            // 已经确定了文件夹专辑，验证当前识别结果
-            FolderAlbumCache.AlbumIdentificationInfo currentAlbum = new FolderAlbumCache.AlbumIdentificationInfo(
-                originalMetadata.getReleaseGroupId(),
-                originalMetadata.getAlbum(),
-                originalMetadata.getAlbumArtist() != null ? originalMetadata.getAlbumArtist() : originalMetadata.getArtist(),
-                0, // trackCount在这里不重要
-                originalMetadata.getReleaseDate()
-            );
-            
-            boolean matches = folderAlbumCache.validateAgainstCache(folderPath, audioFile.getName(), currentAlbum);
-            
-            if (matches) {
-                // 匹配，使用缓存的专辑信息
-                log.info("✓ 使用文件夹统一专辑: {} (置信度: {:.1f}%)",
-                    cachedAlbum.getAlbumTitle(), cachedAlbum.getConfidence() * 100);
-                
-                // 覆盖专辑信息
-                originalMetadata.setAlbum(cachedAlbum.getAlbumTitle());
-                originalMetadata.setAlbumArtist(cachedAlbum.getAlbumArtist());
-                originalMetadata.setReleaseGroupId(cachedAlbum.getReleaseGroupId());
-                if (cachedAlbum.getReleaseDate() != null && !cachedAlbum.getReleaseDate().isEmpty()) {
-                    originalMetadata.setReleaseDate(cachedAlbum.getReleaseDate());
-                }
-                
-                return originalMetadata;
-            } else {
-                // 不匹配，可能已触发重新评估，使用原始识别结果
-                log.warn("⚠ 识别结果与缓存不匹配，使用原始识别结果");
-            }
-        }
-        
-        // 没有缓存或已清除缓存，添加样本
-        if (musicFilesInFolder >= 10) { // 只对大型专辑（10首以上）启用文件夹统一
-            FolderAlbumCache.AlbumIdentificationInfo albumInfo = new FolderAlbumCache.AlbumIdentificationInfo(
-                originalMetadata.getReleaseGroupId(),
-                originalMetadata.getAlbum(),
-                originalMetadata.getAlbumArtist() != null ? originalMetadata.getAlbumArtist() : originalMetadata.getArtist(),
-                0, // 这里不需要trackCount，MusicBrainz已经选择了最佳版本
-                originalMetadata.getReleaseDate()
-            );
-            
-            FolderAlbumCache.CachedAlbumInfo determinedAlbum = folderAlbumCache.addSample(
-                folderPath,
-                audioFile.getName(),
-                musicFilesInFolder,
-                albumInfo
-            );
-            
-            if (determinedAlbum != null) {
-                // 刚刚确定了专辑，应用到当前文件
-                log.info("✓ 文件夹专辑已确定，应用到当前文件: {}", determinedAlbum.getAlbumTitle());
-                
-                originalMetadata.setAlbum(determinedAlbum.getAlbumTitle());
-                originalMetadata.setAlbumArtist(determinedAlbum.getAlbumArtist());
-                originalMetadata.setReleaseGroupId(determinedAlbum.getReleaseGroupId());
-                if (determinedAlbum.getReleaseDate() != null && !determinedAlbum.getReleaseDate().isEmpty()) {
-                    originalMetadata.setReleaseDate(determinedAlbum.getReleaseDate());
-                }
-            }
-        }
-        
-        return originalMetadata;
     }
     
     /**

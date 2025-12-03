@@ -29,6 +29,8 @@ public class MusicConfig {
     private String[] supportedFormats;
     private boolean autoRename;
     private boolean createBackup;
+    private String failedDirectory; // 识别失败文件存放目录
+    private int maxRetries; // 最大重试次数
     
     // 日志配置
     private boolean enableDetailedLogging;
@@ -69,6 +71,8 @@ public class MusicConfig {
         this.supportedFormats = new String[]{"mp3", "flac", "m4a", "ogg", "wav"};
         this.autoRename = true;
         this.createBackup = true;
+        this.failedDirectory = null; // 默认不移动失败文件
+        this.maxRetries = 3; // 默认重试3次
         this.enableDetailedLogging = true;
         this.processedFileLogPath = System.getProperty("user.home") + "/.musicdemo/processed_files.log";
         this.coverArtCacheDirectory = null; // 默认为null,后续会设置为 outputDirectory + "/.cover_cache"
@@ -134,6 +138,16 @@ public class MusicConfig {
             }
             if (props.containsKey("file.createBackup")) {
                 this.createBackup = Boolean.parseBoolean(props.getProperty("file.createBackup"));
+            }
+            if (props.containsKey("file.failedDirectory")) {
+                this.failedDirectory = props.getProperty("file.failedDirectory");
+            }
+            if (props.containsKey("file.maxRetries")) {
+                try {
+                    this.maxRetries = Integer.parseInt(props.getProperty("file.maxRetries"));
+                } catch (NumberFormatException e) {
+                    System.err.println("最大重试次数配置错误: " + props.getProperty("file.maxRetries"));
+                }
             }
             if (props.containsKey("logging.detailed")) {
                 this.enableDetailedLogging = Boolean.parseBoolean(props.getProperty("logging.detailed"));

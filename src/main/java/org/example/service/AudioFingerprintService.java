@@ -40,6 +40,10 @@ public class AudioFingerprintService {
     // fpcalc 工具路径（需要用户安装 Chromaprint）
     private String fpcalcPath = "fpcalc";
     
+    // 重试配置
+    private static final int MAX_RETRIES = 3; // 最大重试次数
+    private static final long RETRY_DELAY_MS = 5000; // 重试间隔5秒
+    
     public AudioFingerprintService(MusicConfig config) {
         this.config = config;
         this.httpClient = createHttpClient(config);
@@ -129,45 +133,76 @@ public class AudioFingerprintService {
     }
     
     /**
-     * 通过 AcoustID API 查询音乐信息
+     * 通过 AcoustID API 查询音乐信息（带重试机制）
      */
-    public AcoustIdResult lookupByFingerprint(AudioFingerprint fingerprint) throws IOException {
+    public AcoustIdResult lookupByFingerprint(AudioFingerprint fingerprint) throws IOException, InterruptedException {
         if (config.getAcoustIdApiKey() == null || config.getAcoustIdApiKey().isEmpty()) {
             throw new IllegalStateException("AcoustID API Key 未配置");
         }
         
-        // 构建请求参数
-        List<NameValuePair> params = new ArrayList<>();
-        params.add(new BasicNameValuePair("client", config.getAcoustIdApiKey()));
-        params.add(new BasicNameValuePair("duration", String.valueOf(fingerprint.getDuration())));
-        params.add(new BasicNameValuePair("fingerprint", fingerprint.getFingerprint()));
-        params.add(new BasicNameValuePair("meta", "recordings releasegroups compress"));
+        int retryCount = 0;
+        IOException lastException = null;
         
-        log.info("AcoustID API 请求参数 - duration: {}, meta: recordings releasegroups compress",
-            fingerprint.getDuration());
-        
-        // 发送 POST 请求
-        HttpPost httpPost = new HttpPost(config.getAcoustIdApiUrl());
-        // 使用 UTF-8 编码,这很关键!
-        httpPost.setEntity(new UrlEncodedFormEntity(params, java.nio.charset.StandardCharsets.UTF_8));
-        httpPost.setHeader("User-Agent", config.getUserAgent());
-        httpPost.setHeader("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-        
-        try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
-            int statusCode = response.getCode();
-            String responseBody = EntityUtils.toString(response.getEntity());
-            
-            if (statusCode != 200) {
-                log.error("AcoustID API 请求失败: {} - {}", statusCode, responseBody);
-                throw new IOException("API 请求失败: " + statusCode);
+        while (retryCount <= MAX_RETRIES) {
+            try {
+                // 构建请求参数
+                List<NameValuePair> params = new ArrayList<>();
+                params.add(new BasicNameValuePair("client", config.getAcoustIdApiKey()));
+                params.add(new BasicNameValuePair("duration", String.valueOf(fingerprint.getDuration())));
+                params.add(new BasicNameValuePair("fingerprint", fingerprint.getFingerprint()));
+                params.add(new BasicNameValuePair("meta", "recordings releasegroups compress"));
+                
+                if (retryCount == 0) {
+                    log.info("AcoustID API 请求参数 - duration: {}, meta: recordings releasegroups compress",
+                        fingerprint.getDuration());
+                }
+                
+                // 发送 POST 请求
+                HttpPost httpPost = new HttpPost(config.getAcoustIdApiUrl());
+                // 使用 UTF-8 编码,这很关键!
+                httpPost.setEntity(new UrlEncodedFormEntity(params, java.nio.charset.StandardCharsets.UTF_8));
+                httpPost.setHeader("User-Agent", config.getUserAgent());
+                httpPost.setHeader("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+                
+                try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+                    int statusCode = response.getCode();
+                    String responseBody = EntityUtils.toString(response.getEntity());
+                    
+                    if (statusCode != 200) {
+                        log.error("AcoustID API 请求失败: {} - {}", statusCode, responseBody);
+                        throw new IOException("API 请求失败: " + statusCode);
+                    }
+                    
+                    log.info("AcoustID API 响应: {}", responseBody);
+                    return parseAcoustIdResponse(responseBody);
+                } catch (ParseException e) {
+                    log.error("解析响应失败", e);
+                    throw new IOException("解析响应失败", e);
+                }
+                
+            } catch (IOException e) {
+                lastException = e;
+                retryCount++;
+                
+                if (retryCount <= MAX_RETRIES) {
+                    log.warn("AcoustID API 请求失败(第{}/{}次尝试): {} - {}秒后重试",
+                        retryCount, MAX_RETRIES, e.getMessage(), RETRY_DELAY_MS / 1000);
+                    
+                    try {
+                        Thread.sleep(RETRY_DELAY_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("重试等待被中断", ie);
+                    }
+                } else {
+                    log.error("AcoustID API 请求失败,已达最大重试次数({}/{}): {}",
+                        retryCount, MAX_RETRIES, e.getMessage());
+                }
             }
-            
-            log.info("AcoustID API 响应: {}", responseBody);
-            return parseAcoustIdResponse(responseBody);
-        } catch (ParseException e) {
-            log.error("解析响应失败", e);
-            throw new IOException("解析响应失败", e);
         }
+        
+        // 所有重试都失败,抛出最后一次异常
+        throw lastException;
     }
     
     /**

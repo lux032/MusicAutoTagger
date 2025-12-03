@@ -22,20 +22,25 @@ public class FileMonitorService {
     private final ExecutorService watcherExecutorService;  // 用于长期运行的监控线程
     private final ExecutorService fileCheckExecutorService;  // 用于短期的文件检查任务
     private final BlockingQueue<File> fileQueue;
+    private final BlockingQueue<FailedFile> failedFileQueue;  // 失败文件重试队列
     private final Map<String, Long> processedFiles;
     private final Set<String> supportedExtensions;
     private final ProcessedFileLogger processedLogger;
     private final Map<WatchKey, Path> watchKeys;
     private volatile boolean running;
     private static final long PROCESS_INTERVAL = 5000; // 每个文件处理间隔5秒,防止API限流
+    private final int maxFileRetries; // 单个文件最大重试次数（从配置读取）
+    private static final long RETRY_QUEUE_CHECK_INTERVAL = 60000; // 重试队列检查间隔60秒
     
     public FileMonitorService(MusicConfig config, ProcessedFileLogger processedLogger) throws IOException {
         this.config = config;
+        this.maxFileRetries = config.getMaxRetries(); // 从配置读取最大重试次数
         this.watchService = FileSystems.getDefault().newWatchService();
         // 分离长期运行的守护线程和短期任务线程
-        this.watcherExecutorService = Executors.newFixedThreadPool(2);  // 监控循环 + 队列消费者
+        this.watcherExecutorService = Executors.newFixedThreadPool(3);  // 监控循环 + 队列消费者 + 重试队列处理
         this.fileCheckExecutorService = Executors.newCachedThreadPool();  // 文件检查任务(可伸缩)
         this.fileQueue = new LinkedBlockingQueue<>();
+        this.failedFileQueue = new LinkedBlockingQueue<>();
         this.processedFiles = new ConcurrentHashMap<>();
         this.supportedExtensions = new HashSet<>(Arrays.asList(config.getSupportedFormats()));
         this.processedLogger = processedLogger;
@@ -75,6 +80,9 @@ public class FileMonitorService {
             
             // 启动文件处理队列线程
             watcherExecutorService.submit(this::processFileQueue);
+            
+            // 启动失败文件重试线程
+            watcherExecutorService.submit(this::processFailedFileQueue);
             
         } catch (IOException e) {
             log.error("启动文件监控失败", e);
@@ -250,8 +258,13 @@ public class FileMonitorService {
                 log.info("开始处理队列中的文件: {} (剩余: {})",
                     file.getName(), fileQueue.size());
                 
-                // 触发实际处理
-                notifyFileReady(file);
+                // 触发实际处理，并捕获结果
+                boolean success = notifyFileReadyWithResult(file);
+                
+                // 如果处理失败且是网络错误，加入重试队列
+                if (!success) {
+                    addToFailedQueue(file, 1);
+                }
                 
                 // 等待指定间隔后再处理下一个文件
                 if (!fileQueue.isEmpty()) {
@@ -266,6 +279,71 @@ public class FileMonitorService {
         }
         
         log.info("文件处理队列线程已停止");
+    }
+    
+    /**
+     * 处理失败文件重试队列
+     */
+    private void processFailedFileQueue() {
+        log.info("失败文件重试队列线程已启动");
+        
+        while (running) {
+            try {
+                // 定期检查失败队列
+                Thread.sleep(RETRY_QUEUE_CHECK_INTERVAL);
+                
+                if (failedFileQueue.isEmpty()) {
+                    continue;
+                }
+                
+                log.info("开始处理失败文件重试队列，当前队列长度: {}", failedFileQueue.size());
+                
+                // 取出所有失败文件进行重试
+                List<FailedFile> filesToRetry = new ArrayList<>();
+                failedFileQueue.drainTo(filesToRetry);
+                
+                for (FailedFile failedFile : filesToRetry) {
+                    if (failedFile.getRetryCount() >= maxFileRetries) {
+                        log.warn("文件 {} 已达最大重试次数 {}，放弃处理",
+                            failedFile.getFile().getName(), maxFileRetries);
+                        // 移动到失败文件目录
+                        moveToFailedDirectory(failedFile.getFile());
+                        continue;
+                    }
+                    
+                    log.info("重试处理文件: {} (第 {}/{} 次重试)",
+                        failedFile.getFile().getName(), failedFile.getRetryCount(), maxFileRetries);
+                    
+                    boolean success = notifyFileReadyWithResult(failedFile.getFile());
+                    
+                    if (!success) {
+                        // 重试失败，重新加入队列
+                        addToFailedQueue(failedFile.getFile(), failedFile.getRetryCount() + 1);
+                    } else {
+                        log.info("✓ 重试成功: {}", failedFile.getFile().getName());
+                    }
+                    
+                    // 重试之间也需要间隔
+                    Thread.sleep(PROCESS_INTERVAL);
+                }
+                
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        
+        log.info("失败文件重试队列线程已停止");
+    }
+    
+    /**
+     * 添加文件到失败队列
+     */
+    private void addToFailedQueue(File file, int retryCount) {
+        FailedFile failedFile = new FailedFile(file, retryCount);
+        failedFileQueue.offer(failedFile);
+        log.info("文件加入重试队列: {} (重试次数: {}, 队列长度: {})",
+            file.getName(), retryCount, failedFileQueue.size());
     }
     
     /**
@@ -336,10 +414,27 @@ public class FileMonitorService {
         }
     }
     
+    /**
+     * 通知文件已准备好处理，并返回处理结果
+     */
+    private boolean notifyFileReadyWithResult(File file) {
+        if (fileReadyCallbackWithResult != null) {
+            return fileReadyCallbackWithResult.apply(file);
+        }
+        // 如果没有设置带返回值的回调，使用原来的回调并返回true
+        notifyFileReady(file);
+        return true;
+    }
+    
     private java.util.function.Consumer<File> fileReadyCallback;
+    private java.util.function.Function<File, Boolean> fileReadyCallbackWithResult;
     
     public void setFileReadyCallback(java.util.function.Consumer<File> callback) {
         this.fileReadyCallback = callback;
+    }
+    
+    public void setFileReadyCallbackWithResult(java.util.function.Function<File, Boolean> callback) {
+        this.fileReadyCallbackWithResult = callback;
     }
     
     /**
@@ -363,8 +458,67 @@ public class FileMonitorService {
         long currentTime = System.currentTimeMillis();
         long expirationTime = 24 * 60 * 60 * 1000; // 24小时
         
-        processedFiles.entrySet().removeIf(entry -> 
+        processedFiles.entrySet().removeIf(entry ->
             currentTime - entry.getValue() > expirationTime
         );
+    }
+    
+    /**
+     * 移动文件到失败目录
+     */
+    private void moveToFailedDirectory(File file) {
+        String failedDir = config.getFailedDirectory();
+        if (failedDir == null || failedDir.trim().isEmpty()) {
+            log.info("未配置失败文件目录，跳过移动: {}", file.getName());
+            return;
+        }
+        
+        try {
+            Path failedDirPath = Paths.get(failedDir);
+            if (!Files.exists(failedDirPath)) {
+                Files.createDirectories(failedDirPath);
+                log.info("创建失败文件目录: {}", failedDir);
+            }
+            
+            Path sourcePath = file.toPath();
+            Path targetPath = failedDirPath.resolve(file.getName());
+            
+            // 如果目标文件已存在，添加时间戳
+            if (Files.exists(targetPath)) {
+                String baseName = file.getName();
+                int dotIndex = baseName.lastIndexOf('.');
+                String name = dotIndex > 0 ? baseName.substring(0, dotIndex) : baseName;
+                String ext = dotIndex > 0 ? baseName.substring(dotIndex) : "";
+                String timestamp = String.valueOf(System.currentTimeMillis());
+                targetPath = failedDirPath.resolve(name + "_" + timestamp + ext);
+            }
+            
+            Files.move(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING);
+            log.info("✓ 失败文件已移动到: {}", targetPath);
+            
+        } catch (IOException e) {
+            log.error("移动失败文件到目录失败: {} -> {}", file.getName(), failedDir, e);
+        }
+    }
+    
+    /**
+     * 失败文件信息
+     */
+    private static class FailedFile {
+        private final File file;
+        private final int retryCount;
+        
+        public FailedFile(File file, int retryCount) {
+            this.file = file;
+            this.retryCount = retryCount;
+        }
+        
+        public File getFile() {
+            return file;
+        }
+        
+        public int getRetryCount() {
+            return retryCount;
+        }
     }
 }

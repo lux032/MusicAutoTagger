@@ -98,9 +98,18 @@ public class TagWriterService {
         // 构建文件名(使用单曲艺术家)
         String newFileName = fileName;
         if (config.isAutoRename() && metadata.getArtist() != null && metadata.getTitle() != null) {
+            // 提取原始文件名的编号前缀（如 "01. " 或 "39. "）
+            String trackPrefix = extractTrackPrefix(fileName);
+            
             String artist = sanitizeFileName(metadata.getArtist());
             String title = sanitizeFileName(metadata.getTitle());
-            newFileName = artist + " - " + title + extension;
+            
+            // 如果有曲目编号前缀，保留它
+            if (trackPrefix != null && !trackPrefix.isEmpty()) {
+                newFileName = trackPrefix + artist + " - " + title + extension;
+            } else {
+                newFileName = artist + " - " + title + extension;
+            }
         }
 
         // 构建目录结构: 输出目录/专辑艺术家/专辑/文件名
@@ -141,6 +150,37 @@ public class TagWriterService {
         }
 
         return targetFile;
+    }
+
+    /**
+     * 从文件名中提取曲目编号前缀
+     * 例如: "01. Title.flac" -> "01. "
+     *      "39. Title.flac" -> "39. "
+     */
+    private String extractTrackPrefix(String fileName) {
+        // 匹配格式: 数字 + 点 + 空格 (可能有多个空格)
+        // 也匹配没有空格的情况: 数字 + 点
+        if (fileName.matches("^\\d+\\.\\s+.*")) {
+            // 有空格的情况
+            int dotIndex = fileName.indexOf('.');
+            if (dotIndex > 0) {
+                // 找到点后第一个非空格字符的位置
+                int spaceEnd = dotIndex + 1;
+                while (spaceEnd < fileName.length() && fileName.charAt(spaceEnd) == ' ') {
+                    spaceEnd++;
+                }
+                return fileName.substring(0, spaceEnd);
+            }
+        } else if (fileName.matches("^\\d+\\..*")) {
+            // 没有空格的情况
+            int dotIndex = fileName.indexOf('.');
+            if (dotIndex > 0) {
+                return fileName.substring(0, dotIndex + 2); // "XX. "
+            }
+        }
+        
+        log.debug("无法从文件名提取曲目编号: {}", fileName);
+        return "";
     }
 
     /**
@@ -245,17 +285,34 @@ public class TagWriterService {
     
     /**
      * 清理文件名中的非法字符
+     * 保留<INST>等有意义的标记，只替换文件系统真正不允许的字符
      */
     private String sanitizeFileName(String fileName) {
         if (fileName == null) {
             return "";
         }
         
-        // 替换 Windows 文件名中的非法字符
-        return fileName
-            .replaceAll("[\\\\/:*?\"<>|]", "")
-            .replaceAll("\\s+", " ")
-            .trim();
+        // Windows文件系统不允许的字符: \ / : * ? " < > |
+        // 但我们需要保留<INST>这样的标记，所以特殊处理
+        String result = fileName;
+        
+        // 先保护<INST>等特殊标记，临时替换为全角括号
+        result = result.replace("<INST>", "〔INST〕");
+        result = result.replace("<inst>", "〔inst〕");
+        result = result.replace("<Inst>", "〔Inst〕");
+        
+        // 替换文件系统不允许的字符
+        result = result.replaceAll("[\\\\/:*?\"<>|]", "");
+        
+        // 恢复<INST>标记，使用方括号代替尖括号（文件系统安全）
+        result = result.replace("〔INST〕", "[INST]");
+        result = result.replace("〔inst〕", "[inst]");
+        result = result.replace("〔Inst〕", "[Inst]");
+        
+        // 清理多余空格
+        result = result.replaceAll("\\s+", " ").trim();
+        
+        return result;
     }
     
     /**

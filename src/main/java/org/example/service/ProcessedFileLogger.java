@@ -25,12 +25,12 @@ import org.example.config.MusicConfig;
  */
 @Slf4j
 public class ProcessedFileLogger {
-    
+
     private final DatabaseService databaseService;
     private final MusicConfig config;
     private final DateTimeFormatter dateFormatter;
     private final boolean isDbMode;
-    
+
     /**
      * 构造函数
      * @param databaseService 数据库服务 (仅在 dbMode 为 mysql 时需要)
@@ -39,9 +39,9 @@ public class ProcessedFileLogger {
         this.config = config;
         this.databaseService = databaseService;
         this.dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        
+
         this.isDbMode = "mysql".equalsIgnoreCase(config.getDbType());
-        
+
         if (isDbMode) {
             log.info("已处理文件日志服务初始化完成 - 模式: MySQL");
         } else {
@@ -49,7 +49,7 @@ public class ProcessedFileLogger {
             initLogFile();
         }
     }
-    
+
     private void initLogFile() {
         File logFile = new File(config.getProcessedFileLogPath());
         if (!logFile.exists()) {
@@ -63,7 +63,7 @@ public class ProcessedFileLogger {
             }
         }
     }
-    
+
     /**
      * 检查文件是否已被处理过
      * 使用文件完整路径作为唯一标识,允许同一首歌在不同位置被分别处理
@@ -76,20 +76,20 @@ public class ProcessedFileLogger {
         if (isDbMode) {
             try {
                 String sql = "SELECT recording_id, artist, title, album, processed_time FROM processed_files WHERE file_path = ?";
-                
+
                 try (Connection conn = databaseService.getConnection();
                      PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                    
+
                     pstmt.setString(1, filePath);
-                    
+
                     try (ResultSet rs = pstmt.executeQuery()) {
                         if (rs.next()) {
                             String artist = rs.getString("artist");
                             String title = rs.getString("title");
                             String processedTime = rs.getTimestamp("processed_time").toLocalDateTime().format(dateFormatter);
-                            
+
                             log.info("文件已处理过(DB): {} (处理时间: {}, 艺术家: {}, 标题: {})",
-                                file.getName(), processedTime, artist, title);
+                                    file.getName(), processedTime, artist, title);
                             return true;
                         }
                     }
@@ -104,11 +104,11 @@ public class ProcessedFileLogger {
             return checkFileInLog(filePath);
         }
     }
-    
+
     private boolean checkFileInLog(String filePath) {
         File logFile = new File(config.getProcessedFileLogPath());
         if (!logFile.exists()) return false;
-        
+
         try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -123,7 +123,7 @@ public class ProcessedFileLogger {
         }
         return false;
     }
-    
+
     /**
      * 记录文件已处理
      * 使用文件完整路径作为唯一标识,允许同一首歌在不同位置被分别处理
@@ -141,21 +141,21 @@ public class ProcessedFileLogger {
             try {
                 String fileHash = calculateFileHash(file);
                 String sql = "INSERT INTO processed_files " +
-                    "(file_hash, file_name, file_path, file_size, processed_time, recording_id, artist, title, album) " +
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-                    "ON DUPLICATE KEY UPDATE " +
-                    "file_hash = VALUES(file_hash), " +
-                    "file_name = VALUES(file_name), " +
-                    "file_size = VALUES(file_size), " +
-                    "processed_time = VALUES(processed_time), " +
-                    "recording_id = VALUES(recording_id), " +
-                    "artist = VALUES(artist), " +
-                    "title = VALUES(title), " +
-                    "album = VALUES(album)";
-                
+                        "(file_hash, file_name, file_path, file_size, processed_time, recording_id, artist, title, album) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                        "ON DUPLICATE KEY UPDATE " +
+                        "file_hash = VALUES(file_hash), " +
+                        "file_name = VALUES(file_name), " +
+                        "file_size = VALUES(file_size), " +
+                        "processed_time = VALUES(processed_time), " +
+                        "recording_id = VALUES(recording_id), " +
+                        "artist = VALUES(artist), " +
+                        "title = VALUES(title), " +
+                        "album = VALUES(album)";
+
                 try (Connection conn = databaseService.getConnection();
                      PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                    
+
                     pstmt.setString(1, fileHash);
                     pstmt.setString(2, file.getName());
                     pstmt.setString(3, filePath);
@@ -165,7 +165,7 @@ public class ProcessedFileLogger {
                     pstmt.setString(7, artist);
                     pstmt.setString(8, title);
                     pstmt.setString(9, album);
-                    
+
                     pstmt.executeUpdate();
                 }
             } catch (IOException | SQLException e) {
@@ -177,37 +177,37 @@ public class ProcessedFileLogger {
                 String timeStr = now.format(dateFormatter);
                 // 格式: filePath|recordingId|artist|title|album|time
                 String line = String.format("%s|%s|%s|%s|%s|%s",
-                    filePath, recordingId, artist, title, album, timeStr);
+                        filePath, recordingId, artist, title, album, timeStr);
                 writer.write(line);
                 writer.newLine();
             } catch (IOException e) {
                 log.error("写入日志文件失败", e);
             }
         }
-        
+
         log.info("已记录处理历史: {} - {} (Mode: {})", artist, title, isDbMode ? "DB" : "File");
     }
-    
+
     /**
      * 计算文件MD5哈希值
      */
     private String calculateFileHash(File file) throws IOException {
         try {
             MessageDigest md = MessageDigest.getInstance("MD5");
-            
+
             // 对于大文件,只读取前1MB和最后1MB来计算哈希(性能优化)
             long fileSize = file.length();
             int sampleSize = 1024 * 1024; // 1MB
-            
+
             try (FileInputStream fis = new FileInputStream(file)) {
                 byte[] buffer = new byte[sampleSize];
-                
+
                 // 读取前1MB
                 int bytesRead = fis.read(buffer);
                 if (bytesRead > 0) {
                     md.update(buffer, 0, bytesRead);
                 }
-                
+
                 // 如果文件大于2MB,跳到末尾读取最后1MB
                 if (fileSize > sampleSize * 2) {
                     fis.getChannel().position(fileSize - sampleSize);
@@ -217,29 +217,29 @@ public class ProcessedFileLogger {
                     }
                 }
             }
-            
+
             // 同时考虑文件大小和路径名(避免同名但内容不同的文件)
             md.update(String.valueOf(fileSize).getBytes());
             md.update(file.getName().getBytes());
-            
+
             byte[] digest = md.digest();
             StringBuilder sb = new StringBuilder();
             for (byte b : digest) {
                 sb.append(String.format("%02x", b));
             }
             return sb.toString();
-            
+
         } catch (NoSuchAlgorithmException e) {
             throw new IOException("MD5算法不可用", e);
         }
     }
-    
+
     /**
      * 获取处理记录统计
      */
     public Map<String, Object> getStatistics() {
         Map<String, Object> stats = new HashMap<>();
-        
+
         if (isDbMode) {
             try (Connection conn = databaseService.getConnection()) {
                 // ... (原有MySQL统计逻辑保持不变)
@@ -261,10 +261,10 @@ public class ProcessedFileLogger {
                 stats.put("totalProcessed", 0);
             }
         }
-        
+
         return stats;
     }
-    
+
     /**
      * 清理旧的日志记录
      * @param daysToKeep 保留最近多少天的记录
@@ -287,7 +287,7 @@ public class ProcessedFileLogger {
             log.info("文本日志模式暂不支持自动清理旧记录");
         }
     }
-    
+
     /**
      * 关闭服务
      * 注意: 不再关闭数据源,因为数据源由DatabaseService统一管理

@@ -77,8 +77,8 @@ public class MusicBrainzClient {
     public MusicMetadata getRecordingById(String recordingId, int musicFilesInFolder) throws IOException, InterruptedException {
         rateLimit();
         
-        // 增加 artist-rels 和 work-rels 以获取作曲家、作词家信息
-        String url = String.format("%s/recording/%s?fmt=json&inc=artists+releases+tags+release-groups+artist-rels+work-rels+work-level-rels",
+        // 增加 media 来获取曲目数信息，增加 artist-rels 和 work-rels 以获取作曲家、作词家信息
+        String url = String.format("%s/recording/%s?fmt=json&inc=artists+releases+tags+release-groups+artist-rels+work-rels+work-level-rels+media",
             config.getMusicBrainzApiUrl(), recordingId);
         
         try {
@@ -320,6 +320,10 @@ public class MusicBrainzClient {
             metadata.setReleaseDate(bestRelease.path("date").asText());
             metadata.setReleaseGroupId(bestRelease.path("release-group").path("id").asText());
             
+            // 设置曲目数
+            int trackCount = calculateTrackCount(bestRelease);
+            metadata.setTrackCount(trackCount);
+            
             // 获取专辑艺术家(Album Artist)
             JsonNode releaseArtistCredits = bestRelease.path("artist-credit");
             if (releaseArtistCredits.isArray() && releaseArtistCredits.size() > 0) {
@@ -470,7 +474,9 @@ public class MusicBrainzClient {
 
         for (JsonNode release : releases) {
             int currentScore = calculateReleaseScore(release, musicFilesInFolder);
-            int trackCount = release.path("track-count").asInt(0);
+            
+            // 从media中计算总曲目数
+            int trackCount = calculateTrackCount(release);
             int trackCountDiff = Math.abs(trackCount - musicFilesInFolder);
             
             // 大型合辑场景：曲目数匹配度是最重要的因素
@@ -507,7 +513,7 @@ public class MusicBrainzClient {
         }
         
         if (bestRelease != null && isLargeCollection) {
-            int finalTrackCount = bestRelease.path("track-count").asInt(0);
+            int finalTrackCount = calculateTrackCount(bestRelease);
             log.info("为大型合辑选择了: {} ({}首曲目)",
                 bestRelease.path("title").asText(), finalTrackCount);
         }
@@ -515,6 +521,29 @@ public class MusicBrainzClient {
         return bestRelease != null ? bestRelease : releases.get(0);
     }
 
+    /**
+     * 从release的media中计算总曲目数
+     */
+    private int calculateTrackCount(JsonNode release) {
+        int totalTracks = 0;
+        
+        // 首先尝试从 track-count 字段获取
+        totalTracks = release.path("track-count").asInt(0);
+        
+        // 如果没有track-count字段，从media中计算
+        if (totalTracks == 0) {
+            JsonNode media = release.path("media");
+            if (media.isArray()) {
+                for (JsonNode medium : media) {
+                    int trackCountInMedium = medium.path("track-count").asInt(0);
+                    totalTracks += trackCountInMedium;
+                }
+            }
+        }
+        
+        return totalTracks;
+    }
+    
     /**
      * 计算专辑评分
      * @param release 发行版本
@@ -525,7 +554,7 @@ public class MusicBrainzClient {
         
         JsonNode releaseGroup = release.path("release-group");
         String type = releaseGroup.path("primary-type").asText("").toLowerCase();
-        int trackCount = release.path("track-count").asInt(0);
+        int trackCount = calculateTrackCount(release);
         
         // 1. 类型评分 (0-100)
         // 根据文件夹内音乐文件数量,优先匹配对应类型
@@ -710,6 +739,7 @@ public class MusicBrainzClient {
         private List<String> genres;
         private String coverArtUrl; // 封面图片 URL
         private int score; // 搜索匹配度分数
+        private int trackCount; // 专辑曲目数
         
         // 新增字段
         private String composer; // 作曲家
