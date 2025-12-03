@@ -30,6 +30,18 @@
 - 🐳 **Docker Ready**: Provides lightweight Docker images compatible with Synology, QNAP, Unraid, and other NAS systems.
 - 🔄 **Smart Retry**: Automatically handles network failures with retry logic and isolates failed files for later inspection.
 
+## ⚠️ Best Practice: How to Get the Most Accurate Results
+
+Since music releases are extremely complex (Singles, EPs, Albums, Compilations, Deluxe Editions, etc.), to ensure the tool accurately categorizes your music into the correct albums, it is **highly recommended** to follow this practice:
+
+> **Please place audio files from the same album (or single) into a separate folder** before processing them with this tool.
+
+❌ **Not Recommended**: Dumping hundreds of songs from different artists and albums into a single directory.
+✅ **Recommended**:
+  - `/Downloads/Jay_Chou_Fantasy/` (Contains songs from the Fantasy album)
+  - `/Downloads/Adele_21/` (Contains songs from the 21 album)
+
+**Reason**: When files are isolated in separate folders, the program can better determine that they belong to the same album based on context, avoiding misidentification of album tracks as "Best Of" compilations or "Single" versions.
 ## 🚀 Quick Start (Docker Compose)
 
 The easiest way to run the application. No Java installation required.
