@@ -178,6 +178,9 @@ public class Main {
             int musicFilesInFolder = countMusicFilesInFolder(audioFile);
             String folderPath = audioFile.getParentFile().getAbsolutePath();
             
+            // 0.6. 检测是否为散落在监控目录根目录的单个文件（保底处理）
+            boolean isLooseFileInMonitorRoot = isLooseFileInMonitorRoot(audioFile);
+            
             MusicBrainzClient.MusicMetadata detailedMetadata = null;
             
             // ===== 优先检查文件夹专辑缓存 =====
@@ -226,6 +229,14 @@ public class Main {
                     folderAlbumCache.setFolderAlbum(folderPath, albumInfo);
                     log.info("已将快速扫描结果缓存到文件夹级别");
                 }
+            }
+            
+            // ===== 保底处理：如果是散落文件，跳过专辑匹配，直接指纹识别 =====
+            if (isLooseFileInMonitorRoot) {
+                log.info("========================================");
+                log.info("检测到散落在监控目录的单个文件，启用保底处理机制");
+                log.info("跳过专辑匹配，直接进行指纹识别");
+                log.info("========================================");
             }
             
             // ===== 无论快速扫描是否成功，都进行指纹识别获取单曲详细信息 =====
@@ -332,7 +343,11 @@ public class Main {
             }
             
             // 5. 文件夹级别的专辑锁定处理
-            if (lockedAlbumTitle != null) {
+            // 注意：散落文件跳过专辑锁定和投票机制，直接处理
+            if (isLooseFileInMonitorRoot) {
+                log.info("散落文件保底处理：直接写入元数据（随缘模式）");
+                processAndWriteFile(audioFile, detailedMetadata, coverArtData);
+            } else if (lockedAlbumTitle != null) {
                 // 已有锁定的专辑信息（来自快速扫描或缓存），直接处理文件
                 log.info("使用已锁定的专辑信息: {}", lockedAlbumTitle);
                 processAndWriteFile(audioFile, detailedMetadata, coverArtData);
@@ -797,6 +812,36 @@ public class Main {
             }
         }
         return false;
+    }
+    
+    /**
+     * 检测是否为散落在监控目录根目录的文件
+     * 用于保底处理机制
+     */
+    private static boolean isLooseFileInMonitorRoot(File audioFile) {
+        File parentDir = audioFile.getParentFile();
+        if (parentDir == null) {
+            return false;
+        }
+        
+        // 获取监控目录的规范路径
+        String monitorDirPath;
+        try {
+            monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
+        } catch (java.io.IOException e) {
+            monitorDirPath = config.getMonitorDirectory();
+        }
+        
+        // 获取父文件夹的规范路径
+        String parentDirPath;
+        try {
+            parentDirPath = parentDir.getCanonicalPath();
+        } catch (java.io.IOException e) {
+            parentDirPath = parentDir.getAbsolutePath();
+        }
+        
+        // 只要父文件夹就是监控目录根目录,就认为是散落文件
+        return parentDirPath.equals(monitorDirPath);
     }
     
     /**
