@@ -325,30 +325,61 @@ public class TagWriterService {
     }
     
     /**
-     * 读取现有标签
+     * 读取现有标签（完整版本，包含作曲、作词、歌词等）
      */
     public MusicMetadata readTags(File audioFile) {
         try {
             AudioFile audioFileObj = AudioFileIO.read(audioFile);
             Tag tag = audioFileObj.getTag();
-            
+
             if (tag == null) {
                 return null;
             }
-            
+
             MusicMetadata metadata = new MusicMetadata();
             metadata.setTitle(tag.getFirst(FieldKey.TITLE));
             metadata.setArtist(tag.getFirst(FieldKey.ARTIST));
+            metadata.setAlbumArtist(tag.getFirst(FieldKey.ALBUM_ARTIST));
             metadata.setAlbum(tag.getFirst(FieldKey.ALBUM));
             metadata.setReleaseDate(tag.getFirst(FieldKey.YEAR));
-            
+
+            // 读取风格
             String genre = tag.getFirst(FieldKey.GENRE);
             if (genre != null && !genre.isEmpty()) {
                 metadata.setGenres(java.util.Arrays.asList(genre.split(",")));
             }
-            
+
+            // 读取作曲家
+            String composer = tag.getFirst(FieldKey.COMPOSER);
+            if (composer != null && !composer.isEmpty()) {
+                metadata.setComposer(composer);
+            }
+
+            // 读取作词家
+            String lyricist = tag.getFirst(FieldKey.LYRICIST);
+            if (lyricist != null && !lyricist.isEmpty()) {
+                metadata.setLyricist(lyricist);
+            }
+
+            // 读取歌词
+            String lyrics = tag.getFirst(FieldKey.LYRICS);
+            if (lyrics != null && !lyrics.isEmpty()) {
+                metadata.setLyrics(lyrics);
+            }
+
+            // 读取碟号和曲目号
+            String discNo = tag.getFirst(FieldKey.DISC_NO);
+            if (discNo != null && !discNo.isEmpty()) {
+                metadata.setDiscNo(discNo);
+            }
+
+            String trackNo = tag.getFirst(FieldKey.TRACK);
+            if (trackNo != null && !trackNo.isEmpty()) {
+                metadata.setTrackNo(trackNo);
+            }
+
             return metadata;
-            
+
         } catch (Exception e) {
             log.error("读取标签失败: {}", audioFile.getName(), e);
             return null;

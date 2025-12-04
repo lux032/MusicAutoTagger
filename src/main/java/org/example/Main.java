@@ -289,20 +289,20 @@ public class Main {
                     lockedReleaseGroupId
                 );
                 log.info("识别成功: {} - {}", bestMatch.getArtist(), bestMatch.getTitle());
-                
+
                 // 如果有锁定的专辑信息，传入1作为musicFilesInFolder以避免selectBestRelease被文件数量影响
                 // 否则传入实际的文件数量
                 int musicFilesParam = (lockedAlbumTitle != null) ? 1 : musicFilesInFolder;
-                
+
                 // 通过 MusicBrainz 获取详细元数据（包含作词、作曲、风格等）
                 log.info("正在获取详细元数据...");
                 detailedMetadata = musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesParam, lockedReleaseGroupId);
-                
+
                 if (detailedMetadata == null) {
                     log.warn("无法获取详细元数据");
                     detailedMetadata = convertToMusicMetadata(bestMatch);
                 }
-                
+
                 // 如果有锁定的专辑信息，用锁定的信息覆盖（确保专辑信息不被改变）
                 if (lockedAlbumTitle != null) {
                     log.info("应用锁定的专辑信息: {}", lockedAlbumTitle);
@@ -313,6 +313,17 @@ public class Main {
                         detailedMetadata.setReleaseDate(lockedReleaseDate);
                     }
                 }
+            }
+
+            // ===== 读取源文件已有标签并合并 =====
+            // 在快速扫描锁定专辑但音频指纹数据库缺失的情况下，保留源文件的作曲、作词、歌词、风格等信息
+            log.info("读取源文件已有标签信息...");
+            MusicMetadata sourceMetadata = tagWriter.readTags(audioFile);
+            if (sourceMetadata != null) {
+                log.info("合并源文件标签信息...");
+                detailedMetadata = mergeMetadata(sourceMetadata, detailedMetadata);
+            } else {
+                log.debug("源文件没有可读取的标签信息");
             }
             
             // 4. 获取封面图片(多层降级策略)
@@ -990,7 +1001,7 @@ public class Main {
     private static AudioFingerprintService.RecordingInfo findBestRecordingMatch(
             java.util.List<AudioFingerprintService.RecordingInfo> recordings,
             String lockedReleaseGroupId) {
-        
+
         if (lockedReleaseGroupId != null && !lockedReleaseGroupId.isEmpty()) {
             for (AudioFingerprintService.RecordingInfo recording : recordings) {
                 if (recording.getReleaseGroups() != null) {
@@ -1005,8 +1016,62 @@ public class Main {
             }
             log.warn("未找到与锁定专辑 Release Group ID {} 匹配的录音，将使用最佳匹配", lockedReleaseGroupId);
         }
-        
+
         // 如果没有锁定专辑或未找到匹配，返回第一个（匹配度最高）
         return recordings.get(0);
+    }
+
+    /**
+     * 合并元数据：保留源文件中已有的标签信息
+     *
+     * 策略：
+     * - 歌曲名、专辑名、专辑艺术家：使用新识别的数据（来自快速扫描或指纹识别）
+     * - 作曲家、作词家、歌词、风格：优先使用新识别的数据，如果新数据为空则保留源文件的
+     *
+     * @param sourceMetadata 源文件已有的元数据
+     * @param newMetadata 新识别的元数据
+     * @return 合并后的元数据
+     */
+    private static MusicMetadata mergeMetadata(MusicMetadata sourceMetadata, MusicMetadata newMetadata) {
+        if (sourceMetadata == null) {
+            return newMetadata;
+        }
+
+        if (newMetadata == null) {
+            return sourceMetadata;
+        }
+
+        // 创建结果对象，基于新识别的元数据
+        MusicMetadata merged = newMetadata;
+
+        // 保留源文件中的作曲家信息（如果新数据没有）
+        if ((merged.getComposer() == null || merged.getComposer().isEmpty()) &&
+            (sourceMetadata.getComposer() != null && !sourceMetadata.getComposer().isEmpty())) {
+            log.info("保留源文件的作曲家信息: {}", sourceMetadata.getComposer());
+            merged.setComposer(sourceMetadata.getComposer());
+        }
+
+        // 保留源文件中的作词家信息（如果新数据没有）
+        if ((merged.getLyricist() == null || merged.getLyricist().isEmpty()) &&
+            (sourceMetadata.getLyricist() != null && !sourceMetadata.getLyricist().isEmpty())) {
+            log.info("保留源文件的作词家信息: {}", sourceMetadata.getLyricist());
+            merged.setLyricist(sourceMetadata.getLyricist());
+        }
+
+        // 保留源文件中的歌词（如果新数据没有）
+        if ((merged.getLyrics() == null || merged.getLyrics().isEmpty()) &&
+            (sourceMetadata.getLyrics() != null && !sourceMetadata.getLyrics().isEmpty())) {
+            log.info("保留源文件的歌词信息");
+            merged.setLyrics(sourceMetadata.getLyrics());
+        }
+
+        // 保留源文件中的风格信息（如果新数据没有）
+        if ((merged.getGenres() == null || merged.getGenres().isEmpty()) &&
+            (sourceMetadata.getGenres() != null && !sourceMetadata.getGenres().isEmpty())) {
+            log.info("保留源文件的风格信息: {}", sourceMetadata.getGenres());
+            merged.setGenres(sourceMetadata.getGenres());
+        }
+
+        return merged;
     }
 }
