@@ -12,7 +12,7 @@
 
 </div>
 
-**Music Auto Tagger** is an automated music library organizer based on audio fingerprinting. Designed for NAS and server environments, it monitors your download folder, identifies music files, fetches comprehensive metadata (including lyrics), and organizes them into a clean structure.
+**Music Auto Tagger** is an automated music library organizer based on **audio fingerprinting** and **duration sequence fingerprinting**. Designed for NAS and server environments, it monitors your download folder, identifies music files, fetches comprehensive metadata (including lyrics), and organizes them into a clean structure.
 
 > **Core Value**: Say goodbye to messy music folders. Automatically tag, cover, and organize your music library to perfection.
 
@@ -24,6 +24,11 @@
 - 🖼️ **HD Cover Art**: Automatically downloads and embeds high-quality album art from the Cover Art Archive.
 - 📁 **Automated Organization**: Automatically renames and sorts files into a `Artist/Album/Title` structure.
 - 🤖 **Unattended Operation**: Works seamlessly with qBittorrent/Transmission to process downloads automatically upon completion.
+- ⚡ **Smart Scan Optimization**: 🆕 **Two-tier identification + folder-level caching**
+    - **Tier 1: Quick Scan** - Tag & duration sequence matching, passes at 90% accuracy
+    - **Tier 2: Fingerprint** - Only triggered when quick scan fails, ensures high recognition rate
+    - **Folder-level Caching** - Subsequent files in the same album use cached results, skip all scans
+    - **Performance Boost**: Processing a 16-track album requires only 1 full scan + 15 cache lookups
 - 💾 **Dual Persistence Modes**:
     - **File Mode (Default)**: Uses a CSV file to track processed files. Zero config, ready out of the box for personal use.
     - **MySQL Mode**: Supports external database connection for massive libraries and high concurrency.

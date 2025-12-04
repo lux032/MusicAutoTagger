@@ -97,6 +97,157 @@ public class MusicBrainzClient {
             throw new IOException("解析响应失败", e);
         }
     }
+    
+    /**
+     * 获取专辑的完整时长序列
+     * @param releaseGroupId Release Group ID
+     * @return 专辑各曲目的时长列表(毫秒),如果获取失败返回空列表
+     */
+    public List<Integer> getAlbumDurationSequence(String releaseGroupId) throws IOException, InterruptedException {
+        rateLimit();
+        
+        // 查询 release-group 获取所有 releases
+        String url = String.format("%s/release-group/%s?fmt=json&inc=releases+media",
+            config.getMusicBrainzApiUrl(), releaseGroupId);
+        
+        try {
+            String response = executeRequest(url);
+            JsonNode root = objectMapper.readTree(response);
+            
+            // 获取所有 releases
+            JsonNode releases = root.path("releases");
+            if (!releases.isArray() || releases.size() == 0) {
+                log.warn("Release Group {} 没有找到任何 releases", releaseGroupId);
+                return new ArrayList<>();
+            }
+            
+            log.info("Release Group {} 共有 {} 个releases，开始查找有时长数据的版本",
+                releaseGroupId, releases.size());
+            
+            // 按优先级排序所有 releases
+            List<JsonNode> sortedReleases = new ArrayList<>();
+            for (JsonNode release : releases) {
+                sortedReleases.add(release);
+            }
+            sortedReleases.sort((r1, r2) -> {
+                int score1 = scoreReleaseForDuration(r1);
+                int score2 = scoreReleaseForDuration(r2);
+                return Integer.compare(score2, score1); // 降序
+            });
+            
+            // 尝试前3个最佳 release（或更少如果总数不足3个）
+            int tryCount = Math.min(3, sortedReleases.size());
+            for (int i = 0; i < tryCount; i++) {
+                JsonNode release = sortedReleases.get(i);
+                String releaseId = release.path("id").asText();
+                String releaseTitle = release.path("title").asText();
+                
+                log.debug("尝试第 {}/{} 个release: {} (ID: {})",
+                    i + 1, tryCount, releaseTitle, releaseId);
+                
+                List<Integer> durations = getReleaseDurationSequence(releaseId);
+                
+                // 如果获取到有效的时长序列（至少有一些曲目），返回结果
+                if (!durations.isEmpty()) {
+                    log.info("成功从 release {} 获取到 {} 首曲目的时长序列",
+                        releaseTitle, durations.size());
+                    return durations;
+                } else {
+                    log.debug("Release {} 没有时长数据，继续尝试下一个", releaseTitle);
+                }
+            }
+            
+            // 所有尝试都失败
+            log.warn("Release Group {} 的前{}个release都没有时长数据",
+                releaseGroupId, tryCount);
+            return new ArrayList<>();
+            
+        } catch (ParseException e) {
+            log.error("解析 Release Group 响应失败", e);
+            return new ArrayList<>();
+        }
+    }
+    
+    /**
+     * 获取 Release 的完整时长序列
+     * @param releaseId Release ID
+     * @return 曲目时长列表(秒)
+     */
+    public List<Integer> getReleaseDurationSequence(String releaseId) throws IOException, InterruptedException {
+        rateLimit();
+        
+        String url = String.format("%s/release/%s?fmt=json&inc=recordings+media",
+            config.getMusicBrainzApiUrl(), releaseId);
+        
+        try {
+            String response = executeRequest(url);
+            JsonNode root = objectMapper.readTree(response);
+            
+            // DEBUG: 打印完整的响应结构
+            log.debug("Release API 响应: {}", response);
+            
+            List<Integer> durations = new ArrayList<>();
+            
+            // 遍历所有 media (碟片)
+            JsonNode media = root.path("media");
+            log.debug("Media 节点存在: {}, isArray: {}, size: {}",
+                !media.isMissingNode(), media.isArray(), media.size());
+            
+            if (media.isArray()) {
+                for (int i = 0; i < media.size(); i++) {
+                    JsonNode medium = media.get(i);
+                    log.debug("Medium[{}] 内容: {}", i, medium.toString());
+                    
+                    JsonNode tracks = medium.path("tracks");
+                    log.debug("Tracks 节点存在: {}, isArray: {}, size: {}",
+                        !tracks.isMissingNode(), tracks.isArray(), tracks.size());
+                    
+                    if (tracks.isArray()) {
+                        for (JsonNode track : tracks) {
+                            // 获取时长(毫秒),转换为秒
+                            int durationMs = track.path("length").asInt(0);
+                            log.debug("Track length: {} ms", durationMs);
+                            if (durationMs > 0) {
+                                int durationSec = (durationMs + 500) / 1000; // 四舍五入
+                                durations.add(durationSec);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            log.info("获取专辑时长序列成功 - Release: {}, 曲目数: {}", releaseId, durations.size());
+            
+            return durations;
+            
+        } catch (ParseException e) {
+            log.error("解析 Release 响应失败", e);
+            return new ArrayList<>();
+        }
+    }
+    
+    /**
+     * 为 Release 打分，用于选择最适合获取时长序列的版本
+     * 优先选择 CD 或 Digital 格式
+     */
+    private int scoreReleaseForDuration(JsonNode release) {
+        int score = 0;
+        
+        JsonNode media = release.path("media");
+        if (media.isArray() && media.size() > 0) {
+            String format = media.get(0).path("format").asText("").toLowerCase();
+            
+            if (format.contains("cd")) {
+                score = 100;
+            } else if (format.contains("digital")) {
+                score = 90;
+            } else if (!format.isEmpty()) {
+                score = 50;
+            }
+        }
+        
+        return score;
+    }
 
     /**
      * 获取封面图片 URL(带重试机制)
@@ -235,6 +386,92 @@ public class MusicBrainzClient {
             log.error("解析响应失败", e);
             throw new IOException("解析响应失败", e);
         }
+    }
+    
+    /**
+     * 搜索专辑（用于快速扫描）
+     * @param albumName 专辑名称
+     * @param artistName 艺术家名称（可选）
+     * @return 搜索结果列表
+     */
+    public List<MusicMetadata> searchAlbum(String albumName, String artistName) throws IOException, InterruptedException {
+        rateLimit();
+        
+        // 构建搜索查询 - 先构建完整查询，再进行URL编码
+        StringBuilder query = new StringBuilder();
+        query.append("release:\"").append(albumName).append("\"");
+        
+        if (artistName != null && !artistName.trim().isEmpty()) {
+            query.append(" AND artist:\"").append(artistName).append("\"");
+        }
+        
+        // 对整个查询字符串进行URL编码
+        String encodedQuery = URLEncoder.encode(query.toString(), StandardCharsets.UTF_8.toString());
+        
+        String url = String.format("%s/release?query=%s&fmt=json&limit=10",
+            config.getMusicBrainzApiUrl(), encodedQuery);
+        
+        try {
+            String response = executeRequest(url);
+            return parseAlbumSearchResponse(response);
+        } catch (ParseException e) {
+            log.error("解析专辑搜索响应失败", e);
+            throw new IOException("解析响应失败", e);
+        }
+    }
+    
+    /**
+     * 解析专辑搜索响应
+     */
+    private List<MusicMetadata> parseAlbumSearchResponse(String json) throws IOException {
+        List<MusicMetadata> results = new ArrayList<>();
+        JsonNode root = objectMapper.readTree(json);
+        JsonNode releases = root.path("releases");
+        
+        if (!releases.isArray()) {
+            return results;
+        }
+        
+        for (JsonNode release : releases) {
+            MusicMetadata metadata = new MusicMetadata();
+            
+            // 基本信息
+            metadata.setAlbum(release.path("title").asText());
+            metadata.setReleaseDate(release.path("date").asText());
+            metadata.setScore(release.path("score").asInt(0));
+            
+            // Release Group ID
+            JsonNode releaseGroup = release.path("release-group");
+            if (!releaseGroup.isMissingNode()) {
+                metadata.setReleaseGroupId(releaseGroup.path("id").asText());
+            }
+            
+            // 艺术家信息
+            JsonNode artistCredits = release.path("artist-credit");
+            if (artistCredits.isArray() && artistCredits.size() > 0) {
+                StringBuilder artists = new StringBuilder();
+                for (JsonNode credit : artistCredits) {
+                    if (artists.length() > 0) {
+                        artists.append(", ");
+                    }
+                    artists.append(credit.path("artist").path("name").asText());
+                }
+                metadata.setAlbumArtist(artists.toString());
+                metadata.setArtist(artists.toString()); // 同时设置 artist
+            }
+            
+            // 曲目数
+            int trackCount = calculateTrackCount(release);
+            metadata.setTrackCount(trackCount);
+            
+            results.add(metadata);
+            
+            log.debug("找到专辑: {} - {} ({}首)",
+                metadata.getAlbumArtist(), metadata.getAlbum(), trackCount);
+        }
+        
+        log.info("专辑搜索返回 {} 个结果", results.size());
+        return results;
     }
     
     /**
@@ -457,6 +694,8 @@ public class MusicBrainzClient {
      * - 如果文件夹音乐文件数≥15，优先匹配大型合辑（曲目数接近的专辑）
      * - 否则按原逻辑：Album > EP > Single > Compilation > Others
      * 同类型下：曲目数匹配度 > 发行时间早优先
+     *
+     * 注意：此方法已被时长序列匹配方案取代，保留用于兼容性
      * @param releases 所有发行版本
      * @param musicFilesInFolder 文件所在文件夹的音乐文件数量
      */

@@ -30,6 +30,7 @@ public class Main {
     private static ProcessedFileLogger processedLogger;
     private static CoverArtCache coverArtCache;
     private static FolderAlbumCache folderAlbumCache;
+    private static QuickScanService quickScanService;
     private static MusicConfig config;
     
     // 文件夹级别的封面缓存: 文件夹路径 -> 封面数据
@@ -112,7 +113,27 @@ public class Main {
         musicBrainzClient = new MusicBrainzClient(config);
         lyricsService = new LyricsService(config);
         tagWriter = new TagWriterService(config);
-        folderAlbumCache = new FolderAlbumCache();
+        
+        // 初始化时长序列匹配服务
+        DurationSequenceService durationSequenceService = new DurationSequenceService();
+        
+        // 初始化文件夹专辑缓存（注入依赖服务）
+        folderAlbumCache = new FolderAlbumCache(
+            durationSequenceService,
+            musicBrainzClient,
+            fingerprintService
+        );
+        
+        // 初始化快速扫描服务
+        quickScanService = new QuickScanService(
+            config,
+            musicBrainzClient,
+            durationSequenceService,
+            fingerprintService
+        );
+        
+        log.info("✓ 时长序列匹配服务已启用");
+        log.info("✓ 快速扫描服务已启用（两级扫描策略）");
         
         // Level 3: 初始化文件监控服务
         log.info("初始化文件监控服务...");
@@ -157,48 +178,93 @@ public class Main {
             int musicFilesInFolder = countMusicFilesInFolder(audioFile);
             String folderPath = audioFile.getParentFile().getAbsolutePath();
             
-            // 1. 使用音频指纹识别
-            log.info("正在进行音频指纹识别...");
-            AudioFingerprintService.AcoustIdResult acoustIdResult =
-                fingerprintService.identifyAudioFile(audioFile);
+            MusicBrainzClient.MusicMetadata detailedMetadata = null;
             
-            if (acoustIdResult.getRecordings() == null || acoustIdResult.getRecordings().isEmpty()) {
-                log.warn("无法通过音频指纹识别文件: {}", audioFile.getName());
-                log.info("该文件的 AcoustID 未关联到 MusicBrainz 录音信息");
-                log.info("建议：手动添加标签或等待 MusicBrainz 社区完善数据");
+            // ===== 优先检查文件夹专辑缓存 =====
+            FolderAlbumCache.CachedAlbumInfo cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder);
+            
+            if (cachedAlbum != null) {
+                // 已有缓存专辑，跳过所有扫描，直接使用
+                log.info("✓ 使用文件夹缓存的专辑信息，跳过快速扫描和指纹识别");
+                log.info("专辑: {} - {}", cachedAlbum.getAlbumArtist(), cachedAlbum.getAlbumTitle());
                 
-                // 如果配置了失败目录，复制整个文件夹到失败目录
-                if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
-                    try {
-                        copyFailedFolderToFailedDirectory(audioFile);
-                    } catch (Exception e) {
-                        log.error("复制失败文件夹到失败目录时出错: {}", e.getMessage());
+                // TODO: 创建基础metadata，后续根据文件时长匹配具体曲目信息
+                detailedMetadata = new MusicBrainzClient.MusicMetadata();
+                detailedMetadata.setAlbum(cachedAlbum.getAlbumTitle());
+                detailedMetadata.setAlbumArtist(cachedAlbum.getAlbumArtist());
+                detailedMetadata.setReleaseGroupId(cachedAlbum.getReleaseGroupId());
+                detailedMetadata.setReleaseDate(cachedAlbum.getReleaseDate());
+                detailedMetadata.setTrackCount(cachedAlbum.getTrackCount());
+                
+            } else {
+                // 没有缓存，进行快速扫描
+                log.info("尝试第一级快速扫描（基于标签和文件夹名称）...");
+                QuickScanService.QuickScanResult quickResult = quickScanService.quickScan(audioFile, musicFilesInFolder);
+                
+                if (quickResult != null && quickResult.isHighConfidence()) {
+                    // 快速扫描成功，直接使用结果
+                    log.info("✓ 快速扫描成功，跳过指纹识别");
+                    detailedMetadata = quickResult.getMetadata();
+                    
+                    // 立即将专辑信息写入文件夹缓存，避免后续文件再次扫描
+                    FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
+                        detailedMetadata.getReleaseGroupId(),
+                        detailedMetadata.getAlbum(),
+                        detailedMetadata.getAlbumArtist() != null ? detailedMetadata.getAlbumArtist() : detailedMetadata.getArtist(),
+                        detailedMetadata.getTrackCount(),
+                        detailedMetadata.getReleaseDate(),
+                        quickResult.getSimilarity()
+                    );
+                    folderAlbumCache.setFolderAlbum(folderPath, albumInfo);
+                    log.info("已将快速扫描结果缓存到文件夹级别，后续文件将直接使用");
+                } else {
+                    // ===== 第二级：指纹扫描投票选专辑 =====
+                    log.info("快速扫描未达标，启动第二级指纹扫描...");
+                    
+                    // 1. 使用音频指纹识别
+                    log.info("正在进行音频指纹识别...");
+                    AudioFingerprintService.AcoustIdResult acoustIdResult =
+                        fingerprintService.identifyAudioFile(audioFile);
+                
+                    if (acoustIdResult.getRecordings() == null || acoustIdResult.getRecordings().isEmpty()) {
+                        log.warn("无法通过音频指纹识别文件: {}", audioFile.getName());
+                        log.info("该文件的 AcoustID 未关联到 MusicBrainz 录音信息");
+                        log.info("建议：手动添加标签或等待 MusicBrainz 社区完善数据");
+                        
+                        // 如果配置了失败目录，复制整个文件夹到失败目录
+                        if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
+                            try {
+                                copyFailedFolderToFailedDirectory(audioFile);
+                            } catch (Exception e) {
+                                log.error("复制失败文件夹到失败目录时出错: {}", e.getMessage());
+                            }
+                        }
+                        
+                        // 记录识别失败的文件，避免重复识别
+                        processedLogger.markFileAsProcessed(
+                            audioFile,
+                            "UNKNOWN",
+                            "识别失败",
+                            audioFile.getName(),
+                            "Unknown Album"
+                        );
+                        return true; // 识别失败，不重试但记录
+                    }
+                    
+                    // 2. 获取最佳匹配的录音信息
+                    AudioFingerprintService.RecordingInfo bestMatch = acoustIdResult.getRecordings().get(0);
+                    log.info("识别成功: {} - {}", bestMatch.getArtist(), bestMatch.getTitle());
+                    
+                    // 3. 通过 MusicBrainz 获取详细元数据（包含封面 URL）
+                    log.info("正在获取详细元数据...");
+                    detailedMetadata =
+                        musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesInFolder);
+                    
+                    if (detailedMetadata == null) {
+                        log.warn("无法获取详细元数据");
+                        detailedMetadata = convertToMusicMetadata(bestMatch);
                     }
                 }
-                
-                // 记录识别失败的文件，避免重复识别
-                processedLogger.markFileAsProcessed(
-                    audioFile,
-                    "UNKNOWN",
-                    "识别失败",
-                    audioFile.getName(),
-                    "Unknown Album"
-                );
-                return true; // 识别失败，不重试但记录
-            }
-            
-            // 2. 获取最佳匹配的录音信息
-            AudioFingerprintService.RecordingInfo bestMatch = acoustIdResult.getRecordings().get(0);
-            log.info("识别成功: {} - {}", bestMatch.getArtist(), bestMatch.getTitle());
-            
-            // 3. 通过 MusicBrainz 获取详细元数据（包含封面 URL）
-            log.info("正在获取详细元数据...");
-            MusicBrainzClient.MusicMetadata detailedMetadata =
-                musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesInFolder);
-            
-            if (detailedMetadata == null) {
-                log.warn("无法获取详细元数据");
-                detailedMetadata = convertToMusicMetadata(bestMatch);
             }
             
             // 4. 获取封面图片(多层降级策略)
@@ -228,8 +294,8 @@ public class Main {
             // 无论是EP、普通专辑还是大合集，都启用文件夹级别的锁定
             log.info("启用文件夹级别专辑锁定（{}首音乐文件）", musicFilesInFolder);
             
-            // 检查是否已有缓存的专辑信息
-            FolderAlbumCache.CachedAlbumInfo cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder);
+            // 检查是否已有缓存的专辑信息（使用之前已定义的cachedAlbum变量）
+            cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder);
             
             if (cachedAlbum != null) {
                 // 已确定专辑：直接使用缓存的专辑信息

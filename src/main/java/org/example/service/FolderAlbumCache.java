@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.File;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * 文件夹级别的专辑缓存管理器
@@ -28,11 +29,41 @@ public class FolderAlbumCache {
     // 文件夹路径 -> 识别样本收集器
     private final Map<String, AlbumSampleCollector> folderSampleCollectors = new ConcurrentHashMap<>();
     
+    // 新增：文件夹路径 -> 时长序列
+    private final Map<String, List<Integer>> folderDurationSequences = new ConcurrentHashMap<>();
+    
+    // 依赖服务
+    private final DurationSequenceService durationSequenceService;
+    private final MusicBrainzClient musicBrainzClient;
+    private final AudioFingerprintService audioFingerprintService;
+    
     // 配置参数
     private static final int SAMPLE_SIZE = 3; // 收集前3首歌作为样本（降低以适应小型专辑）
     private static final double CONFIDENCE_THRESHOLD = 0.6; // 60%以上的歌曲匹配同一专辑才认为可信
     private static final int LARGE_ALBUM_THRESHOLD = 10; // 10首以上认为是大型专辑
     private static final double TRACK_COUNT_TOLERANCE = 0.3; // 曲目数容差30%
+    
+    // 时长序列匹配开关
+    private boolean useDurationSequenceMatching = true;
+    
+    /**
+     * 构造函数
+     */
+    public FolderAlbumCache(DurationSequenceService durationSequenceService,
+                           MusicBrainzClient musicBrainzClient,
+                           AudioFingerprintService audioFingerprintService) {
+        this.durationSequenceService = durationSequenceService;
+        this.musicBrainzClient = musicBrainzClient;
+        this.audioFingerprintService = audioFingerprintService;
+    }
+    
+    /**
+     * 设置是否使用时长序列匹配
+     */
+    public void setUseDurationSequenceMatching(boolean enabled) {
+        this.useDurationSequenceMatching = enabled;
+        log.info("时长序列匹配已{}", enabled ? "启用" : "禁用");
+    }
     
     /**
      * 获取文件夹的专辑信息
@@ -54,6 +85,18 @@ public class FolderAlbumCache {
         }
         
         return null;
+    }
+    
+    /**
+     * 直接设置文件夹的专辑信息（用于快速扫描成功时）
+     * @param folderPath 文件夹路径
+     * @param albumInfo 专辑信息
+     */
+    public void setFolderAlbum(String folderPath, CachedAlbumInfo albumInfo) {
+        folderAlbumCache.put(folderPath, albumInfo);
+        // 清理可能存在的样本收集器
+        folderSampleCollectors.remove(folderPath);
+        log.info("直接设置文件夹专辑缓存: {} - {}", albumInfo.getAlbumArtist(), albumInfo.getAlbumTitle());
     }
     
     /**
@@ -171,7 +214,7 @@ public class FolderAlbumCache {
     }
     
     /**
-     * 分析样本并确定最佳专辑
+     * 分析样本并确定最佳专辑（使用时长序列匹配）
      */
     private CachedAlbumInfo analyzeSamplesAndDetermineAlbum(String folderPath, AlbumSampleCollector collector, int musicFilesCount) {
         List<AlbumIdentificationInfo> samples = new ArrayList<>(collector.getSamples().values());
@@ -180,11 +223,130 @@ public class FolderAlbumCache {
             return null;
         }
         
+        // 如果启用时长序列匹配，使用新方法
+        if (useDurationSequenceMatching) {
+            return analyzeSamplesWithDurationSequence(folderPath, samples, musicFilesCount);
+        }
+        
+        // 否则使用原有的投票方法（保留以备兼容）
+        return analyzeSamplesWithVoting(samples, musicFilesCount);
+    }
+    
+    /**
+     * 使用时长序列匹配分析样本
+     */
+    private CachedAlbumInfo analyzeSamplesWithDurationSequence(String folderPath,
+                                                               List<AlbumIdentificationInfo> samples,
+                                                               int musicFilesCount) {
+        log.info("=== 开始时长序列匹配分析 ===");
+        log.info("文件夹: {}, 样本数: {}, 音乐文件数: {}", folderPath, samples.size(), musicFilesCount);
+        
+        try {
+            // 1. 提取文件夹时长序列（如果尚未提取）
+            List<Integer> folderDurations = folderDurationSequences.get(folderPath);
+            if (folderDurations == null) {
+                File folder = new File(folderPath);
+                File[] files = folder.listFiles((dir, name) ->
+                    name.toLowerCase().endsWith(".mp3") ||
+                    name.toLowerCase().endsWith(".flac") ||
+                    name.toLowerCase().endsWith(".m4a") ||
+                    name.toLowerCase().endsWith(".wav")
+                );
+                
+                if (files != null && files.length > 0) {
+                    List<File> audioFiles = Arrays.asList(files);
+                    folderDurations = audioFingerprintService.extractDurationSequence(audioFiles);
+                    folderDurationSequences.put(folderPath, folderDurations);
+                    log.info("提取文件夹时长序列: {}首", folderDurations.size());
+                }
+            }
+            
+            if (folderDurations == null || folderDurations.isEmpty()) {
+                log.warn("无法提取文件夹时长序列,回退到投票方法");
+                return analyzeSamplesWithVoting(samples, musicFilesCount);
+            }
+            
+            // 2. 收集所有候选专辑的 ReleaseGroupId
+            Set<String> releaseGroupIds = samples.stream()
+                .map(AlbumIdentificationInfo::getReleaseGroupId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+            
+            if (releaseGroupIds.isEmpty()) {
+                log.warn("样本中没有有效的 ReleaseGroupId,回退到投票方法");
+                return analyzeSamplesWithVoting(samples, musicFilesCount);
+            }
+            
+            // 3. 获取每个候选专辑的官方时长序列
+            List<DurationSequenceService.AlbumDurationInfo> candidates = new ArrayList<>();
+            for (String releaseGroupId : releaseGroupIds) {
+                try {
+                    List<Integer> albumDurations = musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
+                    if (!albumDurations.isEmpty()) {
+                        // 从样本中找到对应的专辑信息
+                        AlbumIdentificationInfo albumInfo = samples.stream()
+                            .filter(s -> releaseGroupId.equals(s.getReleaseGroupId()))
+                            .findFirst()
+                            .orElse(null);
+                        
+                        if (albumInfo != null) {
+                            candidates.add(new DurationSequenceService.AlbumDurationInfo(
+                                releaseGroupId,
+                                albumInfo.getAlbumTitle(),
+                                albumInfo.getAlbumArtist(),
+                                albumDurations
+                            ));
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());
+                }
+            }
+            
+            if (candidates.isEmpty()) {
+                log.warn("没有获取到任何候选专辑的时长序列,回退到投票方法");
+                return analyzeSamplesWithVoting(samples, musicFilesCount);
+            }
+            
+            // 4. 使用时长序列服务选择最佳匹配
+            DurationSequenceService.AlbumMatchResult matchResult =
+                durationSequenceService.selectBestMatch(folderDurations, candidates);
+            
+            if (matchResult != null) {
+                DurationSequenceService.AlbumDurationInfo bestAlbum = matchResult.getAlbumInfo();
+                double similarity = matchResult.getSimilarity();
+                
+                log.info("=== 时长序列匹配成功 ===");
+                log.info("最佳专辑: {} - {}", bestAlbum.getAlbumArtist(), bestAlbum.getAlbumTitle());
+                log.info("相似度: {:.2f}, 质量: {}", similarity, matchResult.getQuality());
+                
+                return new CachedAlbumInfo(
+                    bestAlbum.getReleaseGroupId(),
+                    bestAlbum.getAlbumTitle(),
+                    bestAlbum.getAlbumArtist(),
+                    bestAlbum.getDurations().size(),
+                    "", // releaseDate 从样本中获取
+                    similarity
+                );
+            } else {
+                log.warn("时长序列匹配未找到合适专辑,回退到投票方法");
+                return analyzeSamplesWithVoting(samples, musicFilesCount);
+            }
+            
+        } catch (Exception e) {
+            log.error("时长序列匹配过程出错,回退到投票方法", e);
+            return analyzeSamplesWithVoting(samples, musicFilesCount);
+        }
+    }
+    
+    /**
+     * 使用原有投票方法分析样本（保留用于兼容）
+     */
+    private CachedAlbumInfo analyzeSamplesWithVoting(List<AlbumIdentificationInfo> samples, int musicFilesCount) {
+        log.info("使用投票方法分析样本");
+        
         // 是否为大型专辑
         boolean isLargeAlbum = musicFilesCount >= LARGE_ALBUM_THRESHOLD;
-        
-        log.info("开始分析文件夹专辑样本: 样本数={}, 文件夹音乐文件数={}, 大型专辑={}", 
-            samples.size(), musicFilesCount, isLargeAlbum);
         
         // 1. 统计专辑出现次数
         Map<String, AlbumVoteInfo> albumVotes = new HashMap<>();
@@ -202,7 +364,7 @@ public class FolderAlbumCache {
             int votes = voteInfo.getVotes();
             AlbumIdentificationInfo album = voteInfo.getAlbumInfo();
             
-            log.info("专辑投票结果: {} - {} (投票数: {}, 曲目数: {})", 
+            log.info("专辑投票结果: {} - {} (投票数: {}, 曲目数: {})",
                 album.getAlbumArtist(), album.getAlbumTitle(), votes, album.getTrackCount());
             
             // 对于大型专辑，优先考虑曲目数匹配度
@@ -280,6 +442,7 @@ public class FolderAlbumCache {
     public void clearFolderCache(String folderPath) {
         folderAlbumCache.remove(folderPath);
         folderSampleCollectors.remove(folderPath);
+        folderDurationSequences.remove(folderPath);
         log.info("已清除文件夹专辑缓存: {}", folderPath);
     }
     

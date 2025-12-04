@@ -126,10 +126,79 @@ public class AudioFingerprintService {
         fingerprint.setDuration(root.path("duration").asInt());
         fingerprint.setFingerprint(root.path("fingerprint").asText());
         
-        log.info("成功生成音频指纹 - 文件: {}, 时长: {}秒", 
+        log.info("成功生成音频指纹 - 文件: {}, 时长: {}秒",
             audioFile.getName(), fingerprint.getDuration());
         
         return fingerprint;
+    }
+    
+    /**
+     * 仅提取音频文件时长(不生成完整指纹,速度更快)
+     * 用于批量获取文件夹内所有文件的时长序列
+     */
+    public int extractDuration(File audioFile) throws IOException, InterruptedException {
+        if (!audioFile.exists()) {
+            throw new IOException("音频文件不存在: " + audioFile.getAbsolutePath());
+        }
+        
+        // 执行 fpcalc 命令(仅获取时长,不生成指纹)
+        ProcessBuilder processBuilder = new ProcessBuilder(
+            fpcalcPath,
+            "-json",
+            "-length", "0",  // 不计算指纹,只获取元数据
+            audioFile.getAbsolutePath()
+        );
+        
+        Process process = processBuilder.start();
+        
+        // 读取输出
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line);
+            }
+        }
+        
+        // 等待进程完成
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            throw new IOException("fpcalc 执行失败，退出码: " + exitCode);
+        }
+        
+        // 解析 JSON 输出
+        String jsonOutput = output.toString();
+        JsonNode root = objectMapper.readTree(jsonOutput);
+        
+        int duration = root.path("duration").asInt();
+        log.debug("提取音频时长 - 文件: {}, 时长: {}秒", audioFile.getName(), duration);
+        
+        return duration;
+    }
+    
+    /**
+     * 批量提取文件夹内所有音频文件的时长序列
+     * @param audioFiles 音频文件列表
+     * @return 时长列表(秒)
+     */
+    public List<Integer> extractDurationSequence(List<File> audioFiles) {
+        List<Integer> durations = new ArrayList<>();
+        
+        log.info("开始批量提取时长序列 - 文件数: {}", audioFiles.size());
+        
+        for (File audioFile : audioFiles) {
+            try {
+                int duration = extractDuration(audioFile);
+                durations.add(duration);
+            } catch (Exception e) {
+                log.warn("提取时长失败,跳过文件: {} - {}", audioFile.getName(), e.getMessage());
+            }
+        }
+        
+        log.info("完成时长序列提取 - 成功: {}/{}", durations.size(), audioFiles.size());
+        
+        return durations;
     }
     
     /**
