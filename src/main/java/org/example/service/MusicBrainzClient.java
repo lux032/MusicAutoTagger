@@ -250,7 +250,14 @@ public class MusicBrainzClient {
     }
 
     /**
-     * 获取封面图片 URL(带重试机制)
+     * 获取封面图片 URL(带重试机制) - 公共方法
+     */
+    public String getCoverArtUrlByReleaseGroupId(String releaseGroupId) {
+        return getCoverArtUrl(releaseGroupId);
+    }
+
+    /**
+     * 获取封面图片 URL(带重试机制) - 内部方法
      */
     private String getCoverArtUrl(String releaseGroupId) {
         int retryCount = 0;
