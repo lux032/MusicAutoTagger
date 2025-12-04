@@ -196,31 +196,132 @@ public class QuickScanService {
     
     /**
      * 提取文件夹内所有音频文件的时长序列
+     * 支持递归扫描子文件夹（如 CD1, CD2 等多CD专辑结构）
+     *
+     * 智能扫描策略:
+     * - 如果文件夹是监控目录本身，只扫描当前层级（避免混入其他专辑）
+     * - 如果文件夹是监控目录的子文件夹，递归扫描（支持多CD专辑）
      */
     private List<Integer> extractFolderDurations(File folder) {
         try {
-            File[] files = folder.listFiles((dir, name) -> {
-                String lowerName = name.toLowerCase();
-                return lowerName.endsWith(".mp3") ||
-                       lowerName.endsWith(".flac") ||
-                       lowerName.endsWith(".m4a") ||
-                       lowerName.endsWith(".wav");
-            });
+            // 获取监控目录的规范路径
+            String monitorDirPath;
+            try {
+                monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
+            } catch (java.io.IOException e) {
+                monitorDirPath = config.getMonitorDirectory();
+            }
             
-            if (files == null || files.length == 0) {
+            // 获取当前文件夹的规范路径
+            String folderPath;
+            try {
+                folderPath = folder.getCanonicalPath();
+            } catch (java.io.IOException e) {
+                folderPath = folder.getAbsolutePath();
+            }
+            
+            List<File> audioFiles;
+            
+            // 如果是监控目录本身，只扫描当前层级
+            if (folderPath.equals(monitorDirPath)) {
+                log.debug("文件夹是监控目录根目录，只扫描当前层级");
+                audioFiles = collectAudioFilesSingleLevel(folder);
+            } else {
+                // 否则递归扫描（支持多CD专辑）
+                log.debug("文件夹是监控目录的子文件夹，递归扫描");
+                audioFiles = collectAudioFilesRecursively(folder);
+            }
+            
+            if (audioFiles == null || audioFiles.isEmpty()) {
                 return null;
             }
             
-            // 按文件名排序(确保顺序一致)
-            java.util.Arrays.sort(files, (f1, f2) -> f1.getName().compareTo(f2.getName()));
+            log.debug("在文件夹 {} 中找到 {} 个音频文件",
+                folder.getName(), audioFiles.size());
             
-            List<File> audioFiles = java.util.Arrays.asList(files);
             return fingerprintService.extractDurationSequence(audioFiles);
             
         } catch (Exception e) {
             log.warn("提取文件夹时长序列失败: {}", e.getMessage());
             return null;
         }
+    }
+    
+    /**
+     * 收集单层文件夹中的音频文件（不递归）
+     */
+    private List<File> collectAudioFilesSingleLevel(File folder) {
+        List<File> audioFiles = new ArrayList<>();
+        
+        File[] files = folder.listFiles();
+        if (files == null) {
+            return audioFiles;
+        }
+        
+        for (File file : files) {
+            if (file.isFile() && isAudioFile(file)) {
+                audioFiles.add(file);
+            }
+        }
+        
+        // 按文件名排序
+        audioFiles.sort((f1, f2) -> f1.getName().compareTo(f2.getName()));
+        
+        return audioFiles;
+    }
+    
+    /**
+     * 递归收集文件夹及其子文件夹中的所有音频文件
+     * 文件按完整路径排序，确保多CD专辑的正确顺序
+     *
+     * @param folder 要扫描的文件夹
+     * @return 排序后的音频文件列表
+     */
+    private List<File> collectAudioFilesRecursively(File folder) {
+        List<File> audioFiles = new ArrayList<>();
+        collectAudioFilesRecursively(folder, audioFiles);
+        
+        // 按完整路径排序，这样可以保证：
+        // 1. CD1 的文件在 CD2 前面
+        // 2. 同一文件夹内的文件按文件名排序
+        audioFiles.sort((f1, f2) -> f1.getPath().compareTo(f2.getPath()));
+        
+        return audioFiles;
+    }
+    
+    /**
+     * 递归收集音频文件的辅助方法
+     */
+    private void collectAudioFilesRecursively(File folder, List<File> result) {
+        if (!folder.isDirectory()) {
+            return;
+        }
+        
+        File[] files = folder.listFiles();
+        if (files == null) {
+            return;
+        }
+        
+        for (File file : files) {
+            if (file.isDirectory()) {
+                // 递归进入子文件夹
+                collectAudioFilesRecursively(file, result);
+            } else if (isAudioFile(file)) {
+                // 添加音频文件
+                result.add(file);
+            }
+        }
+    }
+    
+    /**
+     * 判断文件是否为支持的音频格式
+     */
+    private boolean isAudioFile(File file) {
+        String lowerName = file.getName().toLowerCase();
+        return lowerName.endsWith(".mp3") ||
+               lowerName.endsWith(".flac") ||
+               lowerName.endsWith(".m4a") ||
+               lowerName.endsWith(".wav");
     }
     
     /**

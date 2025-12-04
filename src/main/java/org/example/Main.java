@@ -707,7 +707,11 @@ public class Main {
     }
     
     /**
-     * 统计文件所在文件夹内的音乐文件数量
+     * 统计文件所在文件夹内的音乐文件数量（智能递归，支持多CD专辑）
+     *
+     * 逻辑:
+     * - 如果父文件夹是监控目录本身，只统计当前层级（避免混入其他专辑）
+     * - 如果父文件夹是监控目录的子文件夹，递归统计（支持多CD专辑）
      */
     private static int countMusicFilesInFolder(File audioFile) {
         File parentDir = audioFile.getParentFile();
@@ -715,19 +719,69 @@ public class Main {
             return 1;
         }
         
-        File[] files = parentDir.listFiles();
+        // 获取监控目录的规范路径
+        String monitorDirPath;
+        try {
+            monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
+        } catch (java.io.IOException e) {
+            monitorDirPath = config.getMonitorDirectory();
+        }
+        
+        // 获取父文件夹的规范路径
+        String parentDirPath;
+        try {
+            parentDirPath = parentDir.getCanonicalPath();
+        } catch (java.io.IOException e) {
+            parentDirPath = parentDir.getAbsolutePath();
+        }
+        
+        // 如果父文件夹就是监控目录，只统计当前层级
+        if (parentDirPath.equals(monitorDirPath)) {
+            log.info("文件位于监控目录根目录，只统计当前层级");
+            File[] files = parentDir.listFiles();
+            if (files == null) {
+                return 1;
+            }
+            
+            int count = 0;
+            for (File file : files) {
+                if (file.isFile() && isMusicFile(file)) {
+                    count++;
+                }
+            }
+            log.info("监控目录根目录中共有 {} 个音乐文件", count);
+            return count;
+        } else {
+            // 父文件夹是监控目录的子文件夹，递归统计（支持多CD专辑）
+            int count = countMusicFilesRecursively(parentDir);
+            log.info("文件夹 {} 中共有 {} 个音乐文件（包括子文件夹）", parentDir.getName(), count);
+            return count;
+        }
+    }
+    
+    /**
+     * 递归统计文件夹及其子文件夹中的音乐文件数量
+     */
+    private static int countMusicFilesRecursively(File directory) {
+        if (!directory.isDirectory()) {
+            return 0;
+        }
+        
+        File[] files = directory.listFiles();
         if (files == null) {
-            return 1;
+            return 0;
         }
         
         int count = 0;
         for (File file : files) {
-            if (file.isFile() && isMusicFile(file)) {
+            if (file.isDirectory()) {
+                // 递归统计子文件夹
+                count += countMusicFilesRecursively(file);
+            } else if (file.isFile() && isMusicFile(file)) {
                 count++;
             }
         }
         
-        log.info("文件夹 {} 中共有 {} 个音乐文件", parentDir.getName(), count);
         return count;
     }
     
