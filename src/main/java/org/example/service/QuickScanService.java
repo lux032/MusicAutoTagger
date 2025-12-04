@@ -3,6 +3,7 @@ package org.example.service;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
+import org.example.model.MusicMetadata;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.tag.FieldKey;
@@ -76,7 +77,7 @@ public class QuickScanService {
                 searchInfo.getArtist(), searchInfo.getAlbum());
             
             // 2. 在 MusicBrainz 搜索专辑
-            List<MusicBrainzClient.MusicMetadata> searchResults = 
+            List<MusicMetadata> searchResults =
                 searchByAlbumInfo(searchInfo);
             
             if (searchResults == null || searchResults.isEmpty()) {
@@ -180,7 +181,7 @@ public class QuickScanService {
     /**
      * 在 MusicBrainz 搜索专辑
      */
-    private List<MusicBrainzClient.MusicMetadata> searchByAlbumInfo(AlbumSearchInfo searchInfo) {
+    private List<MusicMetadata> searchByAlbumInfo(AlbumSearchInfo searchInfo) {
         try {
             // 使用 MusicBrainz 的搜索 API
             // 注意: 这需要在 MusicBrainzClient 中添加搜索方法
@@ -329,7 +330,7 @@ public class QuickScanService {
      * 优化: 一旦找到高置信度匹配(>90%)，立即返回，避免不必要的API调用
      */
     private QuickScanResult findBestMatchByDuration(
-            List<MusicBrainzClient.MusicMetadata> candidates,
+            List<MusicMetadata> candidates,
             List<Integer> folderDurations,
             int musicFilesInFolder) {
         
@@ -337,7 +338,7 @@ public class QuickScanService {
         double bestSimilarity = 0.0;
         
         for (int i = 0; i < candidates.size(); i++) {
-            MusicBrainzClient.MusicMetadata candidate = candidates.get(i);
+            MusicMetadata candidate = candidates.get(i);
             try {
                 String releaseGroupId = candidate.getReleaseGroupId();
                 if (releaseGroupId == null || releaseGroupId.isEmpty()) {
@@ -408,10 +409,10 @@ public class QuickScanService {
      */
     @Data
     public static class QuickScanResult {
-        private final MusicBrainzClient.MusicMetadata metadata;
+        private final MusicMetadata metadata;
         private final double similarity;
         
-        public QuickScanResult(MusicBrainzClient.MusicMetadata metadata, double similarity) {
+        public QuickScanResult(MusicMetadata metadata, double similarity) {
             this.metadata = metadata;
             this.similarity = similarity;
         }

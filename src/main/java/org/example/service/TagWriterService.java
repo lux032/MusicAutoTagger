@@ -2,6 +2,7 @@ package org.example.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
+import org.example.model.MusicMetadata;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.tag.FieldKey;
@@ -217,6 +218,14 @@ public class TagWriterService {
             tag.setField(FieldKey.MUSICBRAINZ_TRACK_ID, metadata.getRecordingId());
         }
         
+        // 写入碟号和曲目号
+        if (metadata.getDiscNo() != null && !metadata.getDiscNo().isEmpty()) {
+            tag.setField(FieldKey.DISC_NO, metadata.getDiscNo());
+        }
+        if (metadata.getTrackNo() != null && !metadata.getTrackNo().isEmpty()) {
+            tag.setField(FieldKey.TRACK, metadata.getTrackNo());
+        }
+        
         // 写入作曲家
         if (metadata.getComposer() != null && !metadata.getComposer().isEmpty()) {
             tag.setField(FieldKey.COMPOSER, metadata.getComposer());
@@ -346,52 +355,4 @@ public class TagWriterService {
         }
     }
     
-    /**
-     * 音乐元数据类
-     */
-    public static class MusicMetadata {
-        private String recordingId;
-        private String title;
-        private String artist;
-        private String albumArtist; // 专辑艺术家
-        private String album;
-        private String releaseDate;
-        private java.util.List<String> genres;
-        private byte[] coverArtData;
-        
-        // 新增字段
-        private String composer; // 作曲家
-        private String lyricist; // 作词家
-        private String lyrics; // 歌词
-        
-        public String getRecordingId() { return recordingId; }
-        public void setRecordingId(String recordingId) { this.recordingId = recordingId; }
-        
-        public String getTitle() { return title; }
-        public void setTitle(String title) { this.title = title; }
-        
-        public String getArtist() { return artist; }
-        public void setArtist(String artist) { this.artist = artist; }
-        
-        public String getAlbumArtist() { return albumArtist; }
-        public void setAlbumArtist(String albumArtist) { this.albumArtist = albumArtist; }
-        
-        public String getAlbum() { return album; }
-        public void setAlbum(String album) { this.album = album; }
-        
-        public String getReleaseDate() { return releaseDate; }
-        public void setReleaseDate(String releaseDate) { this.releaseDate = releaseDate; }
-        
-        public java.util.List<String> getGenres() { return genres; }
-        public void setGenres(java.util.List<String> genres) { this.genres = genres; }
-        
-        public String getComposer() { return composer; }
-        public void setComposer(String composer) { this.composer = composer; }
-        
-        public String getLyricist() { return lyricist; }
-        public void setLyricist(String lyricist) { this.lyricist = lyricist; }
-        
-        public String getLyrics() { return lyrics; }
-        public void setLyrics(String lyrics) { this.lyrics = lyrics; }
-    }
 }

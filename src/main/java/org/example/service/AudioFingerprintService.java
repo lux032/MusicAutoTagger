@@ -338,8 +338,17 @@ public class AudioFingerprintService {
                 JsonNode releaseGroups = recording.path("releasegroups");
                 if (releaseGroups.isArray() && releaseGroups.size() > 0) {
                     info.setAlbum(releaseGroups.get(0).path("title").asText());
+
+                    List<ReleaseGroupInfo> releaseGroupList = new ArrayList<>();
+                    for (JsonNode rg : releaseGroups) {
+                        ReleaseGroupInfo rgInfo = new ReleaseGroupInfo();
+                        rgInfo.setId(rg.path("id").asText());
+                        rgInfo.setTitle(rg.path("title").asText());
+                        releaseGroupList.add(rgInfo);
+                    }
+                    info.setReleaseGroups(releaseGroupList);
                 }
-                
+
                 recordingList.add(info);
             }
             
@@ -426,5 +435,12 @@ public class AudioFingerprintService {
         private String title;
         private String artist;
         private String album;
+        private List<ReleaseGroupInfo> releaseGroups;
+    }
+
+    @Data
+    public static class ReleaseGroupInfo {
+        private String id;
+        private String title;
     }
 }

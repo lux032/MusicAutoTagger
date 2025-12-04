@@ -2,6 +2,7 @@ package org.example;
 
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
+import org.example.model.MusicMetadata;
 import org.example.service.*;
 
 import java.io.File;
@@ -181,7 +182,7 @@ public class Main {
             // 0.6. 检测是否为散落在监控目录根目录的单个文件（保底处理）
             boolean isLooseFileInMonitorRoot = isLooseFileInMonitorRoot(audioFile);
             
-            MusicBrainzClient.MusicMetadata detailedMetadata = null;
+            MusicMetadata detailedMetadata = null;
             
             // ===== 优先检查文件夹专辑缓存 =====
             FolderAlbumCache.CachedAlbumInfo cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder);
@@ -209,7 +210,7 @@ public class Main {
                 if (quickResult != null && quickResult.isHighConfidence()) {
                     // 快速扫描成功，锁定专辑信息
                     log.info("✓ 快速扫描成功，锁定专辑信息");
-                    MusicBrainzClient.MusicMetadata quickMetadata = quickResult.getMetadata();
+                    MusicMetadata quickMetadata = quickResult.getMetadata();
                     
                     lockedAlbumTitle = quickMetadata.getAlbum();
                     lockedAlbumArtist = quickMetadata.getAlbumArtist() != null ?
@@ -273,7 +274,7 @@ public class Main {
                 } else {
                     // 有锁定的专辑信息，创建基础metadata
                     log.warn("无法获取单曲详细信息，使用基础信息");
-                    detailedMetadata = new MusicBrainzClient.MusicMetadata();
+                    detailedMetadata = new MusicMetadata();
                     detailedMetadata.setTitle(audioFile.getName()); // 使用文件名作为标题
                     detailedMetadata.setArtist(lockedAlbumArtist);
                     detailedMetadata.setAlbumArtist(lockedAlbumArtist);
@@ -283,7 +284,10 @@ public class Main {
                 }
             } else {
                 // 指纹识别成功，获取详细元数据
-                AudioFingerprintService.RecordingInfo bestMatch = acoustIdResult.getRecordings().get(0);
+                AudioFingerprintService.RecordingInfo bestMatch = findBestRecordingMatch(
+                    acoustIdResult.getRecordings(),
+                    lockedReleaseGroupId
+                );
                 log.info("识别成功: {} - {}", bestMatch.getArtist(), bestMatch.getTitle());
                 
                 // 如果有锁定的专辑信息，传入1作为musicFilesInFolder以避免selectBestRelease被文件数量影响
@@ -292,7 +296,7 @@ public class Main {
                 
                 // 通过 MusicBrainz 获取详细元数据（包含作词、作曲、风格等）
                 log.info("正在获取详细元数据...");
-                detailedMetadata = musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesParam);
+                detailedMetadata = musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesParam, lockedReleaseGroupId);
                 
                 if (detailedMetadata == null) {
                     log.warn("无法获取详细元数据");
@@ -410,11 +414,10 @@ public class Main {
     /**
      * 处理并写入单个文件
      */
-    private static void processAndWriteFile(File audioFile, MusicBrainzClient.MusicMetadata metadata, byte[] coverArtData) {
+    private static void processAndWriteFile(File audioFile, MusicMetadata metadata, byte[] coverArtData) {
         try {
             log.info("正在写入文件标签: {}", audioFile.getName());
-            TagWriterService.MusicMetadata tagMetadata = convertToTagMetadata(metadata);
-            boolean success = tagWriter.processFile(audioFile, tagMetadata, coverArtData);
+            boolean success = tagWriter.processFile(audioFile, metadata, coverArtData);
             
             if (success) {
                 log.info("✓ 文件处理成功: {}", audioFile.getName());
@@ -455,7 +458,7 @@ public class Main {
         for (FolderAlbumCache.PendingFile pending : pendingFiles) {
             try {
                 File audioFile = pending.getAudioFile();
-                MusicBrainzClient.MusicMetadata metadata = (MusicBrainzClient.MusicMetadata) pending.getMetadata();
+                MusicMetadata metadata = (MusicMetadata) pending.getMetadata();
                 byte[] coverArtData = pending.getCoverArtData();
                 
                 log.info("批量处理文件 [{}/{}]: {}",
@@ -480,7 +483,7 @@ public class Main {
                 failedFiles.add(pending.getAudioFile());
                 // 对于失败的文件，也记录到数据库，避免数据缺失
                 try {
-                    MusicBrainzClient.MusicMetadata metadata = (MusicBrainzClient.MusicMetadata) pending.getMetadata();
+                    MusicMetadata metadata = (MusicMetadata) pending.getMetadata();
                     processedLogger.markFileAsProcessed(
                         pending.getAudioFile(),
                         metadata.getRecordingId() != null ? metadata.getRecordingId() : "UNKNOWN",
@@ -521,7 +524,7 @@ public class Main {
      * @param metadata 元数据（包含封面URL）
      * @param lockedReleaseGroupId 锁定的专辑release group ID，如果非null则优先使用此专辑的封面
      */
-    private static byte[] getCoverArtWithFallback(File audioFile, MusicBrainzClient.MusicMetadata metadata, String lockedReleaseGroupId) {
+    private static byte[] getCoverArtWithFallback(File audioFile, MusicMetadata metadata, String lockedReleaseGroupId) {
         byte[] coverArtData = null;
         String folderPath = audioFile.getParentFile().getAbsolutePath();
         
@@ -847,7 +850,7 @@ public class Main {
     /**
      * 检查是否有完整的标签
      */
-    private static boolean hasCompleteTags(TagWriterService.MusicMetadata metadata) {
+    private static boolean hasCompleteTags(MusicMetadata metadata) {
         return metadata.getTitle() != null && !metadata.getTitle().isEmpty() &&
                metadata.getArtist() != null && !metadata.getArtist().isEmpty() &&
                metadata.getAlbum() != null && !metadata.getAlbum().isEmpty();
@@ -856,38 +859,15 @@ public class Main {
     /**
      * 将 AcoustID RecordingInfo 转换为 MusicBrainz MusicMetadata
      */
-    private static MusicBrainzClient.MusicMetadata convertToMusicMetadata(
+    private static MusicMetadata convertToMusicMetadata(
             AudioFingerprintService.RecordingInfo recordingInfo) {
         
-        MusicBrainzClient.MusicMetadata metadata = new MusicBrainzClient.MusicMetadata();
+        MusicMetadata metadata = new MusicMetadata();
         metadata.setRecordingId(recordingInfo.getRecordingId());
         metadata.setTitle(recordingInfo.getTitle());
         metadata.setArtist(recordingInfo.getArtist());
         metadata.setAlbum(recordingInfo.getAlbum());
         return metadata;
-    }
-    
-    /**
-     * 将 MusicBrainz MusicMetadata 转换为 TagWriter MusicMetadata
-     */
-    private static TagWriterService.MusicMetadata convertToTagMetadata(
-            MusicBrainzClient.MusicMetadata musicMetadata) {
-        
-        TagWriterService.MusicMetadata tagMetadata = new TagWriterService.MusicMetadata();
-        tagMetadata.setRecordingId(musicMetadata.getRecordingId());
-        tagMetadata.setTitle(musicMetadata.getTitle());
-        tagMetadata.setArtist(musicMetadata.getArtist());
-        tagMetadata.setAlbumArtist(musicMetadata.getAlbumArtist());
-        tagMetadata.setAlbum(musicMetadata.getAlbum());
-        tagMetadata.setReleaseDate(musicMetadata.getReleaseDate());
-        tagMetadata.setGenres(musicMetadata.getGenres());
-        
-        // 传递新增字段
-        tagMetadata.setComposer(musicMetadata.getComposer());
-        tagMetadata.setLyricist(musicMetadata.getLyricist());
-        tagMetadata.setLyrics(musicMetadata.getLyrics());
-        
-        return tagMetadata;
     }
     
     /**
@@ -1002,5 +982,31 @@ public class Main {
         } catch (Exception e) {
             log.error("关闭服务时出错", e);
         }
+    }
+    /**
+     * 从 AcoustID 返回的多个录音中选择最佳匹配
+     * 优先选择与已锁定专辑 Release Group ID 匹配的录音
+     */
+    private static AudioFingerprintService.RecordingInfo findBestRecordingMatch(
+            java.util.List<AudioFingerprintService.RecordingInfo> recordings,
+            String lockedReleaseGroupId) {
+        
+        if (lockedReleaseGroupId != null && !lockedReleaseGroupId.isEmpty()) {
+            for (AudioFingerprintService.RecordingInfo recording : recordings) {
+                if (recording.getReleaseGroups() != null) {
+                    for (AudioFingerprintService.ReleaseGroupInfo rg : recording.getReleaseGroups()) {
+                        if (lockedReleaseGroupId.equals(rg.getId())) {
+                            log.info("找到与锁定专辑匹配的录音: {} - {}",
+                                recording.getArtist(), recording.getTitle());
+                            return recording;
+                        }
+                    }
+                }
+            }
+            log.warn("未找到与锁定专辑 Release Group ID {} 匹配的录音，将使用最佳匹配", lockedReleaseGroupId);
+        }
+        
+        // 如果没有锁定专辑或未找到匹配，返回第一个（匹配度最高）
+        return recordings.get(0);
     }
 }
