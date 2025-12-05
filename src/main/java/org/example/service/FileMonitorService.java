@@ -204,7 +204,7 @@ public class FileMonitorService {
             // 首先检查是否已处理过（持久化日志）
             File file = filePath.toFile();
             if (processedLogger != null && processedLogger.isFileProcessed(file)) {
-                log.info("文件已处理过（日志记录），跳过: {}", filePath.getFileName());
+                log.debug("文件已处理过（日志记录），跳过: {}", filePath.getFileName());
                 return;
             }
             
@@ -366,7 +366,7 @@ public class FileMonitorService {
     }
     
     /**
-     * 扫描现有文件
+     * 扫描现有文件 - 按文件夹分组批量处理
      */
     private void scanExistingFiles(Path directory) {
         log.info("递归扫描现有文件...");
@@ -380,11 +380,59 @@ public class FileMonitorService {
             
             log.info("扫描完成,发现 {} 个音乐文件", musicFiles.size());
             
-            // 将文件添加到处理队列
-            // 现有文件不需要等待稳定性检查,直接入队
+            // 按文件夹分组
+            Map<String, List<Path>> filesByFolder = new LinkedHashMap<>();
             for (Path path : musicFiles) {
-                fileCheckExecutorService.submit(() -> addToQueue(path, false));
+                String folderPath = path.getParent().toString();
+                filesByFolder.computeIfAbsent(folderPath, k -> new ArrayList<>()).add(path);
             }
+            
+            log.info("文件分布: {} 个文件夹", filesByFolder.size());
+            
+            // 统计已处理和待处理的文件数
+            int totalSkipped = 0;
+            int totalQueued = 0;
+            
+            // 按文件夹逐个处理
+            for (Map.Entry<String, List<Path>> entry : filesByFolder.entrySet()) {
+                String folderPath = entry.getKey();
+                List<Path> folderFiles = entry.getValue();
+                
+                // 过滤掉已处理的文件
+                List<Path> unprocessedFiles = new ArrayList<>();
+                int skippedInFolder = 0;
+                
+                for (Path path : folderFiles) {
+                    File file = path.toFile();
+                    if (processedLogger != null && processedLogger.isFileProcessed(file)) {
+                        skippedInFolder++;
+                    } else {
+                        unprocessedFiles.add(path);
+                    }
+                }
+                
+                totalSkipped += skippedInFolder;
+                totalQueued += unprocessedFiles.size();
+                
+                if (unprocessedFiles.isEmpty()) {
+                    log.debug("文件夹 {} 的所有文件已处理,跳过", new File(folderPath).getName());
+                    continue;
+                }
+                
+                log.info("文件夹 {} : {} 个待处理文件 (已跳过 {} 个)",
+                    new File(folderPath).getName(), unprocessedFiles.size(), skippedInFolder);
+                
+                // 将该文件夹的所有待处理文件按顺序加入队列
+                for (Path path : unprocessedFiles) {
+                    fileCheckExecutorService.submit(() -> addToQueue(path, false));
+                }
+            }
+            
+            log.info("========================================");
+            log.info("扫描结果汇总: 已跳过 {} 个已处理文件, {} 个文件加入处理队列",
+                totalSkipped, totalQueued);
+            log.info("处理策略: 按文件夹分组,先处理完一个文件夹的所有文件,再处理下一个文件夹");
+            log.info("========================================");
             
         } catch (IOException e) {
             log.error("扫描现有文件失败", e);

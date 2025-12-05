@@ -13,6 +13,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -33,6 +34,9 @@ public class QuickScanService {
     private final MusicBrainzClient musicBrainzClient;
     private final DurationSequenceService durationSequenceService;
     private final AudioFingerprintService fingerprintService;
+    
+    // 文件夹时长序列缓存: 文件夹路径 -> 时长序列
+    private final Map<String, List<Integer>> folderDurationCache = new java.util.concurrent.ConcurrentHashMap<>();
     
     // 文件夹名称解析正则表达式
     // 支持格式: "Artist - Album (Year)", "Artist - Album", "Album (Year)", "Album"
@@ -199,26 +203,35 @@ public class QuickScanService {
      * 提取文件夹内所有音频文件的时长序列
      * 支持递归扫描子文件夹（如 CD1, CD2 等多CD专辑结构）
      *
+     * 使用缓存机制，避免重复提取同一文件夹的时长序列
+     *
      * 智能扫描策略:
      * - 如果文件夹是监控目录本身，只扫描当前层级（避免混入其他专辑）
      * - 如果文件夹是监控目录的子文件夹，递归扫描（支持多CD专辑）
      */
     private List<Integer> extractFolderDurations(File folder) {
         try {
+            // 获取当前文件夹的规范路径作为缓存键
+            String folderPath;
+            try {
+                folderPath = folder.getCanonicalPath();
+            } catch (java.io.IOException e) {
+                folderPath = folder.getAbsolutePath();
+            }
+            
+            // 检查缓存
+            List<Integer> cachedDurations = folderDurationCache.get(folderPath);
+            if (cachedDurations != null) {
+                log.debug("使用文件夹时长序列缓存: {} ({}首)", folder.getName(), cachedDurations.size());
+                return cachedDurations;
+            }
+            
             // 获取监控目录的规范路径
             String monitorDirPath;
             try {
                 monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
             } catch (java.io.IOException e) {
                 monitorDirPath = config.getMonitorDirectory();
-            }
-            
-            // 获取当前文件夹的规范路径
-            String folderPath;
-            try {
-                folderPath = folder.getCanonicalPath();
-            } catch (java.io.IOException e) {
-                folderPath = folder.getAbsolutePath();
             }
             
             List<File> audioFiles;
@@ -240,7 +253,16 @@ public class QuickScanService {
             log.debug("在文件夹 {} 中找到 {} 个音频文件",
                 folder.getName(), audioFiles.size());
             
-            return fingerprintService.extractDurationSequence(audioFiles);
+            // 提取时长序列
+            List<Integer> durations = fingerprintService.extractDurationSequence(audioFiles);
+            
+            // 缓存结果
+            if (durations != null && !durations.isEmpty()) {
+                folderDurationCache.put(folderPath, durations);
+                log.debug("已缓存文件夹时长序列: {} ({}首)", folder.getName(), durations.size());
+            }
+            
+            return durations;
             
         } catch (Exception e) {
             log.warn("提取文件夹时长序列失败: {}", e.getMessage());

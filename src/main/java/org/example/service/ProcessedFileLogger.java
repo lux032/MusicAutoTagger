@@ -88,7 +88,7 @@ public class ProcessedFileLogger {
                             String title = rs.getString("title");
                             String processedTime = rs.getTimestamp("processed_time").toLocalDateTime().format(dateFormatter);
 
-                            log.info("文件已处理过(DB): {} (处理时间: {}, 艺术家: {}, 标题: {})",
+                            log.debug("文件已处理过(DB): {} (处理时间: {}, 艺术家: {}, 标题: {})",
                                     file.getName(), processedTime, artist, title);
                             return true;
                         }
@@ -114,7 +114,7 @@ public class ProcessedFileLogger {
             while ((line = reader.readLine()) != null) {
                 // 简单格式: filePath|recordingId|...
                 if (line.startsWith(filePath + "|")) {
-                    log.info("文件已处理过(Log): {}", filePath);
+                    log.debug("文件已处理过(Log): {}", filePath);
                     return true;
                 }
             }
