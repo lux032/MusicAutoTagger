@@ -275,12 +275,66 @@ public class Main {
                     // 有锁定的专辑信息，创建基础metadata
                     log.warn("无法获取单曲详细信息，使用基础信息");
                     detailedMetadata = new MusicMetadata();
-                    detailedMetadata.setTitle(audioFile.getName()); // 使用文件名作为标题
-                    detailedMetadata.setArtist(lockedAlbumArtist);
+
+                    // 优先使用源文件的标签信息
+                    MusicMetadata sourceTagsForFallback = tagWriter.readTags(audioFile);
+                    String titleToUse;
+                    String artistToUse;
+
+                    if (sourceTagsForFallback != null &&
+                        sourceTagsForFallback.getTitle() != null &&
+                        !sourceTagsForFallback.getTitle().isEmpty()) {
+                        // 使用源文件的标题
+                        titleToUse = sourceTagsForFallback.getTitle();
+                        log.info("使用源文件标签中的标题: {}", titleToUse);
+                    } else {
+                        // 使用文件名作为标题（去掉扩展名）
+                        String fileName = audioFile.getName();
+                        int lastDotIndex = fileName.lastIndexOf('.');
+                        titleToUse = (lastDotIndex > 0) ? fileName.substring(0, lastDotIndex) : fileName;
+                        log.info("使用文件名作为标题（已去除扩展名）: {}", titleToUse);
+                    }
+
+                    if (sourceTagsForFallback != null &&
+                        sourceTagsForFallback.getArtist() != null &&
+                        !sourceTagsForFallback.getArtist().isEmpty()) {
+                        // 使用源文件的艺术家
+                        artistToUse = sourceTagsForFallback.getArtist();
+                        log.info("使用源文件标签中的艺术家: {}", artistToUse);
+                    } else {
+                        // 使用锁定的专辑艺术家
+                        artistToUse = lockedAlbumArtist;
+                        log.info("使用锁定的专辑艺术家: {}", artistToUse);
+                    }
+
+                    detailedMetadata.setTitle(titleToUse);
+                    detailedMetadata.setArtist(artistToUse);
                     detailedMetadata.setAlbumArtist(lockedAlbumArtist);
                     detailedMetadata.setAlbum(lockedAlbumTitle);
                     detailedMetadata.setReleaseGroupId(lockedReleaseGroupId);
                     detailedMetadata.setReleaseDate(lockedReleaseDate);
+
+                    // 同时保留源文件的其他标签信息（作曲、作词、歌词、风格等）
+                    if (sourceTagsForFallback != null) {
+                        if (sourceTagsForFallback.getComposer() != null && !sourceTagsForFallback.getComposer().isEmpty()) {
+                            detailedMetadata.setComposer(sourceTagsForFallback.getComposer());
+                        }
+                        if (sourceTagsForFallback.getLyricist() != null && !sourceTagsForFallback.getLyricist().isEmpty()) {
+                            detailedMetadata.setLyricist(sourceTagsForFallback.getLyricist());
+                        }
+                        if (sourceTagsForFallback.getLyrics() != null && !sourceTagsForFallback.getLyrics().isEmpty()) {
+                            detailedMetadata.setLyrics(sourceTagsForFallback.getLyrics());
+                        }
+                        if (sourceTagsForFallback.getGenres() != null && !sourceTagsForFallback.getGenres().isEmpty()) {
+                            detailedMetadata.setGenres(sourceTagsForFallback.getGenres());
+                        }
+                        if (sourceTagsForFallback.getDiscNo() != null && !sourceTagsForFallback.getDiscNo().isEmpty()) {
+                            detailedMetadata.setDiscNo(sourceTagsForFallback.getDiscNo());
+                        }
+                        if (sourceTagsForFallback.getTrackNo() != null && !sourceTagsForFallback.getTrackNo().isEmpty()) {
+                            detailedMetadata.setTrackNo(sourceTagsForFallback.getTrackNo());
+                        }
+                    }
                 }
             } else {
                 // 指纹识别成功，获取详细元数据
