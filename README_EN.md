@@ -157,5 +157,27 @@ Issues and Pull Requests are welcome!
 
 If this project helps you, please consider giving it a ⭐ **Star**!
 
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
+
+### License Summary
+
+The MIT License is a permissive open source license that allows you to:
+- ✅ Commercial use
+- ✅ Modification
+- ✅ Distribution
+- ✅ Private use
+
+**The only requirement** is to include the copyright notice and license notice in all copies or substantial portions of the software.
+
+### Third-Party Services
+
+This tool relies on the following third-party services. Please respect their respective Terms of Service:
+- [MusicBrainz](https://musicbrainz.org/) - Music metadata service
+- [AcoustID](https://acoustid.org/) - Audio fingerprinting service
+- [LrcLib](https://lrclib.net/) - Lyrics service
+- [Cover Art Archive](https://coverartarchive.org/) - Album art service
+
 ---
 **Disclaimer**: This tool relies on third-party services (MusicBrainz, AcoustID, LrcLib). Please respect their Terms of Service.

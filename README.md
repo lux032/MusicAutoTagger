@@ -157,5 +157,27 @@ java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 
 如果你觉得这个项目对你有帮助，请给个 ⭐ **Star** 支持一下！
 
+## 📄 开源许可
+
+本项目采用 [MIT License](LICENSE) 进行开源。
+
+### 许可证说明
+
+MIT 许可证是一个宽松的开源许可证，允许你：
+- ✅ 商业使用
+- ✅ 修改源代码
+- ✅ 分发
+- ✅ 私人使用
+
+**唯一的要求**是：在软件的所有副本或重要部分中保留版权声明和许可声明。
+
+### 第三方服务声明
+
+本工具依赖以下第三方服务，请遵守它们各自的服务条款：
+- [MusicBrainz](https://musicbrainz.org/) - 音乐元数据服务
+- [AcoustID](https://acoustid.org/) - 音频指纹识别服务
+- [LrcLib](https://lrclib.net/) - 歌词服务
+- [Cover Art Archive](https://coverartarchive.org/) - 封面图片服务
+
 ---
 **Disclaimer**: This tool relies on third-party services (MusicBrainz, AcoustID, LrcLib). Please respect their Terms of Service.
