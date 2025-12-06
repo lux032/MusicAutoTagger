@@ -205,53 +205,38 @@ public class QuickScanService {
      *
      * 使用缓存机制，避免重复提取同一文件夹的时长序列
      *
-     * 智能扫描策略:
-     * - 如果文件夹是监控目录本身，只扫描当前层级（避免混入其他专辑）
-     * - 如果文件夹是监控目录的子文件夹，递归扫描（支持多CD专辑）
+     * 规则：获取监控目录的第一级子目录作为专辑根目录，递归扫描其下所有音频文件
      */
     private List<Integer> extractFolderDurations(File folder) {
         try {
-            // 获取当前文件夹的规范路径作为缓存键
+            // 获取监控目录的第一级子目录作为专辑根目录
+            File albumRootDir = getAlbumRootDirectory(folder);
+            
+            // 使用专辑根目录作为缓存键
             String folderPath;
             try {
-                folderPath = folder.getCanonicalPath();
+                folderPath = albumRootDir.getCanonicalPath();
             } catch (java.io.IOException e) {
-                folderPath = folder.getAbsolutePath();
+                folderPath = albumRootDir.getAbsolutePath();
             }
             
             // 检查缓存
             List<Integer> cachedDurations = folderDurationCache.get(folderPath);
             if (cachedDurations != null) {
-                log.debug("使用文件夹时长序列缓存: {} ({}首)", folder.getName(), cachedDurations.size());
+                log.debug("使用专辑时长序列缓存: {} ({}首)", albumRootDir.getName(), cachedDurations.size());
                 return cachedDurations;
             }
             
-            // 获取监控目录的规范路径
-            String monitorDirPath;
-            try {
-                monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
-            } catch (java.io.IOException e) {
-                monitorDirPath = config.getMonitorDirectory();
-            }
-            
-            List<File> audioFiles;
-            
-            // 如果是监控目录本身，只扫描当前层级
-            if (folderPath.equals(monitorDirPath)) {
-                log.debug("文件夹是监控目录根目录，只扫描当前层级");
-                audioFiles = collectAudioFilesSingleLevel(folder);
-            } else {
-                // 否则递归扫描（支持多CD专辑）
-                log.debug("文件夹是监控目录的子文件夹，递归扫描");
-                audioFiles = collectAudioFilesRecursively(folder);
-            }
+            // 递归扫描专辑根目录下的所有音频文件
+            log.debug("递归扫描专辑根目录: {}", albumRootDir.getName());
+            List<File> audioFiles = collectAudioFilesRecursively(albumRootDir);
             
             if (audioFiles == null || audioFiles.isEmpty()) {
                 return null;
             }
             
-            log.debug("在文件夹 {} 中找到 {} 个音频文件",
-                folder.getName(), audioFiles.size());
+            log.debug("在专辑文件夹 {} 中找到 {} 个音频文件",
+                albumRootDir.getName(), audioFiles.size());
             
             // 提取时长序列
             List<Integer> durations = fingerprintService.extractDurationSequence(audioFiles);
@@ -259,7 +244,7 @@ public class QuickScanService {
             // 缓存结果
             if (durations != null && !durations.isEmpty()) {
                 folderDurationCache.put(folderPath, durations);
-                log.debug("已缓存文件夹时长序列: {} ({}首)", folder.getName(), durations.size());
+                log.debug("已缓存专辑时长序列: {} ({}首)", albumRootDir.getName(), durations.size());
             }
             
             return durations;
@@ -345,6 +330,38 @@ public class QuickScanService {
                lowerName.endsWith(".flac") ||
                lowerName.endsWith(".m4a") ||
                lowerName.endsWith(".wav");
+    }
+    
+    /**
+     * 获取专辑根目录
+     * 规则：监控目录下的第一级子目录即为专辑根目录
+     * 例如：监控目录/Artist - Album/Disc 1/01.flac -> 专辑根目录为 监控目录/Artist - Album
+     */
+    private File getAlbumRootDirectory(File folder) {
+        try {
+            String monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
+            File current = folder;
+            
+            // 向上查找，直到找到监控目录的直接子目录
+            while (current != null) {
+                File parent = current.getParentFile();
+                if (parent != null) {
+                    String parentPath = parent.getCanonicalPath();
+                    if (parentPath.equals(monitorDirPath)) {
+                        // current 是监控目录的直接子目录，即专辑根目录
+                        return current;
+                    }
+                }
+                current = parent;
+            }
+            
+            // 如果找不到，返回原文件夹（保底）
+            return folder;
+            
+        } catch (java.io.IOException e) {
+            log.warn("获取专辑根目录失败: {}", e.getMessage());
+            return folder;
+        }
     }
     
     /**

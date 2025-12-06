@@ -10,6 +10,7 @@ import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.tag.images.Artwork;
 import java.nio.file.Files;
 import java.io.IOException;
+import java.nio.file.Path;
 
 /**
  * 音乐文件自动标签系统主程序
@@ -175,9 +176,12 @@ public class Main {
                 return false; // 返回false以触发重试，而不是永久跳过
             }
             
-            // 0.5. 统计文件夹内音乐文件数量（用于判断是否为单曲/EP/专辑）
+            // 0.5. 获取专辑根目录（监控目录的第一级子目录）
+            File albumRootDir = getAlbumRootDirectory(audioFile);
+            String folderPath = albumRootDir.getAbsolutePath();
+            
+            // 0.5.1 统计专辑根目录内音乐文件数量（递归统计所有子文件夹）
             int musicFilesInFolder = countMusicFilesInFolder(audioFile);
-            String folderPath = audioFile.getParentFile().getAbsolutePath();
             
             // 0.6. 检测是否为散落在监控目录根目录的单个文件（保底处理）
             boolean isLooseFileInMonitorRoot = isLooseFileInMonitorRoot(audioFile);
@@ -253,23 +257,18 @@ public class Main {
                 if (lockedAlbumTitle == null) {
                     log.info("建议：手动添加标签或等待 MusicBrainz 社区完善数据");
                     
-                    // 如果配置了失败目录，复制整个文件夹到失败目录
+                    // 如果配置了失败目录，复制整个专辑根目录到失败目录
                     if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
                         try {
-                            copyFailedFolderToFailedDirectory(audioFile);
+                            copyFailedFolderToFailedDirectory(albumRootDir);
                         } catch (Exception e) {
                             log.error("复制失败文件夹到失败目录时出错: {}", e.getMessage());
                         }
                     }
                     
-                    // 记录识别失败的文件
-                    processedLogger.markFileAsProcessed(
-                        audioFile,
-                        "UNKNOWN",
-                        "识别失败",
-                        audioFile.getName(),
-                        "Unknown Album"
-                    );
+                    // 标记整个专辑根目录下的所有文件为"已处理"，避免继续识别
+                    markAlbumAsProcessed(albumRootDir, "识别失败 - 整个专辑");
+                    
                     return true; // 识别失败，不重试但记录
                 } else {
                     // 有锁定的专辑信息，创建基础metadata
@@ -794,7 +793,8 @@ public class Main {
      *
      * 逻辑:
      * - 如果父文件夹是监控目录本身，只统计当前层级（避免混入其他专辑）
-     * - 如果父文件夹是监控目录的子文件夹，递归统计（支持多CD专辑）
+     * - 如果父文件夹是多CD专辑的子文件夹（如 Disc 1, CD1），向上获取专辑根目录
+     * - 如果父文件夹是专辑根目录，递归统计（支持多CD专辑）
      */
     private static int countMusicFilesInFolder(File audioFile) {
         File parentDir = audioFile.getParentFile();
@@ -835,10 +835,47 @@ public class Main {
             log.info("监控目录根目录中共有 {} 个音乐文件", count);
             return count;
         } else {
-            // 父文件夹是监控目录的子文件夹，递归统计（支持多CD专辑）
-            int count = countMusicFilesRecursively(parentDir);
-            log.info("文件夹 {} 中共有 {} 个音乐文件（包括子文件夹）", parentDir.getName(), count);
+            // 从父文件夹向上查找专辑根目录（监控目录的第一级子目录）
+            // 创建一个临时文件来调用 getAlbumRootDirectory
+            File tempFile = new File(parentDir, "temp");
+            File albumRootDir = getAlbumRootDirectory(tempFile);
+            
+            // 递归统计专辑根目录下的所有音乐文件
+            int count = countMusicFilesRecursively(albumRootDir);
+            log.info("专辑文件夹 {} 中共有 {} 个音乐文件（包括子文件夹）", albumRootDir.getName(), count);
             return count;
+        }
+    }
+    
+    /**
+     * 获取专辑根目录
+     * 规则：监控目录下的第一级子目录即为专辑根目录
+     * 例如：监控目录/Artist - Album/Disc 1/01.flac -> 专辑根目录为 监控目录/Artist - Album
+     */
+    private static File getAlbumRootDirectory(File audioFile) {
+        try {
+            String monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
+            File current = audioFile.getParentFile();
+            
+            // 向上查找，直到找到监控目录的直接子目录
+            while (current != null) {
+                File parent = current.getParentFile();
+                if (parent != null) {
+                    String parentPath = parent.getCanonicalPath();
+                    if (parentPath.equals(monitorDirPath)) {
+                        // current 是监控目录的直接子目录，即专辑根目录
+                        return current;
+                    }
+                }
+                current = parent;
+            }
+            
+            // 如果找不到，返回文件所在目录（保底）
+            return audioFile.getParentFile();
+            
+        } catch (java.io.IOException e) {
+            log.warn("获取专辑根目录失败: {}", e.getMessage());
+            return audioFile.getParentFile();
         }
     }
     
@@ -936,18 +973,17 @@ public class Main {
     }
     
     /**
-     * 复制失败文件所在的整个文件夹到失败目录
-     * 保留文件夹结构，方便用户手动处理
+     * 复制失败的专辑根目录到失败目录
+     * 保留文件夹结构（包括所有子文件夹如 Disc 1, Disc 2），方便用户手动处理
      */
-    private static void copyFailedFolderToFailedDirectory(File audioFile) throws IOException {
-        File sourceFolder = audioFile.getParentFile();
-        if (sourceFolder == null || !sourceFolder.exists()) {
-            log.warn("源文件夹不存在，无法复制");
+    private static void copyFailedFolderToFailedDirectory(File albumRootFolder) throws IOException {
+        if (albumRootFolder == null || !albumRootFolder.exists()) {
+            log.warn("专辑根目录不存在，无法复制");
             return;
         }
         
-        // 构建目标路径：失败目录/原文件夹名
-        String folderName = sourceFolder.getName();
+        // 构建目标路径：失败目录/专辑根文件夹名
+        String folderName = albumRootFolder.getName();
         File targetFolder = new File(config.getFailedDirectory(), folderName);
         
         // 检查是否已经复制过该文件夹
@@ -957,46 +993,125 @@ public class Main {
         }
         
         log.info("========================================");
-        log.info("识别失败，复制整个文件夹到失败目录");
-        log.info("源文件夹: {}", sourceFolder.getAbsolutePath());
+        log.info("识别失败，复制整个专辑根目录到失败目录");
+        log.info("源文件夹: {}", albumRootFolder.getAbsolutePath());
         log.info("目标位置: {}", targetFolder.getAbsolutePath());
         
-        // 创建目标文件夹
-        if (!targetFolder.mkdirs()) {
-            log.error("无法创建目标文件夹: {}", targetFolder.getAbsolutePath());
-            return;
-        }
-        
-        // 复制文件夹中的所有文件
-        File[] files = sourceFolder.listFiles();
-        if (files == null) {
-            log.warn("无法列出源文件夹内容");
-            return;
-        }
-        
-        int copiedCount = 0;
-        int skippedCount = 0;
-        
-        for (File file : files) {
-            if (!file.isFile()) {
-                continue; // 跳过子目录
-            }
-            
-            File targetFile = new File(targetFolder, file.getName());
-            try {
-                Files.copy(file.toPath(), targetFile.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                copiedCount++;
-                log.debug("已复制: {}", file.getName());
-            } catch (IOException e) {
-                log.warn("复制文件失败: {} - {}", file.getName(), e.getMessage());
-                skippedCount++;
-            }
-        }
+        // 递归复制整个专辑根目录（包括所有子文件夹）
+        int[] counts = copyDirectoryRecursively(albumRootFolder.toPath(), targetFolder.toPath());
+        int copiedCount = counts[0];
+        int skippedCount = counts[1];
         
         log.info("文件夹复制完成: 成功 {} 个文件, 跳过 {} 个", copiedCount, skippedCount);
         log.info("失败文件夹位置: {}", targetFolder.getAbsolutePath());
         log.info("========================================");
+    }
+    
+    /**
+     * 递归复制目录及其所有内容
+     * @return int[2] - [复制成功数, 跳过数]
+     */
+    /**
+     * 标记专辑根目录下的所有音频文件为已处理
+     * 用于识别失败后，避免继续处理同一专辑的其他文件
+     */
+    private static void markAlbumAsProcessed(File albumRootDir, String reason) {
+        if (albumRootDir == null || !albumRootDir.exists()) {
+            return;
+        }
+        
+        log.info("========================================");
+        log.info("标记整个专辑为已处理: {}", albumRootDir.getName());
+        
+        int markedCount = 0;
+        try {
+            // 递归收集专辑根目录下的所有音频文件
+            java.util.List<File> audioFiles = new java.util.ArrayList<>();
+            collectAudioFilesForMarking(albumRootDir, audioFiles);
+            
+            // 标记所有音频文件为已处理
+            for (File audioFile : audioFiles) {
+                try {
+                    processedLogger.markFileAsProcessed(
+                        audioFile,
+                        "UNKNOWN",
+                        reason,
+                        audioFile.getName(),
+                        "Unknown Album"
+                    );
+                    markedCount++;
+                } catch (Exception e) {
+                    log.warn("标记文件失败: {} - {}", audioFile.getName(), e.getMessage());
+                }
+            }
+            
+            log.info("已标记 {} 个音频文件为已处理，队列中的其他文件将被跳过", markedCount);
+            log.info("========================================");
+            
+        } catch (Exception e) {
+            log.error("标记专辑文件时出错: {}", e.getMessage());
+        }
+    }
+    
+    /**
+     * 递归收集专辑根目录下的所有音频文件
+     */
+    private static void collectAudioFilesForMarking(File directory, java.util.List<File> result) {
+        if (!directory.isDirectory()) {
+            return;
+        }
+        
+        File[] files = directory.listFiles();
+        if (files == null) {
+            return;
+        }
+        
+        for (File file : files) {
+            if (file.isDirectory()) {
+                // 递归进入子文件夹
+                collectAudioFilesForMarking(file, result);
+            } else if (isMusicFile(file)) {
+                // 添加音频文件
+                result.add(file);
+            }
+        }
+    }
+    
+    /**
+     * 递归复制目录及其所有内容
+     * @return int[2] - [复制成功数, 跳过数]
+     */
+    private static int[] copyDirectoryRecursively(Path source, Path target) throws IOException {
+        int[] counts = new int[2]; // [copiedCount, skippedCount]
+        
+        Files.walkFileTree(source, new java.nio.file.SimpleFileVisitor<Path>() {
+            @Override
+            public java.nio.file.FileVisitResult preVisitDirectory(Path dir, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException {
+                Path targetDir = target.resolve(source.relativize(dir));
+                try {
+                    Files.createDirectories(targetDir);
+                } catch (IOException e) {
+                    log.warn("无法创建目录: {} - {}", targetDir, e.getMessage());
+                }
+                return java.nio.file.FileVisitResult.CONTINUE;
+            }
+            
+            @Override
+            public java.nio.file.FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs) throws IOException {
+                Path targetFile = target.resolve(source.relativize(file));
+                try {
+                    Files.copy(file, targetFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    counts[0]++; // copiedCount
+                    log.debug("已复制: {}", file.getFileName());
+                } catch (IOException e) {
+                    log.warn("复制文件失败: {} - {}", file.getFileName(), e.getMessage());
+                    counts[1]++; // skippedCount
+                }
+                return java.nio.file.FileVisitResult.CONTINUE;
+            }
+        });
+        
+        return counts;
     }
     
     /**

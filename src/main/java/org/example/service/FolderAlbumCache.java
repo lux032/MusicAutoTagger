@@ -246,18 +246,14 @@ public class FolderAlbumCache {
             List<Integer> folderDurations = folderDurationSequences.get(folderPath);
             if (folderDurations == null) {
                 File folder = new File(folderPath);
-                File[] files = folder.listFiles((dir, name) ->
-                    name.toLowerCase().endsWith(".mp3") ||
-                    name.toLowerCase().endsWith(".flac") ||
-                    name.toLowerCase().endsWith(".m4a") ||
-                    name.toLowerCase().endsWith(".wav")
-                );
                 
-                if (files != null && files.length > 0) {
-                    List<File> audioFiles = Arrays.asList(files);
+                // 递归收集所有音频文件（支持多CD专辑）
+                List<File> audioFiles = collectAudioFilesRecursively(folder);
+                
+                if (!audioFiles.isEmpty()) {
                     folderDurations = audioFingerprintService.extractDurationSequence(audioFiles);
                     folderDurationSequences.put(folderPath, folderDurations);
-                    log.info("提取文件夹时长序列: {}首", folderDurations.size());
+                    log.info("提取专辑时长序列: {}首（递归扫描）", folderDurations.size());
                 }
             }
             
@@ -337,6 +333,54 @@ public class FolderAlbumCache {
             log.error("时长序列匹配过程出错,回退到投票方法", e);
             return analyzeSamplesWithVoting(samples, musicFilesCount);
         }
+    }
+    
+    /**
+     * 递归收集文件夹及其子文件夹中的所有音频文件
+     */
+    private List<File> collectAudioFilesRecursively(File folder) {
+        List<File> audioFiles = new ArrayList<>();
+        collectAudioFilesRecursively(folder, audioFiles);
+        
+        // 按完整路径排序，确保多CD专辑顺序正确
+        audioFiles.sort((f1, f2) -> f1.getPath().compareTo(f2.getPath()));
+        
+        return audioFiles;
+    }
+    
+    /**
+     * 递归收集音频文件的辅助方法
+     */
+    private void collectAudioFilesRecursively(File folder, List<File> result) {
+        if (!folder.isDirectory()) {
+            return;
+        }
+        
+        File[] files = folder.listFiles();
+        if (files == null) {
+            return;
+        }
+        
+        for (File file : files) {
+            if (file.isDirectory()) {
+                // 递归进入子文件夹
+                collectAudioFilesRecursively(file, result);
+            } else if (isAudioFile(file)) {
+                // 添加音频文件
+                result.add(file);
+            }
+        }
+    }
+    
+    /**
+     * 判断文件是否为音频文件
+     */
+    private boolean isAudioFile(File file) {
+        String lowerName = file.getName().toLowerCase();
+        return lowerName.endsWith(".mp3") ||
+               lowerName.endsWith(".flac") ||
+               lowerName.endsWith(".m4a") ||
+               lowerName.endsWith(".wav");
     }
     
     /**
