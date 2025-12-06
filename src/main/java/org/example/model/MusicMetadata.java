@@ -31,6 +31,40 @@ public class MusicMetadata {
     // Fields specific to TagWriterService
     private byte[] coverArtData;
 
+    /**
+     * 设置专辑艺术家，自动检测多人情况并规范化为 "Various Artists"
+     * @param albumArtist 专辑艺术家
+     */
+    public void setAlbumArtist(String albumArtist) {
+        this.albumArtist = normalizeAlbumArtist(albumArtist);
+    }
+
+    /**
+     * 规范化专辑艺术家：如果是多人则返回 "Various Artists"
+     * @param albumArtist 原始专辑艺术家
+     * @return 规范化后的专辑艺术家
+     */
+    public static String normalizeAlbumArtist(String albumArtist) {
+        if (albumArtist == null || albumArtist.isEmpty()) {
+            return albumArtist;
+        }
+
+        // 已经是 Various Artists，直接返回
+        if ("Various Artists".equalsIgnoreCase(albumArtist)) {
+            return "Various Artists";
+        }
+
+        // 检测多人情况：包含逗号、顿号、&、and 等分隔符
+        if (albumArtist.contains(", ") ||
+            albumArtist.contains("、") ||
+            albumArtist.contains(" & ") ||
+            albumArtist.contains("; ")) {
+            return "Various Artists";
+        }
+
+        return albumArtist;
+    }
+
     @Override
     public String toString() {
         return String.format("MusicMetadata{title='%s', artist='%s', albumArtist='%s', album='%s', score=%d}",

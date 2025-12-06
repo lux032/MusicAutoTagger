@@ -422,9 +422,9 @@ public class Main {
             } else {
                 // 未锁定专辑：收集样本进行投票
                 log.info("启用文件夹级别专辑锁定（{}首音乐文件）", musicFilesInFolder);
-                
+
                 int trackCount = detailedMetadata.getTrackCount();
-                
+
                 FolderAlbumCache.AlbumIdentificationInfo albumInfo = new FolderAlbumCache.AlbumIdentificationInfo(
                     detailedMetadata.getReleaseGroupId(),
                     detailedMetadata.getAlbum(),
@@ -432,10 +432,15 @@ public class Main {
                     trackCount,
                     detailedMetadata.getReleaseDate()
                 );
-                
-                // 添加到待处理队列
-                folderAlbumCache.addPendingFile(folderPath, audioFile, detailedMetadata, coverArtData);
-                
+
+                // 检查文件是否已在待处理队列中（避免重复添加）
+                if (!folderAlbumCache.isFileInPendingQueue(folderPath, audioFile)) {
+                    // 添加到待处理队列
+                    folderAlbumCache.addPendingFile(folderPath, audioFile, detailedMetadata, coverArtData);
+                } else {
+                    log.debug("文件已在待处理队列中，跳过重复添加: {}", audioFile.getName());
+                }
+
                 // 尝试确定专辑
                 FolderAlbumCache.CachedAlbumInfo determinedAlbum = folderAlbumCache.addSample(
                     folderPath,
@@ -443,36 +448,67 @@ public class Main {
                     musicFilesInFolder,
                     albumInfo
                 );
-                
+
                 if (determinedAlbum != null) {
                     // 专辑已确定，批量处理所有待处理文件
                     log.info("========================================");
                     log.info("✓ 文件夹专辑已确定: {}", determinedAlbum.getAlbumTitle());
                     log.info("开始批量处理文件夹内的所有文件...");
                     log.info("========================================");
-                    
+
                     processPendingFilesWithAlbum(folderPath, determinedAlbum);
                 } else {
                     log.info("专辑收集中，待处理文件已加入队列: {}", audioFile.getName());
+
+                    // 检查是否所有文件都已加入待处理队列但专辑仍未确定
+                    // 这种情况可能发生在样本收集过程中部分文件识别失败
+                    int pendingCount = folderAlbumCache.getPendingFileCount(folderPath);
+                    if (pendingCount >= musicFilesInFolder) {
+                        log.warn("所有文件已加入待处理队列但专辑仍未确定，强制处理");
+                        forceProcessPendingFiles(folderPath, albumInfo);
+                    }
                 }
             }
-            
+
             return true; // 处理成功
-            
+
         } catch (java.io.IOException e) {
             // 网络异常（包括 SocketException），返回false以触发重试
             log.error("网络错误导致处理文件失败: {} - {}", audioFile.getName(), e.getMessage());
             log.info("文件将被加入重试队列");
             return false;
-            
+
         } catch (Exception e) {
             // 其他异常（如识别失败），不重试
             log.error("处理文件失败: {}", audioFile.getName(), e);
             return true; // 返回true避免重试（非网络问题）
-            
+
         } finally {
             log.info("========================================");
         }
+    }
+
+    /**
+     * 强制处理待处理文件（当专辑无法确定时使用最佳猜测）
+     */
+    private static void forceProcessPendingFiles(String folderPath, FolderAlbumCache.AlbumIdentificationInfo bestGuess) {
+        log.info("========================================");
+        log.info("强制处理待处理文件，使用最佳猜测专辑: {}", bestGuess.getAlbumTitle());
+        log.info("========================================");
+
+        FolderAlbumCache.CachedAlbumInfo forcedAlbum = new FolderAlbumCache.CachedAlbumInfo(
+            bestGuess.getReleaseGroupId(),
+            bestGuess.getAlbumTitle(),
+            bestGuess.getAlbumArtist(),
+            bestGuess.getTrackCount(),
+            bestGuess.getReleaseDate(),
+            0.5 // 低置信度
+        );
+
+        // 设置缓存以避免后续文件重复触发
+        folderAlbumCache.setFolderAlbum(folderPath, forcedAlbum);
+
+        processPendingFilesWithAlbum(folderPath, forcedAlbum);
     }
     
     /**
@@ -1119,21 +1155,30 @@ public class Main {
      */
     private static void shutdown() {
         log.info("正在关闭系统...");
-        
+
         try {
             // 按依赖关系逆序关闭服务
             if (fileMonitor != null) {
                 fileMonitor.stop();
             }
-            
+
+            // 在关闭前处理所有待处理文件，避免文件丢失
+            if (folderAlbumCache != null) {
+                processAllPendingFilesBeforeShutdown();
+            }
+
             if (fingerprintService != null) {
                 fingerprintService.close();
             }
-            
+
             if (musicBrainzClient != null) {
-                musicBrainzClient.close();
+                try {
+                    musicBrainzClient.close();
+                } catch (IOException e) {
+                    log.warn("关闭 MusicBrainz 客户端时出错", e);
+                }
             }
-            
+
             if (lyricsService != null) {
                 lyricsService.close();
             }
@@ -1143,25 +1188,95 @@ public class Main {
                 log.info("封面缓存统计: {}", stats);
                 coverArtCache.close();
             }
-            
+
             if (folderAlbumCache != null) {
                 FolderAlbumCache.CacheStatistics stats = folderAlbumCache.getStatistics();
                 log.info("文件夹专辑缓存统计: {}", stats);
             }
-            
+
             if (processedLogger != null) {
                 processedLogger.close();
             }
-            
+
             // 最后关闭数据库连接池
             if (databaseService != null) {
                 databaseService.close();
             }
-            
+
             log.info("系统已安全关闭");
         } catch (Exception e) {
             log.error("关闭服务时出错", e);
         }
+    }
+
+    /**
+     * 关闭前处理所有待处理文件
+     * 避免程序关闭时待处理队列中的文件丢失
+     */
+    private static void processAllPendingFilesBeforeShutdown() {
+        java.util.Set<String> foldersWithPending = folderAlbumCache.getFoldersWithPendingFiles();
+
+        if (foldersWithPending.isEmpty()) {
+            log.info("没有待处理文件需要在关闭前处理");
+            return;
+        }
+
+        log.info("========================================");
+        log.info("关闭前处理待处理文件，共 {} 个文件夹有待处理文件", foldersWithPending.size());
+        log.info("========================================");
+
+        for (String folderPath : foldersWithPending) {
+            java.util.List<FolderAlbumCache.PendingFile> pendingFiles = folderAlbumCache.getPendingFiles(folderPath);
+            if (pendingFiles == null || pendingFiles.isEmpty()) {
+                continue;
+            }
+
+            log.info("处理文件夹: {} ({} 个待处理文件)", new File(folderPath).getName(), pendingFiles.size());
+
+            // 检查是否已有缓存的专辑信息
+            FolderAlbumCache.CachedAlbumInfo cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, pendingFiles.size());
+
+            if (cachedAlbum != null) {
+                // 有缓存的专辑信息，使用它处理
+                log.info("使用缓存的���辑信息: {}", cachedAlbum.getAlbumTitle());
+                processPendingFilesWithAlbum(folderPath, cachedAlbum);
+            } else {
+                // 没有缓存，使用第一个待处理文件的元数据作为最佳猜测
+                FolderAlbumCache.PendingFile firstPending = pendingFiles.get(0);
+                MusicMetadata metadata = (MusicMetadata) firstPending.getMetadata();
+
+                if (metadata != null && metadata.getAlbum() != null) {
+                    log.warn("没有确定的专辑信息，使用第一个文件的元数据作为最佳猜测: {}", metadata.getAlbum());
+
+                    FolderAlbumCache.CachedAlbumInfo guessedAlbum = new FolderAlbumCache.CachedAlbumInfo(
+                        metadata.getReleaseGroupId(),
+                        metadata.getAlbum(),
+                        metadata.getAlbumArtist() != null ? metadata.getAlbumArtist() : metadata.getArtist(),
+                        metadata.getTrackCount(),
+                        metadata.getReleaseDate(),
+                        0.3 // 低置信度
+                    );
+
+                    processPendingFilesWithAlbum(folderPath, guessedAlbum);
+                } else {
+                    // 元数据也没有，直接写入每个文件自己的元数据
+                    log.warn("无法确定专辑信息，直接写入每个文件自己的元数据");
+                    for (FolderAlbumCache.PendingFile pending : pendingFiles) {
+                        try {
+                            MusicMetadata fileMetadata = (MusicMetadata) pending.getMetadata();
+                            processAndWriteFile(pending.getAudioFile(), fileMetadata, pending.getCoverArtData());
+                        } catch (Exception e) {
+                            log.error("关闭前处理文件失败: {}", pending.getAudioFile().getName(), e);
+                        }
+                    }
+                    folderAlbumCache.clearPendingFiles(folderPath);
+                }
+            }
+        }
+
+        log.info("========================================");
+        log.info("关闭前待处理文件处理完成");
+        log.info("========================================");
     }
     /**
      * 从 AcoustID 返回的多个录音中选择最佳匹配

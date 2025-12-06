@@ -114,33 +114,46 @@ public class FolderAlbumCache {
             log.debug("文件夹专辑已确定，跳过样本收集: {} - {}", fileName, cached.getAlbumTitle());
             return cached;
         }
-        
+
         // 获取或创建样本收集器
         AlbumSampleCollector collector = folderSampleCollectors.computeIfAbsent(
             folderPath,
             k -> new AlbumSampleCollector(musicFilesCount)
         );
-        
+
         // 检查样本收集器是否已标记为完成（双重检查）
         if (collector.isComplete() && folderAlbumCache.containsKey(folderPath)) {
             log.debug("样本收集已完成，使用缓存: {}", folderAlbumCache.get(folderPath).getAlbumTitle());
             return folderAlbumCache.get(folderPath);
         }
-        
+
         // 添加样本
         collector.addSample(fileName, albumInfo);
-        
+
         // 动态计算所需样本数：对于小型专辑，使用更少的样本
         int requiredSamples = calculateRequiredSamples(musicFilesCount);
+
+        // 获取当前待处理文件数量
+        int pendingFileCount = getPendingFileCount(folderPath);
+
+        // 关键修复：如果待处理文件数量少于所需样本数，调整所需样本数
+        // 这种情况发生在专辑大部分文件已处理，只剩少数几个文件时
+        int effectiveRequiredSamples = requiredSamples;
+        if (pendingFileCount > 0 && pendingFileCount < requiredSamples) {
+            effectiveRequiredSamples = pendingFileCount;
+            log.info("待处理文件数({})少于所需样本数({})，调整为: {}",
+                pendingFileCount, requiredSamples, effectiveRequiredSamples);
+        }
+
         log.info("添加专辑识别样本: {} - {} (样本数: {}/{})",
-            fileName, albumInfo.getAlbumTitle(), collector.getSamples().size(), requiredSamples);
-        
+            fileName, albumInfo.getAlbumTitle(), collector.getSamples().size(), effectiveRequiredSamples);
+
         // 检查是否收集足够样本
-        if (collector.getSamples().size() >= requiredSamples) {
-            
+        if (collector.getSamples().size() >= effectiveRequiredSamples) {
+
             // 分析样本，确定最佳专辑
             CachedAlbumInfo bestAlbum = analyzeSamplesAndDetermineAlbum(folderPath, collector, musicFilesCount);
-            
+
             if (bestAlbum != null) {
                 // 缓存确定的专辑信息
                 folderAlbumCache.put(folderPath, bestAlbum);
@@ -148,16 +161,16 @@ public class FolderAlbumCache {
                 collector.markComplete();
                 // 移除样本收集器（节省内存）
                 folderSampleCollectors.remove(folderPath);
-                
+
                 log.info("✓ 确定文件夹专辑: {} - {} ({}首曲目，置信度: {:.1f}%)",
                     bestAlbum.getAlbumArtist(), bestAlbum.getAlbumTitle(),
                     bestAlbum.getTrackCount(), bestAlbum.getConfidence() * 100);
                 log.info("✓ 文件夹专辑已锁定，后续文件将统一使用此专辑信息");
-                
+
                 return bestAlbum;
             }
         }
-        
+
         return null;
     }
     
@@ -674,5 +687,51 @@ public class FolderAlbumCache {
     public boolean hasPendingFiles(String folderPath) {
         List<PendingFile> pending = folderPendingFiles.get(folderPath);
         return pending != null && !pending.isEmpty();
+    }
+
+    /**
+     * 检查文件是否已在待处理队列中
+     * @param folderPath 文件夹路径
+     * @param audioFile 音频文件
+     * @return true表示文件已在队列中
+     */
+    public boolean isFileInPendingQueue(String folderPath, File audioFile) {
+        List<PendingFile> pending = folderPendingFiles.get(folderPath);
+        if (pending == null || pending.isEmpty()) {
+            return false;
+        }
+        String targetPath = audioFile.getAbsolutePath();
+        synchronized (pending) {
+            for (PendingFile pf : pending) {
+                if (pf.getAudioFile().getAbsolutePath().equals(targetPath)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 获取文件夹待处理文件数量
+     * @param folderPath 文件夹路径
+     * @return 待处理文件数量
+     */
+    public int getPendingFileCount(String folderPath) {
+        List<PendingFile> pending = folderPendingFiles.get(folderPath);
+        return pending != null ? pending.size() : 0;
+    }
+
+    /**
+     * 获取所有有待处理文件的文件夹路径
+     * @return 文件夹路径集合
+     */
+    public Set<String> getFoldersWithPendingFiles() {
+        Set<String> folders = new HashSet<>();
+        for (Map.Entry<String, List<PendingFile>> entry : folderPendingFiles.entrySet()) {
+            if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                folders.add(entry.getKey());
+            }
+        }
+        return folders;
     }
 }

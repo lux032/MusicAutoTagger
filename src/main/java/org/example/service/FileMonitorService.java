@@ -512,25 +512,42 @@ public class FileMonitorService {
     }
     
     /**
-     * 移动文件到失败目录
+     * 移动文件到失败目录，并记录到数据库
      */
     private void moveToFailedDirectory(File file) {
+        // 关键修复：无论是否配置失败目录，都必须记录到数据库，避免文件"静默丢失"
+        // 记录到数据库，标记为处理失败
+        if (processedLogger != null) {
+            try {
+                processedLogger.markFileAsProcessed(
+                    file,
+                    "FAILED",
+                    "重试失败",
+                    file.getName(),
+                    "Unknown Album"
+                );
+                log.info("已将失败文件记录到数据库: {}", file.getName());
+            } catch (Exception e) {
+                log.error("记录失败文件到数据库失败: {} - {}", file.getName(), e.getMessage());
+            }
+        }
+
         String failedDir = config.getFailedDirectory();
         if (failedDir == null || failedDir.trim().isEmpty()) {
-            log.info("未配置失败文件目录，跳过移动: {}", file.getName());
+            log.warn("未配置失败文件目录，文件保留在原位置: {}", file.getName());
             return;
         }
-        
+
         try {
             Path failedDirPath = Paths.get(failedDir);
             if (!Files.exists(failedDirPath)) {
                 Files.createDirectories(failedDirPath);
                 log.info("创建失败文件目录: {}", failedDir);
             }
-            
+
             Path sourcePath = file.toPath();
             Path targetPath = failedDirPath.resolve(file.getName());
-            
+
             // 如果目标文件已存在，添加时间戳
             if (Files.exists(targetPath)) {
                 String baseName = file.getName();
@@ -540,10 +557,10 @@ public class FileMonitorService {
                 String timestamp = String.valueOf(System.currentTimeMillis());
                 targetPath = failedDirPath.resolve(name + "_" + timestamp + ext);
             }
-            
+
             Files.move(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING);
             log.info("✓ 失败文件已移动到: {}", targetPath);
-            
+
         } catch (IOException e) {
             log.error("移动失败文件到目录失败: {} -> {}", file.getName(), failedDir, e);
         }

@@ -456,15 +456,28 @@ public class MusicBrainzClient {
             // 艺术家信息
             JsonNode artistCredits = release.path("artist-credit");
             if (artistCredits.isArray() && artistCredits.size() > 0) {
-                StringBuilder artists = new StringBuilder();
-                for (JsonNode credit : artistCredits) {
-                    if (artists.length() > 0) {
-                        artists.append(", ");
+                // 如果有多个艺术家，专辑艺术家使用 "Various Artists"
+                if (artistCredits.size() > 1) {
+                    metadata.setAlbumArtist("Various Artists");
+                    // artist 字段保留完整列表
+                    StringBuilder artists = new StringBuilder();
+                    for (JsonNode credit : artistCredits) {
+                        if (artists.length() > 0) {
+                            artists.append(", ");
+                        }
+                        artists.append(credit.path("artist").path("name").asText());
                     }
-                    artists.append(credit.path("artist").path("name").asText());
+                    metadata.setArtist(artists.toString());
+                } else {
+                    String artistName = artistCredits.get(0).path("artist").path("name").asText();
+                    // 检查单个艺术家名称是否包含多人
+                    if (artistName.contains(", ") || artistName.contains("、")) {
+                        metadata.setAlbumArtist("Various Artists");
+                    } else {
+                        metadata.setAlbumArtist(artistName);
+                    }
+                    metadata.setArtist(artistName);
                 }
-                metadata.setAlbumArtist(artists.toString());
-                metadata.setArtist(artists.toString()); // 同时设置 artist
             }
             
             // 曲目数
@@ -581,18 +594,23 @@ public class MusicBrainzClient {
             // 获取专辑艺术家(Album Artist)
             JsonNode releaseArtistCredits = bestRelease.path("artist-credit");
             if (releaseArtistCredits.isArray() && releaseArtistCredits.size() > 0) {
-                StringBuilder albumArtists = new StringBuilder();
-                for (JsonNode credit : releaseArtistCredits) {
-                    if (albumArtists.length() > 0) {
-                        albumArtists.append(", ");
+                // 如果有多个艺术家，使用 "Various Artists"
+                if (releaseArtistCredits.size() > 1) {
+                    metadata.setAlbumArtist("Various Artists");
+                    log.info("专辑艺术家为多人({}人)，使用 Various Artists", releaseArtistCredits.size());
+                } else {
+                    // 单个艺术家，检查是否包含逗号分隔的多人
+                    String artistName = releaseArtistCredits.get(0).path("artist").path("name").asText();
+                    if (artistName.contains(", ") || artistName.contains("、")) {
+                        metadata.setAlbumArtist("Various Artists");
+                        log.info("专辑艺术家名称包含多人({})，使用 Various Artists", artistName);
+                    } else {
+                        metadata.setAlbumArtist(artistName);
                     }
-                    albumArtists.append(credit.path("artist").path("name").asText());
                 }
-                metadata.setAlbumArtist(albumArtists.toString());
             } else {
                 // 如果专辑没有艺术家信息,使用单曲的艺术家
                 metadata.setAlbumArtist(metadata.getArtist());
-                }
             }
             
             // 解析流派标签
@@ -611,10 +629,14 @@ public class MusicBrainzClient {
             return metadata;
         }
         
-        /**
-         * 在 Release 中查找特定 Recording 的位置（碟号和曲目号）
-         */
-        private void findAndSetTrackPosition(JsonNode release, String recordingId, MusicMetadata metadata) {
+        // 如果没有找到任何releases,返回基本元数据
+        return metadata;
+    }
+    
+    /**
+     * 在 Release 中查找特定 Recording 的位置（碟号和曲目号）
+     */
+    private void findAndSetTrackPosition(JsonNode release, String recordingId, MusicMetadata metadata) {
             JsonNode media = release.path("media");
             if (!media.isArray()) {
                 return;
@@ -639,13 +661,13 @@ public class MusicBrainzClient {
                 }
             }
             log.warn("在专辑 {} 中未找到 Recording ID {} 的精确位置", release.path("title").asText(), recordingId);
-        }
-        
-        /**
-         * 解析作曲家和作词家信息
-         * 从 relations 和 work-relations 中提取
-         */
-        private void parseComposerAndLyricist(JsonNode recording, MusicMetadata metadata) {
+    }
+    
+    /**
+     * 解析作曲家和作词家信息
+     * 从 relations 和 work-relations 中提取
+     */
+    private void parseComposerAndLyricist(JsonNode recording, MusicMetadata metadata) {
             try {
                 JsonNode relations = recording.path("relations");
                 if (!relations.isArray()) {
@@ -728,31 +750,31 @@ public class MusicBrainzClient {
                     log.debug("找到作词家: {}", lyricists);
                 }
                 
-            } catch (Exception e) {
-                log.warn("解析作曲家/作词家信息失败", e);
-            }
+        } catch (Exception e) {
+            log.warn("解析作曲家/作词家信息失败", e);
         }
+    }
 
-   /**
-    * 获取完整的 Release 信息
-    */
-   private JsonNode getFullReleaseById(String releaseId) throws IOException, InterruptedException {
-       if (releaseId == null || releaseId.isEmpty()) {
-           return null;
-       }
-       rateLimit();
-       // inc=recordings is crucial to get the track list with recording IDs
-       String url = String.format("%s/release/%s?fmt=json&inc=recordings",
-           config.getMusicBrainzApiUrl(), releaseId);
-       
-       try {
-           String response = executeRequest(url);
-           return objectMapper.readTree(response);
-       } catch (Exception e) {
-           log.error("Failed to fetch full release details for ID: {}", releaseId, e);
-           return null;
-       }
-   }
+    /**
+     * 获取完整的 Release 信息
+     */
+    private JsonNode getFullReleaseById(String releaseId) throws IOException, InterruptedException {
+        if (releaseId == null || releaseId.isEmpty()) {
+            return null;
+        }
+        rateLimit();
+        // inc=recordings is crucial to get the track list with recording IDs
+        String url = String.format("%s/release/%s?fmt=json&inc=recordings",
+            config.getMusicBrainzApiUrl(), releaseId);
+        
+        try {
+            String response = executeRequest(url);
+            return objectMapper.readTree(response);
+        } catch (Exception e) {
+            log.error("Failed to fetch full release details for ID: {}", releaseId, e);
+            return null;
+        }
+    }
     
     /**
      * 选择最佳专辑版本
