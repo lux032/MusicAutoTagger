@@ -286,16 +286,22 @@ public class FileMonitorService {
      */
     private void processFailedFileQueue() {
         log.info("失败文件重试队列线程已启动");
-        
+
         while (running) {
             try {
-                // 定期检查失败队列
-                Thread.sleep(RETRY_QUEUE_CHECK_INTERVAL);
-                
+                // 先检查队列是否有内容
                 if (failedFileQueue.isEmpty()) {
+                    // 队列为空时才等待
+                    Thread.sleep(RETRY_QUEUE_CHECK_INTERVAL);
                     continue;
                 }
-                
+
+                // 如果主队列还在处理中，等待主队列处理完毕再开始重试
+                if (!fileQueue.isEmpty()) {
+                    Thread.sleep(5000); // 短暂等待后再检查
+                    continue;
+                }
+
                 log.info("开始处理失败文件重试队列，当前队列长度: {}", failedFileQueue.size());
                 
                 // 取出所有失败文件进行重试
