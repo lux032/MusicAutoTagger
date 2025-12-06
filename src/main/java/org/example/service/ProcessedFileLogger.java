@@ -30,6 +30,8 @@ public class ProcessedFileLogger {
     private final MusicConfig config;
     private final DateTimeFormatter dateFormatter;
     private final boolean isDbMode;
+    // 关键修复：添加文件写入锁，解决并发写入日志文件的线程安全问题
+    private final Object fileWriteLock = new Object();
 
     /**
      * 构造函数
@@ -172,16 +174,18 @@ public class ProcessedFileLogger {
                 log.error("DB记录失败", e);
             }
         } else {
-            // 文件模式: 追加写入
-            try (BufferedWriter writer = new BufferedWriter(new FileWriter(config.getProcessedFileLogPath(), true))) {
-                String timeStr = now.format(dateFormatter);
-                // 格式: filePath|recordingId|artist|title|album|time
-                String line = String.format("%s|%s|%s|%s|%s|%s",
-                        filePath, recordingId, artist, title, album, timeStr);
-                writer.write(line);
-                writer.newLine();
-            } catch (IOException e) {
-                log.error("写入日志文件失败", e);
+            // 文件模式: 追加写入（使用同步锁保证线程安全）
+            synchronized (fileWriteLock) {
+                try (BufferedWriter writer = new BufferedWriter(new FileWriter(config.getProcessedFileLogPath(), true))) {
+                    String timeStr = now.format(dateFormatter);
+                    // 格式: filePath|recordingId|artist|title|album|time
+                    String line = String.format("%s|%s|%s|%s|%s|%s",
+                            filePath, recordingId, artist, title, album, timeStr);
+                    writer.write(line);
+                    writer.newLine();
+                } catch (IOException e) {
+                    log.error("写入日志文件失败", e);
+                }
             }
         }
 

@@ -712,6 +712,37 @@ public class FolderAlbumCache {
     }
 
     /**
+     * 原子操作：检查文件是否在队列中，如果不在则添加
+     * 关键修复：解决isFileInPendingQueue和addPendingFile之间的竞态条件
+     * @param folderPath 文件夹路径
+     * @param audioFile 音频文件
+     * @param metadata 元数据
+     * @param coverArtData 封面数据
+     * @return true表示文件已添加到队列，false表示文件已存在于队列中
+     */
+    public boolean addPendingFileIfAbsent(String folderPath, File audioFile, Object metadata, byte[] coverArtData) {
+        List<PendingFile> pending = folderPendingFiles.computeIfAbsent(
+            folderPath,
+            k -> Collections.synchronizedList(new ArrayList<>())
+        );
+
+        String targetPath = audioFile.getAbsolutePath();
+        synchronized (pending) {
+            // 在同步块内检查是否已存在
+            for (PendingFile pf : pending) {
+                if (pf.getAudioFile().getAbsolutePath().equals(targetPath)) {
+                    log.debug("文件已在待处理队列中，跳过重复添加: {}", audioFile.getName());
+                    return false;
+                }
+            }
+            // 不存在则添加
+            pending.add(new PendingFile(audioFile, metadata, coverArtData));
+            log.debug("添加待处理文件: {} (文件夹待处理数: {})", audioFile.getName(), pending.size());
+            return true;
+        }
+    }
+
+    /**
      * 获取文件夹待处理文件数量
      * @param folderPath 文件夹路径
      * @return 待处理文件数量

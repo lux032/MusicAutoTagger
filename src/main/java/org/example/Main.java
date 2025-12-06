@@ -433,13 +433,8 @@ public class Main {
                     detailedMetadata.getReleaseDate()
                 );
 
-                // 检查文件是否已在待处理队列中（避免重复添加）
-                if (!folderAlbumCache.isFileInPendingQueue(folderPath, audioFile)) {
-                    // 添加到待处理队列
-                    folderAlbumCache.addPendingFile(folderPath, audioFile, detailedMetadata, coverArtData);
-                } else {
-                    log.debug("文件已在待处理队列中，跳过重复添加: {}", audioFile.getName());
-                }
+                // 关键修复：使用原子操作添加待处理文件，避免竞态条件
+                folderAlbumCache.addPendingFileIfAbsent(folderPath, audioFile, detailedMetadata, coverArtData);
 
                 // 尝试确定专辑
                 FolderAlbumCache.CachedAlbumInfo determinedAlbum = folderAlbumCache.addSample(
@@ -479,8 +474,23 @@ public class Main {
             return false;
 
         } catch (Exception e) {
-            // 其他异常（如识别失败），不重试
+            // 其他异常（如识别失败），不重试，但必须记录到数据库避免静默丢失
             log.error("处理文件失败: {}", audioFile.getName(), e);
+
+            // 关键修复：记录失败文件到数据库，避免文件"静默丢失"
+            try {
+                processedLogger.markFileAsProcessed(
+                    audioFile,
+                    "FAILED",
+                    "处理异常: " + e.getClass().getSimpleName(),
+                    audioFile.getName(),
+                    "Unknown Album"
+                );
+                log.info("已将异常失败文件记录到数据库: {}", audioFile.getName());
+            } catch (Exception recordError) {
+                log.error("记录异常失败文件到数据库失败: {} - {}", audioFile.getName(), recordError.getMessage());
+            }
+
             return true; // 返回true避免重试（非网络问题）
 
         } finally {
@@ -532,12 +542,34 @@ public class Main {
                 );
             } else {
                 log.error("✗ 文件处理失败: {}", audioFile.getName());
+                // 关键修复：写入失败也要记录到数据库，避免文件"静默丢失"
+                processedLogger.markFileAsProcessed(
+                    audioFile,
+                    "WRITE_FAILED",
+                    metadata.getArtist() != null ? metadata.getArtist() : "Unknown Artist",
+                    metadata.getTitle() != null ? metadata.getTitle() : audioFile.getName(),
+                    metadata.getAlbum() != null ? metadata.getAlbum() : "Unknown Album"
+                );
+                log.info("已将写入失败文件记录到数据库: {}", audioFile.getName());
             }
         } catch (Exception e) {
             log.error("写入文件失败: {}", audioFile.getName(), e);
+            // 关键修复：异常时也要记录到数据库，避免文件"静默丢失"
+            try {
+                processedLogger.markFileAsProcessed(
+                    audioFile,
+                    "EXCEPTION",
+                    metadata.getArtist() != null ? metadata.getArtist() : "Unknown Artist",
+                    metadata.getTitle() != null ? metadata.getTitle() : audioFile.getName(),
+                    metadata.getAlbum() != null ? metadata.getAlbum() : "Unknown Album"
+                );
+                log.info("已将异常文件记录到数据库: {}", audioFile.getName());
+            } catch (Exception recordError) {
+                log.error("记录异常文件到数据库失败: {} - {}", audioFile.getName(), recordError.getMessage());
+            }
         }
     }
-    
+
     /**
      * 批量处理文件夹内的待处理文件，统一应用确定的专辑信息
      */
@@ -1267,6 +1299,19 @@ public class Main {
                             processAndWriteFile(pending.getAudioFile(), fileMetadata, pending.getCoverArtData());
                         } catch (Exception e) {
                             log.error("关闭前处理文件失败: {}", pending.getAudioFile().getName(), e);
+                            // 关键修复：记录失败文件到数据库，避免文件"静默丢失"
+                            try {
+                                processedLogger.markFileAsProcessed(
+                                    pending.getAudioFile(),
+                                    "FAILED",
+                                    "关闭前处理失败: " + e.getClass().getSimpleName(),
+                                    pending.getAudioFile().getName(),
+                                    "Unknown Album"
+                                );
+                                log.info("已将关闭前失败文件记录到数据库: {}", pending.getAudioFile().getName());
+                            } catch (Exception recordError) {
+                                log.error("记录关闭前失败文件到数据库失败: {} - {}", pending.getAudioFile().getName(), recordError.getMessage());
+                            }
                         }
                     }
                     folderAlbumCache.clearPendingFiles(folderPath);
