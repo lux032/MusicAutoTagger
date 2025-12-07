@@ -367,7 +367,7 @@ public class Main {
                     acoustIdResult.getRecordings(),
                     lockedReleaseGroupId
                 );
-                log.info(I18nUtil.getMessage("main.identify.success"), bestMatch.getArtist(), bestMatch.getTitle());
+                log.info("识别成功: {} - {}", bestMatch.getArtist(), bestMatch.getTitle());
                 LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.identify.success", bestMatch.getArtist(), bestMatch.getTitle()));
 
                 // 如果有锁定的专辑信息，传入1作为musicFilesInFolder以避免selectBestRelease被文件数量影响
