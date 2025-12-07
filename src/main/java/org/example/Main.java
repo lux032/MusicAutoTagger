@@ -4,6 +4,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
 import org.example.model.MusicMetadata;
 import org.example.service.*;
+import org.example.web.WebServer;
+import org.example.service.LogCollector;
 
 import java.io.File;
 import org.jaudiotagger.audio.AudioFile;
@@ -34,6 +36,7 @@ public class Main {
     private static FolderAlbumCache folderAlbumCache;
     private static QuickScanService quickScanService;
     private static MusicConfig config;
+    private static WebServer webServer;
     
     // 文件夹级别的封面缓存: 文件夹路径 -> 封面数据
     private static java.util.Map<String, byte[]> folderCoverCache = new java.util.concurrent.ConcurrentHashMap<>();
@@ -66,12 +69,15 @@ public class Main {
                 log.warn("音频指纹识别功能将无法使用");
                 log.warn("请安装 Chromaprint: https://acoustid.org/chromaprint");
                 log.warn("========================================");
-            }
-            
-            // 4. 启动文件监控
-            startMonitoring();
-            
-            // 5. 等待用户输入以停止程序
+                }
+                
+                // 4. 启动 Web 监控面板
+                startWebServer();
+                
+                // 5. 启动文件监控
+                startMonitoring();
+                
+                // 6. 等待用户输入以停止程序
             System.out.println("\n系统正在运行中...");
             System.out.println("按回车键停止程序");
             System.in.read();
@@ -146,6 +152,19 @@ public class Main {
     }
     
     /**
+     * 启动 Web 监控面板
+     */
+    private static void startWebServer() {
+        try {
+            webServer = new WebServer(8080);
+            webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService);
+        } catch (Exception e) {
+            log.error("Web 服务器启动失败", e);
+            log.warn("监控面板不可用，但核心功能仍可正常运行");
+        }
+    }
+    
+    /**
      * 启动文件监控
      */
     private static void startMonitoring() {
@@ -162,6 +181,8 @@ public class Main {
     private static boolean processAudioFileWithResult(File audioFile) {
         log.info("========================================");
         log.info("处理音频文件: {}", audioFile.getName());
+        LogCollector.addLog("INFO", "========================================");
+        LogCollector.addLog("INFO", "处理音频文件: " + audioFile.getName());
         
         try {
             // 0. 检查文件是否已处理过
@@ -342,6 +363,7 @@ public class Main {
                     lockedReleaseGroupId
                 );
                 log.info("识别成功: {} - {}", bestMatch.getArtist(), bestMatch.getTitle());
+                LogCollector.addLog("INFO", String.format("识别成功: %s - %s", bestMatch.getArtist(), bestMatch.getTitle()));
 
                 // 如果有锁定的专辑信息，传入1作为musicFilesInFolder以避免selectBestRelease被文件数量影响
                 // 否则传入实际的文件数量
@@ -531,6 +553,8 @@ public class Main {
             
             if (success) {
                 log.info("✓ 文件处理成功: {}", audioFile.getName());
+                LogCollector.addLog("SUCCESS", "✓ 文件处理成功: " + audioFile.getName());
+                LogCollector.addLog("SUCCESS", "文件处理成功: " + audioFile.getName());
                 
                 // 记录文件已处理
                 processedLogger.markFileAsProcessed(
@@ -542,6 +566,8 @@ public class Main {
                 );
             } else {
                 log.error("✗ 文件处理失败: {}", audioFile.getName());
+                LogCollector.addLog("ERROR", "✗ 文件处理失败: " + audioFile.getName());
+                LogCollector.addLog("ERROR", "文件处理失败: " + audioFile.getName());
                 // 关键修复：写入失败也要记录到数据库，避免文件"静默丢失"
                 processedLogger.markFileAsProcessed(
                     audioFile,
@@ -648,6 +674,7 @@ public class Main {
      * 获取封面图片(多层降级策略 + 文件夹级别缓存)
      * 优先级:
      * 0. 检查同文件夹是否已有其他文件获取过封面
+     * 0.5. 如果有锁定的专辑ID，检查是否已经为这个专辑获取过封面（跨文件夹复用）
      * 1. 尝试从网络下载(使用缓存)
      * 2. 如果下载失败,检查音频文件是否自带封面
      * 3. 如果没有自带封面,在音频文件所在目录查找cover图片
@@ -659,17 +686,29 @@ public class Main {
     private static byte[] getCoverArtWithFallback(File audioFile, MusicMetadata metadata, String lockedReleaseGroupId) {
         byte[] coverArtData = null;
         String folderPath = audioFile.getParentFile().getAbsolutePath();
-        
+
         // 策略0: 检查文件夹级别缓存
         coverArtData = folderCoverCache.get(folderPath);
         if (coverArtData != null && coverArtData.length > 0) {
             log.info("策略0: 使用同文件夹已获取的封面");
             return coverArtData;
         }
-        
+
+        // 策略0.5: 如果有锁定的专辑ID，检查 CoverArtCache 中是否已经为这个专辑获取过封面
+        if (lockedReleaseGroupId != null) {
+            coverArtData = coverArtCache.getCachedCoverByReleaseGroupId(lockedReleaseGroupId);
+
+            if (coverArtData != null && coverArtData.length > 0) {
+                log.info("策略0.5: 使用已缓存的锁定专辑封面 (Release Group ID: {})", lockedReleaseGroupId);
+                // 同时缓存到文件夹级别，加速后续文件的访问
+                folderCoverCache.put(folderPath, coverArtData);
+                return coverArtData;
+            }
+        }
+
         // 策略1: 尝试从网络下载
         String coverArtUrl = null;
-        
+
         // 如果有锁定的专辑ID，只使用锁定专辑的封面
         if (lockedReleaseGroupId != null) {
             log.info("使用锁定专辑的封面 (Release Group ID: {})", lockedReleaseGroupId);
@@ -688,14 +727,21 @@ public class Main {
             log.info("使用指纹识别返回的封面URL");
             coverArtUrl = metadata.getCoverArtUrl();
         }
-        
+
         if (coverArtUrl != null) {
             log.info("策略1: 尝试从网络下载封面");
             coverArtData = downloadCoverFromNetwork(coverArtUrl);
-            
+
             if (coverArtData != null && coverArtData.length > 0) {
                 log.info("✓ 成功从网络下载封面,缓存到文件夹级别");
                 folderCoverCache.put(folderPath, coverArtData);
+
+                // 如果有锁定的专辑ID，同时缓存到 Release Group ID 级别，供其他文件夹复用
+                if (lockedReleaseGroupId != null) {
+                    coverArtCache.cacheCoverByReleaseGroupId(lockedReleaseGroupId, coverArtData);
+                    log.info("已将封面缓存到专辑级别 (Release Group ID: {})", lockedReleaseGroupId);
+                }
+
                 return coverArtData;
             }
             log.warn("✗ 网络下载失败,尝试降级策略");
@@ -1190,6 +1236,16 @@ public class Main {
 
         try {
             // 按依赖关系逆序关闭服务
+            
+            // 关闭 Web 服务器
+            if (webServer != null && webServer.isRunning()) {
+                try {
+                    webServer.stop();
+                } catch (Exception e) {
+                    log.warn("关闭 Web 服务器时出错", e);
+                }
+            }
+            
             if (fileMonitor != null) {
                 fileMonitor.stop();
             }

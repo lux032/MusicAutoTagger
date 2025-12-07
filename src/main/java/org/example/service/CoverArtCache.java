@@ -41,8 +41,35 @@ public class CoverArtCache {
     }
     
     /**
+     * 根据 Release Group ID 获取缓存的封面
+     * @param releaseGroupId MusicBrainz Release Group ID
+     * @return 缓存的封面数据，如果未缓存则返回 null
+     */
+    public byte[] getCachedCoverByReleaseGroupId(String releaseGroupId) {
+        if (releaseGroupId == null || releaseGroupId.isEmpty()) {
+            return null;
+        }
+        // 使用固定前缀 + Release Group ID 作为缓存 key
+        return getCachedCover("release-group:" + releaseGroupId);
+    }
+
+    /**
+     * 根据 Release Group ID 缓存封面
+     * @param releaseGroupId MusicBrainz Release Group ID
+     * @param coverData 封面数据（已压缩）
+     * @return 是否保存成功
+     */
+    public boolean cacheCoverByReleaseGroupId(String releaseGroupId, byte[] coverData) {
+        if (releaseGroupId == null || releaseGroupId.isEmpty()) {
+            return false;
+        }
+        // 使用固定前缀 + Release Group ID 作为缓存 key
+        return cacheCover("release-group:" + releaseGroupId, coverData);
+    }
+
+    /**
      * 检查封面是否已缓存
-     * @param coverArtUrl 封面URL
+     * @param coverArtUrl 封面URL（或其他唯一标识）
      * @return 缓存的封面数据,如果未缓存则返回null
      */
     public byte[] getCachedCover(String coverArtUrl) {
