@@ -259,10 +259,16 @@ public class ProcessedFileLogger {
         } else {
             stats.put("databaseType", "File");
             // 简单统计行数
-            try (BufferedReader reader = new BufferedReader(new FileReader(config.getProcessedFileLogPath()))) {
-                long lines = reader.lines().count();
-                stats.put("totalProcessed", lines);
-            } catch (IOException e) {
+            File logFile = new File(config.getProcessedFileLogPath());
+            if (logFile.exists()) {
+                try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
+                    long lines = reader.lines().count();
+                    stats.put("totalProcessed", lines);
+                } catch (IOException e) {
+                    log.error("读取日志文件统计失败", e);
+                    stats.put("totalProcessed", 0);
+                }
+            } else {
                 stats.put("totalProcessed", 0);
             }
         }

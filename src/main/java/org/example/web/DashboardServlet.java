@@ -60,8 +60,10 @@ public class DashboardServlet extends HttpServlet {
         } catch (Exception e) {
             log.error("获取统计信息失败", e);
             resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
-            Map<String, String> error = new HashMap<>();
+            Map<String, Object> error = new HashMap<>();
             error.put("error", e.getMessage());
+            error.put("dbType", config.getDbType());
+            error.put("details", "请检查数据库配置是否正确");
             resp.getWriter().write(gson.toJson(error));
         }
     }

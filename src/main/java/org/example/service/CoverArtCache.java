@@ -181,6 +181,11 @@ public class CoverArtCache {
      * 删除缓存记录
      */
     private void deleteCacheRecord(String urlHash) {
+        // 如果没有数据库服务，跳过数据库操作
+        if (databaseService == null) {
+            return;
+        }
+        
         try {
             String sql = "DELETE FROM cover_art_cache WHERE url_hash = ?";
             try (Connection conn = databaseService.getConnection();
@@ -215,6 +220,12 @@ public class CoverArtCache {
      * @param daysToKeep 保留天数
      */
     public void cleanupOldCache(int daysToKeep) {
+        // 如果没有数据库服务，文件模式下暂不支持自动清理
+        if (databaseService == null) {
+            log.info("文件模式下暂不支持自动清理封面缓存");
+            return;
+        }
+        
         String sql = "SELECT url_hash, cache_file_path FROM cover_art_cache " +
                     "WHERE cached_time < DATE_SUB(NOW(), INTERVAL ? DAY)";
         
@@ -256,6 +267,24 @@ public class CoverArtCache {
     public CacheStatistics getStatistics() {
         CacheStatistics stats = new CacheStatistics();
         
+        // 如果没有数据库服务，从文件系统统计
+        if (databaseService == null) {
+            File cacheDir = new File(cacheDirectory);
+            if (cacheDir.exists() && cacheDir.isDirectory()) {
+                File[] files = cacheDir.listFiles((dir, name) -> name.endsWith(".jpg"));
+                if (files != null) {
+                    stats.totalCached = files.length;
+                    long totalSize = 0;
+                    for (File file : files) {
+                        totalSize += file.length();
+                    }
+                    stats.totalSizeBytes = totalSize;
+                }
+            }
+            return stats;
+        }
+        
+        // MySQL 模式：从数据库统计
         try (Connection conn = databaseService.getConnection()) {
             // 总缓存数量
             String countSQL = "SELECT COUNT(*) as total, SUM(file_size) as total_size FROM cover_art_cache";
