@@ -41,15 +41,18 @@ public class LogCollector {
      */
     public static List<LogEntry> getRecentLogs(int limit) {
         List<LogEntry> result = new ArrayList<>();
-        int count = 0;
-        
-        // 从队列尾部开始获取（最新的日志）
+
+        // 获取所有日志
         Object[] logArray = logs.toArray();
-        for (int i = logArray.length - 1; i >= 0 && count < limit; i--) {
+
+        // 计算起始位置，确保只获取最近的 limit 条
+        int startIndex = Math.max(0, logArray.length - limit);
+
+        // 按时间顺序返回（旧的在前，新的在后），方便前端自动滚动到底部显示最新日志
+        for (int i = startIndex; i < logArray.length; i++) {
             result.add((LogEntry) logArray[i]);
-            count++;
         }
-        
+
         return result;
     }
     

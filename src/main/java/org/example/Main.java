@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
 import org.example.model.MusicMetadata;
 import org.example.service.*;
+import org.example.util.I18nUtil;
 import org.example.web.WebServer;
 import org.example.service.LogCollector;
 
@@ -42,33 +43,33 @@ public class Main {
     private static java.util.Map<String, byte[]> folderCoverCache = new java.util.concurrent.ConcurrentHashMap<>();
     
     public static void main(String[] args) {
-        System.out.println("========================================");
-        System.out.println("音乐文件自动标签系统");
-        System.out.println("========================================");
+        System.out.println(I18nUtil.getMessage("main.title.separator"));
+        System.out.println(I18nUtil.getMessage("main.title"));
+        System.out.println(I18nUtil.getMessage("main.title.separator"));
         
         try {
             // 1. 加载配置
             config = MusicConfig.getInstance();
             if (!config.isValid()) {
-                log.error("配置无效，程序退出");
+                log.error(I18nUtil.getMessage("app.config.invalid"));
                 return;
             }
             
-            log.info("配置加载成功");
-            log.info("监控目录: {}", config.getMonitorDirectory());
-            log.info("输出目录: {}", config.getOutputDirectory());
-            log.info("扫描间隔: {} 秒", config.getScanIntervalSeconds());
+            log.info(I18nUtil.getMessage("app.config.loaded"));
+            log.info(I18nUtil.getMessage("app.monitor.directory"), config.getMonitorDirectory());
+            log.info(I18nUtil.getMessage("app.output.directory"), config.getOutputDirectory());
+            log.info(I18nUtil.getMessage("app.scan.interval"), config.getScanIntervalSeconds());
             
             // 2. 初始化服务
             initializeServices();
             
             // 3. 检查依赖工具
             if (!fingerprintService.isFpcalcAvailable()) {
-                log.warn("========================================");
-                log.warn("警告: fpcalc 工具未安装或不在 PATH 中");
-                log.warn("音频指纹识别功能将无法使用");
-                log.warn("请安装 Chromaprint: https://acoustid.org/chromaprint");
-                log.warn("========================================");
+                log.warn(I18nUtil.getMessage("main.title.separator"));
+                log.warn(I18nUtil.getMessage("main.fpcalc.warning.line"));
+                log.warn(I18nUtil.getMessage("main.fpcalc.feature.disabled"));
+                log.warn(I18nUtil.getMessage("main.fpcalc.install.guide"));
+                log.warn(I18nUtil.getMessage("main.title.separator"));
                 }
                 
                 // 4. 启动 Web 监控面板
@@ -78,15 +79,15 @@ public class Main {
                 startMonitoring();
                 
                 // 6. 等待用户输入以停止程序
-            System.out.println("\n系统正在运行中...");
-            System.out.println("按回车键停止程序");
+            System.out.println("\n" + I18nUtil.getMessage("main.system.running"));
+            System.out.println(I18nUtil.getMessage("main.press.enter.to.stop"));
             System.in.read();
             
             // 6. 优雅关闭
             shutdown();
             
         } catch (Exception e) {
-            log.error("程序运行出错", e);
+            log.error(I18nUtil.getMessage("main.error"), e);
         }
     }
     
@@ -94,18 +95,22 @@ public class Main {
      * 初始化所有服务
      */
     private static void initializeServices() throws IOException {
-        log.info("初始化服务...");
-        
+        log.info(I18nUtil.getMessage("app.init.services"));
+
+        // Level 0: 初始化国际化
+        I18nUtil.init(config.getLanguage());
+        log.info(I18nUtil.getMessage("app.init.i18n"), config.getLanguage());
+
         // Level 1: 初始化数据库服务 (如果配置为 MySQL)
         if ("mysql".equalsIgnoreCase(config.getDbType())) {
-            log.info("初始化数据库服务...");
+            log.info(I18nUtil.getMessage("app.init.database"));
             databaseService = new DatabaseService(config);
         } else {
-            log.info("使用文件模式，跳过数据库初始化");
+            log.info(I18nUtil.getMessage("app.init.file.mode"));
         }
         
         // Level 2: 初始化依赖数据库的服务
-        log.info("初始化日志服务...");
+        log.info(I18nUtil.getMessage("app.init.log.service"));
         processedLogger = new ProcessedFileLogger(config, databaseService);
         
         String cacheDir = config.getCoverArtCacheDirectory();
@@ -116,7 +121,7 @@ public class Main {
         coverArtCache = new CoverArtCache(databaseService, cacheDir);
         
         // Level 2: 初始化其他服务
-        log.info("初始化其他服务...");
+        log.info(I18nUtil.getMessage("app.init.other.services"));
         fingerprintService = new AudioFingerprintService(config);
         musicBrainzClient = new MusicBrainzClient(config);
         lyricsService = new LyricsService(config);
@@ -140,15 +145,15 @@ public class Main {
             fingerprintService
         );
         
-        log.info("✓ 时长序列匹配服务已启用");
-        log.info("✓ 快速扫描服务已启用（两级扫描策略）");
+        log.info(I18nUtil.getMessage("app.duration.sequence.enabled"));
+        log.info(I18nUtil.getMessage("app.quick.scan.enabled"));
         
         // Level 3: 初始化文件监控服务
-        log.info("初始化文件监控服务...");
+        log.info(I18nUtil.getMessage("app.init.file.monitor"));
         fileMonitor = new FileMonitorService(config, processedLogger);
         fileMonitor.setFileReadyCallbackWithResult(Main::processAudioFileWithResult);
         
-        log.info("所有服务初始化完成");
+        log.info(I18nUtil.getMessage("app.all.services.ready"));
     }
     
     /**
@@ -159,8 +164,8 @@ public class Main {
             webServer = new WebServer(8080);
             webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService);
         } catch (Exception e) {
-            log.error("Web 服务器启动失败", e);
-            log.warn("监控面板不可用，但核心功能仍可正常运行");
+            log.error(I18nUtil.getMessage("main.web.start.error"), e);
+            log.warn(I18nUtil.getMessage("main.web.unavailable"));
         }
     }
     
@@ -168,7 +173,7 @@ public class Main {
      * 启动文件监控
      */
     private static void startMonitoring() {
-        log.info("启动文件监控服务...");
+        log.info(I18nUtil.getMessage("monitor.start.monitoring") + "...");
         fileMonitor.start();
     }
     
@@ -179,21 +184,21 @@ public class Main {
      * @return true表示成功，false表示失败（会加入重试队列）
      */
     private static boolean processAudioFileWithResult(File audioFile) {
-        log.info("========================================");
-        log.info("处理音频文件: {}", audioFile.getName());
-        LogCollector.addLog("INFO", "========================================");
-        LogCollector.addLog("INFO", "处理音频文件: " + audioFile.getName());
+        log.info(I18nUtil.getMessage("main.title.separator"));
+        log.info(I18nUtil.getMessage("main.processing.file"), audioFile.getName());
+        LogCollector.addLog("INFO", I18nUtil.getMessage("main.title.separator"));
+        LogCollector.addLog("INFO", I18nUtil.getMessage("main.processing.file", audioFile.getName()));
         
         try {
             // 0. 检查文件是否已处理过
             if (processedLogger.isFileProcessed(audioFile)) {
-                log.info("文件已处理过，跳过: {}", audioFile.getName());
+                log.info(I18nUtil.getMessage("main.file.already.processed"), audioFile.getName());
                 return true; // 已处理，返回成功
             }
             
             // 0.3. 检查文件夹是否有临时文件(下载未完成)
             if (hasTempFilesInFolder(audioFile)) {
-                log.warn("检测到文件夹中有临时文件,可能正在下载中,跳过处理: {}", audioFile.getParentFile().getName());
+                log.warn(I18nUtil.getMessage("main.temp.files.detected"), audioFile.getParentFile().getName());
                 return false; // 返回false以触发重试，而不是永久跳过
             }
             
@@ -271,7 +276,7 @@ public class Main {
                 fingerprintService.identifyAudioFile(audioFile);
             
             if (acoustIdResult.getRecordings() == null || acoustIdResult.getRecordings().isEmpty()) {
-                log.warn("无法通过音频指纹识别文件: {}", audioFile.getName());
+                log.warn(I18nUtil.getMessage("main.fingerprint.failed"), audioFile.getName());
                 log.info("该文件的 AcoustID 未关联到 MusicBrainz 录音信息");
                 
                 // 如果没有锁定的专辑信息，则识别失败
@@ -362,8 +367,8 @@ public class Main {
                     acoustIdResult.getRecordings(),
                     lockedReleaseGroupId
                 );
-                log.info("识别成功: {} - {}", bestMatch.getArtist(), bestMatch.getTitle());
-                LogCollector.addLog("INFO", String.format("识别成功: %s - %s", bestMatch.getArtist(), bestMatch.getTitle()));
+                log.info(I18nUtil.getMessage("main.identify.success"), bestMatch.getArtist(), bestMatch.getTitle());
+                LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.identify.success", bestMatch.getArtist(), bestMatch.getTitle()));
 
                 // 如果有锁定的专辑信息，传入1作为musicFilesInFolder以避免selectBestRelease被文件数量影响
                 // 否则传入实际的文件数量
@@ -415,11 +420,11 @@ public class Main {
             if (coverArtData != null && coverArtData.length > 0) {
                 log.info("✓ 成功获取封面图片");
             } else {
-                log.info("未找到封面图片");
+                log.info(I18nUtil.getMessage("main.cover.not.found"));
             }
             
             // 4.5 获取歌词 (LrcLib)
-            log.info("正在获取歌词...");
+            log.info(I18nUtil.getMessage("main.getting.lyrics"));
             String lyrics = lyricsService.getLyrics(
                 detailedMetadata.getTitle(),
                 detailedMetadata.getArtist(),
@@ -429,7 +434,7 @@ public class Main {
             if (lyrics != null && !lyrics.isEmpty()) {
                 detailedMetadata.setLyrics(lyrics);
             } else {
-                log.info("未找到歌词");
+                log.info(I18nUtil.getMessage("main.lyrics.not.found"));
             }
             
             // 5. 文件夹级别的专辑锁定处理
@@ -491,13 +496,13 @@ public class Main {
 
         } catch (java.io.IOException e) {
             // 网络异常（包括 SocketException），返回false以触发重试
-            log.error("网络错误导致处理文件失败: {} - {}", audioFile.getName(), e.getMessage());
-            log.info("文件将被加入重试队列");
+            log.error(I18nUtil.getMessage("main.network.error"), audioFile.getName(), e.getMessage());
+            log.info(I18nUtil.getMessage("main.retry.queued"));
             return false;
 
         } catch (Exception e) {
             // 其他异常（如识别失败），不重试，但必须记录到数据库避免静默丢失
-            log.error("处理文件失败: {}", audioFile.getName(), e);
+            log.error(I18nUtil.getMessage("main.process.error"), audioFile.getName(), e);
 
             // 关键修复：记录失败文件到数据库，避免文件"静默丢失"
             try {
@@ -553,8 +558,7 @@ public class Main {
             
             if (success) {
                 log.info("✓ 文件处理成功: {}", audioFile.getName());
-                LogCollector.addLog("SUCCESS", "✓ 文件处理成功: " + audioFile.getName());
-                LogCollector.addLog("SUCCESS", "文件处理成功: " + audioFile.getName());
+                LogCollector.addLog("SUCCESS", "✓ " + I18nUtil.getMessage("main.processing.file", audioFile.getName()) + " - " + I18nUtil.getMessage("log.level.success"));
                 
                 // 记录文件已处理
                 processedLogger.markFileAsProcessed(
@@ -566,8 +570,7 @@ public class Main {
                 );
             } else {
                 log.error("✗ 文件处理失败: {}", audioFile.getName());
-                LogCollector.addLog("ERROR", "✗ 文件处理失败: " + audioFile.getName());
-                LogCollector.addLog("ERROR", "文件处理失败: " + audioFile.getName());
+                LogCollector.addLog("ERROR", "✗ " + I18nUtil.getMessage("main.process.error", audioFile.getName()));
                 // 关键修复：写入失败也要记录到数据库，避免文件"静默丢失"
                 processedLogger.markFileAsProcessed(
                     audioFile,
@@ -579,7 +582,7 @@ public class Main {
                 log.info("已将写入失败文件记录到数据库: {}", audioFile.getName());
             }
         } catch (Exception e) {
-            log.error("写入文件失败: {}", audioFile.getName(), e);
+            log.error(I18nUtil.getMessage("main.write.exception"), audioFile.getName(), e);
             // 关键修复：异常时也要记录到数据库，避免文件"静默丢失"
             try {
                 processedLogger.markFileAsProcessed(
@@ -1232,7 +1235,7 @@ public class Main {
      * 优雅关闭所有服务
      */
     private static void shutdown() {
-        log.info("正在关闭系统...");
+        log.info(I18nUtil.getMessage("app.shutting.down"));
 
         try {
             // 按依赖关系逆序关闭服务
@@ -1291,9 +1294,9 @@ public class Main {
                 databaseService.close();
             }
 
-            log.info("系统已安全关闭");
+            log.info(I18nUtil.getMessage("app.shutdown.complete"));
         } catch (Exception e) {
-            log.error("关闭服务时出错", e);
+            log.error(I18nUtil.getMessage("app.shutdown.error"), e);
         }
     }
 
@@ -1305,12 +1308,12 @@ public class Main {
         java.util.Set<String> foldersWithPending = folderAlbumCache.getFoldersWithPendingFiles();
 
         if (foldersWithPending.isEmpty()) {
-            log.info("没有待处理文件需要在关闭前处理");
+            log.info(I18nUtil.getMessage("app.no.pending.files"));
             return;
         }
 
         log.info("========================================");
-        log.info("关闭前处理待处理文件，共 {} 个文件夹有待处理文件", foldersWithPending.size());
+        log.info(I18nUtil.getMessage("app.process.pending.files"), foldersWithPending.size());
         log.info("========================================");
 
         for (String folderPath : foldersWithPending) {

@@ -11,6 +11,7 @@ import org.example.service.CoverArtCache;
 import org.example.service.DatabaseService;
 import org.example.service.FolderAlbumCache;
 import org.example.service.ProcessedFileLogger;
+import org.example.util.I18nUtil;
 
 /**
  * 嵌入式 Web 服务器
@@ -49,7 +50,11 @@ public class WebServer {
         // 注册日志 API
         LogServlet logServlet = new LogServlet();
         servletHandler.addServlet(new ServletHolder(logServlet), "/api/logs");
-        
+
+        // 注册国际化 API
+        I18nServlet i18nServlet = new I18nServlet();
+        servletHandler.addServlet(new ServletHolder(i18nServlet), "/api/i18n");
+
         // 创建静态资源处理器
         ResourceHandler resourceHandler = new ResourceHandler();
         resourceHandler.setDirectoriesListed(false);
@@ -67,10 +72,10 @@ public class WebServer {
         server.setHandler(handlers);
         server.start();
         
-        log.info("========================================");
-        log.info("Web 监控面板已启动");
-        log.info("访问地址: http://localhost:{}", port);
-        log.info("========================================");
+        log.info(I18nUtil.getMessage("web.server.separator"));
+        log.info(I18nUtil.getMessage("web.server.started"));
+        log.info(I18nUtil.getMessage("web.server.url") + port);
+        log.info(I18nUtil.getMessage("web.server.separator"));
     }
     
     /**
@@ -79,7 +84,7 @@ public class WebServer {
     public void stop() throws Exception {
         if (server != null && server.isRunning()) {
             server.stop();
-            log.info("Web 服务器已关闭");
+            log.info(I18nUtil.getMessage("web.server.stopped"));
         }
     }
     

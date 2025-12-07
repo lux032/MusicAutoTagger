@@ -1,6 +1,7 @@
 package org.example.service;
 
 import lombok.extern.slf4j.Slf4j;
+import org.example.util.I18nUtil;
 
 import java.io.File;
 import java.io.IOException;
@@ -34,10 +35,10 @@ public class CoverArtCache {
         File cacheDir = new File(cacheDirectory);
         if (!cacheDir.exists()) {
             cacheDir.mkdirs();
-            log.info("创建封面缓存目录: {}", cacheDirectory);
+            log.info(I18nUtil.getMessage("cache.cover.dir.created"), cacheDirectory);
         }
         
-        log.info("封面缓存服务初始化完成 - 使用共享数据库连接池");
+        log.info(I18nUtil.getMessage("cache.cover.service.initialized"));
     }
     
     /**
@@ -86,7 +87,7 @@ public class CoverArtCache {
                 Path cacheFilePath = Paths.get(cacheDirectory, cacheFileName);
                 File cacheFile = cacheFilePath.toFile();
                 if (cacheFile.exists()) {
-                    log.info("使用缓存的封面(File): {}", coverArtUrl);
+                    log.info(I18nUtil.getMessage("cache.using.cached.cover.file"), coverArtUrl);
                     return Files.readAllBytes(cacheFilePath);
                 }
                 return null;
@@ -105,10 +106,10 @@ public class CoverArtCache {
                         File cacheFile = new File(cacheFilePath);
                         
                         if (cacheFile.exists()) {
-                            log.info("使用缓存的封面(DB): {}", coverArtUrl);
+                            log.info(I18nUtil.getMessage("cache.using.cached.cover.db"), coverArtUrl);
                             return Files.readAllBytes(cacheFile.toPath());
                         } else {
-                            log.warn("缓存文件不存在: {}", cacheFilePath);
+                            log.warn(I18nUtil.getMessage("cache.file.not.exist"), cacheFilePath);
                             // 删除无效的缓存记录
                             deleteCacheRecord(urlHash);
                         }
@@ -116,7 +117,7 @@ public class CoverArtCache {
                 }
             }
         } catch (Exception e) {
-            log.error("检查封面缓存失败", e);
+            log.error(I18nUtil.getMessage("cache.check.failed"), e);
         }
         
         return null;
@@ -142,7 +143,7 @@ public class CoverArtCache {
             
             // 保存文件
             Files.write(cacheFilePath, coverData);
-            log.info("封面已缓存到文件: {}", cacheFilePath);
+            log.info(I18nUtil.getMessage("cache.cover.cached.to.file"), cacheFilePath);
             
             // 如果没有数据库服务，到此结束
             if (databaseService == null) {
@@ -166,12 +167,12 @@ public class CoverArtCache {
                 pstmt.setLong(4, coverData.length);
                 
                 pstmt.executeUpdate();
-                log.info("封面缓存记录已保存到数据库");
+                log.info(I18nUtil.getMessage("cache.cover.record.saved"));
                 return true;
             }
             
         } catch (Exception e) {
-            log.error("保存封面缓存失败", e);
+            log.error(I18nUtil.getMessage("cache.save.cache.failed"), e);
             return false;
         }
     }
@@ -188,7 +189,7 @@ public class CoverArtCache {
                 pstmt.executeUpdate();
             }
         } catch (SQLException e) {
-            log.error("删除缓存记录失败", e);
+            log.error(I18nUtil.getMessage("cache.delete.record.failed"), e);
         }
     }
     
@@ -240,12 +241,12 @@ public class CoverArtCache {
                 }
                 
                 if (deletedCount > 0) {
-                    log.info("清理了 {} 个过期的封面缓存", deletedCount);
+                    log.info(I18nUtil.getMessage("cache.cleanup.old"), deletedCount);
                 }
             }
             
         } catch (SQLException e) {
-            log.error("清理旧缓存失败", e);
+            log.error(I18nUtil.getMessage("cache.cleanup.failed"), e);
         }
     }
     
@@ -278,7 +279,7 @@ public class CoverArtCache {
      * 注意: 不再关闭数据源,因为数据源由DatabaseService统一管理
      */
     public void close() {
-        log.info("封面缓存服务已关闭");
+        log.info(I18nUtil.getMessage("cache.service.closed"));
     }
     
     /**

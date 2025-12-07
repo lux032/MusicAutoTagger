@@ -8,6 +8,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
 import org.example.service.*;
+import org.example.util.I18nUtil;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -73,7 +74,7 @@ public class DashboardServlet extends HttpServlet {
         configInfo.put("monitorDirectory", config.getMonitorDirectory());
         configInfo.put("outputDirectory", config.getOutputDirectory());
         configInfo.put("dbType", config.getDbType());
-        configInfo.put("scanInterval", config.getScanIntervalSeconds() + "秒");
+        configInfo.put("scanInterval", config.getScanIntervalSeconds() + I18nUtil.getMessage("unit.seconds", "秒"));
         stats.put("config", configInfo);
         
         // 处理统计

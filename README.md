@@ -1,4 +1,4 @@
-# 🎵 Music Auto Tagger | 音乐文件自动整理工具
+# 🎵 Music Auto Tagger | Automated Music Library Organizer
 
 <div align="center">
 
@@ -8,60 +8,71 @@
 [![LrcLib](https://img.shields.io/badge/Lyrics-LrcLib-green.svg)](https://lrclib.net/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-[简体中文](README.md) | [English](README_EN.md)
+[English](README.md) | [简体中文](README_ZH.md)
 
 </div>
 
-**Music Auto Tagger** 是一个基于**音频指纹**和**时长序列指纹**的自动化音乐整理工具。它专为 NAS 和服务器环境设计，能够"监听"下载目录，自动识别音乐文件，补全元数据（包括歌词），并整理归档。
+**Music Auto Tagger** is an automated music library organizer based on **audio fingerprinting** and **duration sequence fingerprinting**. Designed for NAS and server environments, it monitors your download folder, identifies music files, fetches comprehensive metadata (including lyrics), and organizes them into a clean structure.
 
-> **核心价值**: 告别杂乱无章的音乐文件夹，让你的音乐库自动拥有完美的标签、封面和歌词。
+> **Core Value**: Say goodbye to messy music folders. Automatically tag, cover, and organize your music library to perfection.
 
-## ✨ 核心特性
+## 📊 Web Monitoring Dashboard
 
-- 🎧 **音频指纹识别**：基于 **Chromaprint (AcoustID)**，即使文件名是乱码 (`track01.mp3`) 也能精准识别。
-- 📝 **权威元数据**：数据源自 **MusicBrainz**，自动补全标题、艺术家、专辑、年份、**作曲**、**作词**等信息。
-- 📜 **自动同步歌词**：🆕 集成 **LrcLib**，自动下载并嵌入 **同步歌词 (.lrc)**，完美支持现代播放器。
-- 🖼️ **高清封面**：自动从 Cover Art Archive 下载并内嵌高清专辑封面。
-- 📁 **自动化整理**：按照 `艺术家/专辑/歌曲名` 的结构自动重命名和归档文件。
-- 🤖 **无人值守**：配合 qBittorrent/Transmission 使用，下载完成后自动处理，无需人工干预。
-- ⚡ **智能扫描优化**：🆕 **两级识别策略 + 时长序列指纹 + 文件夹级缓存**
-    - **第一级：快速扫描** - 基于标签和时长序列指纹匹配，90% 准确率即可通过
-    - **第二级：指纹识别** - 仅在快速扫描失败时启用，保证识别率
-    - **文件夹级缓存** - 同一专辑的后续文件直接使用缓存，跳过所有扫描
-    - **性能提升**：处理一张 16 首的专辑，仅需 1 次完整扫描 + 15 次缓存查询
-- 💾 **双模式持久化**：
-    - **文本模式 (默认)**：无需数据库，使用 CSV 文件记录已处理文件，开箱即用，适合个人用户。
-    - **MySQL 模式**：支持连接外部数据库，适合海量文件和高性能并发场景。
-- 🐳 **Docker 部署**：提供轻量级 Docker 镜像，支持 Synology/QNAP/Unraid 等 NAS 系统。
-- 🔄 **智能重试机制**：自动处理网络波动导致的识别失败，并提供失败文件隔离。
-- 📊 **Web 监控面板**：🆕 内置实时监控面板，可视化查看处理进度、系统状态和运行日志。
+![Web Dashboard](src/main/resources/static/web.png)
 
-## ⚠️ 最佳实践：如何获得最精准的整理效果
+The built-in real-time monitoring dashboard provides:
+- 📊 Real-time statistics and processing progress
+- 📝 Recently processed files with detailed metadata
+- 📋 Live system logs with auto-scroll
+- ⚙️ System configuration and status overview
 
-由于音乐发行形式极其复杂（包含单曲 Single、迷你专辑 EP、正规专辑 Album、精选集 Best、豪华版 Deluxe 等），为了确保工具能将您的音乐精确归类到正确的专辑中，**强烈建议**遵循以下操作：
+## ✨ Key Features
 
-> **请将同一张专辑（或单曲）的音频文件放入一个单独的文件夹中**，然后再交由本工具处理。
+- 🎧 **Audio Fingerprinting**: Uses **Chromaprint (AcoustID)** to accurately identify files even with garbled filenames (e.g., `track01.mp3`).
+- 📝 **Authoritative Metadata**: Sources data from **MusicBrainz** to automatically complete Title, Artist, Album, Year, **Composer**, **Lyricist**, and more.
+- 📜 **Synced Lyrics**: 🆕 Integrates with **LrcLib** to automatically download and embed **synced lyrics (.lrc)**, perfect for modern players.
+- 🖼️ **HD Cover Art**: Automatically downloads and embeds high-quality album art from the Cover Art Archive.
+- 📁 **Automated Organization**: Automatically renames and sorts files into a `Artist/Album/Title` structure.
+- 🤖 **Unattended Operation**: Works seamlessly with qBittorrent/Transmission to process downloads automatically upon completion.
+- ⚡ **Smart Scan Optimization**: 🆕 **Two-tier identification + folder-level caching**
+    - **Tier 1: Quick Scan** - Tag & duration sequence matching, passes at 90% accuracy
+    - **Tier 2: Fingerprint** - Only triggered when quick scan fails, ensures high recognition rate
+    - **Folder-level Caching** - Subsequent files in the same album use cached results, skip all scans
+    - **Performance Boost**: Processing a 16-track album requires only 1 full scan + 15 cache lookups
+- 💾 **Dual Persistence Modes**:
+    - **File Mode (Default)**: Uses a CSV file to track processed files. Zero config, ready out of the box for personal use.
+    - **MySQL Mode**: Supports external database connection for massive libraries and high concurrency.
+- 🐳 **Docker Ready**: Provides lightweight Docker images compatible with Synology, QNAP, Unraid, and other NAS systems.
+- 🔄 **Smart Retry**: Automatically handles network failures with retry logic and isolates failed files for later inspection.
+- 📊 **Web Monitoring Dashboard**: 🆕 Built-in real-time monitoring dashboard to visualize processing progress, system status, and runtime logs.
+- 🌐 **Multi-language Support**: 🆕 Supports both Chinese and English interfaces, easily switchable via configuration file, providing localized experience for global users.
 
-❌ **不推荐**：将成百上千首不同歌手、不同专辑的歌曲混合堆放在同一个目录下。
-✅ **推荐**：
-  - `/Downloads/Jay_Chou_Fantasy/` (包含范特西整张专辑的歌曲)
-  - `/Downloads/Adele_21/` (包含 21 整张专辑的歌曲)
+## ⚠️ Best Practice: How to Get the Most Accurate Results
 
-**原因**：当文件被隔离在独立文件夹时，程序能结合上下文更好地判断它们属于同一张专辑，从而避免将正规专辑中的歌曲误匹配到后续发行的“精选集”或“单曲”版本中。
-## 🚀 快速开始 (Docker Compose)
+Since music releases are extremely complex (Singles, EPs, Albums, Compilations, Deluxe Editions, etc.), to ensure the tool accurately categorizes your music into the correct albums, it is **highly recommended** to follow this practice:
 
-这是最简单的运行方式。无需安装 Java 环境。
+> **Please place audio files from the same album (or single) into a separate folder** before processing them with this tool.
 
-1.  **下载配置文件模板**
-    下载仓库中的 `config.properties.example` 并重命名为 `config.properties`。
+❌ **Not Recommended**: Dumping hundreds of songs from different artists and albums into a single directory.
+✅ **Recommended**:
+  - `/Downloads/Jay_Chou_Fantasy/` (Contains songs from the Fantasy album)
+  - `/Downloads/Adele_21/` (Contains songs from the 21 album)
 
-2.  **申请 API Key (免费)**
-    访问 [AcoustID](https://acoustid.org/new-application) 申请一个 API Key，填入配置文件：
+**Reason**: When files are isolated in separate folders, the program can better determine that they belong to the same album based on context, avoiding misidentification of album tracks as "Best Of" compilations or "Single" versions.
+## 🚀 Quick Start (Docker Compose)
+
+The easiest way to run the application. No Java installation required.
+
+1.  **Download Config Template**
+    Download `config.properties.example` from the repository and rename it to `config.properties`.
+
+2.  **Get API Key (Free)**
+    Visit [AcoustID](https://acoustid.org/new-application) to apply for an API Key and add it to your config:
     ```properties
     acoustid.apiKey=YOUR_API_KEY_HERE
     ```
 
-3.  **创建 `docker-compose.yml`**
+3.  **Create `docker-compose.yml`**
     ```yaml
     version: '3.8'
     services:
@@ -69,131 +80,131 @@
         image: ghcr.io/lux032/musicautotagger:latest
         container_name: music-tagger
         ports:
-          - "8080:8080"                         # Web 监控面板端口
+          - "8080:8080"                         # Web monitoring dashboard port
         volumes:
-          - /path/to/downloads:/music           # 你的下载目录
-          - /path/to/music_library:/app/tagged_music # 整理后的音乐库
+          - /path/to/downloads:/music           # Your download folder
+          - /path/to/music_library:/app/tagged_music # Target music library
           - ./config.properties:/app/config.properties
         restart: unless-stopped
     ```
 
-4.  **启动服务**
+4.  **Start Service**
     ```bash
     docker-compose up -d
     ```
 
-5.  **访问 Web 监控面板**
+5.  **Access Web Monitoring Dashboard**
 
-    启动后，在浏览器中访问 `http://localhost:8080` 即可查看实时监控面板。
+    After starting, open `http://localhost:8080` in your browser to view the real-time monitoring dashboard.
 
-    面板功能包括：
-    - 📊 **实时统计**：已处理文件数、封面缓存、文件夹缓存等
-    - 📝 **最近处理**：查看最近处理的音乐文件详情
-    - 📋 **运行日志**：实时查看系统运行日志，支持自动滚动
-    - ⚙️ **系统信息**：查看配置参数和系统状态
+    Dashboard features:
+    - 📊 **Real-time Statistics**: Processed files count, cover cache, folder cache, etc.
+    - 📝 **Recent Files**: View details of recently processed music files
+    - 📋 **Runtime Logs**: Real-time system logs with auto-scroll support
+    - ⚙️ **System Info**: View configuration parameters and system status
 
-## 💻 本地运行
+## 💻 Local Installation
 
-如果你想在本地开发或运行：
+If you prefer to run it locally for development or testing:
 
-### 前置要求
+### Prerequisites
 - JDK 17+
 - Maven 3.6+
-- [Chromaprint (fpcalc)](https://acoustid.org/chromaprint) (需添加到系统 PATH)
+- [Chromaprint (fpcalc)](https://acoustid.org/chromaprint) (Must be added to system PATH)
 
-### 编译与运行
+### Build & Run
 ```bash
-# 1. 编译
+# 1. Build
 mvn clean package
 
-# 2. 配置
+# 2. Config
 cp config.properties.example config.properties
-# 编辑 config.properties 填入 API Key
+# Edit config.properties and fill in API Key
 
-# 3. 运行
+# 3. Run
 java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 
-# 4. 访问 Web 面板
-# 浏览器打开 http://localhost:8080
+# 4. Access Web Dashboard
+# Open http://localhost:8080 in your browser
 ```
 
-## 📚 文档指南
+## 📚 Documentation
 
-- **QNAP NAS 用户**：请参阅 [QNAP 部署指南](docs/QNAP_DEPLOYMENT_GUIDE.md)
-- **数据库配置**：默认使用文件记录处理状态，如需使用 MySQL 请参阅 [数据库设置](docs/DATABASE_SETUP.md)
-- **Windows 指南**：[Windows 构建与测试](docs/WINDOWS_BUILD_GUIDE.md)
+- **QNAP NAS Users**: See [QNAP Deployment Guide](docs/QNAP_DEPLOYMENT_GUIDE.md) (Chinese)
+- **Database Setup**: Default is file-based. For MySQL setup, see [Database Setup](docs/DATABASE_SETUP.md)
+- **Windows Guide**: [Windows Build & Test](docs/WINDOWS_BUILD_GUIDE.md)
 
-## ⚙️ 详细配置文件说明
+## ⚙️ Configuration Reference
 
-完整的配置模板请参考 `config.properties.example`。以下是常用配置项说明：
+For a complete template, see `config.properties.example`. Here are the most common settings:
 
-### 📁 路径配置
-| 配置项 | 说明 | 默认值 |
+### 📁 Paths
+| Setting | Description | Default |
 |--------|------|--------|
-| `monitor.directory` | 监控的源目录 (Docker内路径) | `/music` |
-| `monitor.outputDirectory` | 输出目标目录 (Docker内路径) | `/app/tagged_music` |
-| `file.failedDirectory` | 识别失败文件存放目录 (可选) | `/app/failed_files` |
-| `cache.coverArtDirectory` | 封面图片缓存目录 | `/app/.cover_cache` |
-| `logging.processedFileLogPath` | 已处理文件日志路径 | `/app/logs/processed_files.log` |
+| `monitor.directory` | Source directory to monitor (Inside Docker) | `/music` |
+| `monitor.outputDirectory` | Target output directory (Inside Docker) | `/app/tagged_music` |
+| `file.failedDirectory` | Directory for failed files (Optional) | `/app/failed_files` |
+| `cache.coverArtDirectory` | Cover art cache directory | `/app/.cover_cache` |
+| `logging.processedFileLogPath` | Processed file log path | `/app/logs/processed_files.log` |
 
-### 🔑 API 配置
-| 配置项 | 说明 | 默认值 |
+### 🔑 API
+| Setting | Description | Default |
 |--------|------|--------|
-| `acoustid.apiKey` | **[必填]** AcoustID API 密钥 | - |
-| `musicbrainz.userAgent` | 用于 API 请求的 User-Agent | `MusicDemo/1.0 ( your-email@example.com )` |
-| `monitor.scanInterval` | 目录扫描间隔 (秒) | `30` |
+| `acoustid.apiKey` | **[Required]** AcoustID API Key | - |
+| `musicbrainz.userAgent` | User-Agent for API requests | `MusicDemo/1.0 ( your-email@example.com )` |
+| `monitor.scanInterval` | Scan interval (seconds) | `30` |
 
-### 🛠️ 功能开关
-| 配置项 | 说明 | 默认值 |
+### 🛠️ Features
+| Setting | Description | Default |
 |--------|------|--------|
-| `file.autoRename` | 是否自动重命名文件 | `true` |
-| `file.maxRetries` | 网络错误最大重试次数 | `3` |
-| `logging.detailed` | 是否启用详细日志 | `true` |
+| `file.autoRename` | Rename files automatically | `true` |
+| `file.maxRetries` | Max retries for network errors | `3` |
+| `logging.detailed` | Enable detailed logging | `true` |
 
-### 💾 数据库配置
-| 配置项 | 说明 | 默认值 |
+### 💾 Database
+| Setting | Description | Default |
 |--------|------|--------|
-| `db.type` | 数据库类型 (`file` 或 `mysql`) | `mysql` |
-| `db.mysql.host` | MySQL 主机地址 | `localhost` |
-| `db.mysql.port` | MySQL 端口 | `3306` |
-| `db.mysql.database` | 数据库名 | `music_demo` |
-| `db.mysql.username` | 数据库用户名 | `root` |
-| `db.mysql.password` | 数据库密码 | - |
+| `db.type` | Database type (`file` or `mysql`) | `mysql` |
+| `db.mysql.host` | MySQL Host | `localhost` |
+| `db.mysql.port` | MySQL Port | `3306` |
+| `db.mysql.database` | Database Name | `music_demo` |
+| `db.mysql.username` | Username | `root` |
+| `db.mysql.password` | Password | - |
 
-### 🌐 代理配置 (可选)
-| 配置项 | 说明 | 默认值 |
+### 🌐 Proxy (Optional)
+| Setting | Description | Default |
 |--------|------|--------|
-| `proxy.enabled` | 是否启用代理 | `false` |
-| `proxy.host` | 代理主机 | `127.0.0.1` |
-| `proxy.port` | 代理端口 | `7890` |
+| `proxy.enabled` | Enable HTTP Proxy | `false` |
+| `proxy.host` | Proxy Host | `127.0.0.1` |
+| `proxy.port` | Proxy Port | `7890` |
 
-## 🤝 贡献与支持
+## 🤝 Contribution
 
-欢迎提交 Issue 或 Pull Request！
+Issues and Pull Requests are welcome!
 
-如果你觉得这个项目对你有帮助，请给个 ⭐ **Star** 支持一下！
+If this project helps you, please consider giving it a ⭐ **Star**!
 
-## 📄 开源许可
+## 📄 License
 
-本项目采用 [MIT License](LICENSE) 进行开源。
+This project is licensed under the [MIT License](LICENSE).
 
-### 许可证说明
+### License Summary
 
-MIT 许可证是一个宽松的开源许可证，允许你：
-- ✅ 商业使用
-- ✅ 修改源代码
-- ✅ 分发
-- ✅ 私人使用
+The MIT License is a permissive open source license that allows you to:
+- ✅ Commercial use
+- ✅ Modification
+- ✅ Distribution
+- ✅ Private use
 
-**唯一的要求**是：在软件的所有副本或重要部分中保留版权声明和许可声明。
+**The only requirement** is to include the copyright notice and license notice in all copies or substantial portions of the software.
 
-### 第三方服务声明
+### Third-Party Services
 
-本工具依赖以下第三方服务，请遵守它们各自的服务条款：
-- [MusicBrainz](https://musicbrainz.org/) - 音乐元数据服务
-- [AcoustID](https://acoustid.org/) - 音频指纹识别服务
-- [LrcLib](https://lrclib.net/) - 歌词服务
-- [Cover Art Archive](https://coverartarchive.org/) - 封面图片服务
+This tool relies on the following third-party services. Please respect their respective Terms of Service:
+- [MusicBrainz](https://musicbrainz.org/) - Music metadata service
+- [AcoustID](https://acoustid.org/) - Audio fingerprinting service
+- [LrcLib](https://lrclib.net/) - Lyrics service
+- [Cover Art Archive](https://coverartarchive.org/) - Album art service
 
 ---
 **Disclaimer**: This tool relies on third-party services (MusicBrainz, AcoustID, LrcLib). Please respect their Terms of Service.

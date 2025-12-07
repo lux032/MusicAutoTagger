@@ -4,6 +4,7 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
+import org.example.util.I18nUtil;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -27,7 +28,7 @@ public class DatabaseService {
         this.config = config;
         this.dataSource = initDataSource();
         
-        log.info("数据库服务初始化完成");
+        log.info(I18nUtil.getMessage("db.service.initialized"));
     }
     
     /**
@@ -53,26 +54,25 @@ public class DatabaseService {
         // 连接测试
         hikariConfig.setConnectionTestQuery("SELECT 1");
         
-        log.info("数据库连接配置: {}", jdbcUrl);
-        log.info("用户名: {}, 数据库: {}", config.getDbUsername(), config.getDbDatabase());
-        log.info("连接池配置: maxPoolSize={}, minIdle={}", 
+        log.info(I18nUtil.getMessage("db.config"), jdbcUrl);
+        log.info(I18nUtil.getMessage("db.username"), config.getDbUsername(), config.getDbDatabase());
+        log.info(I18nUtil.getMessage("db.pool.config"),
             config.getDbMaxPoolSize(), config.getDbMinIdle());
         
         try {
             HikariDataSource ds = new HikariDataSource(hikariConfig);
             // 测试连接
             try (Connection conn = ds.getConnection()) {
-                log.info("数据库连接测试成功!");
+                log.info(I18nUtil.getMessage("db.connection.test.success"));
             }
             return ds;
         } catch (SQLException e) {
-            log.error("数据库连接测试失败!", e);
-            log.error("请检查:");
-            log.error("1. MySQL服务是否启动");
-            log.error("2. 数据库 '{}' 是否已创建", config.getDbDatabase());
-            log.error("3. 用户名密码是否正确: username={}", config.getDbUsername());
-            log.error("4. 执行以下命令创建数据库:");
-            log.error("   mysql -u root -p < src/main/resources/schema.sql");
+            log.error(I18nUtil.getMessage("db.connection.test.failed"), e);
+            log.error(I18nUtil.getMessage("db.check.mysql.running"));
+            log.error(I18nUtil.getMessage("db.check.database.created"), config.getDbDatabase());
+            log.error(I18nUtil.getMessage("db.check.credentials"), config.getDbUsername());
+            log.error(I18nUtil.getMessage("db.create.database.command"));
+            log.error(I18nUtil.getMessage("db.create.database.sql"));
             throw new RuntimeException("数据库连接失败", e);
         }
     }
@@ -102,7 +102,7 @@ public class DatabaseService {
         try (Connection conn = getConnection()) {
             return conn.isValid(5);
         } catch (SQLException e) {
-            log.error("数据库不可用", e);
+            log.error(I18nUtil.getMessage("db.unavailable"), e);
             return false;
         }
     }
@@ -113,7 +113,7 @@ public class DatabaseService {
     public void close() {
         if (dataSource != null && !dataSource.isClosed()) {
             dataSource.close();
-            log.info("数据库连接池已关闭");
+            log.info(I18nUtil.getMessage("db.pool.closed"));
         }
     }
 }

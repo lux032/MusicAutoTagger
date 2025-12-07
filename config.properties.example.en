@@ -1,0 +1,235 @@
+# ========================================
+# Music Auto Tagger Configuration Template
+# ========================================
+#
+# Instructions:
+# 1. Copy this file as config.properties
+# 2. Modify the configuration items according to your environment
+# 3. Place the config file in the project root directory (same level as pom.xml)
+#
+
+# ========================================
+# Monitor Directory Configuration
+# ========================================
+
+# Set the download directory path to monitor
+# Docker environment: Use container path /music
+# Windows local: Use absolute path, e.g., D:/MusicTest/Download
+monitor.directory=/music
+
+# Set the output directory for processed files
+# Docker environment: Use container path /app/tagged_music
+# Windows local: Use absolute path, e.g., D:/MusicTest/Music
+monitor.outputDirectory=/app/tagged_music
+
+# Scan interval (seconds)
+# Recommended: 30-60 seconds, adjust based on download frequency
+monitor.scanInterval=30
+
+# ========================================
+# MusicBrainz API Configuration
+# ========================================
+
+# MusicBrainz API URL (usually no need to modify)
+musicbrainz.apiUrl=https://musicbrainz.org/ws/2
+musicbrainz.coverArtApiUrl=https://coverartarchive.org
+
+# User Agent (MUST modify to your email)
+# Format: ApplicationName/Version ( contact@email.com )
+musicbrainz.userAgent=MusicDemo/1.0 ( your-email@example.com )
+
+# ========================================
+# AcoustID API Configuration
+# ========================================
+
+# AcoustID API Key (REQUIRED!)
+# Register at https://acoustid.org/new-application
+# Steps:
+#   1. Visit the URL above
+#   2. Fill in application name and email
+#   3. Get API Key and fill it below
+acoustid.apiKey=YOUR_API_KEY_HERE
+
+# AcoustID API URL (usually no need to modify)
+acoustid.apiUrl=https://api.acoustid.org/v2/lookup
+
+# ========================================
+# File Processing Configuration
+# ========================================
+
+# Auto-rename files based on metadata
+# true: Rename to "Artist - Title.extension"
+# false: Keep original filename
+file.autoRename=true
+
+# Create backup files (deprecated, now using copy mode)
+# The program will copy processed files to output directory, keeping originals unchanged
+file.createBackup=false
+
+# ========================================
+# Logging Configuration
+# ========================================
+
+# Enable detailed logging
+# true: Output detailed processing information
+# false: Output only critical information
+logging.detailed=true
+
+# Processed files log path (to prevent duplicate processing)
+# Docker environment: Use container path /app/logs/processed_files.log
+# Windows local: Use absolute path, e.g., D:/MusicTest/processed_files.log
+# Or use default location: .musicdemo/processed_files.log in user home directory
+logging.processedFileLogPath=/app/logs/processed_files.log
+
+# ========================================
+# Failed Files Handling Configuration
+# ========================================
+
+# Failed files storage directory
+# When file identification fails and retries are exhausted, files will be moved here
+# Docker environment: Use container path /app/failed_files
+# Windows local: Use absolute path, e.g., D:/MusicTest/FailedFiles
+# Leave empty to not move failed files
+file.failedDirectory=/app/failed_files
+
+# Maximum retry count (for network errors)
+# Default: 3
+file.maxRetries=3
+
+# ========================================
+# Cover Art Cache Configuration
+# ========================================
+
+# Cover art cache directory
+# Used to store downloaded and compressed cover images, avoiding duplicate downloads
+# Docker environment: Use container path /app/.cover_cache
+# Windows local: Use absolute path, e.g., D:/MusicTest/CoverCache
+cache.coverArtDirectory=/app/.cover_cache
+
+# ========================================
+# Database Configuration
+# ========================================
+
+# Database type: file (text file) or mysql (MySQL database)
+# Recommended to use mysql for better performance and reliability
+db.type=mysql
+
+# ===== MySQL Database Configuration =====
+# If db.type=mysql, configure the following items
+
+# MySQL server address
+# Docker environment: Use host IP or container name
+# Windows local: Use localhost or 127.0.0.1
+# QNAP environment: Use QNAP IP address, e.g., 192.168.1.100
+db.mysql.host=localhost
+
+# MySQL port (default 3306)
+db.mysql.port=3306
+
+# Database name
+# Please create this database in MySQL first:
+# CREATE DATABASE music_demo CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+db.mysql.database=music_demo
+
+# MySQL username
+db.mysql.username=root
+
+# MySQL password (modify to your actual password)
+db.mysql.password=YOUR_MYSQL_PASSWORD
+
+# Connection pool configuration (usually no need to modify)
+db.mysql.pool.maxPoolSize=10
+db.mysql.pool.minIdle=2
+db.mysql.pool.connectionTimeout=30000
+
+# ========================================
+# HTTP Proxy Configuration (Optional)
+# ========================================
+
+# Enable HTTP proxy
+# Set to true if you need to access MusicBrainz and AcoustID API through proxy
+proxy.enabled=false
+
+# Proxy server address
+# e.g., 127.0.0.1 or proxy.example.com
+proxy.host=127.0.0.1
+
+# Proxy server port
+# e.g., 7890 (Clash), 1080 (V2Ray)
+proxy.port=7890
+
+# Proxy username (if proxy requires authentication)
+proxy.username=
+
+# Proxy password (if proxy requires authentication)
+proxy.password=
+
+# ========================================
+# Internationalization Configuration
+# ========================================
+
+# Language setting: zh_CN (Simplified Chinese) or en_US (English)
+# Controls the display language of Web dashboard and log output
+# Default: zh_CN
+# Available options:
+#   - zh_CN: Simplified Chinese
+#   - en_US: English
+i18n.language=en_US
+
+# ========================================
+# Configuration Examples
+# ========================================
+
+# === QNAP Docker Environment Example ===
+# monitor.directory=/music
+# monitor.outputDirectory=/app/tagged_music
+# logging.processedFileLogPath=/app/logs/processed_files.log
+# cache.coverArtDirectory=/app/.cover_cache
+# db.mysql.host=192.168.1.100
+# db.mysql.password=your_qnap_mysql_password
+# i18n.language=en_US
+
+# === Windows Local Development Environment Example ===
+# monitor.directory=D:/MusicTest/Download
+# monitor.outputDirectory=D:/MusicTest/Music
+# logging.processedFileLogPath=D:/MusicTest/processed_files.log
+# cache.coverArtDirectory=D:/MusicTest/CoverCache
+# db.mysql.host=localhost
+# db.mysql.password=your_local_mysql_password
+# i18n.language=en_US
+
+# ========================================
+# Important Notes
+# ========================================
+#
+# 1. Required configuration items:
+#    - monitor.directory
+#    - monitor.outputDirectory
+#    - acoustid.apiKey (get from https://acoustid.org)
+#    - musicbrainz.userAgent (fill in your email)
+#    - db.mysql.* (if using MySQL)
+#
+# 2. Path format:
+#    - Windows: Use forward slash / or double backslash \\
+#    - Correct: D:/Music or D:\\Music
+#    - Wrong: D:\Music
+#
+# 3. Database setup:
+#    - First-time use requires creating database and table structure
+#    - Execute SQL statements in src/main/resources/schema.sql
+#    - Or refer to DATABASE_SETUP.md documentation
+#
+# 4. Proxy settings:
+#    - Recommended to enable proxy if using in mainland China
+#    - Ensure proxy server can access international network
+#
+# 5. Performance optimization:
+#    - Adjust monitor.scanInterval based on NAS performance
+#    - If memory is limited, adjust JAVA_OPTS in docker-compose.yml
+#
+# 6. Language settings:
+#    - Set i18n.language to zh_CN for Chinese interface
+#    - Set i18n.language to en_US for English interface
+#    - Restart application after changing language
+#
+# ========================================

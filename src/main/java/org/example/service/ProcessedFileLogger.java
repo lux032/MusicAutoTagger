@@ -1,6 +1,7 @@
 package org.example.service;
 
 import lombok.extern.slf4j.Slf4j;
+import org.example.util.I18nUtil;
 
 import java.io.File;
 import java.io.IOException;
@@ -45,9 +46,9 @@ public class ProcessedFileLogger {
         this.isDbMode = "mysql".equalsIgnoreCase(config.getDbType());
 
         if (isDbMode) {
-            log.info("已处理文件日志服务初始化完成 - 模式: MySQL");
+            log.info(I18nUtil.getMessage("logger.init.mysql"));
         } else {
-            log.info("已处理文件日志服务初始化完成 - 模式: 文本文件 ({})", config.getProcessedFileLogPath());
+            log.info(I18nUtil.getMessage("logger.init.file"), config.getProcessedFileLogPath());
             initLogFile();
         }
     }
@@ -61,7 +62,7 @@ public class ProcessedFileLogger {
                 }
                 logFile.createNewFile();
             } catch (IOException e) {
-                log.error("无法创建日志文件: {}", logFile.getAbsolutePath(), e);
+                log.error(I18nUtil.getMessage("logger.create.log.file.failed"), logFile.getAbsolutePath(), e);
             }
         }
     }
@@ -90,7 +91,7 @@ public class ProcessedFileLogger {
                             String title = rs.getString("title");
                             String processedTime = rs.getTimestamp("processed_time").toLocalDateTime().format(dateFormatter);
 
-                            log.debug("文件已处理过(DB): {} (处理时间: {}, 艺术家: {}, 标题: {})",
+                            log.debug(I18nUtil.getMessage("logger.file.already.processed.db"),
                                     file.getName(), processedTime, artist, title);
                             return true;
                         }
@@ -98,7 +99,7 @@ public class ProcessedFileLogger {
                 }
                 return false;
             } catch (SQLException e) {
-                log.error("数据库故障: {}", e.getMessage());
+                log.error(I18nUtil.getMessage("db.unavailable") + ": {}", e.getMessage());
                 throw new RuntimeException("数据库不可用", e);
             }
         } else {
@@ -116,12 +117,12 @@ public class ProcessedFileLogger {
             while ((line = reader.readLine()) != null) {
                 // 简单格式: filePath|recordingId|...
                 if (line.startsWith(filePath + "|")) {
-                    log.debug("文件已处理过(Log): {}", filePath);
+                    log.debug(I18nUtil.getMessage("logger.file.already.processed.log"), filePath);
                     return true;
                 }
             }
         } catch (IOException e) {
-            log.error("读取日志文件失败", e);
+            log.error(I18nUtil.getMessage("logger.read.log.failed"), e);
         }
         return false;
     }
@@ -171,7 +172,7 @@ public class ProcessedFileLogger {
                     pstmt.executeUpdate();
                 }
             } catch (IOException | SQLException e) {
-                log.error("DB记录失败", e);
+                log.error(I18nUtil.getMessage("logger.db.record.failed"), e);
             }
         } else {
             // 文件模式: 追加写入（使用同步锁保证线程安全）
@@ -184,12 +185,12 @@ public class ProcessedFileLogger {
                     writer.write(line);
                     writer.newLine();
                 } catch (IOException e) {
-                    log.error("写入日志文件失败", e);
+                    log.error(I18nUtil.getMessage("logger.write.log.failed"), e);
                 }
             }
         }
 
-        log.info("已记录处理历史: {} - {} (Mode: {})", artist, title, isDbMode ? "DB" : "File");
+        log.info(I18nUtil.getMessage("logger.history.recorded"), artist, title, isDbMode ? I18nUtil.getMessage("logger.db.mode") : I18nUtil.getMessage("logger.file.mode"));
     }
 
     /**
@@ -281,14 +282,14 @@ public class ProcessedFileLogger {
                 pstmt.setInt(1, daysToKeep);
                 int deletedCount = pstmt.executeUpdate();
                 if (deletedCount > 0) {
-                    log.info("清理了 {} 条过期记录", deletedCount);
+                    log.info(I18nUtil.getMessage("logger.cleanup.old.records"), deletedCount);
                 }
             } catch (SQLException e) {
                 log.error("清理旧记录失败", e);
             }
         } else {
             // 文件模式暂不支持清理 (或以后实现)
-            log.info("文本日志模式暂不支持自动清理旧记录");
+            log.info(I18nUtil.getMessage("logger.cleanup.not.supported"));
         }
     }
 
@@ -297,6 +298,6 @@ public class ProcessedFileLogger {
      * 注意: 不再关闭数据源,因为数据源由DatabaseService统一管理
      */
     public void close() {
-        log.info("已处理文件日志服务已关闭");
+        log.info(I18nUtil.getMessage("logger.service.closed"));
     }
 }

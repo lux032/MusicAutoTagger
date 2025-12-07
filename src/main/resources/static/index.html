@@ -321,11 +321,11 @@
                     </div>
                     <div id="coverStats">
                         <div class="info-row">
-                            <span class="info-label">缓存数量</span>
+                            <span class="info-label" data-i18n="stat.cache.count">缓存数量</span>
                             <span class="info-value" id="coverCached">0</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label">占用空间</span>
+                            <span class="info-label" data-i18n="stat.cache.size">占用空间</span>
                             <span class="info-value" id="coverSizeMB">0 MB</span>
                         </div>
                     </div>
@@ -338,11 +338,11 @@
                     </div>
                     <div id="folderStats">
                         <div class="info-row">
-                            <span class="info-label">已缓存</span>
+                            <span class="info-label" data-i18n="stat.cached">已缓存</span>
                             <span class="info-value" id="folderCached">0</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label">收集中</span>
+                            <span class="info-label" data-i18n="stat.collecting">收集中</span>
                             <span class="info-value" id="pendingFiles">0</span>
                         </div>
                     </div>
@@ -381,14 +381,14 @@
             <div class="recent-files" style="margin-top: 20px;">
                 <div class="card-title" style="flex-wrap: wrap;">
                     <span class="card-icon">📋</span>
-                    实时运行日志
+                    <span data-i18n="card.runtime.logs">实时运行日志</span>
                     <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
                         <label style="display: flex; align-items: center; gap: 5px; font-size: 0.85em; font-weight: normal; cursor: pointer;">
                             <input type="checkbox" id="autoScroll" checked style="cursor: pointer;">
-                            自动滚动
+                            <span data-i18n="web.auto.scroll">自动滚动</span>
                         </label>
-                        <button class="refresh-btn" onclick="loadLogs()" style="padding: 5px 15px; font-size: 0.9em; margin: 0;">刷新</button>
-                        <button class="refresh-btn" onclick="clearLogs()" style="padding: 5px 15px; font-size: 0.9em; margin: 0; background: #dc3545; color: white;">清空</button>
+                        <button class="refresh-btn" onclick="loadLogs()" style="padding: 5px 15px; font-size: 0.9em; margin: 0;" data-i18n="web.refresh">刷新</button>
+                        <button class="refresh-btn" onclick="clearLogs()" style="padding: 5px 15px; font-size: 0.9em; margin: 0; background: #dc3545; color: white;" data-i18n="web.clear">清空</button>
                     </div>
                 </div>
                 <div id="logContainer" style="max-height: 400px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 0.85em; background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px;"></div>
@@ -411,6 +411,84 @@
     </div>
 
     <script>
+        // 国际化消息对象
+        let i18nMessages = {};
+
+        // 获取国际化文本
+        function t(key, defaultValue) {
+            return i18nMessages[key] || defaultValue || key;
+        }
+
+        // 加载国际化资源
+        async function loadI18n() {
+            try {
+                const response = await fetch('/api/i18n');
+                if (!response.ok) throw new Error('Failed to load i18n');
+                const data = await response.json();
+                i18nMessages = data.messages || {};
+                console.log('国际化资源加载成功，语言:', data.language);
+                return true;
+            } catch (err) {
+                console.error('加载国际化资源失败:', err);
+                return false;
+            }
+        }
+
+        // 应用国际化到页面元素
+        function applyI18n() {
+            // 更新页面标题
+            document.title = t('web.title');
+
+            // 更新页面文本
+            document.querySelector('.header h1').textContent = '🎵 ' + t('web.title').split(' - ')[0];
+            document.querySelector('.header p').textContent = t('web.subtitle');
+            document.getElementById('connectionText').textContent = t('web.connecting');
+
+            // 更新带有 data-i18n 属性的元素
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                el.textContent = t(key);
+            });
+
+            // 更新卡片标题（只更新简单的卡片标题，跳过包含按钮的复杂标题）
+            const cardTitles = {
+                '处理统计': 'card.processing.stats',
+                '封面缓存': 'card.cover.cache',
+                '文件夹缓存': 'card.folder.cache',
+                '系统配置': 'card.system.config',
+                '系统信息': 'card.system.info',
+                '最近处理的文件': 'card.recent.files'
+            };
+
+            document.querySelectorAll('.card-title').forEach(el => {
+                // 跳过包含按钮或复杂子元素的标题（如日志区域的标题，已通过 data-i18n 处理）
+                if (el.querySelector('button') || el.querySelector('label')) {
+                    return;
+                }
+
+                const text = el.textContent.trim();
+                for (const [cn, key] of Object.entries(cardTitles)) {
+                    if (text.includes(cn)) {
+                        const icon = el.querySelector('.card-icon');
+                        el.innerHTML = '';
+                        if (icon) el.appendChild(icon);
+                        const textNode = document.createTextNode(t(key));
+                        el.appendChild(textNode);
+                        break;
+                    }
+                }
+            });
+
+            // 更新统计标签
+            document.querySelector('.stat-label').textContent = t('stat.total.processed');
+
+            // 更新底部刷新统计按钮（没有 data-i18n 属性的）
+            const mainRefreshBtn = document.querySelector('.refresh-btn[onclick="loadData()"]');
+            if (mainRefreshBtn && !mainRefreshBtn.hasAttribute('data-i18n')) {
+                mainRefreshBtn.textContent = '🔄 ' + t('web.refresh.stats');
+            }
+        }
+
         // 安全的文本转义函数，防止XSS攻击
         function escapeHtml(text) {
             if (text == null) return '';
@@ -439,7 +517,7 @@
         function updateLastTime() {
             const now = new Date();
             const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            document.getElementById('lastUpdate').textContent = '更新于 ' + timeStr;
+            document.getElementById('lastUpdate').textContent = t('web.updated.at') + ' ' + timeStr;
         }
 
         let isFirstLoad = true;
@@ -454,7 +532,7 @@
                     loading.style.display = 'block';
                     content.style.display = 'none';
                 }
-                updateConnectionStatus('loading', '刷新中...');
+                updateConnectionStatus('loading', t('web.refreshing'));
                 error.style.display = 'none';
 
                 const response = await fetch('/api/dashboard');
@@ -536,14 +614,14 @@
 
                         const title = document.createElement('div');
                         title.className = 'file-title';
-                        title.textContent = file.title || '未知';
+                        title.textContent = file.title || t('file.unknown');
 
                         const info = document.createElement('div');
                         info.className = 'file-info';
                         const artist = document.createElement('strong');
-                        artist.textContent = file.artist || '未知艺术家';
+                        artist.textContent = file.artist || t('file.unknown.artist');
                         info.appendChild(artist);
-                        info.appendChild(document.createTextNode(' · ' + (file.album || '未知专辑')));
+                        info.appendChild(document.createTextNode(' · ' + (file.album || t('file.unknown.album'))));
 
                         const time = document.createElement('div');
                         time.className = 'file-time';
@@ -557,7 +635,7 @@
                 } else {
                     const empty = document.createElement('div');
                     empty.style.cssText = 'text-align: center; color: #999; padding: 30px;';
-                    empty.textContent = '暂无处理记录';
+                    empty.textContent = t('web.no.records');
                     recentFiles.appendChild(empty);
                 }
 
@@ -565,7 +643,7 @@
                 content.style.display = 'block';
                 isFirstLoad = false;
 
-                updateConnectionStatus('', '已连接');
+                updateConnectionStatus('', t('web.connected'));
                 updateLastTime();
 
             } catch (err) {
@@ -574,20 +652,20 @@
                     error.style.display = 'block';
                     error.textContent = '❌ ' + err.message;
                 }
-                updateConnectionStatus('error', '连接失败');
+                updateConnectionStatus('error', t('web.connection.failed'));
                 console.error('加载数据失败:', err);
             }
         }
 
         function formatLabel(key) {
             const labels = {
-                'monitorDirectory': '监控目录',
-                'outputDirectory': '输出目录',
-                'dbType': '数据库类型',
-                'scanInterval': '扫描间隔',
-                'osName': '操作系统',
-                'javaVersion': 'Java版本',
-                'memory': '内存使用'
+                'monitorDirectory': t('config.monitor.directory'),
+                'outputDirectory': t('config.output.directory'),
+                'dbType': t('config.db.type'),
+                'scanInterval': t('config.scan.interval'),
+                'osName': t('system.os.name'),
+                'javaVersion': t('system.java.version'),
+                'memory': t('system.memory')
             };
             return labels[key] || key;
         }
@@ -651,7 +729,7 @@
                 } else {
                     const empty = document.createElement('div');
                     empty.style.cssText = 'text-align: center; color: #6b7280; padding: 30px;';
-                    empty.textContent = '暂无日志记录';
+                    empty.textContent = t('web.no.logs');
                     logContainer.appendChild(empty);
                 }
             } catch (err) {
@@ -661,12 +739,12 @@
 
         // 清空日志（仅前端清空显示）
         function clearLogs() {
-            if (confirm('确定要清空日志显示吗？')) {
+            if (confirm(t('web.confirm.clear'))) {
                 const logContainer = document.getElementById('logContainer');
                 logContainer.innerHTML = '';
                 const empty = document.createElement('div');
                 empty.style.cssText = 'text-align: center; color: #6b7280; padding: 30px;';
-                empty.textContent = '日志显示已清空';
+                empty.textContent = t('web.log.cleared');
                 logContainer.appendChild(empty);
             }
         }
@@ -680,11 +758,11 @@
             const hours = Math.floor(elapsed / 3600000);
 
             let timeStr = '';
-            if (hours > 0) timeStr += hours + '时';
-            if (minutes > 0 || hours > 0) timeStr += minutes + '分';
-            timeStr += seconds + '秒';
+            if (hours > 0) timeStr += hours + t('unit.hours');
+            if (minutes > 0 || hours > 0) timeStr += minutes + t('unit.minutes');
+            timeStr += seconds + t('unit.seconds');
 
-            document.getElementById('runningTime').textContent = '本页运行: ' + timeStr;
+            document.getElementById('runningTime').textContent = t('web.running.time') + ' ' + timeStr;
         }
 
         // 切换最近处理文件的展开/收起状态
@@ -702,7 +780,12 @@
         }
 
         // 页面加载时自动获取数据和日志
-        window.addEventListener('load', () => {
+        window.addEventListener('load', async () => {
+            // 先加载国际化资源
+            await loadI18n();
+            // 应用国际化
+            applyI18n();
+            // 然后加载数据
             loadData();
             loadLogs();
             updateRunningTime();

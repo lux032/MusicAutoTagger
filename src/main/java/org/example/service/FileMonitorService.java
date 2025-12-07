@@ -2,6 +2,7 @@ package org.example.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
+import org.example.util.I18nUtil;
 
 import java.io.File;
 import java.io.IOException;
@@ -53,7 +54,7 @@ public class FileMonitorService {
      */
     public void start() {
         if (running) {
-            log.warn("文件监控服务已经在运行中");
+            log.warn(I18nUtil.getMessage("monitor.already.running"));
             return;
         }
         
@@ -63,14 +64,14 @@ public class FileMonitorService {
             // 注册监控目录
             Path monitorPath = Paths.get(config.getMonitorDirectory());
             if (!Files.exists(monitorPath)) {
-                log.error("监控目录不存在: {}", monitorPath);
+                log.error(I18nUtil.getMessage("monitor.directory.not.exist"), monitorPath);
                 return;
             }
             
             // 递归注册所有子目录
             registerDirectoryRecursively(monitorPath);
             
-            log.info("开始监控目录: {}", monitorPath);
+            log.info(I18nUtil.getMessage("monitor.start.monitoring"), monitorPath);
             
             // 首次扫描现有文件
             scanExistingFiles(monitorPath);
@@ -114,7 +115,7 @@ public class FileMonitorService {
             if (!watcherExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
                 watcherExecutorService.shutdownNow();
             }
-            log.info("文件监控服务已停止");
+            log.info(I18nUtil.getMessage("monitor.service.stopped"));
         } catch (IOException | InterruptedException e) {
             log.error("停止文件监控失败", e);
         }
@@ -148,9 +149,9 @@ public class FileMonitorService {
                     if (kind == StandardWatchEventKinds.ENTRY_CREATE && Files.isDirectory(fullPath)) {
                         try {
                             registerDirectoryRecursively(fullPath);
-                            log.info("已注册新建子目录: {}", fullPath);
+                            log.info(I18nUtil.getMessage("monitor.new.subdirectory"), fullPath);
                         } catch (IOException e) {
-                            log.error("注册新建子目录失败: {}", fullPath, e);
+                            log.error(I18nUtil.getMessage("monitor.register.failed"), fullPath, e);
                         }
                     }
                     
@@ -185,7 +186,7 @@ public class FileMonitorService {
         processedFiles.put(filePathStr, currentTime);
         
         if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
-            log.info("检测到新文件: {}", filePath.getFileName());
+            log.info(I18nUtil.getMessage("monitor.new.file"), filePath.getFileName());
             // 添加到队列,由专门的线程按顺序处理
             // 新文件需要等待写入完成
             fileCheckExecutorService.submit(() -> addToQueue(filePath, true));
@@ -204,7 +205,7 @@ public class FileMonitorService {
             // 首先检查是否已处理过（持久化日志）
             File file = filePath.toFile();
             if (processedLogger != null && processedLogger.isFileProcessed(file)) {
-                log.debug("文件已处理过（日志记录），跳过: {}", filePath.getFileName());
+                log.debug(I18nUtil.getMessage("monitor.file.processed"), filePath.getFileName());
                 return;
             }
             
@@ -227,13 +228,13 @@ public class FileMonitorService {
             }
             
             if (Files.size(filePath) == 0) {
-                log.warn("文件大小为0，跳过处理: {}", filePath);
+                log.warn(I18nUtil.getMessage("monitor.file.size.zero"), filePath);
                 return;
             }
             
             // 添加到队列
             fileQueue.offer(file);
-            log.info("文件已加入处理队列: {} (队列长度: {})",
+            log.info(I18nUtil.getMessage("monitor.file.queued"),
                 filePath.getFileName(), fileQueue.size());
             
         } catch (IOException | InterruptedException e) {
@@ -245,7 +246,7 @@ public class FileMonitorService {
      * 处理文件队列(顺序处理,带间隔防止限流)
      */
     private void processFileQueue() {
-        log.info("文件处理队列线程已启动");
+        log.info(I18nUtil.getMessage("monitor.queue.thread.started"));
         
         while (running) {
             try {
@@ -255,7 +256,7 @@ public class FileMonitorService {
                     continue;
                 }
                 
-                log.info("开始处理队列中的文件: {} (剩余: {})",
+                log.info(I18nUtil.getMessage("monitor.processing.file"),
                     file.getName(), fileQueue.size());
                 
                 // 触发实际处理，并捕获结果
@@ -268,7 +269,7 @@ public class FileMonitorService {
                 
                 // 等待指定间隔后再处理下一个文件
                 if (!fileQueue.isEmpty()) {
-                    log.info("等待 {}ms 后处理下一个文件(防止API限流)...", PROCESS_INTERVAL);
+                    log.info(I18nUtil.getMessage("monitor.wait.interval"), PROCESS_INTERVAL);
                     Thread.sleep(PROCESS_INTERVAL);
                 }
                 
@@ -278,14 +279,14 @@ public class FileMonitorService {
             }
         }
         
-        log.info("文件处理队列线程已停止");
+        log.info(I18nUtil.getMessage("monitor.queue.thread.stopped"));
     }
     
     /**
      * 处理失败文件重试队列
      */
     private void processFailedFileQueue() {
-        log.info("失败文件重试队列线程已启动");
+        log.info(I18nUtil.getMessage("monitor.retry.thread.started"));
 
         while (running) {
             try {
@@ -302,7 +303,7 @@ public class FileMonitorService {
                     continue;
                 }
 
-                log.info("开始处理失败文件重试队列，当前队列长度: {}", failedFileQueue.size());
+                log.info(I18nUtil.getMessage("monitor.processing.retry.queue"), failedFileQueue.size());
                 
                 // 取出所有失败文件进行重试
                 List<FailedFile> filesToRetry = new ArrayList<>();
@@ -310,14 +311,14 @@ public class FileMonitorService {
                 
                 for (FailedFile failedFile : filesToRetry) {
                     if (failedFile.getRetryCount() >= maxFileRetries) {
-                        log.warn("文件 {} 已达最大重试次数 {}，放弃处理",
+                        log.warn(I18nUtil.getMessage("monitor.retry.max.reached"),
                             failedFile.getFile().getName(), maxFileRetries);
                         // 移动到失败文件目录
                         moveToFailedDirectory(failedFile.getFile());
                         continue;
                     }
                     
-                    log.info("重试处理文件: {} (第 {}/{} 次重试)",
+                    log.info(I18nUtil.getMessage("monitor.retry.file"),
                         failedFile.getFile().getName(), failedFile.getRetryCount(), maxFileRetries);
                     
                     boolean success = notifyFileReadyWithResult(failedFile.getFile());
@@ -326,7 +327,7 @@ public class FileMonitorService {
                         // 重试失败，重新加入队列
                         addToFailedQueue(failedFile.getFile(), failedFile.getRetryCount() + 1);
                     } else {
-                        log.info("✓ 重试成功: {}", failedFile.getFile().getName());
+                        log.info(I18nUtil.getMessage("monitor.retry.success"), failedFile.getFile().getName());
                     }
                     
                     // 重试之间也需要间隔
@@ -339,7 +340,7 @@ public class FileMonitorService {
             }
         }
         
-        log.info("失败文件重试队列线程已停止");
+        log.info(I18nUtil.getMessage("monitor.retry.thread.stopped"));
     }
     
     /**
@@ -348,7 +349,7 @@ public class FileMonitorService {
     private void addToFailedQueue(File file, int retryCount) {
         FailedFile failedFile = new FailedFile(file, retryCount);
         failedFileQueue.offer(failedFile);
-        log.info("文件加入重试队列: {} (重试次数: {}, 队列长度: {})",
+        log.info(I18nUtil.getMessage("monitor.file.added.to.retry"),
             file.getName(), retryCount, failedFileQueue.size());
     }
     
@@ -375,7 +376,7 @@ public class FileMonitorService {
      * 扫描现有文件 - 按文件夹分组批量处理
      */
     private void scanExistingFiles(Path directory) {
-        log.info("递归扫描现有文件...");
+        log.info(I18nUtil.getMessage("monitor.scan.existing"));
         
         try {
             List<Path> musicFiles = new ArrayList<>();
@@ -384,7 +385,7 @@ public class FileMonitorService {
                 .filter(this::isMusicFile)
                 .forEach(musicFiles::add);
             
-            log.info("扫描完成,发现 {} 个音乐文件", musicFiles.size());
+            log.info(I18nUtil.getMessage("monitor.scan.complete"), musicFiles.size());
             
             // 按文件夹分组
             Map<String, List<Path>> filesByFolder = new LinkedHashMap<>();
@@ -393,7 +394,7 @@ public class FileMonitorService {
                 filesByFolder.computeIfAbsent(folderPath, k -> new ArrayList<>()).add(path);
             }
             
-            log.info("文件分布: {} 个文件夹", filesByFolder.size());
+            log.info(I18nUtil.getMessage("monitor.file.distribution"), filesByFolder.size());
             
             // 统计已处理和待处理的文件数
             int totalSkipped = 0;
@@ -421,11 +422,11 @@ public class FileMonitorService {
                 totalQueued += unprocessedFiles.size();
                 
                 if (unprocessedFiles.isEmpty()) {
-                    log.debug("文件夹 {} 的所有文件已处理,跳过", new File(folderPath).getName());
+                    log.debug(I18nUtil.getMessage("monitor.folder.all.processed"), new File(folderPath).getName());
                     continue;
                 }
                 
-                log.info("文件夹 {} : {} 个待处理文件 (已跳过 {} 个)",
+                log.info(I18nUtil.getMessage("monitor.folder.status"),
                     new File(folderPath).getName(), unprocessedFiles.size(), skippedInFolder);
                 
                 // 将该文件夹的所有待处理文件按顺序加入队列
@@ -435,9 +436,9 @@ public class FileMonitorService {
             }
             
             log.info("========================================");
-            log.info("扫描结果汇总: 已跳过 {} 个已处理文件, {} 个文件加入处理队列",
+            log.info(I18nUtil.getMessage("monitor.scan.summary"),
                 totalSkipped, totalQueued);
-            log.info("处理策略: 按文件夹分组,先处理完一个文件夹的所有文件,再处理下一个文件夹");
+            log.info(I18nUtil.getMessage("monitor.process.strategy"));
             log.info("========================================");
             
         } catch (IOException e) {
@@ -532,15 +533,15 @@ public class FileMonitorService {
                     file.getName(),
                     "Unknown Album"
                 );
-                log.info("已将失败文件记录到数据库: {}", file.getName());
+                log.info(I18nUtil.getMessage("monitor.failed.file.recorded"), file.getName());
             } catch (Exception e) {
-                log.error("记录失败文件到数据库失败: {} - {}", file.getName(), e.getMessage());
+                log.error(I18nUtil.getMessage("monitor.record.failed.error"), file.getName(), e.getMessage());
             }
         }
 
         String failedDir = config.getFailedDirectory();
         if (failedDir == null || failedDir.trim().isEmpty()) {
-            log.warn("未配置失败文件目录，文件保留在原位置: {}", file.getName());
+            log.warn(I18nUtil.getMessage("monitor.failed.dir.not.configured"), file.getName());
             return;
         }
 
@@ -548,7 +549,7 @@ public class FileMonitorService {
             Path failedDirPath = Paths.get(failedDir);
             if (!Files.exists(failedDirPath)) {
                 Files.createDirectories(failedDirPath);
-                log.info("创建失败文件目录: {}", failedDir);
+                log.info(I18nUtil.getMessage("monitor.failed.dir.created"), failedDir);
             }
 
             Path sourcePath = file.toPath();
@@ -565,10 +566,10 @@ public class FileMonitorService {
             }
 
             Files.move(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING);
-            log.info("✓ 失败文件已移动到: {}", targetPath);
+            log.info(I18nUtil.getMessage("monitor.failed.file.moved"), targetPath);
 
         } catch (IOException e) {
-            log.error("移动失败文件到目录失败: {} -> {}", file.getName(), failedDir, e);
+            log.error(I18nUtil.getMessage("monitor.move.failed.error"), file.getName(), failedDir, e);
         }
     }
     

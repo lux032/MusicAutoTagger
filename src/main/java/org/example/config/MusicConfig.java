@@ -56,7 +56,10 @@ public class MusicConfig {
     private int proxyPort;
     private String proxyUsername;
     private String proxyPassword;
-    
+
+    // 国际化配置
+    private String language; // 语言设置
+
     private static MusicConfig instance;
     
     private MusicConfig() {
@@ -87,6 +90,9 @@ public class MusicConfig {
         this.dbMaxPoolSize = 10;
         this.dbMinIdle = 2;
         this.dbConnectionTimeout = 30000;
+
+        // 国际化默认配置
+        this.language = "zh_CN";
     }
     
     /**
@@ -226,7 +232,12 @@ public class MusicConfig {
                     System.err.println("连接超时配置错误: " + props.getProperty("db.mysql.pool.connectionTimeout"));
                 }
             }
-            
+
+            // 加载国际化配置
+            if (props.containsKey("i18n.language")) {
+                this.language = props.getProperty("i18n.language");
+            }
+
             System.out.println("配置文件加载成功");
             if (proxyEnabled) {
                 System.out.println("HTTP 代理已启用: " + proxyHost + ":" + proxyPort);

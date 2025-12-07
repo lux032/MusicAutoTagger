@@ -6,57 +6,50 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
-import org.example.service.LogCollector;
 import org.example.util.I18nUtil;
 
 import java.io.IOException;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 
 /**
- * 日志接口 - 提供实时日志查看
+ * 国际化资源接口 - 为前端提供多语言文本
  */
 @Slf4j
-public class LogServlet extends HttpServlet {
-    
+public class I18nServlet extends HttpServlet {
+
     private final Gson gson;
-    
-    public LogServlet() {
+
+    public I18nServlet() {
         this.gson = new GsonBuilder().setPrettyPrinting().create();
     }
-    
+
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         resp.setContentType("application/json; charset=UTF-8");
         resp.setCharacterEncoding("UTF-8");
-        
+
         try {
-            // 获取请求参数
-            String limitParam = req.getParameter("limit");
-            int limit = 50; // 默认获取最近50条
-            
-            if (limitParam != null) {
-                try {
-                    limit = Integer.parseInt(limitParam);
-                    limit = Math.min(limit, 200); // 最多200条
-                } catch (NumberFormatException e) {
-                    // 使用默认值
-                }
+            // 获取所有国际化消息
+            Properties messages = I18nUtil.getAllMessages();
+
+            // 转换为Map
+            Map<String, String> messageMap = new HashMap<>();
+            for (String key : messages.stringPropertyNames()) {
+                messageMap.put(key, messages.getProperty(key));
             }
-            
-            // 获取日志
-            List<LogCollector.LogEntry> logs = LogCollector.getRecentLogs(limit);
-            
+
+            // 添加当前语言信息
             Map<String, Object> data = new HashMap<>();
-            data.put("logs", logs);
-            data.put("count", logs.size());
-            
+            data.put("language", I18nUtil.getCurrentLanguage());
+            data.put("messages", messageMap);
+
             resp.setStatus(HttpServletResponse.SC_OK);
             resp.getWriter().write(gson.toJson(data));
-            
+
         } catch (Exception e) {
-            log.error(I18nUtil.getMessage("log.servlet.error.get"), e);
+            log.error("获取国际化资源失败", e);
             resp.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
             Map<String, String> error = new HashMap<>();
             error.put("error", e.getMessage());
