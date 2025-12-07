@@ -34,6 +34,7 @@
     - **MySQL Mode**: Supports external database connection for massive libraries and high concurrency.
 - 🐳 **Docker Ready**: Provides lightweight Docker images compatible with Synology, QNAP, Unraid, and other NAS systems.
 - 🔄 **Smart Retry**: Automatically handles network failures with retry logic and isolates failed files for later inspection.
+- 📊 **Web Monitoring Dashboard**: 🆕 Built-in real-time monitoring dashboard to visualize processing progress, system status, and runtime logs.
 
 ## ⚠️ Best Practice: How to Get the Most Accurate Results
 
@@ -67,6 +68,8 @@ The easiest way to run the application. No Java installation required.
       music-tagger:
         image: ghcr.io/lux032/musicautotagger:latest
         container_name: music-tagger
+        ports:
+          - "8080:8080"                         # Web monitoring dashboard port
         volumes:
           - /path/to/downloads:/music           # Your download folder
           - /path/to/music_library:/app/tagged_music # Target music library
@@ -78,6 +81,16 @@ The easiest way to run the application. No Java installation required.
     ```bash
     docker-compose up -d
     ```
+
+5.  **Access Web Monitoring Dashboard**
+
+    After starting, open `http://localhost:8080` in your browser to view the real-time monitoring dashboard.
+
+    Dashboard features:
+    - 📊 **Real-time Statistics**: Processed files count, cover cache, folder cache, etc.
+    - 📝 **Recent Files**: View details of recently processed music files
+    - 📋 **Runtime Logs**: Real-time system logs with auto-scroll support
+    - ⚙️ **System Info**: View configuration parameters and system status
 
 ## 💻 Local Installation
 
@@ -99,6 +112,9 @@ cp config.properties.example config.properties
 
 # 3. Run
 java -jar target/MusicDemo-1.0-SNAPSHOT.jar
+
+# 4. Access Web Dashboard
+# Open http://localhost:8080 in your browser
 ```
 
 ## 📚 Documentation

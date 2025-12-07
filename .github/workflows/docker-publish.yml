@@ -37,12 +37,20 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      # Build JAR file
+      # Build JAR file (includes static web resources)
       - name: Build with Maven
         run: mvn clean package -DskipTests
 
-      # Install fpcalc (needed for tests if we ran them, or just to verify environment)
-      # In Docker build it's handled by Dockerfile, but good to check here if needed.
+      # Verify static resources are included
+      - name: Verify web resources
+        run: |
+          echo "Checking for web panel resources..."
+          if [ -d "src/main/resources/static" ]; then
+            echo "✓ Static web resources found"
+            ls -la src/main/resources/static/
+          else
+            echo "⚠ No static resources directory found"
+          fi
 
       # Set up Docker Buildx
       - name: Set up Docker Buildx

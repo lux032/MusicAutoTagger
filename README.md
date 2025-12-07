@@ -34,6 +34,7 @@
     - **MySQL 模式**：支持连接外部数据库，适合海量文件和高性能并发场景。
 - 🐳 **Docker 部署**：提供轻量级 Docker 镜像，支持 Synology/QNAP/Unraid 等 NAS 系统。
 - 🔄 **智能重试机制**：自动处理网络波动导致的识别失败，并提供失败文件隔离。
+- 📊 **Web 监控面板**：🆕 内置实时监控面板，可视化查看处理进度、系统状态和运行日志。
 
 ## ⚠️ 最佳实践：如何获得最精准的整理效果
 
@@ -67,6 +68,8 @@
       music-tagger:
         image: ghcr.io/lux032/musicautotagger:latest
         container_name: music-tagger
+        ports:
+          - "8080:8080"                         # Web 监控面板端口
         volumes:
           - /path/to/downloads:/music           # 你的下载目录
           - /path/to/music_library:/app/tagged_music # 整理后的音乐库
@@ -78,6 +81,16 @@
     ```bash
     docker-compose up -d
     ```
+
+5.  **访问 Web 监控面板**
+
+    启动后，在浏览器中访问 `http://localhost:8080` 即可查看实时监控面板。
+
+    面板功能包括：
+    - 📊 **实时统计**：已处理文件数、封面缓存、文件夹缓存等
+    - 📝 **最近处理**：查看最近处理的音乐文件详情
+    - 📋 **运行日志**：实时查看系统运行日志，支持自动滚动
+    - ⚙️ **系统信息**：查看配置参数和系统状态
 
 ## 💻 本地运行
 
@@ -99,6 +112,9 @@ cp config.properties.example config.properties
 
 # 3. 运行
 java -jar target/MusicDemo-1.0-SNAPSHOT.jar
+
+# 4. 访问 Web 面板
+# 浏览器打开 http://localhost:8080
 ```
 
 ## 📚 文档指南
