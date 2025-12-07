@@ -112,7 +112,7 @@ cache.coverArtDirectory=/app/.cover_cache
 
 # Database type: file (text file) or mysql (MySQL database)
 # Recommended to use mysql for better performance and reliability
-db.type=mysql
+db.type=file
 
 # ===== MySQL Database Configuration =====
 # If db.type=mysql, configure the following items

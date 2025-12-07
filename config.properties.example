@@ -112,7 +112,7 @@ cache.coverArtDirectory=/app/.cover_cache
 
 # 数据库类型：file（文本文件）或 mysql（MySQL数据库）
 # 推荐使用 mysql 以获得更好的性能和可靠性
-db.type=mysql
+db.type=file
 
 # ===== MySQL 数据库配置 =====
 # 如果 db.type=mysql，需要配置以下项
