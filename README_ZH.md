@@ -82,11 +82,52 @@
         ports:
           - "8080:8080"                         # Web 监控面板端口
         volumes:
-          - /path/to/downloads:/music           # 你的下载目录
-          - /path/to/music_library:/app/tagged_music # 整理后的音乐库
+          # 监控目录：待处理的音乐文件源文件夹
+          # 左侧（主机）：你实际的下载文件夹路径
+          # 右侧（容器）：必须与 config.properties 中的 'monitor.directory' 一致（默认：/music）
+          - /path/to/downloads:/music
+          
+          # 输出目录：整理后的音乐库存储位置
+          # 左侧（主机）：你的音乐库存储路径
+          # 右侧（容器）：必须与 config.properties 中的 'monitor.outputDirectory' 一致（默认：/app/tagged_music）
+          - /path/to/music_library:/app/tagged_music
+          
+          # 配置文件
           - ./config.properties:/app/config.properties
+          
+          # 可选：失败文件目录（如果在配置中启用了 file.failedDirectory）
+          # - /path/to/failed:/app/failed_files
+          
+          # 可选：封面缓存目录（持久化下载的封面，重启后保留）
+          # - /path/to/cover_cache:/app/.cover_cache
+          
+          # 可选：日志目录（持久化处理日志）
+          # - /path/to/logs:/app/logs
         restart: unless-stopped
     ```
+    
+    **目录挂载详解：**
+    
+    | 主机路径（左侧） | 容器路径（右侧） | 用途说明 | 是否必需 |
+    |-----------------|------------------|---------|----------|
+    | `/path/to/downloads` | `/music` | 监控的源文件夹 | ✅ 必需 |
+    | `/path/to/music_library` | `/app/tagged_music` | 整理后的音乐输出 | ✅ 必需 |
+    | `./config.properties` | `/app/config.properties` | 配置文件 | ✅ 必需 |
+    | `/path/to/failed` | `/app/failed_files` | 识别失败文件隔离 | ⚪ 可选 |
+    | `/path/to/cover_cache` | `/app/.cover_cache` | 封面图片缓存 | ⚪ 可选 |
+    | `/path/to/logs` | `/app/logs` | 处理日志 | ⚪ 可选 |
+    
+    **重要说明：**
+    - **左侧**路径是你**主机上**的实际路径（例如你的 NAS 或服务器路径）
+    - **右侧**路径是 **Docker 容器内部**的路径
+    - 右侧的容器路径必须与 [`config.properties`](config.properties.example) 中对应的配置项一致
+    - NAS 用户示例：
+      ```yaml
+      volumes:
+        - /share/Downloads/Music:/music                    # QNAP/群晖的下载文件夹
+        - /share/Music:/app/tagged_music                   # 你的音乐库
+        - /share/Docker/music-tagger/config.properties:/app/config.properties
+      ```
 
 4.  **启动服务**
     ```bash

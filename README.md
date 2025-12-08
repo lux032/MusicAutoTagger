@@ -82,11 +82,52 @@ The easiest way to run the application. No Java installation required.
         ports:
           - "8080:8080"                         # Web monitoring dashboard port
         volumes:
-          - /path/to/downloads:/music           # Your download folder
-          - /path/to/music_library:/app/tagged_music # Target music library
+          # Monitor directory: Source folder containing music files to process
+          # Left side (host): Your actual download folder path
+          # Right side (container): Must match 'monitor.directory' in config.properties (default: /music)
+          - /path/to/downloads:/music
+          
+          # Output directory: Destination for organized music library
+          # Left side (host): Your music library storage location
+          # Right side (container): Must match 'monitor.outputDirectory' in config.properties (default: /app/tagged_music)
+          - /path/to/music_library:/app/tagged_music
+          
+          # Configuration file
           - ./config.properties:/app/config.properties
+          
+          # Optional: Failed files directory (if you enable file.failedDirectory in config)
+          # - /path/to/failed:/app/failed_files
+          
+          # Optional: Cover cache directory (persists downloaded covers across restarts)
+          # - /path/to/cover_cache:/app/.cover_cache
+          
+          # Optional: Logs directory (persists processing logs)
+          # - /path/to/logs:/app/logs
         restart: unless-stopped
     ```
+    
+    **Volume Mounting Explained:**
+    
+    | Host Path (Left) | Container Path (Right) | Purpose | Required |
+    |-----------------|------------------------|---------|----------|
+    | `/path/to/downloads` | `/music` | Source folder to monitor | ✅ Yes |
+    | `/path/to/music_library` | `/app/tagged_music` | Organized music output | ✅ Yes |
+    | `./config.properties` | `/app/config.properties` | Configuration file | ✅ Yes |
+    | `/path/to/failed` | `/app/failed_files` | Failed file isolation | ⚪ Optional |
+    | `/path/to/cover_cache` | `/app/.cover_cache` | Cover art cache | ⚪ Optional |
+    | `/path/to/logs` | `/app/logs` | Processing logs | ⚪ Optional |
+    
+    **Important Notes:**
+    - The **left side** paths are on your **host machine** (e.g., your NAS or server)
+    - The **right side** paths are **inside the Docker container**
+    - The container paths on the right side must match the corresponding settings in [`config.properties`](config.properties.example)
+    - Example for NAS users:
+      ```yaml
+      volumes:
+        - /share/Downloads/Music:/music                    # QNAP/Synology downloads folder
+        - /share/Music:/app/tagged_music                   # Your music library
+        - /share/Docker/music-tagger/config.properties:/app/config.properties
+      ```
 
 4.  **Start Service**
     ```bash
