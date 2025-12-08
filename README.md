@@ -160,6 +160,7 @@ For a complete template, see `config.properties.example`. Here are the most comm
 | `file.autoRename` | Rename files automatically | `true` |
 | `file.maxRetries` | Max retries for network errors | `3` |
 | `logging.detailed` | Enable detailed logging | `true` |
+| `lyrics.exportToFile` | Export lyrics as separate .lrc file (for Plex and other media servers) | `false` |
 
 ### 💾 Database
 | Setting | Description | Default |

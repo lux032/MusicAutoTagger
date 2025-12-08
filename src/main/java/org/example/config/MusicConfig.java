@@ -60,6 +60,9 @@ public class MusicConfig {
     // 国际化配置
     private String language; // 语言设置
 
+    // 歌词配置
+    private boolean exportLyricsToFile; // 是否将歌词导出为独立文件
+
     private static MusicConfig instance;
     
     private MusicConfig() {
@@ -236,6 +239,11 @@ public class MusicConfig {
             // 加载国际化配置
             if (props.containsKey("i18n.language")) {
                 this.language = props.getProperty("i18n.language");
+            }
+
+            // 加载歌词配置
+            if (props.containsKey("lyrics.exportToFile")) {
+                this.exportLyricsToFile = Boolean.parseBoolean(props.getProperty("lyrics.exportToFile"));
             }
 
             System.out.println("配置文件加载成功");

@@ -160,6 +160,7 @@ java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 | `file.autoRename` | 是否自动重命名文件 | `true` |
 | `file.maxRetries` | 网络错误最大重试次数 | `3` |
 | `logging.detailed` | 是否启用详细日志 | `true` |
+| `lyrics.exportToFile` | 是否将歌词导出为独立的 .lrc 文件（用于 Plex 等媒体服务器） | `false` |
 
 ### 💾 数据库配置
 | 配置项 | 说明 | 默认值 |

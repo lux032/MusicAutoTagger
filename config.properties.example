@@ -177,6 +177,16 @@ proxy.password=
 i18n.language=en_US
 
 # ========================================
+# Lyrics Configuration
+# ========================================
+
+# Export lyrics as separate .lrc file
+# true: In addition to embedding in audio tags, also create a .lrc file with the same name in the same folder (for Plex and other media servers)
+# false: Only embed lyrics in audio tags
+# Default: false
+lyrics.exportToFile=false
+
+# ========================================
 # Configuration Examples
 # ========================================
 

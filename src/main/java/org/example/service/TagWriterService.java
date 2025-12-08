@@ -11,6 +11,7 @@ import org.jaudiotagger.tag.images.Artwork;
 import org.jaudiotagger.tag.images.StandardArtwork;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -75,6 +76,12 @@ public class TagWriterService {
             // 保存更改
             audioFileObj.commit();
             log.info("文件处理完成: {}", targetFile.getName());
+
+            // 如果配置开启,导出歌词到独立文件
+            if (config.isExportLyricsToFile() && metadata.getLyrics() != null && !metadata.getLyrics().isEmpty()) {
+                exportLyricsToFile(targetFile, metadata.getLyrics());
+            }
+
             return true;
 
         } catch (Exception e) {
@@ -239,6 +246,37 @@ public class TagWriterService {
         // 写入歌词
         if (metadata.getLyrics() != null && !metadata.getLyrics().isEmpty()) {
             tag.setField(FieldKey.LYRICS, metadata.getLyrics());
+        }
+    }
+
+    /**
+     * 导出歌词到独立文件
+     * @param audioFile 音频文件
+     * @param lyrics 歌词内容
+     */
+    private void exportLyricsToFile(File audioFile, String lyrics) {
+        if (lyrics == null || lyrics.isEmpty()) {
+            return;
+        }
+
+        try {
+            // 获取音频文件的路径和名称（不含扩展名）
+            String audioFilePath = audioFile.getAbsolutePath();
+            int lastDotIndex = audioFilePath.lastIndexOf('.');
+            String baseFilePath = lastDotIndex > 0 ? audioFilePath.substring(0, lastDotIndex) : audioFilePath;
+            
+            // 创建歌词文件路径（.lrc扩展名）
+            File lyricsFile = new File(baseFilePath + ".lrc");
+            
+            // 写入歌词内容
+            try (FileWriter writer = new FileWriter(lyricsFile, java.nio.charset.StandardCharsets.UTF_8)) {
+                writer.write(lyrics);
+            }
+            
+            log.info("歌词文件已导出: {}", lyricsFile.getName());
+            
+        } catch (IOException e) {
+            log.error("导出歌词文件失败: {}", audioFile.getName(), e);
         }
     }
     
