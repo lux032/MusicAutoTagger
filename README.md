@@ -95,14 +95,14 @@ The easiest way to run the application. No Java installation required.
           # Configuration file
           - ./config.properties:/app/config.properties
           
-          # Optional: Failed files directory (if you enable file.failedDirectory in config)
-          # - /path/to/failed:/app/failed_files
+          # Failed files directory (for identification failures)
+          - /path/to/failed:/app/failed_files
           
-          # Optional: Cover cache directory (persists downloaded covers across restarts)
-          # - /path/to/cover_cache:/app/.cover_cache
+          # Cover cache directory (persists downloaded covers across restarts)
+          - /path/to/cover_cache:/app/.cover_cache
           
-          # Optional: Logs directory (persists processing logs)
-          # - /path/to/logs:/app/logs
+          # Logs directory (persists processing logs)
+          - /path/to/logs:/app/logs
         restart: unless-stopped
     ```
     
@@ -113,9 +113,9 @@ The easiest way to run the application. No Java installation required.
     | `/path/to/downloads` | `/music` | Source folder to monitor | ✅ Yes |
     | `/path/to/music_library` | `/app/tagged_music` | Organized music output | ✅ Yes |
     | `./config.properties` | `/app/config.properties` | Configuration file | ✅ Yes |
-    | `/path/to/failed` | `/app/failed_files` | Failed file isolation | ⚪ Optional |
-    | `/path/to/cover_cache` | `/app/.cover_cache` | Cover art cache | ⚪ Optional |
-    | `/path/to/logs` | `/app/logs` | Processing logs | ⚪ Optional |
+    | `/path/to/failed` | `/app/failed_files` | Failed file isolation | ✅ Yes |
+    | `/path/to/cover_cache` | `/app/.cover_cache` | Cover art cache | ✅ Yes |
+    | `/path/to/logs` | `/app/logs` | Processing logs | ✅ Yes |
     
     **Important Notes:**
     - The **left side** paths are on your **host machine** (e.g., your NAS or server)

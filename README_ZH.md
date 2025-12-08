@@ -94,15 +94,15 @@
           
           # 配置文件
           - ./config.properties:/app/config.properties
-          
-          # 可选：失败文件目录（如果在配置中启用了 file.failedDirectory）
-          # - /path/to/failed:/app/failed_files
-          
-          # 可选：封面缓存目录（持久化下载的封面，重启后保留）
-          # - /path/to/cover_cache:/app/.cover_cache
-          
-          # 可选：日志目录（持久化处理日志）
-          # - /path/to/logs:/app/logs
+
+          # 失败文件目录（识别失败文件隔离）
+          - /path/to/failed:/app/failed_files
+
+          # 封面缓存目录（持久化下载的封面，重启后保留）
+          - /path/to/cover_cache:/app/.cover_cache
+
+          # 日志目录（持久化处理日志）
+          - /path/to/logs:/app/logs
         restart: unless-stopped
     ```
     
@@ -113,9 +113,9 @@
     | `/path/to/downloads` | `/music` | 监控的源文件夹 | ✅ 必需 |
     | `/path/to/music_library` | `/app/tagged_music` | 整理后的音乐输出 | ✅ 必需 |
     | `./config.properties` | `/app/config.properties` | 配置文件 | ✅ 必需 |
-    | `/path/to/failed` | `/app/failed_files` | 识别失败文件隔离 | ⚪ 可选 |
-    | `/path/to/cover_cache` | `/app/.cover_cache` | 封面图片缓存 | ⚪ 可选 |
-    | `/path/to/logs` | `/app/logs` | 处理日志 | ⚪ 可选 |
+    | `/path/to/failed` | `/app/failed_files` | 识别失败文件隔离 | ✅ 必需 |
+    | `/path/to/cover_cache` | `/app/.cover_cache` | 封面图片缓存 | ✅ 必需 |
+    | `/path/to/logs` | `/app/logs` | 处理日志 | ✅ 必需 |
     
     **重要说明：**
     - **左侧**路径是你**主机上**的实际路径（例如你的 NAS 或服务器路径）
