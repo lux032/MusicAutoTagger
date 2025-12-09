@@ -711,12 +711,19 @@ public class Main {
     private static byte[] getCoverArtWithFallback(File audioFile, MusicMetadata metadata, String lockedReleaseGroupId) {
         byte[] coverArtData = null;
         String folderPath = audioFile.getParentFile().getAbsolutePath();
+        
+        // 检查是否为散落文件
+        boolean isLooseFile = isLooseFileInMonitorRoot(audioFile);
 
-        // 策略0: 检查文件夹级别缓存
-        coverArtData = folderCoverCache.get(folderPath);
-        if (coverArtData != null && coverArtData.length > 0) {
-            log.info("策略0: 使用同文件夹已获取的封面");
-            return coverArtData;
+        // 策略0: 检查文件夹级别缓存（散落文件跳过此策略）
+        if (!isLooseFile) {
+            coverArtData = folderCoverCache.get(folderPath);
+            if (coverArtData != null && coverArtData.length > 0) {
+                log.info("策略0: 使用同文件夹已获取的封面");
+                return coverArtData;
+            }
+        } else {
+            log.info("散落文件跳过文件夹级别缓存，独立获取封面");
         }
 
         // 策略0.5: 如果有锁定的专辑ID，检查 CoverArtCache 中是否已经为这个专辑获取过封面
@@ -725,8 +732,11 @@ public class Main {
 
             if (coverArtData != null && coverArtData.length > 0) {
                 log.info("策略0.5: 使用已缓存的锁定专辑封面 (Release Group ID: {})", lockedReleaseGroupId);
-                // 同时缓存到文件夹级别，加速后续文件的访问
-                folderCoverCache.put(folderPath, coverArtData);
+                // 只有非散落文件才缓存到文件夹级别
+                if (!isLooseFile) {
+                    folderCoverCache.put(folderPath, coverArtData);
+                    log.info("已缓存到文件夹级别");
+                }
                 return coverArtData;
             }
         }
@@ -758,8 +768,13 @@ public class Main {
             coverArtData = downloadCoverFromNetwork(coverArtUrl);
 
             if (coverArtData != null && coverArtData.length > 0) {
-                log.info("✓ 成功从网络下载封面,缓存到文件夹级别");
-                folderCoverCache.put(folderPath, coverArtData);
+                log.info("✓ 成功从网络下载封面");
+                
+                // 只有非散落文件才缓存到文件夹级别
+                if (!isLooseFile) {
+                    folderCoverCache.put(folderPath, coverArtData);
+                    log.info("已缓存到文件夹级别");
+                }
 
                 // 如果有锁定的专辑ID，同时缓存到 Release Group ID 级别，供其他文件夹复用
                 if (lockedReleaseGroupId != null) {
@@ -779,8 +794,14 @@ public class Main {
         coverArtData = extractCoverFromAudioFile(audioFile);
         
         if (coverArtData != null && coverArtData.length > 0) {
-            log.info("✓ 成功从音频文件提取封面,缓存到文件夹级别");
-            folderCoverCache.put(folderPath, coverArtData);
+            log.info("✓ 成功从音频文件提取封面");
+            
+            // 只有非散落文件才缓存到文件夹级别
+            if (!isLooseFile) {
+                folderCoverCache.put(folderPath, coverArtData);
+                log.info("已缓存到文件夹级别");
+            }
+            
             return coverArtData;
         }
         log.info("✗ 音频文件无封面,尝试降级策略");
@@ -790,8 +811,14 @@ public class Main {
         coverArtData = findCoverInDirectory(audioFile.getParentFile());
         
         if (coverArtData != null && coverArtData.length > 0) {
-            log.info("✓ 成功从目录找到封面图片,缓存到文件夹级别");
-            folderCoverCache.put(folderPath, coverArtData);
+            log.info("✓ 成功从目录找到封面图片");
+            
+            // 只有非散落文件才缓存到文件夹级别
+            if (!isLooseFile) {
+                folderCoverCache.put(folderPath, coverArtData);
+                log.info("已缓存到文件夹级别");
+            }
+            
             return coverArtData;
         }
         
