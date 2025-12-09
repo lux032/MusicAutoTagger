@@ -232,8 +232,8 @@ public class Main {
                 lockedReleaseGroupId = cachedAlbum.getReleaseGroupId();
                 lockedReleaseDate = cachedAlbum.getReleaseDate();
                 
-            } else {
-                // 没有缓存，进行快速扫描
+            } else if (!isLooseFileInMonitorRoot) {
+                // 没有缓存且不是散落文件，进行快速扫描
                 log.info("尝试第一级快速扫描（基于标签和文件夹名称）...");
                 QuickScanService.QuickScanResult quickResult = quickScanService.quickScan(audioFile, musicFilesInFolder);
                 
@@ -260,6 +260,9 @@ public class Main {
                     folderAlbumCache.setFolderAlbum(folderPath, albumInfo);
                     log.info("已将快速扫描结果缓存到文件夹级别");
                 }
+            } else {
+                // 散落文件，跳过快速扫描
+                log.info("散落文件跳过快速扫描，将直接进入随缘匹配模式（指纹识别）");
             }
             
             // ===== 保底处理：如果是散落文件，跳过专辑匹配，直接指纹识别 =====
