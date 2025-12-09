@@ -286,17 +286,36 @@ public class Main {
                 if (lockedAlbumTitle == null) {
                     log.info("建议：手动添加标签或等待 MusicBrainz 社区完善数据");
                     
-                    // 如果配置了失败目录，复制整个专辑根目录到失败目录
-                    if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
-                        try {
-                            copyFailedFolderToFailedDirectory(albumRootDir);
-                        } catch (Exception e) {
-                            log.error("复制失败文件夹到失败目录时出错: {}", e.getMessage());
+                    // 散落文件：复制单个文件到失败目录
+                    if (isLooseFileInMonitorRoot) {
+                        log.warn("散落文件识别失败: {}", audioFile.getName());
+                        if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
+                            try {
+                                copyFailedFileToFailedDirectory(audioFile);
+                            } catch (Exception e) {
+                                log.error("复制失败文件到失败目录时出错: {}", e.getMessage());
+                            }
                         }
+                        processedLogger.markFileAsProcessed(
+                            audioFile,
+                            "UNKNOWN",
+                            "识别失败 - 散落文件",
+                            audioFile.getName(),
+                            "Unknown Album"
+                        );
+                    } else {
+                        // 正常专辑文件：复制整个专辑根目录到失败目录
+                        if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
+                            try {
+                                copyFailedFolderToFailedDirectory(albumRootDir);
+                            } catch (Exception e) {
+                                log.error("复制失败文件夹到失败目录时出错: {}", e.getMessage());
+                            }
+                        }
+                        
+                        // 标记整个专辑根目录下的所有文件为"已处理"，避免继续识别
+                        markAlbumAsProcessed(albumRootDir, "识别失败 - 整个专辑");
                     }
-                    
-                    // 标记整个专辑根目录下的所有文件为"已处理"，避免继续识别
-                    markAlbumAsProcessed(albumRootDir, "识别失败 - 整个专辑");
                     
                     return true; // 识别失败，不重试但记录
                 } else {
@@ -1090,6 +1109,40 @@ public class Main {
         metadata.setArtist(recordingInfo.getArtist());
         metadata.setAlbum(recordingInfo.getAlbum());
         return metadata;
+    }
+    
+    /**
+     * 复制失败的单个文件到失败目录
+     */
+    private static void copyFailedFileToFailedDirectory(File audioFile) throws IOException {
+        if (audioFile == null || !audioFile.exists()) {
+            log.warn("文件不存在，无法复制");
+            return;
+        }
+        
+        String fileName = audioFile.getName();
+        File targetFile = new File(config.getFailedDirectory(), fileName);
+        
+        // 检查是否已经复制过该文件
+        if (targetFile.exists()) {
+            log.debug("失败文件已存在，跳过复制: {}", targetFile.getAbsolutePath());
+            return;
+        }
+        
+        log.info("========================================");
+        log.info("识别失败，复制单个文件到失败目录");
+        log.info("源文件: {}", audioFile.getAbsolutePath());
+        log.info("目标位置: {}", targetFile.getAbsolutePath());
+        
+        try {
+            Files.copy(audioFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            log.info("文件复制完成: {}", targetFile.getAbsolutePath());
+        } catch (IOException e) {
+            log.error("复制文件失败: {} - {}", fileName, e.getMessage());
+            throw e;
+        }
+        
+        log.info("========================================");
     }
     
     /**
