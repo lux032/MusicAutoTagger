@@ -269,7 +269,10 @@ public class TagWriterService {
             File lyricsFile = new File(baseFilePath + ".lrc");
             
             // 写入歌词内容
-            try (FileWriter writer = new FileWriter(lyricsFile, java.nio.charset.StandardCharsets.UTF_8)) {
+            try (java.io.BufferedWriter writer = new java.io.BufferedWriter(
+                    new java.io.OutputStreamWriter(
+                            new java.io.FileOutputStream(lyricsFile),
+                            java.nio.charset.StandardCharsets.UTF_8))) {
                 writer.write(lyrics);
             }
             
