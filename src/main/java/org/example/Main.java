@@ -1155,7 +1155,7 @@ public class Main {
     
     /**
      * 处理部分识别的文件(有标签或封面但指纹识别失败)
-     * 将文件复制到部分识别目录，并尝试内嵌文件夹封面
+     * 将文件复制到部分识别目录，保留原始的文件夹结构，并尝试内嵌文件夹封面
      */
     private static void handlePartialRecognitionFile(File audioFile) {
         if (config.getPartialDirectory() == null || config.getPartialDirectory().isEmpty()) {
@@ -1186,13 +1186,35 @@ public class Main {
             log.info(I18nUtil.getMessage("main.partial.recognition.has.folder.cover") + ": {}", hasFolderCover);
             log.info(I18nUtil.getMessage("main.partial.recognition.has.tags") + ": {}", hasPartialTags);
             
-            // 构建目标文件路径
-            String fileName = audioFile.getName();
-            File targetFile = new File(config.getPartialDirectory(), fileName);
+            // 计算相对于监控目录的相对路径，保留文件夹结构
+            String monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
+            String audioFilePath = audioFile.getCanonicalPath();
+            
+            // 获取相对路径
+            String relativePath;
+            if (audioFilePath.startsWith(monitorDirPath)) {
+                relativePath = audioFilePath.substring(monitorDirPath.length());
+                // 去掉开头的分隔符
+                if (relativePath.startsWith(File.separator)) {
+                    relativePath = relativePath.substring(1);
+                }
+            } else {
+                // 如果无法获取相对路径，退回到只使用文件名
+                relativePath = audioFile.getName();
+            }
+            
+            // 构建目标文件路径，保留文件夹结构
+            File targetFile = new File(config.getPartialDirectory(), relativePath);
             
             // 创建目标目录
             if (!targetFile.getParentFile().exists()) {
                 targetFile.getParentFile().mkdirs();
+            }
+            
+            // 如果目标文件已存在，跳过复制
+            if (targetFile.exists()) {
+                log.debug("部分识别文件已存在，跳过复制: {}", targetFile.getAbsolutePath());
+                return;
             }
             
             // 复制文件到部分识别目录
@@ -1214,7 +1236,7 @@ public class Main {
             }
             
             log.info(I18nUtil.getMessage("main.partial.recognition.complete") + ": {}", targetFile.getAbsolutePath());
-            LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.partial.recognition.complete") + ": " + config.getPartialDirectory());
+            LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.partial.recognition.complete") + ": " + relativePath);
             log.info("========================================");
             
         } catch (Exception e) {
