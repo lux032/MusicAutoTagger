@@ -13,7 +13,7 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 50%, #06b6d4 100%);
             min-height: 100vh;
             padding: 20px;
         }
@@ -93,6 +93,11 @@
             flex-wrap: wrap;
         }
 
+        .footer-content a:hover {
+            color: rgba(255, 255, 255, 1) !important;
+            text-decoration: underline;
+        }
+
         .footer-divider {
             opacity: 0.5;
         }
@@ -134,7 +139,7 @@
         .stat-value {
             font-size: 2.5em;
             font-weight: bold;
-            color: #667eea;
+            color: #3b82f6;
             margin: 10px 0;
         }
 
@@ -241,7 +246,7 @@
             cursor: pointer;
             font-size: 1em;
             font-weight: 600;
-            color: #667eea;
+            color: #3b82f6;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             transition: all 0.3s ease;
             display: block;
@@ -401,9 +406,9 @@
 
         <footer class="footer">
             <div class="footer-content">
-                <span>👤 Lux032</span>
+                <a href="https://032.im" target="_blank" style="color: rgba(255, 255, 255, 0.8); text-decoration: none; transition: color 0.3s;">👤 Lux032</a>
                 <span class="footer-divider">|</span>
-                <span>Music Auto Tagger</span>
+                <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" style="color: rgba(255, 255, 255, 0.8); text-decoration: none; transition: color 0.3s;">Music Auto Tagger</a>
                 <span class="footer-divider">|</span>
                 <span id="runningTime">运行时间: --</span>
             </div>

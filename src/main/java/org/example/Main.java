@@ -1172,7 +1172,7 @@ public class Main {
             
             // 封面是必需条件：如果既没有内嵌封面也没有文件夹封面，不处理
             if (!hasEmbeddedCover && !hasFolderCover) {
-                log.info("文件没有封面，跳过部分识别处理(封面是必需条件)");
+                log.info(I18nUtil.getMessage("main.partial.recognition.no.cover"));
                 return;
             }
             
@@ -1180,10 +1180,11 @@ public class Main {
             boolean hasPartialTags = tagWriter.hasPartialTags(audioFile);
             
             log.info("========================================");
-            log.info("检测到部分识别文件(有封面)，开始处理");
-            log.info("- 有内嵌封面: {}", hasEmbeddedCover);
-            log.info("- 文件夹有封面: {}", hasFolderCover);
-            log.info("- 有部分标签: {}", hasPartialTags);
+            log.info(I18nUtil.getMessage("main.partial.recognition.detected"));
+            LogCollector.addLog("INFO", "✓ " + I18nUtil.getMessage("main.partial.recognition.detected") + ": " + audioFile.getName());
+            log.info(I18nUtil.getMessage("main.partial.recognition.has.embedded.cover") + ": {}", hasEmbeddedCover);
+            log.info(I18nUtil.getMessage("main.partial.recognition.has.folder.cover") + ": {}", hasFolderCover);
+            log.info(I18nUtil.getMessage("main.partial.recognition.has.tags") + ": {}", hasPartialTags);
             
             // 构建目标文件路径
             String fileName = audioFile.getName();
@@ -1195,25 +1196,29 @@ public class Main {
             }
             
             // 复制文件到部分识别目录
-            log.info("复制文件到部分识别目录: {}", targetFile.getAbsolutePath());
+            log.info(I18nUtil.getMessage("main.partial.recognition.copying") + ": {}", targetFile.getAbsolutePath());
             Files.copy(audioFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             
             // 如果文件夹有封面但文件没有内嵌封面，则内嵌封面
             if (hasFolderCover && !hasEmbeddedCover) {
-                log.info("文件夹有封面但文件未内嵌，开始内嵌封面...");
+                log.info(I18nUtil.getMessage("main.partial.recognition.embedding.cover"));
+                LogCollector.addLog("INFO", "  → " + I18nUtil.getMessage("main.partial.recognition.embedding.cover"));
                 boolean embedSuccess = tagWriter.embedFolderCover(targetFile, folderCover);
                 if (embedSuccess) {
-                    log.info("✓ 封面内嵌成功");
+                    log.info(I18nUtil.getMessage("main.partial.recognition.embed.success"));
+                    LogCollector.addLog("SUCCESS", "  " + I18nUtil.getMessage("main.partial.recognition.embed.success"));
                 } else {
-                    log.warn("✗ 封面内嵌失败");
+                    log.warn(I18nUtil.getMessage("main.partial.recognition.embed.failed"));
+                    LogCollector.addLog("WARN", "  " + I18nUtil.getMessage("main.partial.recognition.embed.failed"));
                 }
             }
             
-            log.info("✓ 部分识别文件处理完成: {}", targetFile.getAbsolutePath());
+            log.info(I18nUtil.getMessage("main.partial.recognition.complete") + ": {}", targetFile.getAbsolutePath());
+            LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.partial.recognition.complete") + ": " + config.getPartialDirectory());
             log.info("========================================");
             
         } catch (Exception e) {
-            log.error("处理部分识别文件失败: {}", audioFile.getName(), e);
+            log.error(I18nUtil.getMessage("main.partial.recognition.failed") + ": {}", audioFile.getName(), e);
         }
     }
     
