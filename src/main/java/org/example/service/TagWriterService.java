@@ -427,4 +427,125 @@ public class TagWriterService {
         }
     }
     
+    /**
+     * 检查音频文件是否有部分有用的标签信息
+     * 检查项目：艺术家、专辑、作曲家、作词家、歌词、风格等
+     * @return true表示至少有一项有用信息
+     */
+    public boolean hasPartialTags(File audioFile) {
+        try {
+            AudioFile audioFileObj = AudioFileIO.read(audioFile);
+            Tag tag = audioFileObj.getTag();
+            
+            if (tag == null) {
+                return false;
+            }
+            
+            // 检查是否有艺术家
+            String artist = tag.getFirst(FieldKey.ARTIST);
+            if (artist != null && !artist.trim().isEmpty()) {
+                return true;
+            }
+            
+            // 检查是否有专辑
+            String album = tag.getFirst(FieldKey.ALBUM);
+            if (album != null && !album.trim().isEmpty()) {
+                return true;
+            }
+            
+            // 检查是否有专辑艺术家
+            String albumArtist = tag.getFirst(FieldKey.ALBUM_ARTIST);
+            if (albumArtist != null && !albumArtist.trim().isEmpty()) {
+                return true;
+            }
+            
+            // 检查是否有作曲家
+            String composer = tag.getFirst(FieldKey.COMPOSER);
+            if (composer != null && !composer.trim().isEmpty()) {
+                return true;
+            }
+            
+            // 检查是否有作词家
+            String lyricist = tag.getFirst(FieldKey.LYRICIST);
+            if (lyricist != null && !lyricist.trim().isEmpty()) {
+                return true;
+            }
+            
+            // 检查是否有歌词
+            String lyrics = tag.getFirst(FieldKey.LYRICS);
+            if (lyrics != null && !lyrics.trim().isEmpty()) {
+                return true;
+            }
+            
+            // 检查是否有风格
+            String genre = tag.getFirst(FieldKey.GENRE);
+            if (genre != null && !genre.trim().isEmpty()) {
+                return true;
+            }
+            
+            return false;
+            
+        } catch (Exception e) {
+            log.error("检查标签信息失败: {}", audioFile.getName(), e);
+            return false;
+        }
+    }
+    
+    /**
+     * 检查音频文件是否已内嵌封面
+     */
+    public boolean hasEmbeddedCover(File audioFile) {
+        try {
+            AudioFile audioFileObj = AudioFileIO.read(audioFile);
+            Tag tag = audioFileObj.getTag();
+            
+            if (tag != null) {
+                Artwork artwork = tag.getFirstArtwork();
+                return artwork != null && artwork.getBinaryData() != null && artwork.getBinaryData().length > 0;
+            }
+            
+            return false;
+            
+        } catch (Exception e) {
+            log.debug("检查内嵌封面失败: {}", audioFile.getName());
+            return false;
+        }
+    }
+    
+    /**
+     * 将文件夹中的封面图片内嵌到音频文件
+     * @param audioFile 音频文件
+     * @param folderCoverData 文件夹封面数据
+     * @return true表示成功
+     */
+    public boolean embedFolderCover(File audioFile, byte[] folderCoverData) {
+        if (folderCoverData == null || folderCoverData.length == 0) {
+            return false;
+        }
+        
+        try {
+            log.info("内嵌文件夹封面到: {}", audioFile.getName());
+            AudioFile audioFileObj = AudioFileIO.read(audioFile);
+            Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
+            
+            // 创建封面对象
+            Artwork artwork = new StandardArtwork();
+            artwork.setBinaryData(folderCoverData);
+            artwork.setMimeType("image/jpeg");
+            
+            // 删除现有封面并设置新封面
+            tag.deleteArtworkField();
+            tag.setField(artwork);
+            
+            // 保存更改
+            audioFileObj.commit();
+            log.info("封面内嵌成功: {}", audioFile.getName());
+            return true;
+            
+        } catch (Exception e) {
+            log.error("内嵌封面失败: {}", audioFile.getName(), e);
+            return false;
+        }
+    }
+    
 }

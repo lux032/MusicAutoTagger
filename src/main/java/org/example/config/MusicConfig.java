@@ -30,6 +30,7 @@ public class MusicConfig {
     private boolean autoRename;
     private boolean createBackup;
     private String failedDirectory; // 识别失败文件存放目录
+    private String partialDirectory; // 部分识别文件存放目录(有标签或封面但指纹识别失败)
     private int maxRetries; // 最大重试次数
     
     // 日志配置
@@ -78,6 +79,7 @@ public class MusicConfig {
         this.autoRename = true;
         this.createBackup = true;
         this.failedDirectory = null; // 默认不移动失败文件
+        this.partialDirectory = null; // 默认不移动部分识别文件
         this.maxRetries = 3; // 默认重试3次
         this.enableDetailedLogging = true;
         this.processedFileLogPath = System.getProperty("user.home") + "/.musicdemo/processed_files.log";
@@ -150,6 +152,9 @@ public class MusicConfig {
             }
             if (props.containsKey("file.failedDirectory")) {
                 this.failedDirectory = props.getProperty("file.failedDirectory");
+            }
+            if (props.containsKey("file.partialDirectory")) {
+                this.partialDirectory = props.getProperty("file.partialDirectory");
             }
             if (props.containsKey("file.maxRetries")) {
                 try {

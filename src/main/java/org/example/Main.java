@@ -235,11 +235,13 @@ public class Main {
             } else if (!isLooseFileInMonitorRoot) {
                 // 没有缓存且不是散落文件，进行快速扫描
                 log.info("尝试第一级快速扫描（基于标签和文件夹名称）...");
+                LogCollector.addLog("INFO", "📂 " + I18nUtil.getMessage("main.quick.scan.attempt", audioFile.getName()));
                 QuickScanService.QuickScanResult quickResult = quickScanService.quickScan(audioFile, musicFilesInFolder);
-                
+
                 if (quickResult != null && quickResult.isHighConfidence()) {
                     // 快速扫描成功，锁定专辑信息
                     log.info("✓ 快速扫描成功，锁定专辑信息");
+                    LogCollector.addLog("SUCCESS", "✓ " + I18nUtil.getMessage("main.quick.scan.success", audioFile.getName()));
                     MusicMetadata quickMetadata = quickResult.getMetadata();
                     
                     lockedAlbumTitle = quickMetadata.getAlbum();
@@ -275,20 +277,27 @@ public class Main {
             
             // ===== 无论快速扫描是否成功，都进行指纹识别获取单曲详细信息 =====
             log.info("正在进行音频指纹识别以获取单曲详细元数据...");
+            LogCollector.addLog("INFO", "🔍 " + I18nUtil.getMessage("main.fingerprint.identifying", audioFile.getName()));
             AudioFingerprintService.AcoustIdResult acoustIdResult =
                 fingerprintService.identifyAudioFile(audioFile);
-            
+
             if (acoustIdResult.getRecordings() == null || acoustIdResult.getRecordings().isEmpty()) {
                 log.warn(I18nUtil.getMessage("main.fingerprint.failed"), audioFile.getName());
                 log.info("该文件的 AcoustID 未关联到 MusicBrainz 录音信息");
-                
+                LogCollector.addLog("WARN", "⚠ " + I18nUtil.getMessage("main.acoustid.no.match", audioFile.getName()));
+
                 // 如果没有锁定的专辑信息，则识别失败
                 if (lockedAlbumTitle == null) {
                     log.info("建议：手动添加标签或等待 MusicBrainz 社区完善数据");
-                    
+
                     // 散落文件：复制单个文件到失败目录
                     if (isLooseFileInMonitorRoot) {
                         log.warn("散落文件识别失败: {}", audioFile.getName());
+                        LogCollector.addLog("WARN", "✗ " + I18nUtil.getMessage("main.recognition.failed.loose", audioFile.getName()));
+                        
+                        // 先尝试处理部分识别文件
+                        handlePartialRecognitionFile(audioFile);
+                        
                         if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
                             try {
                                 copyFailedFileToFailedDirectory(audioFile);
@@ -305,6 +314,12 @@ public class Main {
                         );
                     } else {
                         // 正常专辑文件：复制整个专辑根目录到失败目录
+                        log.warn("专辑识别失败: {}", albumRootDir.getName());
+                        LogCollector.addLog("WARN", "✗ " + I18nUtil.getMessage("main.recognition.failed.album", albumRootDir.getName(), audioFile.getName()));
+                        
+                        // 先尝试处理部分识别文件
+                        handlePartialRecognitionFile(audioFile);
+                        
                         if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
                             try {
                                 copyFailedFolderToFailedDirectory(albumRootDir);
@@ -312,11 +327,11 @@ public class Main {
                                 log.error("复制失败文件夹到失败目录时出错: {}", e.getMessage());
                             }
                         }
-                        
+
                         // 标记整个专辑根目录下的所有文件为"已处理"，避免继续识别
                         markAlbumAsProcessed(albumRootDir, "识别失败 - 整个专辑");
                     }
-                    
+
                     return true; // 识别失败，不重试但记录
                 } else {
                     // 有锁定的专辑信息，创建基础metadata
@@ -1136,6 +1151,70 @@ public class Main {
         metadata.setArtist(recordingInfo.getArtist());
         metadata.setAlbum(recordingInfo.getAlbum());
         return metadata;
+    }
+    
+    /**
+     * 处理部分识别的文件(有标签或封面但指纹识别失败)
+     * 将文件复制到部分识别目录，并尝试内嵌文件夹封面
+     */
+    private static void handlePartialRecognitionFile(File audioFile) {
+        if (config.getPartialDirectory() == null || config.getPartialDirectory().isEmpty()) {
+            return; // 未配置部分识别目录，跳过
+        }
+        
+        try {
+            // 检查是否有内嵌封面
+            boolean hasEmbeddedCover = tagWriter.hasEmbeddedCover(audioFile);
+            
+            // 检查文件夹中是否有封面
+            byte[] folderCover = findCoverInDirectory(audioFile.getParentFile());
+            boolean hasFolderCover = (folderCover != null && folderCover.length > 0);
+            
+            // 封面是必需条件：如果既没有内嵌封面也没有文件夹封面，不处理
+            if (!hasEmbeddedCover && !hasFolderCover) {
+                log.info("文件没有封面，跳过部分识别处理(封面是必需条件)");
+                return;
+            }
+            
+            // 检查是否有部分标签信息
+            boolean hasPartialTags = tagWriter.hasPartialTags(audioFile);
+            
+            log.info("========================================");
+            log.info("检测到部分识别文件(有封面)，开始处理");
+            log.info("- 有内嵌封面: {}", hasEmbeddedCover);
+            log.info("- 文件夹有封面: {}", hasFolderCover);
+            log.info("- 有部分标签: {}", hasPartialTags);
+            
+            // 构建目标文件路径
+            String fileName = audioFile.getName();
+            File targetFile = new File(config.getPartialDirectory(), fileName);
+            
+            // 创建目标目录
+            if (!targetFile.getParentFile().exists()) {
+                targetFile.getParentFile().mkdirs();
+            }
+            
+            // 复制文件到部分识别目录
+            log.info("复制文件到部分识别目录: {}", targetFile.getAbsolutePath());
+            Files.copy(audioFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            
+            // 如果文件夹有封面但文件没有内嵌封面，则内嵌封面
+            if (hasFolderCover && !hasEmbeddedCover) {
+                log.info("文件夹有封面但文件未内嵌，开始内嵌封面...");
+                boolean embedSuccess = tagWriter.embedFolderCover(targetFile, folderCover);
+                if (embedSuccess) {
+                    log.info("✓ 封面内嵌成功");
+                } else {
+                    log.warn("✗ 封面内嵌失败");
+                }
+            }
+            
+            log.info("✓ 部分识别文件处理完成: {}", targetFile.getAbsolutePath());
+            log.info("========================================");
+            
+        } catch (Exception e) {
+            log.error("处理部分识别文件失败: {}", audioFile.getName(), e);
+        }
     }
     
     /**

@@ -92,6 +92,14 @@ logging.processedFileLogPath=/app/logs/processed_files.log
 # 留空则不移动失败文件
 file.failedDirectory=/app/failed_files
 
+# 部分识别文件存放目录
+# 当音频指纹识别失败但文件已有部分标签信息（艺术家、专辑、作曲家等）或封面时，
+# 除了复制到失败目录外，还会复制到此目录，方便用户直接使用
+# Docker环境：使用容器内路径 /app/partial_files
+# Windows本地：使用绝对路径，例如 D:/MusicTest/PartialFiles
+# 留空则不复制部分识别文件
+file.partialDirectory=/app/partial_files
+
 # 最大重试次数（网络错误时）
 # 默认值：3
 file.maxRetries=3

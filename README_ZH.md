@@ -98,6 +98,9 @@
           # 失败文件目录（识别失败文件隔离）
           - /path/to/failed:/app/failed_files
 
+          # 部分识别目录（可选，存放有标签/封面但指纹识别失败的文件）
+          - /path/to/partial:/app/partial_files
+
           # 封面缓存目录（持久化下载的封面，重启后保留）
           - /path/to/cover_cache:/app/.cover_cache
 
@@ -114,6 +117,7 @@
     | `/path/to/music_library` | `/app/tagged_music` | 整理后的音乐输出 | ✅ 必需 |
     | `./config.properties` | `/app/config.properties` | 配置文件 | ✅ 必需 |
     | `/path/to/failed` | `/app/failed_files` | 识别失败文件隔离 | ✅ 必需 |
+    | `/path/to/partial` | `/app/partial_files` | 部分识别文件（可选） | ⚠️ 可选 |
     | `/path/to/cover_cache` | `/app/.cover_cache` | 封面图片缓存 | ✅ 必需 |
     | `/path/to/logs` | `/app/logs` | 处理日志 | ✅ 必需 |
     
@@ -184,7 +188,8 @@ java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 |--------|------|--------|
 | `monitor.directory` | 监控的源目录 (Docker内路径) | `/music` |
 | `monitor.outputDirectory` | 输出目标目录 (Docker内路径) | `/app/tagged_music` |
-| `file.failedDirectory` | 识别失败文件存放目录 (可选) | `/app/failed_files` |
+| `file.failedDirectory` | 识别失败文件存放目录 | `/app/failed_files` |
+| `file.partialDirectory` | 部分识别文件存放目录（可选，必须有封面） | `/app/partial_files` |
 | `cache.coverArtDirectory` | 封面图片缓存目录 | `/app/.cover_cache` |
 | `logging.processedFileLogPath` | 已处理文件日志路径 | `/app/logs/processed_files.log` |
 

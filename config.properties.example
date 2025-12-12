@@ -92,6 +92,14 @@ logging.processedFileLogPath=/app/logs/processed_files.log
 # Leave empty to not move failed files
 file.failedDirectory=/app/failed_files
 
+# Partial recognition files storage directory
+# When fingerprint recognition fails but the file has some tags (artist, album, composer, etc.) or cover art,
+# files will be copied here in addition to the failed directory for user convenience
+# Docker environment: Use container path /app/partial_files
+# Windows local: Use absolute path, e.g., D:/MusicTest/PartialFiles
+# Leave empty to not copy partial recognition files
+file.partialDirectory=/app/partial_files
+
 # Maximum retry count (for network errors)
 # Default: 3
 file.maxRetries=3

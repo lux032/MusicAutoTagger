@@ -98,6 +98,9 @@ The easiest way to run the application. No Java installation required.
           # Failed files directory (for identification failures)
           - /path/to/failed:/app/failed_files
           
+          # Partial recognition directory (optional, for files with tags/cover but failed fingerprinting)
+          - /path/to/partial:/app/partial_files
+          
           # Cover cache directory (persists downloaded covers across restarts)
           - /path/to/cover_cache:/app/.cover_cache
           
@@ -114,6 +117,7 @@ The easiest way to run the application. No Java installation required.
     | `/path/to/music_library` | `/app/tagged_music` | Organized music output | ✅ Yes |
     | `./config.properties` | `/app/config.properties` | Configuration file | ✅ Yes |
     | `/path/to/failed` | `/app/failed_files` | Failed file isolation | ✅ Yes |
+    | `/path/to/partial` | `/app/partial_files` | Partial recognition files (optional) | ⚠️ Optional |
     | `/path/to/cover_cache` | `/app/.cover_cache` | Cover art cache | ✅ Yes |
     | `/path/to/logs` | `/app/logs` | Processing logs | ✅ Yes |
     
@@ -184,7 +188,8 @@ For a complete template, see `config.properties.example`. Here are the most comm
 |--------|------|--------|
 | `monitor.directory` | Source directory to monitor (Inside Docker) | `/music` |
 | `monitor.outputDirectory` | Target output directory (Inside Docker) | `/app/tagged_music` |
-| `file.failedDirectory` | Directory for failed files (Optional) | `/app/failed_files` |
+| `file.failedDirectory` | Directory for failed files | `/app/failed_files` |
+| `file.partialDirectory` | Directory for partial recognition files (Optional, must have cover) | `/app/partial_files` |
 | `cache.coverArtDirectory` | Cover art cache directory | `/app/.cover_cache` |
 | `logging.processedFileLogPath` | Processed file log path | `/app/logs/processed_files.log` |
 
