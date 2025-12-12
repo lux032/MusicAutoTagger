@@ -290,14 +290,15 @@ public class Main {
                 if (lockedAlbumTitle == null) {
                     log.info("建议：手动添加标签或等待 MusicBrainz 社区完善数据");
 
-                    // 散落文件：复制单个文件到失败目录
+                    // 散落文件：先处理部分识别，然后复制到失败目录
                     if (isLooseFileInMonitorRoot) {
                         log.warn("散落文件识别失败: {}", audioFile.getName());
                         LogCollector.addLog("WARN", "✗ " + I18nUtil.getMessage("main.recognition.failed.loose", audioFile.getName()));
                         
-                        // 先尝试处理部分识别文件
+                        // 尝试处理部分识别文件
                         handlePartialRecognitionFile(audioFile);
                         
+                        // 复制到失败目录
                         if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
                             try {
                                 copyFailedFileToFailedDirectory(audioFile);
@@ -313,13 +314,14 @@ public class Main {
                             "Unknown Album"
                         );
                     } else {
-                        // 正常专辑文件：复制整个专辑根目录到失败目录
+                        // 正常专辑文件：先处理部分识别，然后复制整个专辑到失败目录
                         log.warn("专辑识别失败: {}", albumRootDir.getName());
                         LogCollector.addLog("WARN", "✗ " + I18nUtil.getMessage("main.recognition.failed.album", albumRootDir.getName(), audioFile.getName()));
                         
-                        // 先尝试处理部分识别文件
+                        // 尝试处理部分识别文件
                         handlePartialRecognitionFile(audioFile);
                         
+                        // 复制整个专辑到失败目录
                         if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
                             try {
                                 copyFailedFolderToFailedDirectory(albumRootDir);
@@ -1173,6 +1175,7 @@ public class Main {
             // 封面是必需条件：如果既没有内嵌封面也没有文件夹封面，不处理
             if (!hasEmbeddedCover && !hasFolderCover) {
                 log.info(I18nUtil.getMessage("main.partial.recognition.no.cover"));
+                LogCollector.addLog("INFO", "  ✗ " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
                 return;
             }
             
@@ -1219,6 +1222,7 @@ public class Main {
             
             // 复制文件到部分识别目录
             log.info(I18nUtil.getMessage("main.partial.recognition.copying") + ": {}", targetFile.getAbsolutePath());
+            LogCollector.addLog("INFO", "  → " + I18nUtil.getMessage("main.partial.recognition.copying") + ": " + relativePath);
             Files.copy(audioFile.toPath(), targetFile.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             
             // 如果文件夹有封面但文件没有内嵌封面，则内嵌封面
