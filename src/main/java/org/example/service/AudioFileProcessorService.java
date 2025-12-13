@@ -202,25 +202,64 @@ public class AudioFileProcessorService {
                     acoustIdResult.getRecordings(),
                     lockedReleaseGroupId
                 );
+                
+                // 检查 bestMatch 是否有完整信息
+                boolean hasCompleteInfo = (bestMatch.getTitle() != null && !bestMatch.getTitle().isEmpty() &&
+                                          bestMatch.getArtist() != null && !bestMatch.getArtist().isEmpty());
+                
                 // 处理可能为 null 或空的情况
                 String displayArtist = (bestMatch.getArtist() != null && !bestMatch.getArtist().isEmpty())
-                    ? bestMatch.getArtist() : "(待获取)";
+                    ? bestMatch.getArtist() : "(待从MusicBrainz获取)";
                 String displayTitle = (bestMatch.getTitle() != null && !bestMatch.getTitle().isEmpty())
-                    ? bestMatch.getTitle() : "(待获取)";
-                log.info("识别成功: {} - {}", displayArtist, displayTitle);
-                LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.identify.success", displayArtist, displayTitle));
+                    ? bestMatch.getTitle() : "(待从MusicBrainz获取)";
+                
+                if (hasCompleteInfo) {
+                    log.info("识别成功: {} - {}", displayArtist, displayTitle);
+                    LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.identify.success", displayArtist, displayTitle));
+                } else {
+                    log.info("AcoustID 返回了 Recording ID: {}，但缺少详细信息，将从 MusicBrainz 查询", bestMatch.getRecordingId());
+                    LogCollector.addLog("INFO", "🔍 " + I18nUtil.getMessage("main.acoustid.has.recording.id"));
+                }
 
                 // 如果有锁定的专辑信息，传入1作为musicFilesInFolder以避免selectBestRelease被文件数量影响
                 // 否则传入实际的文件数量
                 int musicFilesParam = (lockedAlbumTitle != null) ? 1 : musicFilesInFolder;
 
                 // 通过 MusicBrainz 获取详细元数据（包含作词、作曲、风格等）
-                log.info("正在获取详细元数据...");
+                // 即使 AcoustID 返回的信息不完整，只要有 Recording ID 就可以查询
+                log.info("正在从 MusicBrainz 获取详细元数据 (Recording ID: {})...", bestMatch.getRecordingId());
                 detailedMetadata = musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesParam, lockedReleaseGroupId);
 
                 if (detailedMetadata == null) {
-                    log.warn("无法获取详细元数据");
-                    detailedMetadata = MetadataUtils.convertToMusicMetadata(bestMatch);
+                    log.warn("无法从 MusicBrainz 获取详细元数据");
+                    if (hasCompleteInfo) {
+                        // 如果 AcoustID 有完整信息，使用它作为备选
+                        detailedMetadata = MetadataUtils.convertToMusicMetadata(bestMatch);
+                    } else {
+                        // AcoustID 和 MusicBrainz 都没有完整信息
+                        log.warn("AcoustID 和 MusicBrainz 均无法提供完整元数据");
+                        // 如果有快速扫描锁定的专辑信息，使用它
+                        if (lockedAlbumTitle != null) {
+                            log.info("使用快速扫描锁定的专辑信息作为备选");
+                            MusicMetadata sourceTagsForFallback = tagWriter.readTags(audioFile);
+                            detailedMetadata = MetadataUtils.createMetadataFromQuickScan(
+                                sourceTagsForFallback,
+                                lockedAlbumTitle,
+                                lockedAlbumArtist,
+                                lockedReleaseGroupId,
+                                lockedReleaseDate,
+                                audioFile.getName()
+                            );
+                        } else {
+                            // 完全没有信息，创建基本元数据
+                            detailedMetadata = new MusicMetadata();
+                            detailedMetadata.setRecordingId(bestMatch.getRecordingId());
+                        }
+                    }
+                } else {
+                    // 成功从 MusicBrainz 获取到详细信息
+                    log.info("✓ 成功从 MusicBrainz 获取详细元数据: {} - {}",
+                        detailedMetadata.getArtist(), detailedMetadata.getTitle());
                 }
 
                 // 如果有锁定的专辑信息，用锁定的信息覆盖（确保专辑信息不被改变）

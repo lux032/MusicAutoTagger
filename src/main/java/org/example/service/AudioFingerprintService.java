@@ -316,10 +316,18 @@ public class AudioFingerprintService {
         
         if (recordings.isArray() && recordings.size() > 0) {
             List<RecordingInfo> recordingList = new ArrayList<>();
+            int incompleteCount = 0;
             
             for (JsonNode recording : recordings) {
                 // 获取基本信息
                 String recordingId = recording.path("id").asText();
+                
+                // 跳过没有 recording ID 的记录
+                if (recordingId == null || recordingId.isEmpty()) {
+                    log.debug("跳过没有 ID 的录音记录");
+                    continue;
+                }
+                
                 String title = recording.path("title").asText();
                 
                 // 解析艺术家
@@ -336,17 +344,26 @@ public class AudioFingerprintService {
                     artistName = artistNames.toString();
                 }
                 
-                // 跳过没有完整信息的录音（必须有title和artist）
-                if (title == null || title.isEmpty() || artistName == null || artistName.isEmpty()) {
-                    log.debug("跳过不完整的录音: id={}, title={}, artist={}",
-                        recordingId, title, artistName);
-                    continue;
-                }
-                
                 RecordingInfo info = new RecordingInfo();
                 info.setRecordingId(recordingId);
-                info.setTitle(title);
-                info.setArtist(artistName);
+                
+                // 检查是否有完整的 title 和 artist 信息
+                boolean hasCompleteInfo = (title != null && !title.isEmpty() &&
+                                          artistName != null && !artistName.isEmpty());
+                
+                if (hasCompleteInfo) {
+                    info.setTitle(title);
+                    info.setArtist(artistName);
+                } else {
+                    // 即使缺少 title/artist，也保留 recording ID
+                    // 后续可以通过 MusicBrainz API 使用 recording ID 查询完整信息
+                    incompleteCount++;
+                    log.debug("录音信息不完整但保留 ID: id={}, title={}, artist={}",
+                        recordingId, title, artistName);
+                    // 设置空值或 null，让后续处理知道需要从 MusicBrainz 获取
+                    info.setTitle(title != null && !title.isEmpty() ? title : null);
+                    info.setArtist(artistName != null && !artistName.isEmpty() ? artistName : null);
+                }
                 
                 // 解析专辑
                 JsonNode releaseGroups = recording.path("releasegroups");
@@ -368,10 +385,10 @@ public class AudioFingerprintService {
             
             result.setRecordings(recordingList);
             
-            // 如果所有录音都被过滤掉了，记录警告
-            if (recordingList.isEmpty() && recordings.size() > 0) {
-                log.warn("AcoustID 返回了 {} 条录音，但都缺少完整的 title 或 artist 信息",
-                    recordings.size());
+            // 记录信息不完整但已保留的录音数量
+            if (incompleteCount > 0) {
+                log.info("AcoustID 返回了 {} 条录音，其中 {} 条缺少 title/artist 信息（已保留 recording ID 用于 MusicBrainz 查询）",
+                    recordings.size(), incompleteCount);
             }
         }
         
