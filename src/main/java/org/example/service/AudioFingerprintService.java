@@ -219,11 +219,11 @@ public class AudioFingerprintService {
                 params.add(new BasicNameValuePair("client", config.getAcoustIdApiKey()));
                 params.add(new BasicNameValuePair("duration", String.valueOf(fingerprint.getDuration())));
                 params.add(new BasicNameValuePair("fingerprint", fingerprint.getFingerprint()));
-                // 使用 + 连接多个 meta 参数，确保返回完整的录音信息（包括 title 和 artists）
-                params.add(new BasicNameValuePair("meta", "recordings+releasegroups+compress"));
+                // 使用空格连接多个 meta 参数（URL编码后空格会变成+），确保返回完整的录音信息
+                params.add(new BasicNameValuePair("meta", "recordings releasegroups compress"));
                 
                 if (retryCount == 0) {
-                    log.info("AcoustID API 请求参数 - duration: {}, meta: recordings+releasegroups+compress",
+                    log.info("AcoustID API 请求参数 - duration: {}, meta: recordings releasegroups compress",
                         fingerprint.getDuration());
                 }
                 

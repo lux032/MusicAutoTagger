@@ -405,6 +405,9 @@ public class Main {
                 }
             } else {
                 // 指纹识别成功，获取详细元数据
+                // 关键：指纹识别成功获取到recordings，应该使用指纹识别模式（而非快速扫描模式）
+                isQuickScanMode = false;
+                
                 AudioFingerprintService.RecordingInfo bestMatch = findBestRecordingMatch(
                     acoustIdResult.getRecordings(),
                     lockedReleaseGroupId
