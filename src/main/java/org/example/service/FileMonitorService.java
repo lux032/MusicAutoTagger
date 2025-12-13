@@ -519,11 +519,21 @@ public class FileMonitorService {
     }
     
     /**
-     * 移动文件到失败目录，并记录到数据库
+     * 复制失败文件到失败目录，保留完整的相对路径结构
+     *
+     * 关键修复：
+     * - 复制单个失败文件（而非移动）
+     * - 保留从监控目录到文件的完整相对路径结构
+     * - 只复制这一个失败的文件，不复制整个专辑文件夹
+     *
+     * 例如：
+     * - 监控目录：/MusicDownload
+     * - 失败文件：/MusicDownload/Artist - Album/Disc 1/03 song.flac
+     * - 失败目录：/failed_files
+     * - 结果：/failed_files/Artist - Album/Disc 1/03 song.flac
      */
     private void moveToFailedDirectory(File file) {
-        // 关键修复：无论是否配置失败目录，都必须记录到数据库，避免文件"静默丢失"
-        // 记录到数据库，标记为处理失败
+        // 记录到数据库，标记为处理失败（无论是否配置失败目录，都必须记录）
         if (processedLogger != null) {
             try {
                 processedLogger.markFileAsProcessed(
@@ -552,8 +562,17 @@ public class FileMonitorService {
                 log.info(I18nUtil.getMessage("monitor.failed.dir.created"), failedDir);
             }
 
+            // 计算相对路径（保留文件夹结构）
             Path sourcePath = file.toPath();
-            Path targetPath = failedDirPath.resolve(file.getName());
+            String relativePath = getRelativePathFromMonitorDir(file);
+            Path targetPath = failedDirPath.resolve(relativePath);
+
+            // 创建目标目录（保留文件夹结构）
+            Path targetDir = targetPath.getParent();
+            if (targetDir != null && !Files.exists(targetDir)) {
+                Files.createDirectories(targetDir);
+                log.debug("创建失败文件目录结构: {}", targetDir);
+            }
 
             // 如果目标文件已存在，添加时间戳
             if (Files.exists(targetPath)) {
@@ -562,15 +581,40 @@ public class FileMonitorService {
                 String name = dotIndex > 0 ? baseName.substring(0, dotIndex) : baseName;
                 String ext = dotIndex > 0 ? baseName.substring(dotIndex) : "";
                 String timestamp = String.valueOf(System.currentTimeMillis());
-                targetPath = failedDirPath.resolve(name + "_" + timestamp + ext);
+                targetPath = targetDir.resolve(name + "_" + timestamp + ext);
             }
 
-            Files.move(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING);
-            log.info(I18nUtil.getMessage("monitor.failed.file.moved"), targetPath);
+            // 复制文件（而非移动），保留原文件
+            Files.copy(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING);
+            log.info("✓ 失败文件已复制到: {} (保留原文件)", targetPath);
 
         } catch (IOException e) {
             log.error(I18nUtil.getMessage("monitor.move.failed.error"), file.getName(), failedDir, e);
         }
+    }
+    
+    /**
+     * 获取文件相对于监控目录的相对路径
+     */
+    private String getRelativePathFromMonitorDir(File file) {
+        try {
+            String monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
+            String filePath = file.getCanonicalPath();
+            
+            if (filePath.startsWith(monitorDirPath)) {
+                String relativePath = filePath.substring(monitorDirPath.length());
+                // 去掉开头的分隔符
+                if (relativePath.startsWith(File.separator)) {
+                    relativePath = relativePath.substring(1);
+                }
+                return relativePath;
+            }
+        } catch (IOException e) {
+            log.warn("获取相对路径失败，使用文件名: {}", e.getMessage());
+        }
+        
+        // 如果无法获取相对路径，返回文件名
+        return file.getName();
     }
     
     /**
