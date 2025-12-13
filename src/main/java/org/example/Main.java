@@ -213,6 +213,7 @@ public class Main {
             boolean isLooseFileInMonitorRoot = isLooseFileInMonitorRoot(audioFile);
             
             MusicMetadata detailedMetadata = null;
+            boolean isQuickScanMode = false; // 标记是否使用快速扫描模式处理
             
             // ===== 优先检查文件夹专辑缓存 =====
             FolderAlbumCache.CachedAlbumInfo cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder);
@@ -242,6 +243,7 @@ public class Main {
                     // 快速扫描成功，锁定专辑信息
                     log.info("✓ 快速扫描成功，锁定专辑信息");
                     LogCollector.addLog("SUCCESS", "✓ " + I18nUtil.getMessage("main.quick.scan.success", audioFile.getName()));
+                    isQuickScanMode = true; // 标记为快速扫描模式
                     MusicMetadata quickMetadata = quickResult.getMetadata();
                     
                     lockedAlbumTitle = quickMetadata.getAlbum();
@@ -282,12 +284,11 @@ public class Main {
                 fingerprintService.identifyAudioFile(audioFile);
 
             if (acoustIdResult.getRecordings() == null || acoustIdResult.getRecordings().isEmpty()) {
-                log.warn(I18nUtil.getMessage("main.fingerprint.failed"), audioFile.getName());
-                log.info("该文件的 AcoustID 未关联到 MusicBrainz 录音信息");
-                LogCollector.addLog("WARN", "⚠ " + I18nUtil.getMessage("main.acoustid.no.match", audioFile.getName()));
-
                 // 如果没有锁定的专辑信息，则识别失败
                 if (lockedAlbumTitle == null) {
+                    log.warn(I18nUtil.getMessage("main.fingerprint.failed"), audioFile.getName());
+                    log.info("该文件的 AcoustID 未关联到 MusicBrainz 录音信息");
+                    LogCollector.addLog("WARN", "⚠ " + I18nUtil.getMessage("main.acoustid.no.match", audioFile.getName()));
                     log.info("建议：手动添加标签或等待 MusicBrainz 社区完善数据");
 
                     // 散落文件：先处理部分识别，然后复制到失败目录
@@ -336,8 +337,10 @@ public class Main {
 
                     return true; // 识别失败，不重试但记录
                 } else {
-                    // 有锁定的专辑信息，创建基础metadata
-                    log.warn("无法获取单曲详细信息，使用基础信息");
+                    // 有锁定的专辑信息（快速扫描成功），使用锁定的专辑信息继续处理
+                    log.info("AcoustID 未关联到详细录音信息，但快速扫描已锁定专辑，继续处理");
+                    LogCollector.addLog("INFO", "📋 " + I18nUtil.getMessage("main.acoustid.no.match.use.quick.scan", audioFile.getName()));
+                    LogCollector.addLog("INFO", "📋 " + I18nUtil.getMessage("main.quick.scan.locked.album", lockedAlbumArtist, lockedAlbumTitle));
                     detailedMetadata = new MusicMetadata();
 
                     // 优先使用源文件的标签信息
@@ -406,8 +409,13 @@ public class Main {
                     acoustIdResult.getRecordings(),
                     lockedReleaseGroupId
                 );
-                log.info("识别成功: {} - {}", bestMatch.getArtist(), bestMatch.getTitle());
-                LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.identify.success", bestMatch.getArtist(), bestMatch.getTitle()));
+                // 处理可能为 null 或空的情况
+                String displayArtist = (bestMatch.getArtist() != null && !bestMatch.getArtist().isEmpty())
+                    ? bestMatch.getArtist() : "(待获取)";
+                String displayTitle = (bestMatch.getTitle() != null && !bestMatch.getTitle().isEmpty())
+                    ? bestMatch.getTitle() : "(待获取)";
+                log.info("识别成功: {} - {}", displayArtist, displayTitle);
+                LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.identify.success", displayArtist, displayTitle));
 
                 // 如果有锁定的专辑信息，传入1作为musicFilesInFolder以避免selectBestRelease被文件数量影响
                 // 否则传入实际的文件数量
@@ -480,11 +488,11 @@ public class Main {
             // 注意：散落文件跳过专辑锁定和投票机制，直接处理
             if (isLooseFileInMonitorRoot) {
                 log.info("散落文件保底处理：直接写入元数据（随缘模式）");
-                processAndWriteFile(audioFile, detailedMetadata, coverArtData);
+                processAndWriteFile(audioFile, detailedMetadata, coverArtData, false);
             } else if (lockedAlbumTitle != null) {
                 // 已有锁定的专辑信息（来自快速扫描或缓存），直接处理文件
                 log.info("使用已锁定的专辑信息: {}", lockedAlbumTitle);
-                processAndWriteFile(audioFile, detailedMetadata, coverArtData);
+                processAndWriteFile(audioFile, detailedMetadata, coverArtData, isQuickScanMode);
             } else {
                 // 未锁定专辑：收集样本进行投票
                 log.info("启用文件夹级别专辑锁定（{}首音乐文件）", musicFilesInFolder);
@@ -589,15 +597,24 @@ public class Main {
     
     /**
      * 处理并写入单个文件
+     * @param audioFile 音频文件
+     * @param metadata 元数据
+     * @param coverArtData 封面数据
+     * @param isQuickScanMode 是否为快速扫描模式（用于区分日志显示）
      */
-    private static void processAndWriteFile(File audioFile, MusicMetadata metadata, byte[] coverArtData) {
+    private static void processAndWriteFile(File audioFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
         try {
             log.info("正在写入文件标签: {}", audioFile.getName());
             boolean success = tagWriter.processFile(audioFile, metadata, coverArtData);
             
             if (success) {
-                log.info("✓ 文件处理成功: {}", audioFile.getName());
-                LogCollector.addLog("SUCCESS", "✓ " + I18nUtil.getMessage("main.processing.file", audioFile.getName()) + " - " + I18nUtil.getMessage("log.level.success"));
+                if (isQuickScanMode) {
+                    log.info("✓ 文件处理成功（快速扫描模式）: {}", audioFile.getName());
+                    LogCollector.addLog("SUCCESS", "✓ " + I18nUtil.getMessage("main.process.success.quick.scan", audioFile.getName()));
+                } else {
+                    log.info("✓ 文件处理成功: {}", audioFile.getName());
+                    LogCollector.addLog("SUCCESS", "✓ " + I18nUtil.getMessage("main.process.success.fingerprint", audioFile.getName()));
+                }
                 
                 // 记录文件已处理
                 processedLogger.markFileAsProcessed(
@@ -674,7 +691,7 @@ public class Main {
                 }
                 
                 // 写入文件（metadata已包含作词、作曲、风格等信息）
-                processAndWriteFile(audioFile, metadata, coverArtData);
+                processAndWriteFile(audioFile, metadata, coverArtData, false);
                 successCount++;
                 
             } catch (Exception e) {
@@ -1548,7 +1565,7 @@ public class Main {
                     for (FolderAlbumCache.PendingFile pending : pendingFiles) {
                         try {
                             MusicMetadata fileMetadata = (MusicMetadata) pending.getMetadata();
-                            processAndWriteFile(pending.getAudioFile(), fileMetadata, pending.getCoverArtData());
+                            processAndWriteFile(pending.getAudioFile(), fileMetadata, pending.getCoverArtData(), false);
                         } catch (Exception e) {
                             log.error("关闭前处理文件失败: {}", pending.getAudioFile().getName(), e);
                             // 关键修复：记录失败文件到数据库，避免文件"静默丢失"

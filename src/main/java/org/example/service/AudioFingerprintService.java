@@ -219,10 +219,11 @@ public class AudioFingerprintService {
                 params.add(new BasicNameValuePair("client", config.getAcoustIdApiKey()));
                 params.add(new BasicNameValuePair("duration", String.valueOf(fingerprint.getDuration())));
                 params.add(new BasicNameValuePair("fingerprint", fingerprint.getFingerprint()));
-                params.add(new BasicNameValuePair("meta", "recordings releasegroups"));
+                // 使用 + 连接多个 meta 参数，确保返回完整的录音信息（包括 title 和 artists）
+                params.add(new BasicNameValuePair("meta", "recordings+releasegroups+compress"));
                 
                 if (retryCount == 0) {
-                    log.info("AcoustID API 请求参数 - duration: {}, meta: recordings releasegroups compress",
+                    log.info("AcoustID API 请求参数 - duration: {}, meta: recordings+releasegroups+compress",
                         fingerprint.getDuration());
                 }
                 
@@ -376,8 +377,14 @@ public class AudioFingerprintService {
         
         if (result.getRecordings() != null && !result.getRecordings().isEmpty()) {
             RecordingInfo bestMatch = result.getRecordings().get(0);
-            log.info("识别结果: {} - {} ({})", 
-                bestMatch.getArtist(), bestMatch.getTitle(), bestMatch.getAlbum());
+            String artist = bestMatch.getArtist();
+            String title = bestMatch.getTitle();
+            String album = bestMatch.getAlbum();
+            // 处理可能为 null 或空的情况
+            String displayArtist = (artist != null && !artist.isEmpty()) ? artist : "(待获取)";
+            String displayTitle = (title != null && !title.isEmpty()) ? title : "(待获取)";
+            String displayAlbum = (album != null && !album.isEmpty()) ? album : "(待获取)";
+            log.info("识别结果: {} - {} ({})", displayArtist, displayTitle, displayAlbum);
         } else {
             log.warn("未能识别文件: {}", audioFile.getName());
         }
