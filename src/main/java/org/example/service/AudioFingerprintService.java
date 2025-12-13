@@ -318,11 +318,12 @@ public class AudioFingerprintService {
             List<RecordingInfo> recordingList = new ArrayList<>();
             
             for (JsonNode recording : recordings) {
-                RecordingInfo info = new RecordingInfo();
-                info.setRecordingId(recording.path("id").asText());
-                info.setTitle(recording.path("title").asText());
+                // 获取基本信息
+                String recordingId = recording.path("id").asText();
+                String title = recording.path("title").asText();
                 
                 // 解析艺术家
+                String artistName = null;
                 JsonNode artists = recording.path("artists");
                 if (artists.isArray() && artists.size() > 0) {
                     StringBuilder artistNames = new StringBuilder();
@@ -332,8 +333,20 @@ public class AudioFingerprintService {
                         }
                         artistNames.append(artist.path("name").asText());
                     }
-                    info.setArtist(artistNames.toString());
+                    artistName = artistNames.toString();
                 }
+                
+                // 跳过没有完整信息的录音（必须有title和artist）
+                if (title == null || title.isEmpty() || artistName == null || artistName.isEmpty()) {
+                    log.debug("跳过不完整的录音: id={}, title={}, artist={}",
+                        recordingId, title, artistName);
+                    continue;
+                }
+                
+                RecordingInfo info = new RecordingInfo();
+                info.setRecordingId(recordingId);
+                info.setTitle(title);
+                info.setArtist(artistName);
                 
                 // 解析专辑
                 JsonNode releaseGroups = recording.path("releasegroups");
@@ -354,6 +367,12 @@ public class AudioFingerprintService {
             }
             
             result.setRecordings(recordingList);
+            
+            // 如果所有录音都被过滤掉了，记录警告
+            if (recordingList.isEmpty() && recordings.size() > 0) {
+                log.warn("AcoustID 返回了 {} 条录音，但都缺少完整的 title 或 artist 信息",
+                    recordings.size());
+            }
         }
         
         int recordingCount = result.getRecordings() != null ? result.getRecordings().size() : 0;

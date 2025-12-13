@@ -1598,14 +1598,16 @@ public class Main {
     /**
      * 从 AcoustID 返回的多个录音中选择最佳匹配
      * 优先选择与已锁定专辑 Release Group ID 匹配的录音
+     * 确保返回的录音有完整的 title 和 artist 信息
      */
     private static AudioFingerprintService.RecordingInfo findBestRecordingMatch(
             java.util.List<AudioFingerprintService.RecordingInfo> recordings,
             String lockedReleaseGroupId) {
 
         if (lockedReleaseGroupId != null && !lockedReleaseGroupId.isEmpty()) {
+            // 第一遍：查找与锁定专辑匹配且信息完整的录音
             for (AudioFingerprintService.RecordingInfo recording : recordings) {
-                if (recording.getReleaseGroups() != null) {
+                if (recording.getReleaseGroups() != null && isRecordingComplete(recording)) {
                     for (AudioFingerprintService.ReleaseGroupInfo rg : recording.getReleaseGroups()) {
                         if (lockedReleaseGroupId.equals(rg.getId())) {
                             log.info("找到与锁定专辑匹配的录音: {} - {}",
@@ -1618,8 +1620,24 @@ public class Main {
             log.warn("未找到与锁定专辑 Release Group ID {} 匹配的录音，将使用最佳匹配", lockedReleaseGroupId);
         }
 
-        // 如果没有锁定专辑或未找到匹配，返回第一个（匹配度最高）
+        // 如果没有锁定专辑或未找到匹配，返回第一个信息完整的录音
+        for (AudioFingerprintService.RecordingInfo recording : recordings) {
+            if (isRecordingComplete(recording)) {
+                return recording;
+            }
+        }
+        
+        // 保底：如果所有录音都不完整，返回第一个
+        log.warn("所有录音信息都不完整，使用第一个录音");
         return recordings.get(0);
+    }
+    
+    /**
+     * 检查录音信息是否完整（有 title 和 artist）
+     */
+    private static boolean isRecordingComplete(AudioFingerprintService.RecordingInfo recording) {
+        return recording.getTitle() != null && !recording.getTitle().isEmpty() &&
+               recording.getArtist() != null && !recording.getArtist().isEmpty();
     }
 
     /**
