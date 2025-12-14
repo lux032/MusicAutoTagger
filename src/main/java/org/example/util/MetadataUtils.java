@@ -38,24 +38,65 @@ public class MetadataUtils {
      * 从 AcoustID 返回的多个录音中选择最佳匹配
      * 优先选择与已锁定专辑 Release Group ID 匹配的录音
      * 确保返回的录音有完整的 title 和 artist 信息
+     *
+     * @param recordings AcoustID 返回的录音列表
+     * @param lockedReleaseGroupId 锁定的专辑 Release Group ID
+     * @return 最佳匹配的录音
      */
     public static AudioFingerprintService.RecordingInfo findBestRecordingMatch(
             List<AudioFingerprintService.RecordingInfo> recordings,
             String lockedReleaseGroupId) {
+        return findBestRecordingMatch(recordings, lockedReleaseGroupId, null);
+    }
+    
+    /**
+     * 从 AcoustID 返回的多个录音中选择最佳匹配
+     * 优先选择与已锁定专辑 Release Group ID 匹配的录音
+     * 确保返回的录音有完整的 title 和 artist 信息
+     * 当有多个匹配的录音时，根据文件名进一步匹配（如区分 instrumental 版本）
+     *
+     * @param recordings AcoustID 返回的录音列表
+     * @param lockedReleaseGroupId 锁定的专辑 Release Group ID
+     * @param fileName 源文件名，用于更精确的匹配
+     * @return 最佳匹配的录音
+     */
+    public static AudioFingerprintService.RecordingInfo findBestRecordingMatch(
+            List<AudioFingerprintService.RecordingInfo> recordings,
+            String lockedReleaseGroupId,
+            String fileName) {
 
         if (lockedReleaseGroupId != null && !lockedReleaseGroupId.isEmpty()) {
-            // 第一遍：查找与锁定专辑匹配且信息完整的录音
+            // 收集所有与锁定专辑匹配且信息完整的录音
+            List<AudioFingerprintService.RecordingInfo> matchingRecordings = new java.util.ArrayList<>();
+            
             for (AudioFingerprintService.RecordingInfo recording : recordings) {
                 if (recording.getReleaseGroups() != null && isRecordingComplete(recording)) {
                     for (AudioFingerprintService.ReleaseGroupInfo rg : recording.getReleaseGroups()) {
                         if (lockedReleaseGroupId.equals(rg.getId())) {
-                            log.info("找到与锁定专辑匹配的录音: {} - {}",
-                                recording.getArtist(), recording.getTitle());
-                            return recording;
+                            matchingRecordings.add(recording);
+                            break;
                         }
                     }
                 }
             }
+            
+            if (!matchingRecordings.isEmpty()) {
+                // 如果只有一个匹配，直接返回
+                if (matchingRecordings.size() == 1) {
+                    AudioFingerprintService.RecordingInfo match = matchingRecordings.get(0);
+                    log.info("找到与锁定专辑匹配的录音: {} - {}",
+                        match.getArtist(), match.getTitle());
+                    return match;
+                }
+                
+                // 有多个匹配，根据文件名进行更精确的匹配
+                log.info("找到 {} 个与锁定专辑匹配的录音，进行更精确的匹配...", matchingRecordings.size());
+                AudioFingerprintService.RecordingInfo bestMatch = selectBestMatchByFileName(matchingRecordings, fileName);
+                log.info("根据文件名匹配选择录音: {} - {}",
+                    bestMatch.getArtist(), bestMatch.getTitle());
+                return bestMatch;
+            }
+            
             log.warn("未找到与锁定专辑 Release Group ID {} 匹配的录音，将使用最佳匹配", lockedReleaseGroupId);
         }
 
@@ -68,6 +109,95 @@ public class MetadataUtils {
         
         // 保底：如果所有录音都不完整，返回第一个
         log.warn("所有录音信息都不完整，使用第一个录音");
+        return recordings.get(0);
+    }
+    
+    /**
+     * 根据文件名从多个匹配的录音中选择最佳匹配
+     * 主要用于区分 instrumental、live、remix 等不同版本
+     */
+    private static AudioFingerprintService.RecordingInfo selectBestMatchByFileName(
+            List<AudioFingerprintService.RecordingInfo> recordings,
+            String fileName) {
+        
+        if (fileName == null || fileName.isEmpty() || recordings.size() == 1) {
+            return recordings.get(0);
+        }
+        
+        String fileNameLower = fileName.toLowerCase();
+        
+        // 定义版本标识符列表
+        String[] versionIndicators = {
+            "instrumental", "inst", "karaoke", "off vocal", "offvocal",
+            "live", "acoustic", "remix", "extended", "radio edit",
+            "tv size", "tv ver", "movie ver", "full ver"
+        };
+        
+        // 检查文件名中包含哪些版本标识符
+        List<String> fileNameIndicators = new java.util.ArrayList<>();
+        for (String indicator : versionIndicators) {
+            if (fileNameLower.contains(indicator)) {
+                fileNameIndicators.add(indicator);
+            }
+        }
+        
+        // 计算每个录音的匹配分数
+        AudioFingerprintService.RecordingInfo bestMatch = null;
+        int bestScore = Integer.MIN_VALUE;
+        
+        for (AudioFingerprintService.RecordingInfo recording : recordings) {
+            String titleLower = recording.getTitle().toLowerCase();
+            int score = 0;
+            
+            // 检查录音标题中包含哪些版本标识符
+            List<String> titleIndicators = new java.util.ArrayList<>();
+            for (String indicator : versionIndicators) {
+                if (titleLower.contains(indicator)) {
+                    titleIndicators.add(indicator);
+                }
+            }
+            
+            // 计算分数：
+            // +100 分：文件名和标题中都有相同的版本标识符
+            // -100 分：文件名没有但标题有某个版本标识符
+            // -50 分：文件名有但标题没有某个版本标识符
+            
+            for (String indicator : fileNameIndicators) {
+                if (titleIndicators.contains(indicator)) {
+                    score += 100; // 文件名和标题都有
+                    log.debug("录音 '{}' 匹配版本标识符 '{}' (+100)", recording.getTitle(), indicator);
+                } else {
+                    score -= 50; // 文件名有但标题没有
+                    log.debug("录音 '{}' 缺少版本标识符 '{}' (-50)", recording.getTitle(), indicator);
+                }
+            }
+            
+            for (String indicator : titleIndicators) {
+                if (!fileNameIndicators.contains(indicator)) {
+                    score -= 100; // 标题有但文件名没有（惩罚更重）
+                    log.debug("录音 '{}' 多余版本标识符 '{}' (-100)", recording.getTitle(), indicator);
+                }
+            }
+            
+            // 如果文件名和标题都没有任何版本标识符，给予一些基础分
+            if (fileNameIndicators.isEmpty() && titleIndicators.isEmpty()) {
+                score += 10;
+            }
+            
+            log.debug("录音 '{}' 最终匹配分数: {}", recording.getTitle(), score);
+            
+            if (score > bestScore) {
+                bestScore = score;
+                bestMatch = recording;
+            }
+        }
+        
+        if (bestMatch != null) {
+            log.info("版本匹配分析完成 - 最佳匹配: '{}' (分数: {})", bestMatch.getTitle(), bestScore);
+            return bestMatch;
+        }
+        
+        // 如果无法确定，返回第一个
         return recordings.get(0);
     }
     

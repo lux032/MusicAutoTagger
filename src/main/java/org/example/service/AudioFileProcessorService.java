@@ -200,7 +200,8 @@ public class AudioFileProcessorService {
                 
                 AudioFingerprintService.RecordingInfo bestMatch = MetadataUtils.findBestRecordingMatch(
                     acoustIdResult.getRecordings(),
-                    lockedReleaseGroupId
+                    lockedReleaseGroupId,
+                    audioFile.getName()
                 );
                 
                 // 检查 bestMatch 是否有完整信息
