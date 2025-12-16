@@ -103,19 +103,19 @@ public class ApplicationLifecycleManager {
         log.info(I18nUtil.getMessage("app.quick.scan.enabled"));
         
         // Level 3: 初始化新增的服务
-        log.info("初始化封面艺术服务...");
+        log.info(I18nUtil.getMessage("app.init.cover.art.service"));
         coverArtService = new CoverArtService(coverArtCache, musicBrainzClient);
         
-        log.info("初始化文件系统工具...");
+        log.info(I18nUtil.getMessage("app.init.filesystem.utils"));
         fileSystemUtils = new FileSystemUtils(config);
         
-        log.info("初始化专辑批量处理器...");
+        log.info(I18nUtil.getMessage("app.init.album.batch.processor"));
         albumBatchProcessor = new AlbumBatchProcessor(config, folderAlbumCache, tagWriter, processedLogger);
         
-        log.info("初始化失败文件处理器...");
+        log.info(I18nUtil.getMessage("app.init.failed.file.handler"));
         failedFileHandler = new FailedFileHandler(config, tagWriter, coverArtService, processedLogger, fileSystemUtils);
         
-        log.info("初始化音频文件处理器...");
+        log.info(I18nUtil.getMessage("app.init.audio.file.processor"));
         audioFileProcessorService = new AudioFileProcessorService(
             config,
             fingerprintService,
@@ -181,7 +181,7 @@ public class ApplicationLifecycleManager {
                 try {
                     webServer.stop();
                 } catch (Exception e) {
-                    log.warn("关闭 Web 服务器时出错", e);
+                    log.warn(I18nUtil.getMessage("app.shutdown.web.server.error"), e);
                 }
             }
             
@@ -202,7 +202,7 @@ public class ApplicationLifecycleManager {
                 try {
                     musicBrainzClient.close();
                 } catch (IOException e) {
-                    log.warn("关闭 MusicBrainz 客户端时出错", e);
+                    log.warn(I18nUtil.getMessage("app.shutdown.musicbrainz.error"), e);
                 }
             }
 
@@ -212,13 +212,13 @@ public class ApplicationLifecycleManager {
 
             if (coverArtCache != null) {
                 CoverArtCache.CacheStatistics stats = coverArtCache.getStatistics();
-                log.info("封面缓存统计: {}", stats);
+                log.info(I18nUtil.getMessage("app.cover.cache.statistics"), stats);
                 coverArtCache.close();
             }
 
             if (folderAlbumCache != null) {
                 FolderAlbumCache.CacheStatistics stats = folderAlbumCache.getStatistics();
-                log.info("文件夹专辑缓存统计: {}", stats);
+                log.info(I18nUtil.getMessage("app.folder.album.cache.statistics"), stats);
             }
 
             if (processedLogger != null) {
