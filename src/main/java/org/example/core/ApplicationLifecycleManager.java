@@ -106,7 +106,7 @@ public class ApplicationLifecycleManager {
         fileSystemUtils = new FileSystemUtils(config);
         
         log.info(I18nUtil.getMessage("app.init.album.batch.processor"));
-        albumBatchProcessor = new AlbumBatchProcessor(config, folderAlbumCache, tagWriter, processedLogger);
+        albumBatchProcessor = new AlbumBatchProcessor(config, folderAlbumCache, tagWriter, processedLogger, coverArtService);
         
         log.info(I18nUtil.getMessage("app.init.failed.file.handler"));
         failedFileHandler = new FailedFileHandler(config, tagWriter, coverArtService, processedLogger, fileSystemUtils);

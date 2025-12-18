@@ -21,13 +21,16 @@ public class AlbumBatchProcessor {
     private final FolderAlbumCache folderAlbumCache;
     private final TagWriterService tagWriter;
     private final ProcessedFileLogger processedLogger;
+    private final CoverArtService coverArtService;
     
     public AlbumBatchProcessor(MusicConfig config, FolderAlbumCache folderAlbumCache,
-                               TagWriterService tagWriter, ProcessedFileLogger processedLogger) {
+                               TagWriterService tagWriter, ProcessedFileLogger processedLogger,
+                               CoverArtService coverArtService) {
         this.config = config;
         this.folderAlbumCache = folderAlbumCache;
         this.tagWriter = tagWriter;
         this.processedLogger = processedLogger;
+        this.coverArtService = coverArtService;
     }
     
     /**
@@ -103,6 +106,24 @@ public class AlbumBatchProcessor {
         
         log.info("开始批量处理 {} 个待处理文件", pendingFiles.size());
         
+        // 关键修复：使用锁定专辑的 Release Group ID 获取正确的封面
+        byte[] correctCoverArt = null;
+        if (albumInfo.getReleaseGroupId() != null && !albumInfo.getReleaseGroupId().isEmpty()) {
+            try {
+                log.info("尝试获取锁定专辑的封面 (Release Group ID: {})", albumInfo.getReleaseGroupId());
+                correctCoverArt = coverArtService.getCoverArtByReleaseGroupId(
+                    albumInfo.getReleaseGroupId(), folderPath);
+                
+                if (correctCoverArt != null && correctCoverArt.length > 0) {
+                    log.info("✓ 成功获取锁定专辑的封面，将替换所有文件的封面");
+                } else {
+                    log.warn("未能获取锁定专辑的封面，将使用文件原有封面");
+                }
+            } catch (Exception e) {
+                log.warn("获取锁定专辑封面失败，将使用文件原有封面: {}", e.getMessage());
+            }
+        }
+        
         int successCount = 0;
         int failCount = 0;
         List<File> failedFiles = new ArrayList<>();
@@ -111,7 +132,9 @@ public class AlbumBatchProcessor {
             try {
                 File audioFile = pending.getAudioFile();
                 MusicMetadata metadata = (MusicMetadata) pending.getMetadata();
-                byte[] coverArtData = pending.getCoverArtData();
+                // 关键修复：如果成功获取了正确的封面，使用正确的封面；否则使用原有封面
+                byte[] coverArtData = (correctCoverArt != null && correctCoverArt.length > 0) ?
+                    correctCoverArt : pending.getCoverArtData();
                 
                 log.info("批量处理文件 [{}/{}]: {}",
                     successCount + failCount + 1, pendingFiles.size(), audioFile.getName());

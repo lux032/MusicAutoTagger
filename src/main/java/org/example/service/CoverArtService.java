@@ -250,6 +250,193 @@ public class CoverArtService {
     }
     
     /**
+     * 根据 Release Group ID 获取封面（用于批量处理时确保使用正确专辑的封面）
+     * 优先级：
+     * 1. 从 Release Group ID 级别的缓存获取
+     * 2. 从网络下载并缓存
+     * 3. 从文件夹内任一音频文件提取封面
+     * 4. 在专辑根目录查找封面图片
+     *
+     * @param releaseGroupId 专辑 Release Group ID
+     * @param folderPath 文件夹路径（用于更新文件夹级别缓存和降级策略）
+     * @return 封面数据，如果获取失败返回 null
+     */
+    public byte[] getCoverArtByReleaseGroupId(String releaseGroupId, String folderPath) {
+        if (releaseGroupId == null || releaseGroupId.isEmpty()) {
+            return null;
+        }
+        
+        // 策略1: 检查 Release Group ID 级别的缓存
+        byte[] coverArtData = coverArtCache.getCachedCoverByReleaseGroupId(releaseGroupId);
+        if (coverArtData != null && coverArtData.length > 0) {
+            log.info("策略1: 从缓存获取锁定专辑封面 (Release Group ID: {})", releaseGroupId);
+            // 更新文件夹级别缓存
+            if (folderPath != null) {
+                folderCoverCache.put(folderPath, coverArtData);
+                log.info("已更新文件夹级别缓存");
+            }
+            return coverArtData;
+        }
+        
+        // 策略2: 从网络下载
+        try {
+            log.info("策略2: 从网络获取锁定专辑封面 (Release Group ID: {})", releaseGroupId);
+            String coverArtUrl = musicBrainzClient.getCoverArtUrlByReleaseGroupId(releaseGroupId);
+            
+            if (coverArtUrl != null) {
+                coverArtData = downloadCoverFromNetwork(coverArtUrl);
+                
+                if (coverArtData != null && coverArtData.length > 0) {
+                    log.info("✓ 成功从网络获取锁定专辑封面");
+                    
+                    // 缓存到 Release Group ID 级别
+                    coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, coverArtData);
+                    log.info("已缓存到专辑级别 (Release Group ID: {})", releaseGroupId);
+                    
+                    // 更新文件夹级别缓存
+                    if (folderPath != null) {
+                        folderCoverCache.put(folderPath, coverArtData);
+                        log.info("已更新文件夹级别缓存");
+                    }
+                    
+                    return coverArtData;
+                }
+            } else {
+                log.warn("未获取到锁定专辑的封面URL");
+            }
+        } catch (Exception e) {
+            log.warn("从网络获取锁定专辑封面失败: {}", e.getMessage());
+        }
+        
+        log.warn("✗ 网络下载失败，尝试降级策略");
+        
+        // 策略3: 从文件夹内任一音频文件提取封面
+        if (folderPath != null) {
+            log.info("策略3: 从文件夹内音频文件提取封面");
+            coverArtData = extractCoverFromFolderAudioFiles(folderPath);
+            
+            if (coverArtData != null && coverArtData.length > 0) {
+                log.info("✓ 成功从文件夹内音频文件提取封面");
+                
+                // 缓存到 Release Group ID 级别
+                coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, coverArtData);
+                log.info("已缓存到专辑级别 (Release Group ID: {})", releaseGroupId);
+                
+                // 更新文件夹级别缓存
+                folderCoverCache.put(folderPath, coverArtData);
+                log.info("已更新文件夹级别缓存");
+                
+                return coverArtData;
+            }
+            log.info("✗ 文件夹内音频文件无封面，尝试降级策略");
+        }
+        
+        // 策略4: 在专辑根目录查找封面图片（注意：要在专辑根目录找，而不是 CD1/CD2 子目录）
+        if (folderPath != null) {
+            log.info("策略4: 在专辑根目录查找封面图片");
+            File albumRootDir = getAlbumRootDirectory(new File(folderPath));
+            coverArtData = findCoverInDirectory(albumRootDir);
+            
+            if (coverArtData != null && coverArtData.length > 0) {
+                log.info("✓ 成功从专辑根目录找到封面图片");
+                
+                // 缓存到 Release Group ID 级别
+                coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, coverArtData);
+                log.info("已缓存到专辑级别 (Release Group ID: {})", releaseGroupId);
+                
+                // 更新文件夹级别缓存
+                folderCoverCache.put(folderPath, coverArtData);
+                log.info("已更新文件夹级别缓存");
+                
+                return coverArtData;
+            }
+        }
+        
+        log.warn("✗ 所有策略均失败，未找到锁定专辑的封面");
+        return null;
+    }
+    
+    /**
+     * 从文件夹内任一音频文件提取封面
+     * 递归扫描文件夹及其子文件夹，找到第一个包含封面的音频文件
+     */
+    private byte[] extractCoverFromFolderAudioFiles(String folderPath) {
+        File folder = new File(folderPath);
+        if (!folder.exists() || !folder.isDirectory()) {
+            return null;
+        }
+        
+        return extractCoverFromFolderRecursively(folder);
+    }
+    
+    /**
+     * 递归扫描文件夹，从第一个包含封面的音频文件提取封面
+     */
+    private byte[] extractCoverFromFolderRecursively(File folder) {
+        File[] files = folder.listFiles();
+        if (files == null) {
+            return null;
+        }
+        
+        // 先处理当前目录的音频文件
+        for (File file : files) {
+            if (file.isFile() && isAudioFile(file)) {
+                byte[] cover = extractCoverFromAudioFile(file);
+                if (cover != null && cover.length > 0) {
+                    return cover;
+                }
+            }
+        }
+        
+        // 再递归处理子目录
+        for (File file : files) {
+            if (file.isDirectory()) {
+                byte[] cover = extractCoverFromFolderRecursively(file);
+                if (cover != null && cover.length > 0) {
+                    return cover;
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * 判断文件是否为音频文件
+     */
+    private boolean isAudioFile(File file) {
+        String lowerName = file.getName().toLowerCase();
+        return lowerName.endsWith(".mp3") ||
+               lowerName.endsWith(".flac") ||
+               lowerName.endsWith(".m4a") ||
+               lowerName.endsWith(".wav");
+    }
+    
+    /**
+     * 获取专辑根目录
+     * 如果当前目录是 "Disc X"、"CD X" 等子目录，返回其父目录
+     * 否则返回当前目录本身
+     */
+    private File getAlbumRootDirectory(File folder) {
+        if (folder == null || !folder.exists()) {
+            return folder;
+        }
+        
+        String folderName = folder.getName().toLowerCase();
+        // 检查是否为碟片子目录（Disc 1, CD 1, Disc1, CD1 等）
+        if (folderName.matches("^(disc|cd)\\s*\\d+$") ||
+            folderName.matches("^(disc|cd)\\d+$")) {
+            File parent = folder.getParentFile();
+            if (parent != null && parent.exists()) {
+                log.debug("检测到碟片子目录 {}，使用父目录 {} 作为专辑根目录", folder.getName(), parent.getName());
+                return parent;
+            }
+        }
+        
+        return folder;
+    }
+    
+    /**
      * 清除文件夹级别的封面缓存
      */
     public void clearFolderCache(String folderPath) {
