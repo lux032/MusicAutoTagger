@@ -18,6 +18,7 @@ import org.apache.hc.core5.http.message.BasicNameValuePair;
 import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.util.Timeout;
 import org.example.config.MusicConfig;
+import org.example.util.I18nUtil;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -67,10 +68,12 @@ public class AudioFingerprintService {
         if (config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isEmpty()) {
             HttpHost proxy = new HttpHost(config.getProxyHost(), config.getProxyPort());
             builder.setProxy(proxy);
-            log.info("AcoustID 客户端使用代理: {}:{}", config.getProxyHost(), config.getProxyPort());
+            log.info(I18nUtil.getMessage("proxy.acoustid.enabled", config.getProxyHost(), config.getProxyPort()));
             
             // 注意: 代理认证功能已简化,如需认证代理,请使用系统代理设置
             // 或在代理软件中配置允许本地连接无需认证
+        } else if (config.isProxyEnabled()) {
+            log.warn(I18nUtil.getMessage("proxy.enabled.no.host"));
         }
         
         return builder.build();
