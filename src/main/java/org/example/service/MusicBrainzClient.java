@@ -200,13 +200,28 @@ public class MusicBrainzClient {
                 for (int i = 0; i < media.size(); i++) {
                     JsonNode medium = media.get(i);
                     log.debug("Medium[{}] 内容: {}", i, medium.toString());
-                    
+
+                    // 检查媒体格式，跳过视频格式
+                    String format = medium.path("format").asText("").toLowerCase();
+                    if (isVideoFormat(format)) {
+                        log.debug("跳过视频格式媒体: {} (format: {})", i, format);
+                        continue;
+                    }
+
                     JsonNode tracks = medium.path("tracks");
                     log.debug("Tracks 节点存在: {}, isArray: {}, size: {}",
                         !tracks.isMissingNode(), tracks.isArray(), tracks.size());
-                    
+
                     if (tracks.isArray()) {
                         for (JsonNode track : tracks) {
+                            // 检查 track 的 recording 是否为视频
+                            JsonNode recording = track.path("recording");
+                            boolean isVideo = recording.path("video").asBoolean(false);
+                            if (isVideo) {
+                                log.debug("跳过视频 track: {}", track.path("title").asText(""));
+                                continue;
+                            }
+
                             // 获取时长(毫秒),转换为秒
                             int durationMs = track.path("length").asInt(0);
                             log.debug("Track length: {} ms", durationMs);
@@ -235,11 +250,16 @@ public class MusicBrainzClient {
      */
     private int scoreReleaseForDuration(JsonNode release) {
         int score = 0;
-        
+
         JsonNode media = release.path("media");
         if (media.isArray() && media.size() > 0) {
             String format = media.get(0).path("format").asText("").toLowerCase();
-            
+
+            // 如果是视频格式，给予负分以排除
+            if (isVideoFormat(format)) {
+                return -100;
+            }
+
             if (format.contains("cd")) {
                 score = 100;
             } else if (format.contains("digital")) {
@@ -248,8 +268,31 @@ public class MusicBrainzClient {
                 score = 50;
             }
         }
-        
+
         return score;
+    }
+
+    /**
+     * 判断媒体格式是否为视频格式
+     * @param format 媒体格式字符串（小写）
+     * @return 如果是视频格式返回true
+     */
+    private boolean isVideoFormat(String format) {
+        if (format == null || format.isEmpty()) {
+            return false;
+        }
+        // 常见的视频格式
+        return format.contains("dvd") ||
+               format.contains("blu-ray") ||
+               format.contains("bluray") ||
+               format.contains("hd dvd") ||
+               format.contains("hd-dvd") ||
+               format.contains("vhs") ||
+               format.contains("laserdisc") ||
+               format.contains("vcd") ||
+               format.contains("svcd") ||
+               format.contains("umd") ||
+               format.contains("video");
     }
 
     /**
