@@ -317,12 +317,32 @@ public class AudioFileProcessorService {
 
                 int trackCount = detailedMetadata.getTrackCount();
 
+                // 收集 AcoustID 返回的所有候选 ReleaseGroups
+                java.util.List<FolderAlbumCache.CandidateReleaseGroup> allCandidates = new java.util.ArrayList<>();
+                if (acoustIdResult.getRecordings() != null) {
+                    for (AudioFingerprintService.RecordingInfo recording : acoustIdResult.getRecordings()) {
+                        if (recording.getReleaseGroups() != null) {
+                            for (AudioFingerprintService.ReleaseGroupInfo rg : recording.getReleaseGroups()) {
+                                // 避免重复添加
+                                boolean exists = allCandidates.stream()
+                                    .anyMatch(c -> c.getReleaseGroupId().equals(rg.getId()));
+                                if (!exists) {
+                                    allCandidates.add(new FolderAlbumCache.CandidateReleaseGroup(
+                                        rg.getId(), rg.getTitle()));
+                                }
+                            }
+                        }
+                    }
+                }
+                log.info("收集到 {} 个候选专辑用于时长序列匹配", allCandidates.size());
+
                 FolderAlbumCache.AlbumIdentificationInfo albumInfo = new FolderAlbumCache.AlbumIdentificationInfo(
                     detailedMetadata.getReleaseGroupId(),
                     detailedMetadata.getAlbum(),
                     detailedMetadata.getAlbumArtist() != null ? detailedMetadata.getAlbumArtist() : detailedMetadata.getArtist(),
                     trackCount,
-                    detailedMetadata.getReleaseDate()
+                    detailedMetadata.getReleaseDate(),
+                    allCandidates
                 );
 
                 // 关键修复：使用原子操作添加待处理文件，避免竞态条件

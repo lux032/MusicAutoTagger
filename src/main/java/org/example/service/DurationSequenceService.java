@@ -219,6 +219,183 @@ public class DurationSequenceService {
     }
     
     /**
+     * 从多个候选专辑中选择最佳匹配（同时考虑文件夹名称相似度）
+     * 关键改进：利用文件夹名称与专辑名称的相似度来辅助选择
+     *
+     * @param folderDurations 文件夹时长序列
+     * @param candidates 候选专辑列表
+     * @param folderName 文件夹名称
+     * @return 最佳匹配的专辑,如果没有符合阈值的则返回null
+     */
+    public AlbumMatchResult selectBestMatchWithFolderName(List<Integer> folderDurations,
+                                                          List<AlbumDurationInfo> candidates,
+                                                          String folderName) {
+        if (folderDurations == null || folderDurations.isEmpty() ||
+            candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+
+        AlbumMatchResult bestMatch = null;
+        double bestCombinedScore = 0.0;
+
+        log.info("开始时长序列匹配（含文件夹名称匹配）");
+        log.info("文件夹名称: {}", folderName);
+        log.info("文件夹时长序列: {}", formatDurationSequence(folderDurations));
+
+        // 标准化文件夹名称用于比较
+        String normalizedFolderName = normalizeName(folderName);
+
+        for (AlbumDurationInfo candidate : candidates) {
+            // 1. 计算时长序列相似度（使用DTW算法）
+            double durationSimilarity = calculateSimilarityDTW(folderDurations, candidate.getDurations());
+
+            // 2. 计算文件夹名称与专辑名称的相似度
+            String normalizedAlbumTitle = normalizeName(candidate.getAlbumTitle());
+            double nameSimilarity = calculateNameSimilarity(normalizedFolderName, normalizedAlbumTitle);
+
+            // 3. 计算综合得分
+            // 权重：时长相似度 70%，名称相似度 30%
+            // 但如果名称相似度很高（>0.8），给予额外加分
+            double combinedScore = durationSimilarity * 0.7 + nameSimilarity * 0.3;
+
+            // 名称高度匹配时的额外加分
+            if (nameSimilarity >= 0.8) {
+                combinedScore += 0.1; // 额外加10%
+                log.info("  ★ 文件夹名称高度匹配，额外加分");
+            }
+
+            log.info("候选专辑: {} - {} ({}首曲目)",
+                candidate.getAlbumTitle(),
+                candidate.getAlbumArtist(),
+                candidate.getDurations().size());
+            log.info("  时长序列: {}", formatDurationSequence(candidate.getDurations()));
+            log.info("  时长相似度: {:.2f}, 名称相似度: {:.2f}, 综合得分: {:.2f}",
+                durationSimilarity, nameSimilarity, combinedScore);
+
+            if (combinedScore > bestCombinedScore) {
+                bestCombinedScore = combinedScore;
+                bestMatch = new AlbumMatchResult(candidate, combinedScore);
+            }
+        }
+
+        // 检查是否达到最小匹配阈值
+        if (bestMatch != null && bestCombinedScore >= MIN_MATCH_THRESHOLD) {
+            log.info("✓ 选择最佳匹配: {} - {} (综合得分: {:.2f})",
+                bestMatch.getAlbumInfo().getAlbumTitle(),
+                bestMatch.getAlbumInfo().getAlbumArtist(),
+                bestCombinedScore);
+            return bestMatch;
+        } else {
+            log.warn("未找到符合阈值的匹配专辑 (最佳综合得分: {:.2f}, 阈值: {:.2f})",
+                bestCombinedScore, MIN_MATCH_THRESHOLD);
+            return null;
+        }
+    }
+
+    /**
+     * 标准化名称用于比较
+     * 移除常见的干扰字符和标准化格式
+     */
+    private String normalizeName(String name) {
+        if (name == null || name.isEmpty()) {
+            return "";
+        }
+
+        // 转小写
+        String normalized = name.toLowerCase();
+
+        // 移除常见的文件夹后缀（如 [VIZL-1777]）
+        normalized = normalized.replaceAll("\\[.*?\\]", "");
+        normalized = normalized.replaceAll("\\(.*?\\)", "");
+
+        // 移除特殊字符，保留字母、数字和空格
+        normalized = normalized.replaceAll("[^a-z0-9\\u4e00-\\u9fa5\\u3040-\\u309f\\u30a0-\\u30ff\\s]", " ");
+
+        // 合并多个空格
+        normalized = normalized.replaceAll("\\s+", " ").trim();
+
+        return normalized;
+    }
+
+    /**
+     * 计算两个名称的相似度
+     * 使用 Jaccard 相似度 + 子串匹配
+     */
+    private double calculateNameSimilarity(String name1, String name2) {
+        if (name1 == null || name2 == null || name1.isEmpty() || name2.isEmpty()) {
+            return 0.0;
+        }
+
+        // 1. 检查是否包含关系（子串匹配）
+        if (name1.contains(name2) || name2.contains(name1)) {
+            // 计算包含比例
+            double containRatio = (double) Math.min(name1.length(), name2.length()) /
+                                  Math.max(name1.length(), name2.length());
+            if (containRatio > 0.5) {
+                return Math.max(0.8, containRatio); // 至少返回0.8
+            }
+        }
+
+        // 2. 使用词汇级别的 Jaccard 相似度
+        String[] words1 = name1.split("\\s+");
+        String[] words2 = name2.split("\\s+");
+
+        java.util.Set<String> set1 = new java.util.HashSet<>(java.util.Arrays.asList(words1));
+        java.util.Set<String> set2 = new java.util.HashSet<>(java.util.Arrays.asList(words2));
+
+        // 计算交集
+        java.util.Set<String> intersection = new java.util.HashSet<>(set1);
+        intersection.retainAll(set2);
+
+        // 计算并集
+        java.util.Set<String> union = new java.util.HashSet<>(set1);
+        union.addAll(set2);
+
+        if (union.isEmpty()) {
+            return 0.0;
+        }
+
+        double jaccardSimilarity = (double) intersection.size() / union.size();
+
+        // 3. 使用编辑距离作为补充
+        double editDistanceSimilarity = 1.0 - (double) levenshteinDistance(name1, name2) /
+                                        Math.max(name1.length(), name2.length());
+
+        // 综合两种相似度
+        return Math.max(jaccardSimilarity, editDistanceSimilarity * 0.8);
+    }
+
+    /**
+     * 计算 Levenshtein 编辑距离
+     */
+    private int levenshteinDistance(String s1, String s2) {
+        int m = s1.length();
+        int n = s2.length();
+
+        int[][] dp = new int[m + 1][n + 1];
+
+        for (int i = 0; i <= m; i++) {
+            dp[i][0] = i;
+        }
+        for (int j = 0; j <= n; j++) {
+            dp[0][j] = j;
+        }
+
+        for (int i = 1; i <= m; i++) {
+            for (int j = 1; j <= n; j++) {
+                if (s1.charAt(i - 1) == s2.charAt(j - 1)) {
+                    dp[i][j] = dp[i - 1][j - 1];
+                } else {
+                    dp[i][j] = 1 + Math.min(dp[i - 1][j - 1],
+                                   Math.min(dp[i - 1][j], dp[i][j - 1]));
+                }
+            }
+        }
+
+        return dp[m][n];
+    }
+
+    /**
      * 格式化时长序列用于日志输出
      */
     private String formatDurationSequence(List<Integer> durations) {

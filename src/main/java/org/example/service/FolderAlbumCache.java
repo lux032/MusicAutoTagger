@@ -247,88 +247,127 @@ public class FolderAlbumCache {
     
     /**
      * 使用时长序列匹配分析样本
+     * 关键改进：使用 AcoustID 返回的所有候选专辑，而不仅仅是样本中已选定的 releaseGroupId
      */
     private CachedAlbumInfo analyzeSamplesWithDurationSequence(String folderPath,
                                                                List<AlbumIdentificationInfo> samples,
                                                                int musicFilesCount) {
         log.info("=== 开始时长序列匹配分析 ===");
         log.info("文件夹: {}, 样本数: {}, 音乐文件数: {}", folderPath, samples.size(), musicFilesCount);
-        
+
         try {
             // 1. 提取文件夹时长序列（如果尚未提取）
             List<Integer> folderDurations = folderDurationSequences.get(folderPath);
             if (folderDurations == null) {
                 File folder = new File(folderPath);
-                
+
                 // 递归收集所有音频文件（支持多CD专辑）
                 List<File> audioFiles = collectAudioFilesRecursively(folder);
-                
+
                 if (!audioFiles.isEmpty()) {
                     folderDurations = audioFingerprintService.extractDurationSequence(audioFiles);
                     folderDurationSequences.put(folderPath, folderDurations);
                     log.info("提取专辑时长序列: {}首（递归扫描）", folderDurations.size());
                 }
             }
-            
+
             if (folderDurations == null || folderDurations.isEmpty()) {
                 log.warn("无法提取文件夹时长序列,回退到投票方法");
                 return analyzeSamplesWithVoting(samples, musicFilesCount);
             }
-            
-            // 2. 收集所有候选专辑的 ReleaseGroupId
-            Set<String> releaseGroupIds = samples.stream()
-                .map(AlbumIdentificationInfo::getReleaseGroupId)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
-            
-            if (releaseGroupIds.isEmpty()) {
-                log.warn("样本中没有有效的 ReleaseGroupId,回退到投票方法");
+
+            // 2. 收集所有候选专辑的 ReleaseGroupId（关键改进：包含 AcoustID 返回的所有候选）
+            // 使用 Map 存储 releaseGroupId -> title 的映射，便于后续获取专辑信息
+            Map<String, String> allCandidateReleaseGroups = new LinkedHashMap<>();
+
+            // 2.1 首先添加样本中已选定的 releaseGroupId
+            for (AlbumIdentificationInfo sample : samples) {
+                if (sample.getReleaseGroupId() != null) {
+                    allCandidateReleaseGroups.put(sample.getReleaseGroupId(), sample.getAlbumTitle());
+                }
+            }
+
+            // 2.2 关键改进：添加 AcoustID 返回的所有候选专辑
+            for (AlbumIdentificationInfo sample : samples) {
+                if (sample.getAllCandidateReleaseGroups() != null) {
+                    for (CandidateReleaseGroup candidate : sample.getAllCandidateReleaseGroups()) {
+                        if (candidate.getReleaseGroupId() != null &&
+                            !allCandidateReleaseGroups.containsKey(candidate.getReleaseGroupId())) {
+                            allCandidateReleaseGroups.put(candidate.getReleaseGroupId(), candidate.getTitle());
+                        }
+                    }
+                }
+            }
+
+            log.info("收集到 {} 个候选专辑用于时长序列匹配（包含 AcoustID 返回的所有候选）",
+                allCandidateReleaseGroups.size());
+
+            if (allCandidateReleaseGroups.isEmpty()) {
+                log.warn("没有有效的候选 ReleaseGroupId,回退到投票方法");
                 return analyzeSamplesWithVoting(samples, musicFilesCount);
             }
-            
+
+            // 2.3 获取文件夹名称用于相似度匹配
+            String folderName = new File(folderPath).getName();
+            log.info("文件夹名称: {}", folderName);
+
             // 3. 获取每个候选专辑的官方时长序列
             List<DurationSequenceService.AlbumDurationInfo> candidates = new ArrayList<>();
-            for (String releaseGroupId : releaseGroupIds) {
+            for (Map.Entry<String, String> entry : allCandidateReleaseGroups.entrySet()) {
+                String releaseGroupId = entry.getKey();
+                String albumTitle = entry.getValue();
+
                 try {
                     List<Integer> albumDurations = musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
                     if (!albumDurations.isEmpty()) {
-                        // 从样本中找到对应的专辑信息
-                        AlbumIdentificationInfo albumInfo = samples.stream()
-                            .filter(s -> releaseGroupId.equals(s.getReleaseGroupId()))
-                            .findFirst()
-                            .orElse(null);
-                        
-                        if (albumInfo != null) {
-                            candidates.add(new DurationSequenceService.AlbumDurationInfo(
-                                releaseGroupId,
-                                albumInfo.getAlbumTitle(),
-                                albumInfo.getAlbumArtist(),
-                                albumDurations
-                            ));
+                        // 尝试从样本中找到对应的专辑艺术家信息
+                        String albumArtist = null;
+                        for (AlbumIdentificationInfo sample : samples) {
+                            if (releaseGroupId.equals(sample.getReleaseGroupId())) {
+                                albumArtist = sample.getAlbumArtist();
+                                albumTitle = sample.getAlbumTitle(); // 使用更完整的标题
+                                break;
+                            }
                         }
+
+                        // 如果没有找到艺术家信息，使用 "Unknown Artist"
+                        if (albumArtist == null || albumArtist.isEmpty()) {
+                            albumArtist = "Unknown Artist";
+                        }
+
+                        candidates.add(new DurationSequenceService.AlbumDurationInfo(
+                            releaseGroupId,
+                            albumTitle,
+                            albumArtist,
+                            albumDurations
+                        ));
+
+                        log.info("候选专辑: {} - {} ({}首曲目)", albumArtist, albumTitle, albumDurations.size());
                     }
                 } catch (Exception e) {
                     log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());
                 }
             }
-            
+
             if (candidates.isEmpty()) {
                 log.warn("没有获取到任何候选专辑的时长序列,回退到投票方法");
                 return analyzeSamplesWithVoting(samples, musicFilesCount);
             }
-            
-            // 4. 使用时长序列服务选择最佳匹配
+
+            log.info("成功获取 {} 个候选专辑的时长序列", candidates.size());
+
+            // 4. 使用时长序列服务选择最佳匹配（同时考虑文件夹名称相似度）
             DurationSequenceService.AlbumMatchResult matchResult =
-                durationSequenceService.selectBestMatch(folderDurations, candidates);
-            
+                durationSequenceService.selectBestMatchWithFolderName(folderDurations, candidates, folderName);
+
             if (matchResult != null) {
                 DurationSequenceService.AlbumDurationInfo bestAlbum = matchResult.getAlbumInfo();
                 double similarity = matchResult.getSimilarity();
-                
+
                 log.info("=== 时长序列匹配成功 ===");
                 log.info("最佳专辑: {} - {}", bestAlbum.getAlbumArtist(), bestAlbum.getAlbumTitle());
                 log.info("相似度: {:.2f}, 质量: {}", similarity, matchResult.getQuality());
-                
+
                 return new CachedAlbumInfo(
                     bestAlbum.getReleaseGroupId(),
                     bestAlbum.getAlbumTitle(),
@@ -341,7 +380,7 @@ public class FolderAlbumCache {
                 log.warn("时长序列匹配未找到合适专辑,回退到投票方法");
                 return analyzeSamplesWithVoting(samples, musicFilesCount);
             }
-            
+
         } catch (Exception e) {
             log.error("时长序列匹配过程出错,回退到投票方法", e);
             return analyzeSamplesWithVoting(samples, musicFilesCount);
@@ -578,14 +617,42 @@ public class FolderAlbumCache {
         private String albumArtist;
         private int trackCount;
         private String releaseDate;
+        private List<CandidateReleaseGroup> allCandidateReleaseGroups; // 新增：存储 AcoustID 返回的所有候选专辑
         
-        public AlbumIdentificationInfo(String releaseGroupId, String albumTitle, String albumArtist, 
+        public AlbumIdentificationInfo(String releaseGroupId, String albumTitle, String albumArtist,
                                       int trackCount, String releaseDate) {
             this.releaseGroupId = releaseGroupId;
             this.albumTitle = albumTitle;
             this.albumArtist = albumArtist;
             this.trackCount = trackCount;
             this.releaseDate = releaseDate;
+            this.allCandidateReleaseGroups = new ArrayList<>();
+        }
+        
+        public AlbumIdentificationInfo(String releaseGroupId, String albumTitle, String albumArtist,
+                                      int trackCount, String releaseDate,
+                                      List<CandidateReleaseGroup> allCandidateReleaseGroups) {
+            this.releaseGroupId = releaseGroupId;
+            this.albumTitle = albumTitle;
+            this.albumArtist = albumArtist;
+            this.trackCount = trackCount;
+            this.releaseDate = releaseDate;
+            this.allCandidateReleaseGroups = allCandidateReleaseGroups != null ?
+                allCandidateReleaseGroups : new ArrayList<>();
+        }
+    }
+    
+    /**
+     * 候选专辑信息（来自 AcoustID）
+     */
+    @Data
+    public static class CandidateReleaseGroup {
+        private final String releaseGroupId;
+        private final String title;
+        
+        public CandidateReleaseGroup(String releaseGroupId, String title) {
+            this.releaseGroupId = releaseGroupId;
+            this.title = title;
         }
     }
     
