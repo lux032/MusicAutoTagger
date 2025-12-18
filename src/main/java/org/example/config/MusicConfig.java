@@ -160,7 +160,7 @@ public class MusicConfig {
                 try {
                     this.maxRetries = Integer.parseInt(props.getProperty("file.maxRetries"));
                 } catch (NumberFormatException e) {
-                    System.err.println("最大重试次数配置错误: " + props.getProperty("file.maxRetries"));
+                    System.err.println("Invalid max retries configuration: " + props.getProperty("file.maxRetries"));
                 }
             }
             if (props.containsKey("logging.detailed")) {
@@ -186,7 +186,7 @@ public class MusicConfig {
                 try {
                     this.proxyPort = Integer.parseInt(props.getProperty("proxy.port"));
                 } catch (NumberFormatException e) {
-                    System.err.println("代理端口配置错误: " + props.getProperty("proxy.port"));
+                    System.err.println("Invalid proxy port configuration: " + props.getProperty("proxy.port"));
                 }
             }
             if (props.containsKey("proxy.username")) {
@@ -207,7 +207,7 @@ public class MusicConfig {
                 try {
                     this.dbPort = Integer.parseInt(props.getProperty("db.mysql.port"));
                 } catch (NumberFormatException e) {
-                    System.err.println("数据库端口配置错误: " + props.getProperty("db.mysql.port"));
+                    System.err.println("Invalid database port configuration: " + props.getProperty("db.mysql.port"));
                 }
             }
             if (props.containsKey("db.mysql.database")) {
@@ -223,21 +223,21 @@ public class MusicConfig {
                 try {
                     this.dbMaxPoolSize = Integer.parseInt(props.getProperty("db.mysql.pool.maxPoolSize"));
                 } catch (NumberFormatException e) {
-                    System.err.println("连接池最大连接数配置错误: " + props.getProperty("db.mysql.pool.maxPoolSize"));
+                    System.err.println("Invalid max pool size configuration: " + props.getProperty("db.mysql.pool.maxPoolSize"));
                 }
             }
             if (props.containsKey("db.mysql.pool.minIdle")) {
                 try {
                     this.dbMinIdle = Integer.parseInt(props.getProperty("db.mysql.pool.minIdle"));
                 } catch (NumberFormatException e) {
-                    System.err.println("连接池最小空闲连接数配置错误: " + props.getProperty("db.mysql.pool.minIdle"));
+                    System.err.println("Invalid min idle configuration: " + props.getProperty("db.mysql.pool.minIdle"));
                 }
             }
             if (props.containsKey("db.mysql.pool.connectionTimeout")) {
                 try {
                     this.dbConnectionTimeout = Long.parseLong(props.getProperty("db.mysql.pool.connectionTimeout"));
                 } catch (NumberFormatException e) {
-                    System.err.println("连接超时配置错误: " + props.getProperty("db.mysql.pool.connectionTimeout"));
+                    System.err.println("Invalid connection timeout configuration: " + props.getProperty("db.mysql.pool.connectionTimeout"));
                 }
             }
 
@@ -251,12 +251,12 @@ public class MusicConfig {
                 this.exportLyricsToFile = Boolean.parseBoolean(props.getProperty("lyrics.exportToFile"));
             }
 
-            System.out.println("配置文件加载成功");
+            System.out.println("Configuration file loaded successfully");
             if (proxyEnabled) {
-                System.out.println("HTTP 代理已启用: " + proxyHost + ":" + proxyPort);
+                System.out.println("HTTP proxy enabled: " + proxyHost + ":" + proxyPort);
             }
         } catch (IOException e) {
-            System.out.println("未找到配置文件，使用默认配置");
+            System.out.println("Configuration file not found, using default configuration");
         }
     }
     
@@ -265,15 +265,15 @@ public class MusicConfig {
      */
     public boolean isValid() {
         if (monitorDirectory == null || monitorDirectory.isEmpty()) {
-            System.err.println("监控目录未配置");
+            System.err.println("Monitor directory not configured");
             return false;
         }
         if (outputDirectory == null || outputDirectory.isEmpty()) {
-            System.err.println("输出目录未配置");
+            System.err.println("Output directory not configured");
             return false;
         }
         if (acoustIdApiKey == null || acoustIdApiKey.isEmpty()) {
-            System.err.println("警告: AcoustID API Key 未配置，将无法使用音频指纹识别");
+            System.err.println("WARNING: AcoustID API Key not configured, audio fingerprint recognition will be unavailable");
         }
         return true;
     }

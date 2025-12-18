@@ -3,6 +3,7 @@ package org.example;
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
 import org.example.core.ApplicationLifecycleManager;
+import org.example.util.BannerUtil;
 import org.example.util.I18nUtil;
 
 /**
@@ -19,13 +20,21 @@ public class Main {
     private static ApplicationLifecycleManager lifecycleManager;
     
     public static void main(String[] args) {
-        System.out.println(I18nUtil.getMessage("main.title.separator"));
-        System.out.println(I18nUtil.getMessage("main.title"));
-        System.out.println(I18nUtil.getMessage("main.title.separator"));
+        // 显示启动 Banner
+        BannerUtil.printBanner();
         
         try {
             // 1. 加载配置
             MusicConfig config = MusicConfig.getInstance();
+            
+            // 2. 初始化国际化(必须在其他日志之前)
+            I18nUtil.init(config.getLanguage());
+            
+            // 3. 显示标题和配置信息
+            System.out.println(I18nUtil.getMessage("main.title.separator"));
+            System.out.println(I18nUtil.getMessage("main.title"));
+            System.out.println(I18nUtil.getMessage("main.title.separator"));
+            
             if (!config.isValid()) {
                 log.error(I18nUtil.getMessage("app.config.invalid"));
                 return;
@@ -36,11 +45,11 @@ public class Main {
             log.info(I18nUtil.getMessage("app.output.directory"), config.getOutputDirectory());
             log.info(I18nUtil.getMessage("app.scan.interval"), config.getScanIntervalSeconds());
             
-            // 2. 创建并初始化生命周期管理器
+            // 4. 创建并初始化生命周期管理器
             lifecycleManager = new ApplicationLifecycleManager(config);
             lifecycleManager.initializeServices();
             
-            // 3. 检查依赖工具
+            // 5. 检查依赖工具
             if (!lifecycleManager.isFpcalcAvailable()) {
                 log.warn(I18nUtil.getMessage("main.title.separator"));
                 log.warn(I18nUtil.getMessage("main.fpcalc.warning.line"));
@@ -49,18 +58,18 @@ public class Main {
                 log.warn(I18nUtil.getMessage("main.title.separator"));
             }
             
-            // 4. 启动 Web 监控面板
+            // 6. 启动 Web 监控面板
             lifecycleManager.startWebServer();
             
-            // 5. 启动文件监控
+            // 7. 启动文件监控
             lifecycleManager.startMonitoring();
             
-            // 6. 等待用户输入以停止程序
+            // 8. 等待用户输入以停止程序
             System.out.println("\n" + I18nUtil.getMessage("main.system.running"));
             System.out.println(I18nUtil.getMessage("main.press.enter.to.stop"));
             System.in.read();
             
-            // 7. 优雅关闭
+            // 9. 优雅关闭
             lifecycleManager.shutdown();
             
         } catch (Exception e) {

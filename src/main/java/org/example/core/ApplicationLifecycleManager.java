@@ -51,10 +51,6 @@ public class ApplicationLifecycleManager {
     public void initializeServices() throws IOException {
         log.info(I18nUtil.getMessage("app.init.services"));
 
-        // Level 0: 初始化国际化
-        I18nUtil.init(config.getLanguage());
-        log.info(I18nUtil.getMessage("app.init.i18n"), config.getLanguage());
-
         // Level 1: 初始化数据库服务 (如果配置为 MySQL)
         if ("mysql".equalsIgnoreCase(config.getDbType())) {
             log.info(I18nUtil.getMessage("app.init.database"));

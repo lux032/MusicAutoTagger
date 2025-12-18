@@ -36,9 +36,9 @@ public class I18nUtil {
         try (InputStream is = I18nUtil.class.getResourceAsStream(resourceFile);
              InputStreamReader reader = new InputStreamReader(is, StandardCharsets.UTF_8)) {
             messages.load(reader);
-            log.info("成功加载国际化资源文件: {}", resourceFile);
+            log.info("Successfully loaded i18n resource file: {}", resourceFile);
         } catch (IOException | NullPointerException e) {
-            log.error("加载国际化资源文件失败: {}, 将使用默认中文", resourceFile, e);
+            log.error("Failed to load i18n resource file: {}, falling back to default Chinese", resourceFile, e);
             // 如果加载失败，尝试加载默认中文资源
             if (!"zh_CN".equals(language)) {
                 init("zh_CN");
