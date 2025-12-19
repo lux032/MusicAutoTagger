@@ -2,6 +2,7 @@ package org.example.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
+import org.example.model.ProcessResult;
 import org.example.util.I18nUtil;
 
 import java.io.File;
@@ -260,11 +261,13 @@ public class FileMonitorService {
                     file.getName(), fileQueue.size());
                 
                 // 触发实际处理，并捕获结果
-                boolean success = notifyFileReadyWithResult(file);
+                ProcessResult result = notifyFileReadyWithResult(file);
                 
-                // 如果处理失败且是网络错误，加入重试队列
-                if (!success) {
-                    addToFailedQueue(file, 1);
+                // 根据处理结果决定后续操作
+                if (result.shouldRetry()) {
+                    // 只有网络错误才增加重试计数，临时文件检测等情况不增加
+                    int initialRetryCount = result.shouldIncrementRetryCount() ? 1 : 0;
+                    addToFailedQueue(file, initialRetryCount);
                 }
                 
                 // 等待指定间隔后再处理下一个文件
@@ -318,17 +321,30 @@ public class FileMonitorService {
                         continue;
                     }
                     
-                    log.info(I18nUtil.getMessage("monitor.retry.file"),
-                        failedFile.getFile().getName(), failedFile.getRetryCount(), maxFileRetries);
-                    
-                    boolean success = notifyFileReadyWithResult(failedFile.getFile());
-                    
-                    if (!success) {
-                        // 重试失败，重新加入队列
-                        addToFailedQueue(failedFile.getFile(), failedFile.getRetryCount() + 1);
+                    // 只有真正的重试（retryCount > 0）才显示重试日志
+                    if (failedFile.getRetryCount() > 0) {
+                        log.info(I18nUtil.getMessage("monitor.retry.file"),
+                            failedFile.getFile().getName(), failedFile.getRetryCount(), maxFileRetries);
                     } else {
+                        // retryCount = 0 表示这是延迟重试（如临时文件检测），使用不同的日志
+                        log.info(I18nUtil.getMessage("monitor.delay.retry.file"),
+                            failedFile.getFile().getName());
+                    }
+                    
+                    ProcessResult result = notifyFileReadyWithResult(failedFile.getFile());
+                    
+                    if (result.shouldRetry()) {
+                        // 根据结果类型决定是否增加重试计数
+                        int newRetryCount = failedFile.getRetryCount();
+                        if (result.shouldIncrementRetryCount()) {
+                            newRetryCount++;
+                        }
+                        // 重试失败，重新加入队列
+                        addToFailedQueue(failedFile.getFile(), newRetryCount);
+                    } else if (result.isSuccess()) {
                         log.info(I18nUtil.getMessage("monitor.retry.success"), failedFile.getFile().getName());
                     }
+                    // PERMANENT_FAIL 情况下不需要额外处理，文件已在 processAudioFile 中被记录
                     
                     // 重试之间也需要间隔
                     Thread.sleep(PROCESS_INTERVAL);
@@ -472,23 +488,23 @@ public class FileMonitorService {
     /**
      * 通知文件已准备好处理，并返回处理结果
      */
-    private boolean notifyFileReadyWithResult(File file) {
+    private ProcessResult notifyFileReadyWithResult(File file) {
         if (fileReadyCallbackWithResult != null) {
             return fileReadyCallbackWithResult.apply(file);
         }
-        // 如果没有设置带返回值的回调，使用原来的回调并返回true
+        // 如果没有设置带返回值的回调，使用原来的回调并返回成功
         notifyFileReady(file);
-        return true;
+        return ProcessResult.SUCCESS;
     }
     
     private java.util.function.Consumer<File> fileReadyCallback;
-    private java.util.function.Function<File, Boolean> fileReadyCallbackWithResult;
+    private java.util.function.Function<File, ProcessResult> fileReadyCallbackWithResult;
     
     public void setFileReadyCallback(java.util.function.Consumer<File> callback) {
         this.fileReadyCallback = callback;
     }
     
-    public void setFileReadyCallbackWithResult(java.util.function.Function<File, Boolean> callback) {
+    public void setFileReadyCallbackWithResult(java.util.function.Function<File, ProcessResult> callback) {
         this.fileReadyCallbackWithResult = callback;
     }
     

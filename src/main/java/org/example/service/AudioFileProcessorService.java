@@ -3,6 +3,7 @@ package org.example.service;
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
 import org.example.model.MusicMetadata;
+import org.example.model.ProcessResult;
 import org.example.util.FileSystemUtils;
 import org.example.util.I18nUtil;
 import org.example.util.MetadataUtils;
@@ -59,9 +60,13 @@ public class AudioFileProcessorService {
      * 处理音频文件的核心逻辑（带返回值）- 两阶段处理
      * 阶段1: 识别收集阶段 - 收集专辑信息，不写文件
      * 阶段2: 批量写入阶段 - 确定专辑后统一批量处理
-     * @return true表示成功，false表示失败（会加入重试队列）
+     * @return ProcessResult 表示处理结果类型：
+     *         - SUCCESS: 处理成功
+     *         - DELAY_RETRY: 需要延迟重试（如检测到临时文件），不增加重试计数
+     *         - NETWORK_ERROR_RETRY: 网络错误需要重试，增加重试计数
+     *         - PERMANENT_FAIL: 永久失败，不重试
      */
-    public boolean processAudioFile(File audioFile) {
+    public ProcessResult processAudioFile(File audioFile) {
         log.info(I18nUtil.getMessage("main.title.separator"));
         log.info(I18nUtil.getMessage("main.processing.file"), audioFile.getName());
         LogCollector.addLog("INFO", I18nUtil.getMessage("main.title.separator"));
@@ -71,13 +76,15 @@ public class AudioFileProcessorService {
             // 0. 检查文件是否已处理过
             if (processedLogger.isFileProcessed(audioFile)) {
                 log.info(I18nUtil.getMessage("main.file.already.processed"), audioFile.getName());
-                return true; // 已处理，返回成功
+                return ProcessResult.SUCCESS; // 已处理，返回成功
             }
             
             // 0.3. 检查文件夹是否有临时文件(下载未完成)
             if (fileSystemUtils.hasTempFilesInFolder(audioFile)) {
                 log.warn(I18nUtil.getMessage("main.temp.files.detected"), audioFile.getParentFile().getName());
-                return false; // 返回false以触发重试，而不是永久跳过
+                // 返回 DELAY_RETRY 表示需要延迟重试，但不消耗重试次数
+                // 因为这不是真正的处理失败，只是暂时不适合处理
+                return ProcessResult.DELAY_RETRY;
             }
             
             // 0.5. 获取专辑根目录（监控目录的第一级子目录）
@@ -221,7 +228,7 @@ public class AudioFileProcessorService {
                         failedFileHandler.handleAlbumFileFailed(audioFile, albumRootDir);
                     }
 
-                    return true; // 识别失败，不重试但记录
+                    return ProcessResult.PERMANENT_FAIL; // 识别失败，不重试但记录
                 } else {
                     // 有锁定的专辑信息（快速扫描成功），使用锁定的专辑信息继续处理
                     log.info("AcoustID 未关联到详细录音信息，但快速扫描已锁定专辑，继续处理");
@@ -422,13 +429,13 @@ public class AudioFileProcessorService {
                 }
             }
 
-            return true; // 处理成功
+            return ProcessResult.SUCCESS; // 处理成功
 
         } catch (java.io.IOException e) {
-            // 网络异常（包括 SocketException），返回false以触发重试
+            // 网络异常（包括 SocketException），返回 NETWORK_ERROR_RETRY 以触发重试并增加重试计数
             log.error(I18nUtil.getMessage("main.network.error"), audioFile.getName(), e.getMessage());
             log.info(I18nUtil.getMessage("main.retry.queued"));
-            return false;
+            return ProcessResult.NETWORK_ERROR_RETRY;
 
         } catch (Exception e) {
             // 其他异常（如识别失败），不重试，但必须记录到数据库避免静默丢失
@@ -448,7 +455,7 @@ public class AudioFileProcessorService {
                 log.error("记录异常失败文件到数据库失败: {} - {}", audioFile.getName(), recordError.getMessage());
             }
 
-            return true; // 返回true避免重试（非网络问题）
+            return ProcessResult.PERMANENT_FAIL; // 返回永久失败避免重试（非网络问题）
 
         } finally {
             log.info("========================================");
