@@ -161,6 +161,51 @@ public class AudioFileProcessorService {
             AudioFingerprintService.AcoustIdResult acoustIdResult =
                 fingerprintService.identifyAudioFile(audioFile);
 
+            // ===== 关键修复：在获取详细元数据之前，先执行时长序列匹配确定专辑 =====
+            // 这样第一个文件就能使用正确的 preferredReleaseGroupId
+            if (lockedAlbumTitle == null && !isLooseFileInMonitorRoot &&
+                acoustIdResult.getRecordings() != null && !acoustIdResult.getRecordings().isEmpty()) {
+                
+                // 收集 AcoustID 返回的所有候选专辑
+                java.util.List<FolderAlbumCache.CandidateReleaseGroup> allCandidates = new java.util.ArrayList<>();
+                for (AudioFingerprintService.RecordingInfo recording : acoustIdResult.getRecordings()) {
+                    if (recording.getReleaseGroups() != null) {
+                        for (AudioFingerprintService.ReleaseGroupInfo rg : recording.getReleaseGroups()) {
+                            boolean exists = allCandidates.stream()
+                                .anyMatch(c -> c.getReleaseGroupId().equals(rg.getId()));
+                            if (!exists) {
+                                allCandidates.add(new FolderAlbumCache.CandidateReleaseGroup(
+                                    rg.getId(), rg.getTitle()));
+                            }
+                        }
+                    }
+                }
+                
+                if (!allCandidates.isEmpty()) {
+                    log.info("第一个文件处理：收集到 {} 个候选专辑，立即执行时长序列匹配", allCandidates.size());
+                    
+                    // 立即执行时长序列匹配
+                    FolderAlbumCache.CachedAlbumInfo determinedAlbum =
+                        folderAlbumCache.determineAlbumWithDurationSequence(folderPath, allCandidates, musicFilesInFolder);
+                    
+                    if (determinedAlbum != null) {
+                        // 时长序列匹配成功，锁定专辑信息
+                        lockedAlbumTitle = determinedAlbum.getAlbumTitle();
+                        lockedAlbumArtist = determinedAlbum.getAlbumArtist();
+                        lockedReleaseGroupId = determinedAlbum.getReleaseGroupId();
+                        lockedReleaseDate = determinedAlbum.getReleaseDate();
+                        
+                        log.info("✓ 第一个文件即确定专辑: {} (Release Group ID: {})",
+                            lockedAlbumTitle, lockedReleaseGroupId);
+                        
+                        // 同时设置到批处理器的缓存中
+                        albumBatchProcessor.setFolderAlbum(folderPath, determinedAlbum);
+                    } else {
+                        log.info("时长序列匹配未能确定专辑，将在后续样本收集后再尝试");
+                    }
+                }
+            }
+
             if (acoustIdResult.getRecordings() == null || acoustIdResult.getRecordings().isEmpty()) {
                 // 如果没有锁定的专辑信息，则识别失败
                 if (lockedAlbumTitle == null) {
