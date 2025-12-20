@@ -87,13 +87,29 @@ public class DurationSequenceService {
     /**
      * 使用动态时间规整(DTW)算法计算相似度
      * DTW对序列的时间扭曲更宽容,适合处理专辑中可能存在的额外曲目
-     * 
+     *
      * @param folderDurations 文件夹内文件的时长序列
      * @param albumDurations 专辑官方时长序列
      * @return 相似度分数 (0.0-1.0)
      */
     public double calculateSimilarityDTW(List<Integer> folderDurations, List<Integer> albumDurations) {
-        if (folderDurations == null || albumDurations == null || 
+        // 默认使用加权DTW
+        return calculateSimilarityWeightedDTW(folderDurations, albumDurations);
+    }
+    
+    /**
+     * 使用加权动态时间规整(Weighted DTW)算法计算相似度
+     * 对专辑首尾曲目给予更高权重，因为：
+     * 1. 首曲通常是最具代表性的开场曲，时长特征明显
+     * 2. 尾曲同样具有特征性（可能是主打曲或特殊结尾）
+     * 3. 中间曲目可能因版本不同而有变化（bonus track等）
+     *
+     * @param folderDurations 文件夹内文件的时长序列
+     * @param albumDurations 专辑官方时长序列
+     * @return 相似度分数 (0.0-1.0)
+     */
+    public double calculateSimilarityWeightedDTW(List<Integer> folderDurations, List<Integer> albumDurations) {
+        if (folderDurations == null || albumDurations == null ||
             folderDurations.isEmpty() || albumDurations.isEmpty()) {
             return 0.0;
         }
@@ -112,7 +128,7 @@ public class DurationSequenceService {
         }
         dtw[0][0] = 0;
         
-        // 计算DTW距离
+        // 计算加权DTW距离
         for (int i = 1; i <= m; i++) {
             for (int j = 1; j <= n; j++) {
                 int duration1 = folderDurations.get(i - 1);
@@ -126,7 +142,16 @@ public class DurationSequenceService {
                     cost = 0;
                 }
                 
-                dtw[i][j] = cost + Math.min(
+                // 获取位置权重 - 首尾曲目权重更高
+                double weight1 = getPositionWeight(i - 1, m);
+                double weight2 = getPositionWeight(j - 1, n);
+                // 使用两个权重的平均值
+                double combinedWeight = (weight1 + weight2) / 2.0;
+                
+                // 应用权重到代价
+                double weightedCost = cost * combinedWeight;
+                
+                dtw[i][j] = weightedCost + Math.min(
                     Math.min(dtw[i - 1][j], dtw[i][j - 1]),
                     dtw[i - 1][j - 1]
                 );
@@ -135,19 +160,114 @@ public class DurationSequenceService {
         
         double dtwDistance = dtw[m][n];
         
-        // 归一化:除以序列长度和平均时长
+        // 归一化:除以序列长度和平均时长，同时考虑权重的影响
         double avgDuration = (folderDurations.stream().mapToInt(Integer::intValue).average().orElse(200.0) +
                              albumDurations.stream().mapToInt(Integer::intValue).average().orElse(200.0)) / 2.0;
         int maxLength = Math.max(m, n);
-        double normalizedDistance = dtwDistance / (maxLength * avgDuration);
+        // 计算平均权重用于归一化
+        double avgWeight = calculateAverageWeight(maxLength);
+        double normalizedDistance = dtwDistance / (maxLength * avgDuration * avgWeight);
         
         // 转换为相似度
         double similarity = 1.0 / (1.0 + normalizedDistance);
         
-        log.debug("DTW时长序列匹配 - DTW距离:{:.2f}, 归一化距离:{:.4f}, 相似度:{:.2f}", 
-            dtwDistance, normalizedDistance, similarity);
+        // ==================== 首尾精确匹配加分机制 ====================
+        // 当首尾曲目精确匹配时，给予额外加分奖励
+        double bonusScore = 0.0;
         
-        return Math.max(0.0, Math.min(1.0, similarity));
+        // 检查第一首曲目是否精确匹配
+        int firstFolderDuration = folderDurations.get(0);
+        int firstAlbumDuration = albumDurations.get(0);
+        if (Math.abs(firstFolderDuration - firstAlbumDuration) <= DURATION_TOLERANCE) {
+            bonusScore += FIRST_TRACK_MATCH_BONUS;
+            log.debug("  ★ 首曲精确匹配 (+{:.0f}%加分)", FIRST_TRACK_MATCH_BONUS * 100);
+        }
+        
+        // 检查最后一首曲目是否精确匹配
+        int lastFolderDuration = folderDurations.get(m - 1);
+        int lastAlbumDuration = albumDurations.get(n - 1);
+        if (Math.abs(lastFolderDuration - lastAlbumDuration) <= DURATION_TOLERANCE) {
+            bonusScore += LAST_TRACK_MATCH_BONUS;
+            log.debug("  ★ 尾曲精确匹配 (+{:.0f}%加分)", LAST_TRACK_MATCH_BONUS * 100);
+        }
+        
+        // 应用加分，但确保不超过1.0
+        double finalSimilarity = Math.min(1.0, similarity + bonusScore);
+        
+        log.debug("加权DTW时长序列匹配 - DTW距离:{:.2f}, 归一化距离:{:.4f}, 基础相似度:{:.2f}, 加分:{:.2f}, 最终相似度:{:.2f}",
+            dtwDistance, normalizedDistance, similarity, bonusScore, finalSimilarity);
+        
+        return Math.max(0.0, finalSimilarity);
+    }
+    
+    // ==================== 权重和加分常量 ====================
+    
+    // 首尾曲目权重（用于DTW代价计算）
+    private static final double FIRST_LAST_WEIGHT = 1.5;
+    // 次首尾曲目权重
+    private static final double SECOND_WEIGHT = 1.25;
+    // 标准权重
+    private static final double NORMAL_WEIGHT = 1.0;
+    
+    // 首尾精确匹配加分（首曲匹配+5%，尾曲匹配+5%）
+    private static final double FIRST_TRACK_MATCH_BONUS = 0.05;
+    private static final double LAST_TRACK_MATCH_BONUS = 0.05;
+    
+    /**
+     * 获取位置权重
+     * 首尾曲目权重最高(1.5)，次首尾曲目次高(1.25)，其他曲目标准权重(1.0)
+     *
+     * @param position 曲目位置(0-based)
+     * @param totalLength 序列总长度
+     * @return 位置权重
+     */
+    private double getPositionWeight(int position, int totalLength) {
+        if (totalLength <= 0) {
+            return NORMAL_WEIGHT;
+        }
+        
+        // 处理短专辑的情况
+        if (totalLength <= 2) {
+            // 只有1-2首曲目，都给高权重
+            return FIRST_LAST_WEIGHT;
+        }
+        
+        if (totalLength <= 4) {
+            // 3-4首曲目，首尾高权重，其他标准
+            if (position == 0 || position == totalLength - 1) {
+                return FIRST_LAST_WEIGHT;
+            }
+            return NORMAL_WEIGHT;
+        }
+        
+        // 5首及以上曲目的标准情况
+        if (position == 0 || position == totalLength - 1) {
+            // 第一首和最后一首：最高权重
+            return FIRST_LAST_WEIGHT;
+        } else if (position == 1 || position == totalLength - 2) {
+            // 第二首和倒数第二首：次高权重
+            return SECOND_WEIGHT;
+        }
+        
+        return NORMAL_WEIGHT;
+    }
+    
+    /**
+     * 计算序列的平均权重，用于归一化
+     *
+     * @param length 序列长度
+     * @return 平均权重
+     */
+    private double calculateAverageWeight(int length) {
+        if (length <= 0) {
+            return NORMAL_WEIGHT;
+        }
+        
+        double totalWeight = 0.0;
+        for (int i = 0; i < length; i++) {
+            totalWeight += getPositionWeight(i, length);
+        }
+        return totalWeight / length;
     }
     
     /**
