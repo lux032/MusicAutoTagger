@@ -197,16 +197,107 @@ public class MusicBrainzClient {
     }
     
     /**
+     * 获取 Release Group 下所有 Release 的时长序列（用于精确匹配）
+     * 改进版本：返回所有有效的 Release 时长序列，而不是只返回第一个
+     *
+     * @param releaseGroupId Release Group ID
+     * @return 包含所有 Release 时长序列的列表
+     */
+    public List<AlbumDurationResult> getAllReleaseDurationSequences(String releaseGroupId) throws IOException, InterruptedException {
+        rateLimit();
+        
+        List<AlbumDurationResult> results = new ArrayList<>();
+        
+        // 查询 release-group 获取所有 releases
+        String url = String.format("%s/release-group/%s?fmt=json&inc=releases+media",
+            config.getMusicBrainzApiUrl(), releaseGroupId);
+        
+        try {
+            String response = executeRequest(url);
+            JsonNode root = objectMapper.readTree(response);
+            
+            // 获取所有 releases
+            JsonNode releases = root.path("releases");
+            if (!releases.isArray() || releases.size() == 0) {
+                log.warn("Release Group {} 没有找到任何 releases", releaseGroupId);
+                return results;
+            }
+            
+            log.info("Release Group {} 共有 {} 个 releases，获取所有有效版本的时长序列",
+                releaseGroupId, releases.size());
+            
+            // 按优先级排序所有 releases（优先选择 CD 或 Digital 格式）
+            List<JsonNode> sortedReleases = new ArrayList<>();
+            for (JsonNode release : releases) {
+                sortedReleases.add(release);
+            }
+            sortedReleases.sort((r1, r2) -> {
+                int score1 = scoreReleaseForDuration(r1);
+                int score2 = scoreReleaseForDuration(r2);
+                return Integer.compare(score2, score1); // 降序
+            });
+            
+            // 获取所有有时长数据的 release（最多尝试10个）
+            int tryCount = Math.min(10, sortedReleases.size());
+            int successCount = 0;
+            
+            for (int i = 0; i < tryCount && successCount < 5; i++) {
+                JsonNode release = sortedReleases.get(i);
+                String releaseId = release.path("id").asText();
+                String releaseTitle = release.path("title").asText();
+                int trackCount = calculateTrackCount(release);
+                
+                // 跳过视频格式
+                int score = scoreReleaseForDuration(release);
+                if (score < 0) {
+                    continue;
+                }
+                
+                log.debug("尝试获取 release {} 的时长序列 (ID: {}, 曲目数: {})",
+                    releaseTitle, releaseId, trackCount);
+                
+                List<Integer> durations = getReleaseDurationSequence(releaseId);
+                
+                // 如果获取到有效的时长序列
+                if (!durations.isEmpty()) {
+                    results.add(new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount));
+                    successCount++;
+                    log.info("✓ 成功获取 release {} 的时长序列 ({} 首曲目)",
+                        releaseTitle, durations.size());
+                }
+            }
+            
+            log.info("共获取到 {} 个 release 的时长序列", results.size());
+            return results;
+            
+        } catch (ParseException e) {
+            log.error("解析 Release Group 响应失败", e);
+            return results;
+        }
+    }
+    
+    /**
      * 专辑时长序列结果（包含 Release ID）
      */
     @Data
     public static class AlbumDurationResult {
         private final List<Integer> durations;
         private final String releaseId;
+        private final String releaseTitle;
+        private final int trackCount;
         
         public AlbumDurationResult(List<Integer> durations, String releaseId) {
             this.durations = durations;
             this.releaseId = releaseId;
+            this.releaseTitle = null;
+            this.trackCount = durations != null ? durations.size() : 0;
+        }
+        
+        public AlbumDurationResult(List<Integer> durations, String releaseId, String releaseTitle, int trackCount) {
+            this.durations = durations;
+            this.releaseId = releaseId;
+            this.releaseTitle = releaseTitle;
+            this.trackCount = trackCount;
         }
     }
     

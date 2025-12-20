@@ -41,13 +41,16 @@ public class MusicMetadata {
     }
 
     /**
-     * 规范化专辑艺术家：如果是多人则返回 "Various Artists"
+     * 规范化专辑艺术家：如果是多人、未知或空则返回 "Various Artists"
      * @param albumArtist 原始专辑艺术家
      * @return 规范化后的专辑艺术家
      */
     public static String normalizeAlbumArtist(String albumArtist) {
-        if (albumArtist == null || albumArtist.isEmpty()) {
-            return albumArtist;
+        // 如果是 null、空字符串或 "Unknown Artist"，返回 "Various Artists"
+        if (albumArtist == null || albumArtist.isEmpty() ||
+            "Unknown Artist".equalsIgnoreCase(albumArtist) ||
+            "Unknown".equalsIgnoreCase(albumArtist)) {
+            return "Various Artists";
         }
 
         // 已经是 Various Artists，直接返回

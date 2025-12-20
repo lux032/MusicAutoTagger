@@ -2,6 +2,7 @@ package org.example.service;
 
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
+import org.example.model.MusicMetadata;
 
 import java.io.File;
 import java.util.*;
@@ -312,41 +313,53 @@ public class FolderAlbumCache {
             log.info("文件夹名称: {}", folderName);
 
             // 3. 获取每个候选专辑的官方时长序列
+            // 关键改进：获取每个 Release Group 下所有 Release 的时长序列，而不是只获取第一个
             List<DurationSequenceService.AlbumDurationInfo> candidates = new ArrayList<>();
             for (Map.Entry<String, String> entry : allCandidateReleaseGroups.entrySet()) {
                 String releaseGroupId = entry.getKey();
                 String albumTitle = entry.getValue();
 
                 try {
-                    MusicBrainzClient.AlbumDurationResult durationResult = musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
-                    List<Integer> albumDurations = durationResult.getDurations();
-                    String releaseId = durationResult.getReleaseId();
-
-                    if (!albumDurations.isEmpty()) {
-                        // 尝试从样本中找到对应的专辑艺术家信息
-                        String albumArtist = null;
-                        for (AlbumIdentificationInfo sample : samples) {
-                            if (releaseGroupId.equals(sample.getReleaseGroupId())) {
-                                albumArtist = sample.getAlbumArtist();
+                    // 使用新方法获取所有 Release 的时长序列
+                    List<MusicBrainzClient.AlbumDurationResult> allReleaseResults =
+                        musicBrainzClient.getAllReleaseDurationSequences(releaseGroupId);
+                    
+                    if (allReleaseResults.isEmpty()) {
+                        log.warn("Release Group {} 没有获取到任何有效的时长序列", releaseGroupId);
+                        continue;
+                    }
+                    
+                    // 尝试从样本中找到对应的专辑艺术家信息
+                    String albumArtist = null;
+                    for (AlbumIdentificationInfo sample : samples) {
+                        if (releaseGroupId.equals(sample.getReleaseGroupId())) {
+                            albumArtist = sample.getAlbumArtist();
+                            if (sample.getAlbumTitle() != null && !sample.getAlbumTitle().isEmpty()) {
                                 albumTitle = sample.getAlbumTitle(); // 使用更完整的标题
-                                break;
                             }
+                            break;
                         }
+                    }
 
-                        // 如果没有找到艺术家信息，使用 "Unknown Artist"
-                        if (albumArtist == null || albumArtist.isEmpty()) {
-                            albumArtist = "Unknown Artist";
-                        }
-
+                    // 规范化专辑艺术家（null、空、Unknown Artist 会被转换为 "Various Artists"）
+                    albumArtist = MusicMetadata.normalizeAlbumArtist(albumArtist);
+                    
+                    // 为每个 Release 创建候选项
+                    for (MusicBrainzClient.AlbumDurationResult releaseResult : allReleaseResults) {
+                        String releaseTitle = releaseResult.getReleaseTitle() != null ?
+                            releaseResult.getReleaseTitle() : albumTitle;
+                        
                         candidates.add(new DurationSequenceService.AlbumDurationInfo(
                             releaseGroupId,
-                            releaseId,
-                            albumTitle,
+                            releaseResult.getReleaseId(),
+                            releaseTitle,
                             albumArtist,
-                            albumDurations
+                            releaseResult.getDurations()
                         ));
 
-                        log.info("候选专辑: {} - {} ({}首曲目, Release ID: {})", albumArtist, albumTitle, albumDurations.size(), releaseId);
+                        log.info("候选版本: {} - {} ({}首曲目, Release ID: {})",
+                            albumArtist, releaseTitle, releaseResult.getDurations().size(),
+                            releaseResult.getReleaseId());
                     }
                 } catch (Exception e) {
                     log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());
@@ -450,25 +463,41 @@ public class FolderAlbumCache {
             log.info("文件夹名称: {}", folderName);
             
             // 3. 获取每个候选专辑的官方时长序列
+            // 关键改进：获取每个 Release Group 下所有 Release 的时长序列，而不是只获取第一个
             List<DurationSequenceService.AlbumDurationInfo> candidates = new ArrayList<>();
             for (CandidateReleaseGroup candidate : candidateReleaseGroups) {
                 String releaseGroupId = candidate.getReleaseGroupId();
                 String albumTitle = candidate.getTitle();
                 
                 try {
-                    MusicBrainzClient.AlbumDurationResult durationResult = musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
-                    List<Integer> albumDurations = durationResult.getDurations();
-                    String releaseId = durationResult.getReleaseId();
-
-                    if (!albumDurations.isEmpty()) {
+                    // 使用新方法获取所有 Release 的时长序列
+                    List<MusicBrainzClient.AlbumDurationResult> allReleaseResults =
+                        musicBrainzClient.getAllReleaseDurationSequences(releaseGroupId);
+                    
+                    if (allReleaseResults.isEmpty()) {
+                        log.warn("Release Group {} 没有获取到任何有效的时长序列", releaseGroupId);
+                        continue;
+                    }
+                    
+                    // 规范化专辑艺术家（null、空、Unknown Artist 会被转换为 "Various Artists"）
+                    String normalizedArtist = MusicMetadata.normalizeAlbumArtist(null);
+                    
+                    // 为每个 Release 创建候选项
+                    for (MusicBrainzClient.AlbumDurationResult releaseResult : allReleaseResults) {
+                        String releaseTitle = releaseResult.getReleaseTitle() != null ?
+                            releaseResult.getReleaseTitle() : albumTitle;
+                        
                         candidates.add(new DurationSequenceService.AlbumDurationInfo(
                             releaseGroupId,
-                            releaseId,
-                            albumTitle,
-                            "Unknown Artist", // 稍后会从 MusicBrainz 获取
-                            albumDurations
+                            releaseResult.getReleaseId(),
+                            releaseTitle,
+                            normalizedArtist,
+                            releaseResult.getDurations()
                         ));
-                        log.info("候选专辑: {} ({}首曲目, Release ID: {})", albumTitle, albumDurations.size(), releaseId);
+                        
+                        log.info("候选版本: {} ({}首曲目, Release ID: {})",
+                            releaseTitle, releaseResult.getDurations().size(),
+                            releaseResult.getReleaseId());
                     }
                 } catch (Exception e) {
                     log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());
@@ -809,7 +838,8 @@ public class FolderAlbumCache {
             this.releaseGroupId = releaseGroupId;
             this.releaseId = releaseId;
             this.albumTitle = albumTitle;
-            this.albumArtist = albumArtist;
+            // 规范化专辑艺术家（null、空、Unknown Artist 会被转换为 "Various Artists"）
+            this.albumArtist = MusicMetadata.normalizeAlbumArtist(albumArtist);
             this.trackCount = trackCount;
             this.releaseDate = releaseDate;
             this.confidence = confidence;
