@@ -318,7 +318,10 @@ public class FolderAlbumCache {
                 String albumTitle = entry.getValue();
 
                 try {
-                    List<Integer> albumDurations = musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
+                    MusicBrainzClient.AlbumDurationResult durationResult = musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
+                    List<Integer> albumDurations = durationResult.getDurations();
+                    String releaseId = durationResult.getReleaseId();
+
                     if (!albumDurations.isEmpty()) {
                         // 尝试从样本中找到对应的专辑艺术家信息
                         String albumArtist = null;
@@ -337,12 +340,13 @@ public class FolderAlbumCache {
 
                         candidates.add(new DurationSequenceService.AlbumDurationInfo(
                             releaseGroupId,
+                            releaseId,
                             albumTitle,
                             albumArtist,
                             albumDurations
                         ));
 
-                        log.info("候选专辑: {} - {} ({}首曲目)", albumArtist, albumTitle, albumDurations.size());
+                        log.info("候选专辑: {} - {} ({}首曲目, Release ID: {})", albumArtist, albumTitle, albumDurations.size(), releaseId);
                     }
                 } catch (Exception e) {
                     log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());
@@ -370,6 +374,7 @@ public class FolderAlbumCache {
 
                 return new CachedAlbumInfo(
                     bestAlbum.getReleaseGroupId(),
+                    bestAlbum.getReleaseId(),  // 传递 Release ID
                     bestAlbum.getAlbumTitle(),
                     bestAlbum.getAlbumArtist(),
                     bestAlbum.getDurations().size(),
@@ -451,15 +456,19 @@ public class FolderAlbumCache {
                 String albumTitle = candidate.getTitle();
                 
                 try {
-                    List<Integer> albumDurations = musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
+                    MusicBrainzClient.AlbumDurationResult durationResult = musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
+                    List<Integer> albumDurations = durationResult.getDurations();
+                    String releaseId = durationResult.getReleaseId();
+
                     if (!albumDurations.isEmpty()) {
                         candidates.add(new DurationSequenceService.AlbumDurationInfo(
                             releaseGroupId,
+                            releaseId,
                             albumTitle,
                             "Unknown Artist", // 稍后会从 MusicBrainz 获取
                             albumDurations
                         ));
-                        log.info("候选专辑: {} ({}首曲目)", albumTitle, albumDurations.size());
+                        log.info("候选专辑: {} ({}首曲目, Release ID: {})", albumTitle, albumDurations.size(), releaseId);
                     }
                 } catch (Exception e) {
                     log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());
@@ -487,6 +496,7 @@ public class FolderAlbumCache {
                 
                 CachedAlbumInfo albumInfo = new CachedAlbumInfo(
                     bestAlbum.getReleaseGroupId(),
+                    bestAlbum.getReleaseId(),  // 传递 Release ID
                     bestAlbum.getAlbumTitle(),
                     bestAlbum.getAlbumArtist(),
                     bestAlbum.getDurations().size(),
@@ -615,6 +625,7 @@ public class FolderAlbumCache {
                 AlbumIdentificationInfo bestAlbum = bestVote.getAlbumInfo();
                 return new CachedAlbumInfo(
                     bestAlbum.getReleaseGroupId(),
+                    null,  // 投票方法没有 releaseId
                     bestAlbum.getAlbumTitle(),
                     bestAlbum.getAlbumArtist(),
                     bestAlbum.getTrackCount(),
@@ -785,6 +796,7 @@ public class FolderAlbumCache {
     @Data
     public static class CachedAlbumInfo {
         private final String releaseGroupId;
+        private final String releaseId;  // 新增：具体的 Release ID，用于确保版本一致性
         private final String albumTitle;
         private final String albumArtist;
         private final int trackCount;
@@ -792,9 +804,10 @@ public class FolderAlbumCache {
         private final double confidence; // 置信度
         private int mismatchCount = 0; // 不匹配次数
         
-        public CachedAlbumInfo(String releaseGroupId, String albumTitle, String albumArtist, 
+        public CachedAlbumInfo(String releaseGroupId, String releaseId, String albumTitle, String albumArtist,
                               int trackCount, String releaseDate, double confidence) {
             this.releaseGroupId = releaseGroupId;
+            this.releaseId = releaseId;
             this.albumTitle = albumTitle;
             this.albumArtist = albumArtist;
             this.trackCount = trackCount;

@@ -21,6 +21,7 @@ public class MusicMetadata {
     private String lyrics;
     private String discNo;
     private String trackNo;
+    private Integer duration; // 时长（秒）
 
     // Fields specific to MusicBrainzClient
     private String releaseGroupId;

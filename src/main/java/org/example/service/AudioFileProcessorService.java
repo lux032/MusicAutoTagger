@@ -106,16 +106,18 @@ public class AudioFileProcessorService {
             String lockedAlbumTitle = null;
             String lockedAlbumArtist = null;
             String lockedReleaseGroupId = null;
+            String lockedReleaseId = null;  // 新增：具体的 Release ID，用于确保版本一致性
             String lockedReleaseDate = null;
-            
+
             if (cachedAlbum != null) {
                 // 已有缓存专辑，锁定专辑信息，但仍需指纹识别获取单曲详细信息
                 log.info("✓ 使用文件夹缓存的专辑信息");
                 log.info("专辑: {} - {}", cachedAlbum.getAlbumArtist(), cachedAlbum.getAlbumTitle());
-                
+
                 lockedAlbumTitle = cachedAlbum.getAlbumTitle();
                 lockedAlbumArtist = cachedAlbum.getAlbumArtist();
                 lockedReleaseGroupId = cachedAlbum.getReleaseGroupId();
+                lockedReleaseId = cachedAlbum.getReleaseId();  // 获取具体的 Release ID
                 lockedReleaseDate = cachedAlbum.getReleaseDate();
                 
             } else if (!isLooseFileInMonitorRoot) {
@@ -140,6 +142,7 @@ public class AudioFileProcessorService {
                     // 立即将专辑信息写入文件夹缓存
                     FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
                         lockedReleaseGroupId,
+                        null,  // releaseId - 快速扫描时没有具体的 Release ID
                         lockedAlbumTitle,
                         lockedAlbumArtist,
                         quickMetadata.getTrackCount(),
@@ -200,10 +203,11 @@ public class AudioFileProcessorService {
                         lockedAlbumTitle = determinedAlbum.getAlbumTitle();
                         lockedAlbumArtist = determinedAlbum.getAlbumArtist();
                         lockedReleaseGroupId = determinedAlbum.getReleaseGroupId();
+                        lockedReleaseId = determinedAlbum.getReleaseId();  // 关键：获取具体的 Release ID
                         lockedReleaseDate = determinedAlbum.getReleaseDate();
-                        
-                        log.info("✓ 第一个文件即确定专辑: {} (Release Group ID: {})",
-                            lockedAlbumTitle, lockedReleaseGroupId);
+
+                        log.info("✓ 第一个文件即确定专辑: {} (Release Group ID: {}, Release ID: {})",
+                            lockedAlbumTitle, lockedReleaseGroupId, lockedReleaseId);
                         
                         // 同时设置到批处理器的缓存中
                         albumBatchProcessor.setFolderAlbum(folderPath, determinedAlbum);
@@ -249,23 +253,23 @@ public class AudioFileProcessorService {
                 // 指纹识别成功，获取详细元数据
                 // 关键：指纹识别成功获取到recordings，应该使用指纹识别模式（而非快速扫描模式）
                 isQuickScanMode = false;
-                
+
                 AudioFingerprintService.RecordingInfo bestMatch = MetadataUtils.findBestRecordingMatch(
                     acoustIdResult.getRecordings(),
                     lockedReleaseGroupId,
                     audioFile.getName()
                 );
-                
+
                 // 检查 bestMatch 是否有完整信息
                 boolean hasCompleteInfo = (bestMatch.getTitle() != null && !bestMatch.getTitle().isEmpty() &&
                                           bestMatch.getArtist() != null && !bestMatch.getArtist().isEmpty());
-                
+
                 // 处理可能为 null 或空的情况
                 String displayArtist = (bestMatch.getArtist() != null && !bestMatch.getArtist().isEmpty())
                     ? bestMatch.getArtist() : "(待从MusicBrainz获取)";
                 String displayTitle = (bestMatch.getTitle() != null && !bestMatch.getTitle().isEmpty())
                     ? bestMatch.getTitle() : "(待从MusicBrainz获取)";
-                
+
                 if (hasCompleteInfo) {
                     log.info("识别成功: {} - {}", displayArtist, displayTitle);
                     LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.identify.success", displayArtist, displayTitle));
@@ -274,14 +278,23 @@ public class AudioFileProcessorService {
                     LogCollector.addLog("INFO", "🔍 " + I18nUtil.getMessage("main.acoustid.has.recording.id"));
                 }
 
-                // 如果有锁定的专辑信息，传入1作为musicFilesInFolder以避免selectBestRelease被文件数量影响
-                // 否则传入实际的文件数量
-                int musicFilesParam = (lockedAlbumTitle != null) ? 1 : musicFilesInFolder;
+                // 始终传入实际的文件数量，让 MusicBrainz 在回退匹配时能正确选择
+                // selectBestRelease() 会优先匹配 preferredReleaseGroupId，匹配失败时才使用文件数量
+                int musicFilesParam = musicFilesInFolder;
+
+                // 使用 AcoustID 指纹识别时获取的文件时长（更可靠）
+                int fileDurationSeconds = acoustIdResult.getDuration();
+                if (fileDurationSeconds > 0) {
+                    log.debug("使用 AcoustID 获取的文件时长: {}秒", fileDurationSeconds);
+                } else {
+                    log.warn("AcoustID 未返回文件时长信息");
+                }
 
                 // 通过 MusicBrainz 获取详细元数据（包含作词、作曲、风格等）
                 // 即使 AcoustID 返回的信息不完整，只要有 Recording ID 就可以查询
+                // 关键修复：传递 lockedReleaseId 以确保版本一致性，传递 fileDurationSeconds 用于时长匹配备选方案
                 log.info("正在从 MusicBrainz 获取详细元数据 (Recording ID: {})...", bestMatch.getRecordingId());
-                detailedMetadata = musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesParam, lockedReleaseGroupId);
+                detailedMetadata = musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesParam, lockedReleaseGroupId, lockedReleaseId, fileDurationSeconds);
 
                 if (detailedMetadata == null) {
                     log.warn("无法从 MusicBrainz 获取详细元数据");
@@ -313,6 +326,67 @@ public class AudioFileProcessorService {
                     // 成功从 MusicBrainz 获取到详细信息
                     log.info("✓ 成功从 MusicBrainz 获取详细元数据: {} - {}",
                         detailedMetadata.getArtist(), detailedMetadata.getTitle());
+                    
+                    // ===== 关键修复：检查返回的专辑是否匹配锁定的专辑 =====
+                    // 如果已锁定专辑，但 MusicBrainz 返回的 Recording 不属于锁定专辑，
+                    // 则使用"强制使用锁定专辑"模式从锁定专辑中按时长查找匹配曲目
+                    // 修复：即使 lockedReleaseId 为 null，只要有 lockedReleaseGroupId 也应该检测不匹配
+                    if (lockedReleaseGroupId != null && !lockedReleaseGroupId.isEmpty()) {
+                        
+                        String returnedReleaseGroupId = detailedMetadata.getReleaseGroupId();
+                        boolean albumMismatch = (returnedReleaseGroupId == null ||
+                                                returnedReleaseGroupId.isEmpty() ||
+                                                !lockedReleaseGroupId.equals(returnedReleaseGroupId));
+                        
+                        if (albumMismatch) {
+                            log.warn("⚠ 检测到专辑不匹配！");
+                            log.warn("  锁定专辑 Release Group ID: {}", lockedReleaseGroupId);
+                            log.warn("  返回的 Release Group ID: {}", returnedReleaseGroupId);
+                            
+                            // 如果有具体的 Release ID，尝试强制匹配
+                            if (lockedReleaseId != null && !lockedReleaseId.isEmpty()) {
+                                log.info("启用强制使用锁定专辑模式（Release ID: {}）...", lockedReleaseId);
+                                
+                                // 调用强制专辑匹配方法
+                                MusicMetadata forcedMetadata = musicBrainzClient.getTrackFromLockedAlbumByDuration(
+                                    lockedReleaseId,
+                                    lockedReleaseGroupId,
+                                    fileDurationSeconds,
+                                    lockedAlbumTitle,
+                                    lockedAlbumArtist
+                                );
+                                
+                                if (forcedMetadata != null) {
+                                    // 强制匹配成功，使用新的元数据
+                                    log.info("✓ 强制专辑匹配成功，使用锁定专辑中的曲目信息");
+                                    detailedMetadata = forcedMetadata;
+                                } else {
+                                    // 强制匹配失败，保留原有元数据但应用锁定的专辑信息
+                                    log.warn("强制专辑匹配失败，将保留 AcoustID 识别的曲目信息但覆盖专辑信息");
+                                }
+                            } else {
+                                // 没有具体的 Release ID，尝试通过 Release Group ID 强制匹配
+                                log.warn("没有锁定的 Release ID，尝试通过 Release Group ID 强制匹配");
+                                
+                                MusicMetadata forcedMetadataByRG = musicBrainzClient.getTrackFromLockedAlbumByReleaseGroup(
+                                    lockedReleaseGroupId,
+                                    fileDurationSeconds,
+                                    musicFilesInFolder,
+                                    lockedAlbumTitle,
+                                    lockedAlbumArtist
+                                );
+                                
+                                if (forcedMetadataByRG != null) {
+                                    // 强制匹配成功，使用新的元数据
+                                    log.info("✓ 通过 Release Group ID 强制专辑匹配成功");
+                                    detailedMetadata = forcedMetadataByRG;
+                                } else {
+                                    // 强制匹配失败，保留原有元数据但应用锁定的专辑信息
+                                    log.warn("通过 Release Group ID 强制匹配也失败，将保留 AcoustID 识别的曲目信息但覆盖专辑信息");
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // 如果有锁定的专辑信息，用锁定的信息覆盖（确保专辑信息不被改变）

@@ -414,6 +414,9 @@ public class AudioFingerprintService {
         // 2. 查询 AcoustID
         AcoustIdResult result = lookupByFingerprint(fingerprint);
         
+        // 3. 保存文件时长到结果中（用于后续时长匹配）
+        result.setDuration(fingerprint.getDuration());
+        
         if (result.getRecordings() != null && !result.getRecordings().isEmpty()) {
             RecordingInfo bestMatch = result.getRecordings().get(0);
             String artist = bestMatch.getArtist();
@@ -470,6 +473,7 @@ public class AudioFingerprintService {
         private double score;
         private String acoustId;
         private List<RecordingInfo> recordings;
+        private int duration; // 音频文件时长（秒），用于后续时长匹配
     }
     
     /**

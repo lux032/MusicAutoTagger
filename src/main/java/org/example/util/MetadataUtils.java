@@ -126,11 +126,14 @@ public class MetadataUtils {
         
         String fileNameLower = fileName.toLowerCase();
         
-        // 定义版本标识符列表
+        // 定义版本标识符列表（包含常见的混音/版本标识）
         String[] versionIndicators = {
             "instrumental", "inst", "karaoke", "off vocal", "offvocal",
             "live", "acoustic", "remix", "extended", "radio edit",
-            "tv size", "tv ver", "movie ver", "full ver"
+            "tv size", "tv ver", "movie ver", "full ver",
+            "album mix", "album ver", "album version", "single mix", "single ver",
+            "original mix", "remaster", "remastered", "bonus track",
+            "short ver", "long ver", "edit", "demo"
         };
         
         // 检查文件名中包含哪些版本标识符

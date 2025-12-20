@@ -197,6 +197,7 @@ public class AlbumBatchProcessor {
 
         FolderAlbumCache.CachedAlbumInfo forcedAlbum = new FolderAlbumCache.CachedAlbumInfo(
             bestGuess.getReleaseGroupId(),
+            null,  // releaseId - 强制处理时没有具体的 Release ID
             bestGuess.getAlbumTitle(),
             bestGuess.getAlbumArtist(),
             bestGuess.getTrackCount(),
@@ -251,6 +252,7 @@ public class AlbumBatchProcessor {
 
                     FolderAlbumCache.CachedAlbumInfo guessedAlbum = new FolderAlbumCache.CachedAlbumInfo(
                         metadata.getReleaseGroupId(),
+                        null,  // releaseId - 猜测时没有具体的 Release ID
                         metadata.getAlbum(),
                         metadata.getAlbumArtist() != null ? metadata.getAlbumArtist() : metadata.getArtist(),
                         metadata.getTrackCount(),

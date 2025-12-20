@@ -432,13 +432,15 @@ public class DurationSequenceService {
     @Data
     public static class AlbumDurationInfo {
         private String releaseGroupId;
+        private String releaseId;  // 新增：具体的 Release ID
         private String albumTitle;
         private String albumArtist;
         private List<Integer> durations; // 曲目时长列表(秒)
         
-        public AlbumDurationInfo(String releaseGroupId, String albumTitle, 
+        public AlbumDurationInfo(String releaseGroupId, String releaseId, String albumTitle,
                                 String albumArtist, List<Integer> durations) {
             this.releaseGroupId = releaseGroupId;
+            this.releaseId = releaseId;
             this.albumTitle = albumTitle;
             this.albumArtist = albumArtist;
             this.durations = durations != null ? new ArrayList<>(durations) : new ArrayList<>();

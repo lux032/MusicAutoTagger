@@ -386,9 +386,10 @@ public class QuickScanService {
                 }
                 
                 // 获取专辑时长序列
-                List<Integer> albumDurations =
+                MusicBrainzClient.AlbumDurationResult durationResult =
                     musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
-                
+                List<Integer> albumDurations = durationResult.getDurations();
+
                 if (albumDurations.isEmpty()) {
                     log.debug("候选专辑 {} 没有时长数据，跳过", candidate.getAlbum());
                     continue;
