@@ -201,18 +201,30 @@ public class AudioFileProcessorService {
                         folderAlbumCache.determineAlbumWithDurationSequence(folderPath, allCandidates, musicFilesInFolder);
                     
                     if (determinedAlbum != null) {
-                        // 时长序列匹配成功，锁定专辑信息
-                        lockedAlbumTitle = determinedAlbum.getAlbumTitle();
-                        lockedAlbumArtist = determinedAlbum.getAlbumArtist();
-                        lockedReleaseGroupId = determinedAlbum.getReleaseGroupId();
-                        lockedReleaseId = determinedAlbum.getReleaseId();  // 关键：获取具体的 Release ID
-                        lockedReleaseDate = determinedAlbum.getReleaseDate();
-
-                        log.info("✓ 第一个文件即确定专辑: {} (Release Group ID: {}, Release ID: {})",
-                            lockedAlbumTitle, lockedReleaseGroupId, lockedReleaseId);
-                        
-                        // 同时设置到批处理器的缓存中
+                        // 时长序列匹配成功，设置到缓存中（尊重优先级）
                         albumBatchProcessor.setFolderAlbum(folderPath, determinedAlbum);
+                        
+                        // 关键修复：从缓存重新获取专辑信息，确保使用优先级更高的正确值
+                        // 这样可以避免时长序列匹配返回的 albumArtist 覆盖快速扫描的正确值
+                        FolderAlbumCache.CachedAlbumInfo actualCached =
+                            albumBatchProcessor.getCachedAlbum(folderPath, musicFilesInFolder);
+                        if (actualCached != null) {
+                            lockedAlbumTitle = actualCached.getAlbumTitle();
+                            lockedAlbumArtist = actualCached.getAlbumArtist();
+                            lockedReleaseGroupId = actualCached.getReleaseGroupId();
+                            lockedReleaseId = actualCached.getReleaseId();
+                            lockedReleaseDate = actualCached.getReleaseDate();
+                        } else {
+                            // 备选：使用返回值（通常不会走到这里）
+                            lockedAlbumTitle = determinedAlbum.getAlbumTitle();
+                            lockedAlbumArtist = determinedAlbum.getAlbumArtist();
+                            lockedReleaseGroupId = determinedAlbum.getReleaseGroupId();
+                            lockedReleaseId = determinedAlbum.getReleaseId();
+                            lockedReleaseDate = determinedAlbum.getReleaseDate();
+                        }
+
+                        log.info("✓ 第一个文件即确定专辑: {} (专辑艺术家: {}, Release Group ID: {}, Release ID: {})",
+                            lockedAlbumTitle, lockedAlbumArtist, lockedReleaseGroupId, lockedReleaseId);
                     } else {
                         log.info("时长序列匹配未能确定专辑，将在后续样本收集后再尝试");
                     }
