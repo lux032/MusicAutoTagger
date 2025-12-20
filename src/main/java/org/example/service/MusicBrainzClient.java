@@ -780,6 +780,7 @@ public class MusicBrainzClient {
             metadata.setAlbum(bestRelease.path("title").asText());
             metadata.setReleaseDate(bestRelease.path("date").asText());
             metadata.setReleaseGroupId(bestRelease.path("release-group").path("id").asText());
+            metadata.setReleaseId(bestRelease.path("id").asText());  // 设置 Release ID，用于版本一致性检查
             
             // 设置曲目数
             int trackCount = calculateTrackCount(bestRelease);

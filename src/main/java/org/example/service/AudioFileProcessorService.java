@@ -344,18 +344,47 @@ public class AudioFileProcessorService {
                     // ===== 关键修复：检查返回的专辑是否匹配锁定的专辑 =====
                     // 如果已锁定专辑，但 MusicBrainz 返回的 Recording 不属于锁定专辑，
                     // 则使用"强制使用锁定专辑"模式从锁定专辑中按时长查找匹配曲目
-                    // 修复：即使 lockedReleaseId 为 null，只要有 lockedReleaseGroupId 也应该检测不匹配
+                    //
+                    // 关键改进：不仅检查 Release Group ID，还要检查 Release ID
+                    // 因为同一个 Release Group 下可能有多个不同的 Release（如 Digital Soundtrack vs Original Soundtrack）
+                    // 时长序列匹配可能选择了特定的 Release，需要确保版本一致性
                     if (lockedReleaseGroupId != null && !lockedReleaseGroupId.isEmpty()) {
                         
                         String returnedReleaseGroupId = detailedMetadata.getReleaseGroupId();
-                        boolean albumMismatch = (returnedReleaseGroupId == null ||
+                        String returnedReleaseId = detailedMetadata.getReleaseId();
+                        
+                        // 检查 Release Group ID 是否匹配
+                        boolean releaseGroupMismatch = (returnedReleaseGroupId == null ||
                                                 returnedReleaseGroupId.isEmpty() ||
                                                 !lockedReleaseGroupId.equals(returnedReleaseGroupId));
                         
+                        // 关键改进：即使 Release Group ID 匹配，也要检查 Release ID 是否匹配
+                        // 这可以避免同一 Release Group 下选择错误的 Release 版本
+                        boolean releaseIdMismatch = false;
+                        if (lockedReleaseId != null && !lockedReleaseId.isEmpty()) {
+                            releaseIdMismatch = (returnedReleaseId == null ||
+                                                returnedReleaseId.isEmpty() ||
+                                                !lockedReleaseId.equals(returnedReleaseId));
+                            if (releaseIdMismatch && !releaseGroupMismatch) {
+                                log.info("检测到 Release ID 不匹配（但 Release Group ID 相同）");
+                                log.info("  锁定 Release ID: {} vs 返回 Release ID: {}", lockedReleaseId, returnedReleaseId);
+                            }
+                        }
+                        
+                        boolean albumMismatch = releaseGroupMismatch || releaseIdMismatch;
+                        
                         if (albumMismatch) {
-                            log.warn("⚠ 检测到专辑不匹配！");
-                            log.warn("  锁定专辑 Release Group ID: {}", lockedReleaseGroupId);
-                            log.warn("  返回的 Release Group ID: {}", returnedReleaseGroupId);
+                            log.warn("⚠ 检测到专辑版本不匹配！");
+                            if (releaseGroupMismatch) {
+                                log.warn("  Release Group ID 不匹配:");
+                                log.warn("    锁定: {}", lockedReleaseGroupId);
+                                log.warn("    返回: {}", returnedReleaseGroupId);
+                            }
+                            if (releaseIdMismatch) {
+                                log.warn("  Release ID 不匹配:");
+                                log.warn("    锁定: {} ({})", lockedReleaseId, lockedAlbumTitle);
+                                log.warn("    返回: {} ({})", returnedReleaseId, detailedMetadata.getAlbum());
+                            }
                             
                             // 如果有具体的 Release ID，尝试强制匹配
                             if (lockedReleaseId != null && !lockedReleaseId.isEmpty()) {

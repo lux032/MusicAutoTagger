@@ -25,6 +25,7 @@ public class MusicMetadata {
 
     // Fields specific to MusicBrainzClient
     private String releaseGroupId;
+    private String releaseId;  // 具体的 Release ID，用于确保版本一致性
     private String coverArtUrl;
     private int score;
     private int trackCount;
