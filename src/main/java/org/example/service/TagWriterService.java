@@ -106,8 +106,13 @@ public class TagWriterService {
         // 构建文件名(使用单曲艺术家)
         String newFileName = fileName;
         if (config.isAutoRename() && metadata.getArtist() != null && metadata.getTitle() != null) {
-            // 提取原始文件名的编号前缀（如 "01. " 或 "39. "）
-            String trackPrefix = extractTrackPrefix(fileName);
+            // 优先使用 metadata 中的碟号和曲目号构建前缀（来自 MusicBrainz）
+            String trackPrefix = buildTrackPrefixFromMetadata(metadata);
+            
+            // 如果 metadata 没有碟号曲目号，尝试从原始文件名提取
+            if (trackPrefix.isEmpty()) {
+                trackPrefix = extractTrackPrefix(fileName);
+            }
             
             String artist = sanitizeFileName(metadata.getArtist());
             String title = sanitizeFileName(metadata.getTitle());
@@ -161,13 +166,57 @@ public class TagWriterService {
     }
 
     /**
-     * 从文件名中提取曲目编号前缀
-     * 例如: "01. Title.flac" -> "01. "
-     *      "39. Title.flac" -> "39. "
+     * 从 metadata 的碟号和曲目号构建文件名前缀
+     * 格式: "碟号.曲目号 " (如 "2.05 " 或 "1.12 ")
+     * 如果只有曲目号没有碟号，格式: "曲目号. " (如 "05. ")
+     */
+    private String buildTrackPrefixFromMetadata(MusicMetadata metadata) {
+        String discNo = metadata.getDiscNo();
+        String trackNo = metadata.getTrackNo();
+        
+        if (trackNo == null || trackNo.isEmpty()) {
+            return "";
+        }
+        
+        try {
+            int track = Integer.parseInt(trackNo.split("/")[0].trim()); // 处理 "5/49" 格式
+            
+            if (discNo != null && !discNo.isEmpty()) {
+                int disc = Integer.parseInt(discNo.split("/")[0].trim()); // 处理 "2/2" 格式
+                // 多碟专辑: "碟号.曲目号 " 格式 (曲目号补零到2位)
+                String prefix = String.format("%d.%02d ", disc, track);
+                log.info("使用 metadata 构建文件名前缀: {} (碟号: {}, 曲目号: {})", prefix, disc, track);
+                return prefix;
+            } else {
+                // 单碟专辑: "曲目号. " 格式 (曲目号补零到2位)
+                String prefix = String.format("%02d. ", track);
+                log.info("使用 metadata 构建文件名前缀: {} (曲目号: {})", prefix, track);
+                return prefix;
+            }
+        } catch (NumberFormatException e) {
+            log.warn("无法解析碟号/曲目号: discNo={}, trackNo={}", discNo, trackNo);
+            return "";
+        }
+    }
+    
+    /**
+     * 从文件名中提取曲目编号前缀（备选方案）
+     * 支持多种格式:
+     * - "01. Title.flac" -> "01. "
+     * - "2.01 Title.flac" -> "2.01 " (碟号.曲目号)
+     * - "39. Title.flac" -> "39. "
      */
     private String extractTrackPrefix(String fileName) {
+        // 先尝试匹配 "碟号.曲目号 " 格式 (如 "2.01 Title")
+        if (fileName.matches("^\\d+\\.\\d+\\s+.*")) {
+            // 找到第二个空格前的部分
+            int spaceIndex = fileName.indexOf(' ');
+            if (spaceIndex > 0) {
+                return fileName.substring(0, spaceIndex + 1);
+            }
+        }
+        
         // 匹配格式: 数字 + 点 + 空格 (可能有多个空格)
-        // 也匹配没有空格的情况: 数字 + 点
         if (fileName.matches("^\\d+\\.\\s+.*")) {
             // 有空格的情况
             int dotIndex = fileName.indexOf('.');
@@ -180,10 +229,26 @@ public class TagWriterService {
                 return fileName.substring(0, spaceEnd);
             }
         } else if (fileName.matches("^\\d+\\..*")) {
-            // 没有空格的情况
+            // 纯数字+点的情况，但后面紧跟着非数字字符
+            // 避免把 "2.01" 错误解析
             int dotIndex = fileName.indexOf('.');
             if (dotIndex > 0) {
-                return fileName.substring(0, dotIndex + 2); // "XX. "
+                // 检查点后是否是数字（表示这是碟号.曲目号格式）
+                if (dotIndex + 1 < fileName.length() && Character.isDigit(fileName.charAt(dotIndex + 1))) {
+                    // 这是碟号.曲目号格式，需要找到曲目号结束的位置
+                    int numEnd = dotIndex + 1;
+                    while (numEnd < fileName.length() && Character.isDigit(fileName.charAt(numEnd))) {
+                        numEnd++;
+                    }
+                    // 跳过后续空格
+                    while (numEnd < fileName.length() && fileName.charAt(numEnd) == ' ') {
+                        numEnd++;
+                    }
+                    return fileName.substring(0, numEnd);
+                } else {
+                    // 单纯的曲目号格式
+                    return fileName.substring(0, dotIndex + 2); // "XX. "
+                }
             }
         }
         

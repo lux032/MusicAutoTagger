@@ -219,8 +219,10 @@ public class DurationSequenceService {
     }
     
     /**
-     * 从多个候选专辑中选择最佳匹配（同时考虑文件夹名称相似度）
-     * 关键改进：利用文件夹名称与专辑名称的相似度来辅助选择
+     * 从多个候选专辑中选择最佳匹配（同时考虑文件夹名称相似度和媒体格式匹配）
+     * 关键改进：
+     * 1. 利用文件夹名称与专辑名称的相似度来辅助选择
+     * 2. 从文件夹名称提取媒体格式（如 CD、Digital），优先选择匹配的 Release
      *
      * @param folderDurations 文件夹时长序列
      * @param candidates 候选专辑列表
@@ -238,12 +240,18 @@ public class DurationSequenceService {
         AlbumMatchResult bestMatch = null;
         double bestCombinedScore = 0.0;
 
-        log.info("开始时长序列匹配（含文件夹名称匹配）");
+        log.info("开始时长序列匹配（含文件夹名称匹配和媒体格式匹配）");
         log.info("文件夹名称: {}", folderName);
         log.info("文件夹时长序列: {}", formatDurationSequence(folderDurations));
 
         // 标准化文件夹名称用于比较
         String normalizedFolderName = normalizeName(folderName);
+        
+        // 关键改进：从文件夹名提取媒体格式
+        MediaFormat preferredFormat = extractMediaFormat(folderName);
+        if (preferredFormat != MediaFormat.UNKNOWN) {
+            log.info("从文件夹名提取的媒体格式: {} (将优先选择此格式的 Release)", preferredFormat);
+        }
 
         for (AlbumDurationInfo candidate : candidates) {
             // 1. 计算时长序列相似度（使用DTW算法）
@@ -255,19 +263,34 @@ public class DurationSequenceService {
 
             // 3. 计算综合得分
             // 权重：时长相似度 70%，名称相似度 30%
-            // 但如果名称相似度很高（>0.8），给予额外加分
             double combinedScore = durationSimilarity * 0.7 + nameSimilarity * 0.3;
 
             // 名称高度匹配时的额外加分
             if (nameSimilarity >= 0.8) {
                 combinedScore += 0.1; // 额外加10%
-                log.info("  ★ 文件夹名称高度匹配，额外加分");
+                log.info("  ★ 文件夹名称高度匹配，额外加分 (+0.1)");
+            }
+            
+            // 4. 关键改进：媒体格式匹配加分
+            // 如果文件夹名称指定了媒体格式，且候选专辑的格式匹配，给予额外加分
+            if (preferredFormat != MediaFormat.UNKNOWN && candidate.getMediaFormat() != null) {
+                MediaFormat candidateFormat = parseMediaFormat(candidate.getMediaFormat());
+                if (candidateFormat == preferredFormat) {
+                    combinedScore += 0.15; // 格式完全匹配，额外加15%
+                    log.info("  ★ 媒体格式完全匹配 ({})，额外加分 (+0.15)", preferredFormat);
+                } else if (candidateFormat != MediaFormat.UNKNOWN) {
+                    // 格式不匹配，轻微扣分
+                    combinedScore -= 0.05;
+                    log.info("  ⚠ 媒体格式不匹配 (期望: {}, 实际: {})，扣分 (-0.05)",
+                        preferredFormat, candidateFormat);
+                }
             }
 
-            log.info("候选专辑: {} - {} ({}首曲目)",
+            log.info("候选专辑: {} - {} ({}首曲目, 格式: {})",
                 candidate.getAlbumTitle(),
                 candidate.getAlbumArtist(),
-                candidate.getDurations().size());
+                candidate.getDurations().size(),
+                candidate.getMediaFormat() != null ? candidate.getMediaFormat() : "未知");
             log.info("  时长序列: {}", formatDurationSequence(candidate.getDurations()));
             log.info("  时长相似度: {:.2f}, 名称相似度: {:.2f}, 综合得分: {:.2f}",
                 durationSimilarity, nameSimilarity, combinedScore);
@@ -280,16 +303,107 @@ public class DurationSequenceService {
 
         // 检查是否达到最小匹配阈值
         if (bestMatch != null && bestCombinedScore >= MIN_MATCH_THRESHOLD) {
-            log.info("✓ 选择最佳匹配: {} - {} (综合得分: {:.2f})",
+            log.info("✓ 选择最佳匹配: {} - {} (综合得分: {:.2f}, 格式: {})",
                 bestMatch.getAlbumInfo().getAlbumTitle(),
                 bestMatch.getAlbumInfo().getAlbumArtist(),
-                bestCombinedScore);
+                bestCombinedScore,
+                bestMatch.getAlbumInfo().getMediaFormat());
             return bestMatch;
         } else {
             log.warn("未找到符合阈值的匹配专辑 (最佳综合得分: {:.2f}, 阈值: {:.2f})",
                 bestCombinedScore, MIN_MATCH_THRESHOLD);
             return null;
         }
+    }
+    
+    /**
+     * 媒体格式枚举
+     */
+    public enum MediaFormat {
+        CD,
+        DIGITAL,
+        VINYL,
+        CASSETTE,
+        SACD,
+        UNKNOWN
+    }
+    
+    /**
+     * 从文件夹名提取媒体格式
+     * 支持的格式标识：
+     * - CD: "CD", "[CD", "CD FLAC", "CD ALAC"
+     * - Digital: "Digital", "WEB", "iTunes"
+     * - Vinyl: "Vinyl", "LP", "12\""
+     * - SACD: "SACD", "DSD"
+     */
+    public MediaFormat extractMediaFormat(String folderName) {
+        if (folderName == null || folderName.isEmpty()) {
+            return MediaFormat.UNKNOWN;
+        }
+        
+        String upper = folderName.toUpperCase();
+        
+        // CD 格式检测（优先级最高）
+        if (upper.contains("[CD") || upper.contains("(CD") ||
+            upper.contains(" CD ") || upper.contains("CD FLAC") ||
+            upper.contains("CD ALAC") || upper.contains("CD]") ||
+            upper.matches(".*\\bCD\\b.*")) {
+            return MediaFormat.CD;
+        }
+        
+        // SACD 格式
+        if (upper.contains("SACD") || upper.contains("DSD")) {
+            return MediaFormat.SACD;
+        }
+        
+        // Digital 格式
+        if (upper.contains("DIGITAL") || upper.contains("WEB") ||
+            upper.contains("ITUNES") || upper.contains("[WEB") ||
+            upper.contains("STREAMING")) {
+            return MediaFormat.DIGITAL;
+        }
+        
+        // Vinyl 格式
+        if (upper.contains("VINYL") || upper.contains(" LP") ||
+            upper.contains("12\"") || upper.contains("12''")) {
+            return MediaFormat.VINYL;
+        }
+        
+        // Cassette 格式
+        if (upper.contains("CASSETTE") || upper.contains("TAPE")) {
+            return MediaFormat.CASSETTE;
+        }
+        
+        return MediaFormat.UNKNOWN;
+    }
+    
+    /**
+     * 解析 MusicBrainz 返回的媒体格式字符串
+     */
+    private MediaFormat parseMediaFormat(String format) {
+        if (format == null || format.isEmpty()) {
+            return MediaFormat.UNKNOWN;
+        }
+        
+        String lower = format.toLowerCase();
+        
+        if (lower.contains("cd")) {
+            return MediaFormat.CD;
+        }
+        if (lower.contains("digital") || lower.contains("download") || lower.contains("streaming")) {
+            return MediaFormat.DIGITAL;
+        }
+        if (lower.contains("vinyl") || lower.contains("lp") || lower.contains("12\"")) {
+            return MediaFormat.VINYL;
+        }
+        if (lower.contains("sacd") || lower.contains("dsd")) {
+            return MediaFormat.SACD;
+        }
+        if (lower.contains("cassette") || lower.contains("tape")) {
+            return MediaFormat.CASSETTE;
+        }
+        
+        return MediaFormat.UNKNOWN;
     }
 
     /**
@@ -432,18 +546,25 @@ public class DurationSequenceService {
     @Data
     public static class AlbumDurationInfo {
         private String releaseGroupId;
-        private String releaseId;  // 新增：具体的 Release ID
+        private String releaseId;  // 具体的 Release ID
         private String albumTitle;
         private String albumArtist;
         private List<Integer> durations; // 曲目时长列表(秒)
+        private String mediaFormat;  // 新增：媒体格式（如 "CD", "Digital Media" 等）
         
         public AlbumDurationInfo(String releaseGroupId, String releaseId, String albumTitle,
                                 String albumArtist, List<Integer> durations) {
+            this(releaseGroupId, releaseId, albumTitle, albumArtist, durations, null);
+        }
+        
+        public AlbumDurationInfo(String releaseGroupId, String releaseId, String albumTitle,
+                                String albumArtist, List<Integer> durations, String mediaFormat) {
             this.releaseGroupId = releaseGroupId;
             this.releaseId = releaseId;
             this.albumTitle = albumTitle;
             this.albumArtist = albumArtist;
             this.durations = durations != null ? new ArrayList<>(durations) : new ArrayList<>();
+            this.mediaFormat = mediaFormat;
         }
     }
     

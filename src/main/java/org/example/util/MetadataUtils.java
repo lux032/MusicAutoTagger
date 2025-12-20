@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.example.model.MusicMetadata;
 import org.example.service.AudioFingerprintService;
 
+import java.text.Normalizer;
 import java.util.List;
 
 /**
@@ -114,7 +115,10 @@ public class MetadataUtils {
     
     /**
      * 根据文件名从多个匹配的录音中选择最佳匹配
-     * 主要用于区分 instrumental、live、remix 等不同版本
+     * 优先级：
+     * 1. 文件名直接包含曲目标题（高权重）
+     * 2. 版本标识符匹配（instrumental、live、remix等）
+     * 3. 如果都无法区分，返回第一个
      */
     private static AudioFingerprintService.RecordingInfo selectBestMatchByFileName(
             List<AudioFingerprintService.RecordingInfo> recordings,
@@ -124,7 +128,12 @@ public class MetadataUtils {
             return recordings.get(0);
         }
         
+        // 从文件名中提取核心标题（去掉编号前缀和扩展名）
+        String fileNameCore = extractTitleFromFileName(fileName);
+        String fileNameCoreLower = fileNameCore.toLowerCase();
         String fileNameLower = fileName.toLowerCase();
+        
+        log.info("文件名匹配分析 - 原始文件名: '{}', 提取的标题: '{}'", fileName, fileNameCore);
         
         // 定义版本标识符列表（包含常见的混音/版本标识）
         String[] versionIndicators = {
@@ -149,9 +158,29 @@ public class MetadataUtils {
         int bestScore = Integer.MIN_VALUE;
         
         for (AudioFingerprintService.RecordingInfo recording : recordings) {
-            String titleLower = recording.getTitle().toLowerCase();
+            String title = recording.getTitle();
+            String titleLower = title.toLowerCase();
             int score = 0;
             
+            // ===== 关键修复：文件名与曲目标题的直接匹配（高权重）=====
+            // 计算标题相似度
+            double titleSimilarity = calculateTitleSimilarity(fileNameCore, title);
+            
+            if (titleSimilarity >= 0.8) {
+                // 高度匹配（80%以上相似度）
+                score += 500;
+                log.info("录音 '{}' 与文件名高度匹配 (相似度: {:.1f}%) (+500)", title, titleSimilarity * 100);
+            } else if (titleSimilarity >= 0.5) {
+                // 中度匹配（50%-80%相似度）
+                score += 200;
+                log.info("录音 '{}' 与文件名中度匹配 (相似度: {:.1f}%) (+200)", title, titleSimilarity * 100);
+            } else if (fileNameCoreLower.contains(titleLower) || titleLower.contains(fileNameCoreLower)) {
+                // 包含关系
+                score += 300;
+                log.info("录音 '{}' 与文件名存在包含关系 (+300)", title);
+            }
+            
+            // ===== 版本标识符匹配 =====
             // 检查录音标题中包含哪些版本标识符
             List<String> titleIndicators = new java.util.ArrayList<>();
             for (String indicator : versionIndicators) {
@@ -160,7 +189,7 @@ public class MetadataUtils {
                 }
             }
             
-            // 计算分数：
+            // 计算版本标识符分数：
             // +100 分：文件名和标题中都有相同的版本标识符
             // -100 分：文件名没有但标题有某个版本标识符
             // -50 分：文件名有但标题没有某个版本标识符
@@ -168,17 +197,17 @@ public class MetadataUtils {
             for (String indicator : fileNameIndicators) {
                 if (titleIndicators.contains(indicator)) {
                     score += 100; // 文件名和标题都有
-                    log.debug("录音 '{}' 匹配版本标识符 '{}' (+100)", recording.getTitle(), indicator);
+                    log.debug("录音 '{}' 匹配版本标识符 '{}' (+100)", title, indicator);
                 } else {
                     score -= 50; // 文件名有但标题没有
-                    log.debug("录音 '{}' 缺少版本标识符 '{}' (-50)", recording.getTitle(), indicator);
+                    log.debug("录音 '{}' 缺少版本标识符 '{}' (-50)", title, indicator);
                 }
             }
             
             for (String indicator : titleIndicators) {
                 if (!fileNameIndicators.contains(indicator)) {
                     score -= 100; // 标题有但文件名没有（惩罚更重）
-                    log.debug("录音 '{}' 多余版本标识符 '{}' (-100)", recording.getTitle(), indicator);
+                    log.debug("录音 '{}' 多余版本标识符 '{}' (-100)", title, indicator);
                 }
             }
             
@@ -187,7 +216,7 @@ public class MetadataUtils {
                 score += 10;
             }
             
-            log.debug("录音 '{}' 最终匹配分数: {}", recording.getTitle(), score);
+            log.debug("录音 '{}' 最终匹配分数: {}", title, score);
             
             if (score > bestScore) {
                 bestScore = score;
@@ -202,6 +231,90 @@ public class MetadataUtils {
         
         // 如果无法确定，返回第一个
         return recordings.get(0);
+    }
+    
+    /**
+     * 从文件名中提取核心标题
+     * 例如：
+     * "2.01 恋愛マスターのセリちん.flac" -> "恋愛マスターのセリちん"
+     * "01. Song Title.mp3" -> "Song Title"
+     * "Artist - Title.flac" -> "Title"
+     */
+    private static String extractTitleFromFileName(String fileName) {
+        if (fileName == null || fileName.isEmpty()) {
+            return "";
+        }
+        
+        // Unicode 规范化（NFC 形式）- 解决日语等字符的编码差异问题
+        fileName = Normalizer.normalize(fileName, Normalizer.Form.NFC);
+        
+        // 去掉扩展名
+        int lastDotIndex = fileName.lastIndexOf('.');
+        String nameWithoutExt = lastDotIndex > 0 ? fileName.substring(0, lastDotIndex) : fileName;
+        
+        // 去掉编号前缀（如 "2.01 ", "01. ", "01 - " 等格式）
+        // 匹配模式：数字（可能包含点分隔的多级编号）+ 分隔符（空格、点+空格、横杠等）
+        String result = nameWithoutExt.replaceFirst("^\\d+(\\.\\d+)?[.\\s\\-]+", "");
+        
+        // 如果包含 " - "，可能是 "Artist - Title" 格式，取后半部分
+        if (result.contains(" - ")) {
+            String[] parts = result.split(" - ", 2);
+            if (parts.length == 2) {
+                result = parts[1];
+            }
+        }
+        
+        return result.trim();
+    }
+    
+    /**
+     * 计算两个标题的相似度（0.0 - 1.0）
+     * 使用简单的字符匹配算法
+     */
+    private static double calculateTitleSimilarity(String title1, String title2) {
+        if (title1 == null || title2 == null || title1.isEmpty() || title2.isEmpty()) {
+            return 0.0;
+        }
+        
+        // Unicode 规范化（NFC 形式）- 解决日语等字符的编码差异问题
+        // 例如：デ 可能是预组合形式 U+30C7 或分解形式 U+30C6 + U+3099
+        String s1 = Normalizer.normalize(title1, Normalizer.Form.NFC).toLowerCase().replaceAll("\\s+", " ").trim();
+        String s2 = Normalizer.normalize(title2, Normalizer.Form.NFC).toLowerCase().replaceAll("\\s+", " ").trim();
+        
+        // 完全相等
+        if (s1.equals(s2)) {
+            return 1.0;
+        }
+        
+        // 计算 Jaccard 相似度（基于字符）
+        // 对于日文等语言，使用字符级别的匹配更合适
+        java.util.Set<Character> set1 = new java.util.HashSet<>();
+        java.util.Set<Character> set2 = new java.util.HashSet<>();
+        
+        for (char c : s1.toCharArray()) {
+            if (!Character.isWhitespace(c)) {
+                set1.add(c);
+            }
+        }
+        for (char c : s2.toCharArray()) {
+            if (!Character.isWhitespace(c)) {
+                set2.add(c);
+            }
+        }
+        
+        // 计算交集大小
+        java.util.Set<Character> intersection = new java.util.HashSet<>(set1);
+        intersection.retainAll(set2);
+        
+        // 计算并集大小
+        java.util.Set<Character> union = new java.util.HashSet<>(set1);
+        union.addAll(set2);
+        
+        if (union.isEmpty()) {
+            return 0.0;
+        }
+        
+        return (double) intersection.size() / union.size();
     }
     
     /**

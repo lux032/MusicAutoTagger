@@ -90,14 +90,75 @@ public class FolderAlbumCache {
     
     /**
      * 直接设置文件夹的专辑信息（用于快速扫描成功时）
+     * 关键修复：实现优先级控制，防止低优先级的缓存覆盖高优先级的缓存
      * @param folderPath 文件夹路径
      * @param albumInfo 专辑信息
      */
     public void setFolderAlbum(String folderPath, CachedAlbumInfo albumInfo) {
-        folderAlbumCache.put(folderPath, albumInfo);
-        // 清理可能存在的样本收集器
-        folderSampleCollectors.remove(folderPath);
-        log.info("直接设置文件夹专辑缓存: {} - {}", albumInfo.getAlbumArtist(), albumInfo.getAlbumTitle());
+        synchronized (folderAlbumCache) {
+            CachedAlbumInfo existing = folderAlbumCache.get(folderPath);
+            
+            if (existing != null) {
+                // 已有缓存，检查优先级
+                CacheSource existingSource = existing.getSource();
+                CacheSource newSource = albumInfo.getSource();
+                
+                if (newSource == null) {
+                    newSource = CacheSource.UNKNOWN;
+                }
+                if (existingSource == null) {
+                    existingSource = CacheSource.UNKNOWN;
+                }
+                
+                // 只有新缓存优先级更高时才覆盖
+                if (newSource.hasHigherPriorityThan(existingSource)) {
+                    folderAlbumCache.put(folderPath, albumInfo);
+                    folderSampleCollectors.remove(folderPath);
+                    log.info("更新文件夹专辑缓存（优先级更高）: {} - {} (来源: {} -> {})",
+                        albumInfo.getAlbumArtist(), albumInfo.getAlbumTitle(),
+                        existingSource, newSource);
+                } else if (existingSource.hasHigherPriorityThan(newSource)) {
+                    // 现有缓存优先级更高，忽略新缓存
+                    log.info("保留现有缓存（优先级更高）: {} - {} (来源: {}, 忽略: {})",
+                        existing.getAlbumArtist(), existing.getAlbumTitle(),
+                        existingSource, newSource);
+                } else {
+                    // 优先级相同，使用置信度判断
+                    if (albumInfo.getConfidence() > existing.getConfidence()) {
+                        folderAlbumCache.put(folderPath, albumInfo);
+                        folderSampleCollectors.remove(folderPath);
+                        log.info("更新文件夹专辑缓存（置信度更高）: {} - {} (置信度: {}% -> {}%)",
+                            albumInfo.getAlbumArtist(), albumInfo.getAlbumTitle(),
+                            String.format("%.2f", existing.getConfidence() * 100),
+                            String.format("%.2f", albumInfo.getConfidence() * 100));
+                    } else {
+                        log.info("保留现有缓存（置信度更高或相同）: {} - {}",
+                            existing.getAlbumArtist(), existing.getAlbumTitle());
+                    }
+                }
+            } else {
+                // 没有现有缓存，直接设置
+                folderAlbumCache.put(folderPath, albumInfo);
+                folderSampleCollectors.remove(folderPath);
+                log.info("直接设置文件夹专辑缓存: {} - {} (来源: {})",
+                    albumInfo.getAlbumArtist(), albumInfo.getAlbumTitle(), albumInfo.getSource());
+            }
+        }
+    }
+    
+    /**
+     * 强制设置文件夹的专辑信息（忽略优先级检查）
+     * 仅用于特殊情况，如手动修正
+     * @param folderPath 文件夹路径
+     * @param albumInfo 专辑信息
+     */
+    public void forceSetFolderAlbum(String folderPath, CachedAlbumInfo albumInfo) {
+        synchronized (folderAlbumCache) {
+            folderAlbumCache.put(folderPath, albumInfo);
+            folderSampleCollectors.remove(folderPath);
+            log.info("强制设置文件夹专辑缓存: {} - {} (来源: {})",
+                albumInfo.getAlbumArtist(), albumInfo.getAlbumTitle(), albumInfo.getSource());
+        }
     }
     
     /**
@@ -354,12 +415,13 @@ public class FolderAlbumCache {
                             releaseResult.getReleaseId(),
                             releaseTitle,
                             albumArtist,
-                            releaseResult.getDurations()
+                            releaseResult.getDurations(),
+                            releaseResult.getMediaFormat()  // 传递媒体格式
                         ));
 
-                        log.info("候选版本: {} - {} ({}首曲目, Release ID: {})",
+                        log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 格式: {})",
                             albumArtist, releaseTitle, releaseResult.getDurations().size(),
-                            releaseResult.getReleaseId());
+                            releaseResult.getReleaseId(), releaseResult.getMediaFormat());
                     }
                 } catch (Exception e) {
                     log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());
@@ -392,7 +454,8 @@ public class FolderAlbumCache {
                     bestAlbum.getAlbumArtist(),
                     bestAlbum.getDurations().size(),
                     "", // releaseDate 从样本中获取
-                    similarity
+                    similarity,
+                    CacheSource.DURATION_SEQUENCE  // 标记来源为时长序列匹配
                 );
             } else {
                 log.warn("时长序列匹配未找到合适专辑,回退到投票方法");
@@ -492,12 +555,13 @@ public class FolderAlbumCache {
                             releaseResult.getReleaseId(),
                             releaseTitle,
                             normalizedArtist,
-                            releaseResult.getDurations()
+                            releaseResult.getDurations(),
+                            releaseResult.getMediaFormat()  // 传递媒体格式
                         ));
                         
-                        log.info("候选版本: {} ({}首曲目, Release ID: {})",
+                        log.info("候选版本: {} ({}首曲目, Release ID: {}, 格式: {})",
                             releaseTitle, releaseResult.getDurations().size(),
-                            releaseResult.getReleaseId());
+                            releaseResult.getReleaseId(), releaseResult.getMediaFormat());
                     }
                 } catch (Exception e) {
                     log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());
@@ -530,11 +594,12 @@ public class FolderAlbumCache {
                     bestAlbum.getAlbumArtist(),
                     bestAlbum.getDurations().size(),
                     "",
-                    similarity
+                    similarity,
+                    CacheSource.DURATION_SEQUENCE  // 标记来源为时长序列匹配
                 );
                 
-                // 缓存结果
-                folderAlbumCache.put(folderPath, albumInfo);
+                // 关键修复：使用 setFolderAlbum 而不是直接 put，以尊重优先级
+                setFolderAlbum(folderPath, albumInfo);
                 log.info("✓ 文件夹专辑已锁定（第一个文件即确定）: {}", albumInfo.getAlbumTitle());
                 
                 return albumInfo;
@@ -659,7 +724,8 @@ public class FolderAlbumCache {
                     bestAlbum.getAlbumArtist(),
                     bestAlbum.getTrackCount(),
                     bestAlbum.getReleaseDate(),
-                    confidence
+                    confidence,
+                    CacheSource.VOTING  // 标记来源为投票方法
                 );
             } else {
                 log.warn("置信度不足，不缓存专辑信息 (需要 >= {:.1f}%)", CONFIDENCE_THRESHOLD * 100);
@@ -820,6 +886,31 @@ public class FolderAlbumCache {
     }
     
     /**
+     * 缓存来源枚举
+     * 用于区分不同方式产生的缓存，实现优先级控制
+     */
+    public enum CacheSource {
+        QUICK_SCAN(100),           // 快速扫描（最高优先级）- 基于文件标签和文件夹名的精确匹配
+        DURATION_SEQUENCE(50),     // 时长序列匹配（中等优先级）- 基于音频时长序列的匹配
+        VOTING(30),                // 投票方法（较低优先级）- 基于多个样本的投票
+        UNKNOWN(0);                // 未知来源（最低优先级）
+        
+        private final int priority;
+        
+        CacheSource(int priority) {
+            this.priority = priority;
+        }
+        
+        public int getPriority() {
+            return priority;
+        }
+        
+        public boolean hasHigherPriorityThan(CacheSource other) {
+            return this.priority > other.priority;
+        }
+    }
+    
+    /**
      * 缓存的专辑信息
      */
     @Data
@@ -831,10 +922,16 @@ public class FolderAlbumCache {
         private final int trackCount;
         private final String releaseDate;
         private final double confidence; // 置信度
+        private final CacheSource source; // 新增：缓存来源，用于优先级判断
         private int mismatchCount = 0; // 不匹配次数
         
         public CachedAlbumInfo(String releaseGroupId, String releaseId, String albumTitle, String albumArtist,
                               int trackCount, String releaseDate, double confidence) {
+            this(releaseGroupId, releaseId, albumTitle, albumArtist, trackCount, releaseDate, confidence, CacheSource.UNKNOWN);
+        }
+        
+        public CachedAlbumInfo(String releaseGroupId, String releaseId, String albumTitle, String albumArtist,
+                              int trackCount, String releaseDate, double confidence, CacheSource source) {
             this.releaseGroupId = releaseGroupId;
             this.releaseId = releaseId;
             this.albumTitle = albumTitle;
@@ -843,6 +940,7 @@ public class FolderAlbumCache {
             this.trackCount = trackCount;
             this.releaseDate = releaseDate;
             this.confidence = confidence;
+            this.source = source;
         }
         
         public void incrementMismatchCount() {

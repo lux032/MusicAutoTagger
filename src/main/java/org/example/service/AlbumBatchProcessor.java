@@ -202,7 +202,8 @@ public class AlbumBatchProcessor {
             bestGuess.getAlbumArtist(),
             bestGuess.getTrackCount(),
             bestGuess.getReleaseDate(),
-            0.5 // 低置信度
+            0.5, // 低置信度
+            FolderAlbumCache.CacheSource.VOTING  // 标记来源为投票/猜测
         );
 
         // 设置缓存以避免后续文件重复触发
@@ -257,7 +258,8 @@ public class AlbumBatchProcessor {
                         metadata.getAlbumArtist() != null ? metadata.getAlbumArtist() : metadata.getArtist(),
                         metadata.getTrackCount(),
                         metadata.getReleaseDate(),
-                        0.3 // 低置信度
+                        0.3, // 低置信度
+                        FolderAlbumCache.CacheSource.UNKNOWN  // 标记来源为未知（猜测）
                     );
 
                     processPendingFilesWithAlbum(folderPath, guessedAlbum);

@@ -239,33 +239,36 @@ public class MusicBrainzClient {
             
             // 获取所有有时长数据的 release（最多尝试10个）
             int tryCount = Math.min(10, sortedReleases.size());
-            int successCount = 0;
+        int successCount = 0;
+        
+        for (int i = 0; i < tryCount && successCount < 5; i++) {
+            JsonNode release = sortedReleases.get(i);
+            String releaseId = release.path("id").asText();
+            String releaseTitle = release.path("title").asText();
+            int trackCount = calculateTrackCount(release);
             
-            for (int i = 0; i < tryCount && successCount < 5; i++) {
-                JsonNode release = sortedReleases.get(i);
-                String releaseId = release.path("id").asText();
-                String releaseTitle = release.path("title").asText();
-                int trackCount = calculateTrackCount(release);
-                
-                // 跳过视频格式
-                int score = scoreReleaseForDuration(release);
-                if (score < 0) {
-                    continue;
-                }
-                
-                log.debug("尝试获取 release {} 的时长序列 (ID: {}, 曲目数: {})",
-                    releaseTitle, releaseId, trackCount);
-                
-                List<Integer> durations = getReleaseDurationSequence(releaseId);
-                
-                // 如果获取到有效的时长序列
-                if (!durations.isEmpty()) {
-                    results.add(new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount));
-                    successCount++;
-                    log.info("✓ 成功获取 release {} 的时长序列 ({} 首曲目)",
-                        releaseTitle, durations.size());
-                }
+            // 跳过视频格式
+            int score = scoreReleaseForDuration(release);
+            if (score < 0) {
+                continue;
             }
+            
+            // 获取媒体格式
+            String mediaFormat = extractMediaFormat(release);
+            
+            log.debug("尝试获取 release {} 的时长序列 (ID: {}, 曲目数: {}, 格式: {})",
+                releaseTitle, releaseId, trackCount, mediaFormat);
+            
+            List<Integer> durations = getReleaseDurationSequence(releaseId);
+            
+            // 如果获取到有效的时长序列
+            if (!durations.isEmpty()) {
+                results.add(new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount, mediaFormat));
+                successCount++;
+                log.info("✓ 成功获取 release {} 的时长序列 ({} 首曲目, 格式: {})",
+                    releaseTitle, durations.size(), mediaFormat);
+            }
+        }
             
             log.info("共获取到 {} 个 release 的时长序列", results.size());
             return results;
@@ -277,7 +280,7 @@ public class MusicBrainzClient {
     }
     
     /**
-     * 专辑时长序列结果（包含 Release ID）
+     * 专辑时长序列结果（包含 Release ID 和媒体格式）
      */
     @Data
     public static class AlbumDurationResult {
@@ -285,19 +288,22 @@ public class MusicBrainzClient {
         private final String releaseId;
         private final String releaseTitle;
         private final int trackCount;
+        private final String mediaFormat;  // 新增：媒体格式（如 "CD", "Digital Media" 等）
         
         public AlbumDurationResult(List<Integer> durations, String releaseId) {
-            this.durations = durations;
-            this.releaseId = releaseId;
-            this.releaseTitle = null;
-            this.trackCount = durations != null ? durations.size() : 0;
+            this(durations, releaseId, null, durations != null ? durations.size() : 0, null);
         }
         
         public AlbumDurationResult(List<Integer> durations, String releaseId, String releaseTitle, int trackCount) {
+            this(durations, releaseId, releaseTitle, trackCount, null);
+        }
+        
+        public AlbumDurationResult(List<Integer> durations, String releaseId, String releaseTitle, int trackCount, String mediaFormat) {
             this.durations = durations;
             this.releaseId = releaseId;
             this.releaseTitle = releaseTitle;
             this.trackCount = trackCount;
+            this.mediaFormat = mediaFormat;
         }
     }
     
@@ -423,6 +429,23 @@ public class MusicBrainzClient {
                format.contains("svcd") ||
                format.contains("umd") ||
                format.contains("video");
+    }
+    
+    /**
+     * 从 Release 节点提取媒体格式
+     * @param release Release JSON 节点
+     * @return 媒体格式字符串（如 "CD", "Digital Media"），如果无法确定返回 null
+     */
+    private String extractMediaFormat(JsonNode release) {
+        JsonNode media = release.path("media");
+        if (media.isArray() && media.size() > 0) {
+            // 获取第一个 media 的格式
+            String format = media.get(0).path("format").asText("");
+            if (!format.isEmpty()) {
+                return format;
+            }
+        }
+        return null;
     }
 
     /**

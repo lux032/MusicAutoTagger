@@ -140,6 +140,7 @@ public class AudioFileProcessorService {
                     lockedReleaseDate = quickMetadata.getReleaseDate();
                     
                     // 立即将专辑信息写入文件夹缓存
+                    // 关键修复：标记来源为 QUICK_SCAN（最高优先级），防止被时长序列匹配结果覆盖
                     FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
                         lockedReleaseGroupId,
                         null,  // releaseId - 快速扫描时没有具体的 Release ID
@@ -147,10 +148,11 @@ public class AudioFileProcessorService {
                         lockedAlbumArtist,
                         quickMetadata.getTrackCount(),
                         lockedReleaseDate,
-                        quickResult.getSimilarity()
+                        quickResult.getSimilarity(),
+                        FolderAlbumCache.CacheSource.QUICK_SCAN  // 标记来源为快速扫描（最高优先级）
                     );
                     albumBatchProcessor.setFolderAlbum(folderPath, albumInfo);
-                    log.info("已将快速扫描结果缓存到文件夹级别");
+                    log.info("已将快速扫描结果缓存到文件夹级别（优先级: QUICK_SCAN）");
                 }
             } else {
                 // 散落文件，跳过快速扫描
