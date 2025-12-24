@@ -1150,15 +1150,59 @@ public class MusicBrainzClient {
                 }
             }
         }
-        
+
         if (bestRelease != null) {
+            // --- 地区优先级选择：在同一个 Release Group 中选择优先地区的版本 ---
+            List<String> countryPriority = config.getReleaseCountryPriority();
+            if (countryPriority != null && !countryPriority.isEmpty()) {
+                String bestReleaseGroupId = bestRelease.path("release-group").path("id").asText("");
+                int bestTrackCount = calculateTrackCount(bestRelease);
+
+                // 收集同一 Release Group 且曲目数相同的所有版本
+                List<JsonNode> sameGroupReleases = new ArrayList<>();
+                for (JsonNode release : releases) {
+                    String groupId = release.path("release-group").path("id").asText("");
+                    int trackCount = calculateTrackCount(release);
+                    if (bestReleaseGroupId.equals(groupId) && trackCount == bestTrackCount) {
+                        sameGroupReleases.add(release);
+                    }
+                }
+
+                // 按地区优先级选择
+                if (sameGroupReleases.size() > 1) {
+                    boolean foundPreferredCountry = false;
+                    for (String preferredCountry : countryPriority) {
+                        for (JsonNode release : sameGroupReleases) {
+                            String country = release.path("country").asText("");
+                            if (preferredCountry.equalsIgnoreCase(country)) {
+                                log.info("在同一专辑的{}个版本中，按地区优先级选择{}版本",
+                                    sameGroupReleases.size(), preferredCountry);
+                                bestRelease = release;
+                                foundPreferredCountry = true;
+                                break;
+                            }
+                        }
+                        if (foundPreferredCountry) {
+                            break;
+                        }
+                    }
+                    if (!foundPreferredCountry) {
+                        log.debug("同一专辑的{}个版本中未找到优先地区{}的版本，保持原选择",
+                            sameGroupReleases.size(), countryPriority);
+                    }
+                }
+            }
+            // --- End of country priority selection ---
+
             int finalTrackCount = calculateTrackCount(bestRelease);
             String releaseType = bestRelease.path("release-group").path("primary-type").asText("Unknown");
-            log.info("最终选择: {} - {} ({}首曲目，类型: {})",
+            String country = bestRelease.path("country").asText("Unknown");
+            log.info("最终选择: {} - {} ({}首曲目，类型: {}，地区: {})",
                 bestRelease.path("title").asText(),
                 bestRelease.path("artist-credit").get(0).path("artist").path("name").asText("Unknown"),
                 finalTrackCount,
-                releaseType);
+                releaseType,
+                country);
         }
         
         return bestRelease != null ? bestRelease : releases.get(0);
@@ -1186,7 +1230,7 @@ public class MusicBrainzClient {
         
         return totalTracks;
     }
-    
+
     /**
      * 计算专辑评分
      * @param release 发行版本

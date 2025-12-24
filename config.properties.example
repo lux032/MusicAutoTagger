@@ -195,6 +195,39 @@ i18n.language=en_US
 lyrics.exportToFile=false
 
 # ========================================
+# Release Country Priority Configuration
+# 专辑发行地区优先级配置
+# ========================================
+
+# Set the priority of album release countries, separated by commas
+# 设置专辑发行地区的优先级，用逗号分隔
+#
+# The system will prefer album versions released in countries listed earlier
+# 系统会优先选择排在前面的地区发行的专辑版本
+#
+# Note: This only affects version selection within the same album,
+#       it will NOT affect album matching accuracy
+# 注意：此配置仅影响同一专辑内的版本选择，不会影响专辑匹配的准确性
+#
+# Common country codes / 常用地区代码：
+#   - JP: Japan / 日本
+#   - US: United States / 美国
+#   - GB: United Kingdom / 英国
+#   - XW: Worldwide / 全球发行
+#   - XE: Europe / 欧洲
+#   - DE: Germany / 德国
+#   - KR: South Korea / 韩国
+#   - CN: China / 中国
+#   - TW: Taiwan / 台湾
+#   - HK: Hong Kong / 香港
+#
+# Leave empty to disable country priority (use default matching logic)
+# 留空则不按地区筛选，使用默认的匹配逻辑
+#
+# Example / 示例: release.countryPriority=JP,US,GB,XW
+release.countryPriority=
+
+# ========================================
 # Configuration Examples
 # ========================================
 

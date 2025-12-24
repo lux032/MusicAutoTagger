@@ -3,6 +3,9 @@ package org.example.config;
 import lombok.Data;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Properties;
 
 /**
@@ -64,6 +67,9 @@ public class MusicConfig {
     // 歌词配置
     private boolean exportLyricsToFile; // 是否将歌词导出为独立文件
 
+    // 发行地区优先级配置
+    private List<String> releaseCountryPriority; // 发行地区优先级列表
+
     private static MusicConfig instance;
     
     private MusicConfig() {
@@ -98,6 +104,9 @@ public class MusicConfig {
 
         // 国际化默认配置
         this.language = "zh_CN";
+
+        // 发行地区优先级默认配置（空列表表示不按地区筛选）
+        this.releaseCountryPriority = new ArrayList<>();
     }
     
     /**
@@ -249,6 +258,19 @@ public class MusicConfig {
             // 加载歌词配置
             if (props.containsKey("lyrics.exportToFile")) {
                 this.exportLyricsToFile = Boolean.parseBoolean(props.getProperty("lyrics.exportToFile"));
+            }
+
+            // 加载发行地区优先级配置
+            if (props.containsKey("release.countryPriority")) {
+                String countryPriorityStr = props.getProperty("release.countryPriority", "").trim();
+                if (!countryPriorityStr.isEmpty()) {
+                    this.releaseCountryPriority = Arrays.asList(countryPriorityStr.split(","))
+                        .stream()
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(java.util.stream.Collectors.toList());
+                    System.out.println("Release country priority configured: " + this.releaseCountryPriority);
+                }
             }
 
             System.out.println("Configuration file loaded successfully");
