@@ -1,7 +1,11 @@
 package org.example.web;
 
 import lombok.extern.slf4j.Slf4j;
+import org.eclipse.jetty.server.ForwardedRequestCustomizer;
+import org.eclipse.jetty.server.HttpConfiguration;
+import org.eclipse.jetty.server.HttpConnectionFactory;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.handler.HandlerList;
 import org.eclipse.jetty.server.handler.ResourceHandler;
 import org.eclipse.jetty.servlet.ServletContextHandler;
@@ -36,7 +40,23 @@ public class WebServer {
                      MusicConfig config,
                      DatabaseService databaseService) throws Exception {
         
-        server = new Server(port);
+        server = new Server();
+        
+        // 配置 HTTP 连接，支持反向代理头信息
+        HttpConfiguration httpConfig = new HttpConfiguration();
+        httpConfig.setSendServerVersion(false);
+        httpConfig.setSendDateHeader(false);
+        
+        // 添加 ForwardedRequestCustomizer 以支持反向代理
+        // 这会处理 X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host 等头信息
+        ForwardedRequestCustomizer forwardedCustomizer = new ForwardedRequestCustomizer();
+        httpConfig.addCustomizer(forwardedCustomizer);
+        
+        // 创建 HTTP 连接器
+        ServerConnector connector = new ServerConnector(server, new HttpConnectionFactory(httpConfig));
+        connector.setPort(port);
+        connector.setHost("0.0.0.0");  // 监听所有网络接口
+        server.addConnector(connector);
         
         // 创建 Servlet 上下文处理器
         ServletContextHandler servletHandler = new ServletContextHandler(ServletContextHandler.SESSIONS);
