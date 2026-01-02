@@ -212,7 +212,7 @@ For a complete template, see `config.properties.example`. Here are the most comm
 ### 💾 Database
 | Setting | Description | Default |
 |--------|------|--------|
-| `db.type` | Database type (`file` or `mysql`) | `mysql` |
+| `db.type` | Database type (`file` or `mysql`) | `file` |
 | `db.mysql.host` | MySQL Host | `localhost` |
 | `db.mysql.port` | MySQL Port | `3306` |
 | `db.mysql.database` | Database Name | `music_demo` |

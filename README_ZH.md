@@ -94,16 +94,16 @@
           
           # 配置文件
           - ./config.properties:/app/config.properties
-
+    
           # 失败文件目录（识别失败文件隔离）
           - /path/to/failed:/app/failed_files
-
+    
           # 部分识别目录（可选，存放有标签/封面但指纹识别失败的文件）
           - /path/to/partial:/app/partial_files
-
+    
           # 封面缓存目录（持久化下载的封面，重启后保留）
           - /path/to/cover_cache:/app/.cover_cache
-
+    
           # 日志目录（持久化处理日志）
           - /path/to/logs:/app/logs
         restart: unless-stopped
@@ -212,7 +212,7 @@ java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 ### 💾 数据库配置
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
-| `db.type` | 数据库类型 (`file` 或 `mysql`) | `mysql` |
+| `db.type` | 数据库类型 (`file` 或 `mysql`) | `file` |
 | `db.mysql.host` | MySQL 主机地址 | `localhost` |
 | `db.mysql.port` | MySQL 端口 | `3306` |
 | `db.mysql.database` | 数据库名 | `music_demo` |
