@@ -80,7 +80,7 @@ public class AudioFormatNormalizer {
             AudioFile audioFile = AudioFileIO.read(sourceFile);
             AudioHeader header = audioFile.getAudioHeader();
             int sampleRate = parsePositiveInt(header.getSampleRate());
-            int bitDepth = parsePositiveInt(header.getBitsPerSample());
+            int bitDepth = parsePositiveInt(String.valueOf(header.getBitsPerSample()));
             return new AudioSpecs(sampleRate, bitDepth);
         } catch (Exception e) {
             log.debug("Failed to read audio specs: {} - {}", sourceFile.getName(), e.getMessage());
