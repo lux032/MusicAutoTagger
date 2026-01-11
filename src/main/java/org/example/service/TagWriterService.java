@@ -315,6 +315,32 @@ public class TagWriterService {
     }
 
     /**
+     * 更新已存在文件的标签（不复制文件）
+     */
+    public boolean updateTagsOnExistingFile(File targetFile, MusicMetadata metadata, byte[] coverArtData) {
+        try {
+            AudioFile audioFileObj = AudioFileIO.read(targetFile);
+            Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
+
+            updateTextTags(tag, metadata);
+
+            if (coverArtData != null && coverArtData.length > 0) {
+                Artwork artwork = new StandardArtwork();
+                artwork.setBinaryData(coverArtData);
+                artwork.setMimeType("image/jpeg");
+                tag.deleteArtworkField();
+                tag.setField(artwork);
+            }
+
+            audioFileObj.commit();
+            return true;
+        } catch (Exception e) {
+            log.error("更新标签失败: {}", targetFile.getName(), e);
+            return false;
+        }
+    }
+
+    /**
      * 导出歌词到独立文件
      * @param audioFile 音频文件
      * @param lyrics 歌词内容

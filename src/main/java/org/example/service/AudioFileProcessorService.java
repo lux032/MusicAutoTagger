@@ -252,9 +252,9 @@ public class AudioFileProcessorService {
 
                     // 处理识别失败
                     if (isLooseFileInMonitorRoot) {
-                        failedFileHandler.handleLooseFileFailed(audioFile);
+                        failedFileHandler.handleLooseFileFailed(originalAudioFile, processingAudioFile);
                     } else {
-                        failedFileHandler.handleAlbumFileFailed(audioFile, albumRootDir);
+                        failedFileHandler.handleAlbumFileFailed(originalAudioFile, albumRootDir);
                     }
 
                     return ProcessResult.PERMANENT_FAIL; // 识别失败，不重试但记录

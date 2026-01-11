@@ -9,6 +9,7 @@ import org.example.util.I18nUtil;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +26,7 @@ public class FailedFileHandler {
     private final CoverArtService coverArtService;
     private final ProcessedFileLogger processedLogger;
     private final FileSystemUtils fileSystemUtils;
+    private final AudioFormatNormalizer audioFormatNormalizer;
     
     public FailedFileHandler(MusicConfig config, TagWriterService tagWriter, 
                              CoverArtService coverArtService, ProcessedFileLogger processedLogger,
@@ -34,13 +36,22 @@ public class FailedFileHandler {
         this.coverArtService = coverArtService;
         this.processedLogger = processedLogger;
         this.fileSystemUtils = fileSystemUtils;
+        this.audioFormatNormalizer = new AudioFormatNormalizer(config);
     }
-    
+
     /**
      * 处理部分识别的文件(有标签或封面但指纹识别失败)
      * 将文件复制到部分识别目录，保留原始的文件夹结构，并尝试内嵌文件夹封面
      */
     public void handlePartialRecognitionFile(File audioFile) {
+        handlePartialRecognitionFile(audioFile, null);
+    }
+
+    /**
+     * 处理部分识别的文件(有标签或封面但指纹识别失败)
+     * 将文件复制到部分识别目录，保留原始的文件夹结构，并尝试内嵌文件夹封面
+     */
+    public void handlePartialRecognitionFile(File audioFile, File processingFile) {
         if (config.getPartialDirectory() == null || config.getPartialDirectory().isEmpty()) {
             return; // 未配置部分识别目录，跳过
         }
@@ -56,7 +67,7 @@ public class FailedFileHandler {
             // 封面是必需条件：如果既没有内嵌封面也没有文件夹封面，不处理
             if (!hasEmbeddedCover && !hasFolderCover) {
                 log.info(I18nUtil.getMessage("main.partial.recognition.no.cover"));
-                LogCollector.addLog("INFO", "  ✗ " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
+                LogCollector.addLog("INFO", "  ? " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
                 return;
             }
             
@@ -65,7 +76,7 @@ public class FailedFileHandler {
             
             log.info("========================================");
             log.info(I18nUtil.getMessage("main.partial.recognition.detected"));
-            LogCollector.addLog("INFO", "✓ " + I18nUtil.getMessage("main.partial.recognition.detected") + ": " + audioFile.getName());
+            LogCollector.addLog("INFO", "? " + I18nUtil.getMessage("main.partial.recognition.detected") + ": " + audioFile.getName());
             log.info(I18nUtil.getMessage("main.partial.recognition.has.embedded.cover") + ": {}", hasEmbeddedCover);
             log.info(I18nUtil.getMessage("main.partial.recognition.has.folder.cover") + ": {}", hasFolderCover);
             log.info(I18nUtil.getMessage("main.partial.recognition.has.tags") + ": {}", hasPartialTags);
@@ -90,13 +101,27 @@ public class FailedFileHandler {
             // 复制文件到部分识别目录
             log.info(I18nUtil.getMessage("main.partial.recognition.copying") + ": {}", targetFile.getAbsolutePath());
             LogCollector.addLog("INFO", "  → " + I18nUtil.getMessage("main.partial.recognition.copying") + ": " + relativePath);
-            Files.copy(audioFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            File sourceFile = (processingFile != null && processingFile.exists()) ? processingFile : audioFile;
+            Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             
-            // 如果文件夹有封面但文件没有内嵌封面，则内嵌封面
-            if (hasFolderCover && !hasEmbeddedCover) {
+            // 如果使用了转码文件，尽量保留原始标签
+            if (sourceFile != audioFile) {
+                org.example.model.MusicMetadata sourceTags = tagWriter.readTags(audioFile);
+                if (sourceTags != null) {
+                    tagWriter.updateTagsOnExistingFile(targetFile, sourceTags, null);
+                }
+            }
+
+            // 处理封面：优先文件夹封面，否则使用源文件内嵌封面
+            byte[] embeddedCover = null;
+            if (!hasFolderCover && hasEmbeddedCover) {
+                embeddedCover = coverArtService.extractEmbeddedCover(audioFile);
+            }
+            byte[] coverToEmbed = hasFolderCover ? folderCover : embeddedCover;
+            if (coverToEmbed != null && !tagWriter.hasEmbeddedCover(targetFile)) {
                 log.info(I18nUtil.getMessage("main.partial.recognition.embedding.cover"));
                 LogCollector.addLog("INFO", "  → " + I18nUtil.getMessage("main.partial.recognition.embedding.cover"));
-                boolean embedSuccess = tagWriter.embedFolderCover(targetFile, folderCover);
+                boolean embedSuccess = tagWriter.embedFolderCover(targetFile, coverToEmbed);
                 if (embedSuccess) {
                     log.info(I18nUtil.getMessage("main.partial.recognition.embed.success"));
                     LogCollector.addLog("SUCCESS", "  " + I18nUtil.getMessage("main.partial.recognition.embed.success"));
@@ -153,7 +178,7 @@ public class FailedFileHandler {
             // 封面是必需条件：如果既没有内嵌封面也没有文件夹封面，不处理
             if (!anyHasEmbeddedCover && !hasFolderCover) {
                 log.info(I18nUtil.getMessage("main.partial.recognition.no.cover"));
-                LogCollector.addLog("INFO", "  ✗ " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
+                LogCollector.addLog("INFO", "  ? " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
                 return;
             }
             
@@ -162,7 +187,7 @@ public class FailedFileHandler {
             
             log.info("========================================");
             log.info(I18nUtil.getMessage("main.partial.recognition.album.detected", albumRootDir.getName()));
-            LogCollector.addLog("INFO", "✓ " + I18nUtil.getMessage("main.partial.recognition.album.detected", albumRootDir.getName()));
+            LogCollector.addLog("INFO", "? " + I18nUtil.getMessage("main.partial.recognition.album.detected", albumRootDir.getName()));
             log.info(I18nUtil.getMessage("main.partial.recognition.has.folder.cover") + ": {}", hasFolderCover);
             log.info(I18nUtil.getMessage("main.partial.recognition.has.tags") + ": {}", hasPartialTags);
             log.info("专辑文件数: {}", audioFiles.size());
@@ -186,38 +211,61 @@ public class FailedFileHandler {
             int skippedCount = counts[1];
             
             log.info("专辑文件夹复制完成: 成功 {} 个文件, 跳过 {} 个", copiedCount, skippedCount);
-            
-            // 如果文件夹有封面，为每个没有内嵌封面的音频文件内嵌封面
-            if (hasFolderCover) {
-                log.info(I18nUtil.getMessage("main.partial.recognition.embedding.cover.album"));
-                LogCollector.addLog("INFO", "  → " + I18nUtil.getMessage("main.partial.recognition.embedding.cover.album"));
-                
-                int embedSuccessCount = 0;
-                int embedSkipCount = 0;
-                
-                // 遍历目标文件夹中的所有音频文件
-                List<File> targetAudioFiles = new ArrayList<>();
-                fileSystemUtils.collectAudioFilesForMarking(targetFolder, targetAudioFiles);
-                
-                for (File targetFile : targetAudioFiles) {
-                    try {
-                        if (!tagWriter.hasEmbeddedCover(targetFile)) {
-                            boolean embedSuccess = tagWriter.embedFolderCover(targetFile, folderCover);
-                            if (embedSuccess) {
-                                embedSuccessCount++;
-                            }
-                        } else {
-                            embedSkipCount++;
-                        }
-                    } catch (Exception e) {
-                        log.warn("内嵌封面失败: {} - {}", targetFile.getName(), e.getMessage());
+            int embedSuccessCount = 0;
+            int embedSkipCount = 0;
+            int embedFailCount = 0;
+            int normalizedCount = 0;
+
+            // 遍历源文件并定位目标文件（必要时转码，并恢复标签/封面）
+            Path albumRootPath = albumRootDir.toPath();
+            for (File audioFile : audioFiles) {
+                Path relative = albumRootPath.relativize(audioFile.toPath());
+                File targetAudioFile = new File(targetFolder, relative.toString());
+
+                if (!targetAudioFile.exists()) {
+                    continue;
+                }
+
+                boolean converted = audioFormatNormalizer.normalizeToTargetIfNeeded(audioFile, targetAudioFile);
+                if (converted) {
+                    normalizedCount++;
+                    org.example.model.MusicMetadata sourceTags = tagWriter.readTags(audioFile);
+                    if (sourceTags != null) {
+                        tagWriter.updateTagsOnExistingFile(targetAudioFile, sourceTags, null);
                     }
                 }
-                
-                log.info("封面内嵌完成: 成功 {} 个, 跳过 {} 个(已有封面)", embedSuccessCount, embedSkipCount);
+
+                byte[] coverToEmbed = null;
+                if (hasFolderCover) {
+                    coverToEmbed = folderCover;
+                } else if (tagWriter.hasEmbeddedCover(audioFile)) {
+                    coverToEmbed = coverArtService.extractEmbeddedCover(audioFile);
+                }
+
+                if (coverToEmbed != null) {
+                    if (!tagWriter.hasEmbeddedCover(targetAudioFile)) {
+                        boolean embedSuccess = tagWriter.embedFolderCover(targetAudioFile, coverToEmbed);
+                        if (embedSuccess) {
+                            embedSuccessCount++;
+                        } else {
+                            embedFailCount++;
+                        }
+                    } else {
+                        embedSkipCount++;
+                    }
+                }
+            }
+
+            if (normalizedCount > 0) {
+                log.info("部分识别专辑已转码 {} 个文件", normalizedCount);
+            }
+
+            if (embedSuccessCount + embedSkipCount + embedFailCount > 0) {
+                log.info("封面内嵌完成: 成功 {} 个, 跳过 {} 个(已有封面), 失败 {} 个",
+                    embedSuccessCount, embedSkipCount, embedFailCount);
                 LogCollector.addLog("SUCCESS", "  " + I18nUtil.getMessage("main.partial.recognition.embed.album.complete", embedSuccessCount, embedSkipCount));
             }
-            
+
             log.info(I18nUtil.getMessage("main.partial.recognition.album.complete") + ": {}", targetFolder.getAbsolutePath());
             LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.partial.recognition.album.complete") + ": " + folderName);
             log.info("========================================");
@@ -342,11 +390,15 @@ public class FailedFileHandler {
      * 处理识别失败的散落文件
      */
     public void handleLooseFileFailed(File audioFile) {
+        handleLooseFileFailed(audioFile, null);
+    }
+
+    public void handleLooseFileFailed(File audioFile, File processingFile) {
         log.warn("散落文件识别失败: {}", audioFile.getName());
-        LogCollector.addLog("WARN", "✗ " + I18nUtil.getMessage("main.recognition.failed.loose", audioFile.getName()));
+        LogCollector.addLog("WARN", "? " + I18nUtil.getMessage("main.recognition.failed.loose", audioFile.getName()));
         
         // 尝试处理部分识别文件
-        handlePartialRecognitionFile(audioFile);
+        handlePartialRecognitionFile(audioFile, processingFile);
         
         // 复制到失败目录
         if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
@@ -371,7 +423,7 @@ public class FailedFileHandler {
      */
     public void handleAlbumFileFailed(File audioFile, File albumRootDir) {
         log.warn("专辑识别失败: {}", albumRootDir.getName());
-        LogCollector.addLog("WARN", "✗ " + I18nUtil.getMessage("main.recognition.failed.album", albumRootDir.getName(), audioFile.getName()));
+        LogCollector.addLog("WARN", "? " + I18nUtil.getMessage("main.recognition.failed.album", albumRootDir.getName(), audioFile.getName()));
         
         // 尝试处理整个专辑的部分识别（复制整个专辑到部分识别目录）
         handlePartialRecognitionAlbum(albumRootDir);

@@ -68,6 +68,27 @@ public class AudioFormatNormalizer {
         }
     }
 
+    public boolean normalizeToTargetIfNeeded(File sourceFile, File targetFile) {
+        if (!config.isAudioNormalizeEnabled()) {
+            return false;
+        }
+
+        AudioSpecs specs = readSpecs(sourceFile);
+        if (!specs.isKnown()) {
+            return false;
+        }
+        if (!needsNormalization(specs.sampleRate, specs.bitDepth)) {
+            return false;
+        }
+
+        try {
+            return runFfmpeg(sourceFile, targetFile, specs.bitDepth);
+        } catch (IOException e) {
+            log.warn("Failed to normalize audio for partial output: {} - {}", sourceFile.getName(), e.getMessage());
+            return false;
+        }
+    }
+
     public void cleanup(NormalizationResult result) {
         if (result == null || result.getTempDirectory() == null) {
             return;

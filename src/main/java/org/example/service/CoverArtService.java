@@ -248,6 +248,13 @@ public class CoverArtService {
         
         return null;
     }
+
+    /**
+     * 从音频文件提取内嵌封面（用于部分识别保留封面）
+     */
+    public byte[] extractEmbeddedCover(File audioFile) {
+        return extractCoverFromAudioFile(audioFile);
+    }
     
     /**
      * 根据 Release Group ID 获取封面（用于批量处理时确保使用正确专辑的封面）
