@@ -14,8 +14,8 @@ RUN mvn clean package -DskipTests
 # 运行阶段
 FROM eclipse-temurin:17-jre
 
-# 安装 chromaprint (fpcalc)
-RUN apt-get update && apt-get install -y libchromaprint-tools && rm -rf /var/lib/apt/lists/*
+# 安装 chromaprint (fpcalc) 和 ffmpeg
+RUN apt-get update && apt-get install -y libchromaprint-tools ffmpeg && rm -rf /var/lib/apt/lists/*
 
 # 创建应用目录
 WORKDIR /app

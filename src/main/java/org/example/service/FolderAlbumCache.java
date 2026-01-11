@@ -973,12 +973,17 @@ public class FolderAlbumCache {
     @Data
     public static class PendingFile {
         private final File audioFile;
+        private final File processingFile;
+        private final java.nio.file.Path processingTempDir;
         private final Object metadata; // MusicBrainzClient.MusicMetadata
         private final byte[] coverArtData;
         private final long addTime;
         
-        public PendingFile(File audioFile, Object metadata, byte[] coverArtData) {
+        public PendingFile(File audioFile, File processingFile, java.nio.file.Path processingTempDir,
+                           Object metadata, byte[] coverArtData) {
             this.audioFile = audioFile;
+            this.processingFile = processingFile;
+            this.processingTempDir = processingTempDir;
             this.metadata = metadata;
             this.coverArtData = coverArtData;
             this.addTime = System.currentTimeMillis();
@@ -988,12 +993,13 @@ public class FolderAlbumCache {
     /**
      * 添加待处理文件到文件夹队列
      */
-    public void addPendingFile(String folderPath, File audioFile, Object metadata, byte[] coverArtData) {
+    public void addPendingFile(String folderPath, File audioFile, File processingFile, java.nio.file.Path processingTempDir,
+                               Object metadata, byte[] coverArtData) {
         List<PendingFile> pending = folderPendingFiles.computeIfAbsent(
             folderPath,
             k -> Collections.synchronizedList(new ArrayList<>())
         );
-        pending.add(new PendingFile(audioFile, metadata, coverArtData));
+        pending.add(new PendingFile(audioFile, processingFile, processingTempDir, metadata, coverArtData));
         log.debug("添加待处理文件: {} (文件夹待处理数: {})", audioFile.getName(), pending.size());
     }
     
@@ -1051,7 +1057,8 @@ public class FolderAlbumCache {
      * @param coverArtData 封面数据
      * @return true表示文件已添加到队列，false表示文件已存在于队列中
      */
-    public boolean addPendingFileIfAbsent(String folderPath, File audioFile, Object metadata, byte[] coverArtData) {
+    public boolean addPendingFileIfAbsent(String folderPath, File audioFile, File processingFile,
+                                          java.nio.file.Path processingTempDir, Object metadata, byte[] coverArtData) {
         List<PendingFile> pending = folderPendingFiles.computeIfAbsent(
             folderPath,
             k -> Collections.synchronizedList(new ArrayList<>())
@@ -1067,7 +1074,7 @@ public class FolderAlbumCache {
                 }
             }
             // 不存在则添加
-            pending.add(new PendingFile(audioFile, metadata, coverArtData));
+            pending.add(new PendingFile(audioFile, processingFile, processingTempDir, metadata, coverArtData));
             log.debug("添加待处理文件: {} (文件夹待处理数: {})", audioFile.getName(), pending.size());
             return true;
         }

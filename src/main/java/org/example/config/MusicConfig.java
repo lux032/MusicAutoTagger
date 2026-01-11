@@ -67,6 +67,10 @@ public class MusicConfig {
     // 歌词配置
     private boolean exportLyricsToFile; // 是否将歌词导出为独立文件
 
+    // 音频规格规范化配置
+    private boolean audioNormalizeEnabled; // 是否将高规格音频转换为24/48
+    private String audioNormalizeFfmpegPath; // ffmpeg 路径
+
     // 发行地区优先级配置
     private List<String> releaseCountryPriority; // 发行地区优先级列表
 
@@ -104,6 +108,10 @@ public class MusicConfig {
 
         // 国际化默认配置
         this.language = "zh_CN";
+
+        // 音频规格规范化默认配置
+        this.audioNormalizeEnabled = false;
+        this.audioNormalizeFfmpegPath = "ffmpeg";
 
         // 发行地区优先级默认配置（空列表表示不按地区筛选）
         this.releaseCountryPriority = new ArrayList<>();
@@ -258,6 +266,14 @@ public class MusicConfig {
             // 加载歌词配置
             if (props.containsKey("lyrics.exportToFile")) {
                 this.exportLyricsToFile = Boolean.parseBoolean(props.getProperty("lyrics.exportToFile"));
+            }
+
+            // 加载音频规格规范化配置
+            if (props.containsKey("audio.normalize.enabled")) {
+                this.audioNormalizeEnabled = Boolean.parseBoolean(props.getProperty("audio.normalize.enabled"));
+            }
+            if (props.containsKey("audio.normalize.ffmpegPath")) {
+                this.audioNormalizeFfmpegPath = props.getProperty("audio.normalize.ffmpegPath");
             }
 
             // 加载发行地区优先级配置

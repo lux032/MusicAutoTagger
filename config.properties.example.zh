@@ -105,6 +105,16 @@ file.partialDirectory=/app/partial_files
 file.maxRetries=3
 
 # ========================================
+# 音频规格规范化配置
+# ========================================
+
+# 是否将高规格音频（>24bit 或 >48kHz）转换为 24bit/48kHz 后再识别和存储
+audio.normalize.enabled=false
+
+# ffmpeg 可执行文件路径（需在 PATH 中或填写完整路径）
+audio.normalize.ffmpegPath=ffmpeg
+
+# ========================================
 # 封面缓存配置
 # ========================================
 

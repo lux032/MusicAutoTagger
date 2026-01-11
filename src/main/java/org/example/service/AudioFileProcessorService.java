@@ -29,6 +29,7 @@ public class AudioFileProcessorService {
     private final FailedFileHandler failedFileHandler;
     private final FileSystemUtils fileSystemUtils;
     private final FolderAlbumCache folderAlbumCache;
+    private final AudioFormatNormalizer audioFormatNormalizer;
     
     public AudioFileProcessorService(MusicConfig config,
                                      AudioFingerprintService fingerprintService,
@@ -54,6 +55,7 @@ public class AudioFileProcessorService {
         this.failedFileHandler = failedFileHandler;
         this.fileSystemUtils = fileSystemUtils;
         this.folderAlbumCache = folderAlbumCache;
+        this.audioFormatNormalizer = new AudioFormatNormalizer(config);
     }
     
     /**
@@ -71,31 +73,40 @@ public class AudioFileProcessorService {
         log.info(I18nUtil.getMessage("main.processing.file"), audioFile.getName());
         LogCollector.addLog("INFO", I18nUtil.getMessage("main.title.separator"));
         LogCollector.addLog("INFO", I18nUtil.getMessage("main.processing.file", audioFile.getName()));
-        
+
+        File originalAudioFile = audioFile;
+        AudioFormatNormalizer.NormalizationResult normalizationResult = null;
+        File processingAudioFile = audioFile;
+        boolean deferNormalizationCleanup = false;
+
         try {
             // 0. 检查文件是否已处理过
-            if (processedLogger.isFileProcessed(audioFile)) {
-                log.info(I18nUtil.getMessage("main.file.already.processed"), audioFile.getName());
+            if (processedLogger.isFileProcessed(originalAudioFile)) {
+                log.info(I18nUtil.getMessage("main.file.already.processed"), originalAudioFile.getName());
                 return ProcessResult.SUCCESS; // 已处理，返回成功
             }
             
             // 0.3. 检查文件夹是否有临时文件(下载未完成)
-            if (fileSystemUtils.hasTempFilesInFolder(audioFile)) {
-                log.warn(I18nUtil.getMessage("main.temp.files.detected"), audioFile.getParentFile().getName());
+            if (fileSystemUtils.hasTempFilesInFolder(originalAudioFile)) {
+                log.warn(I18nUtil.getMessage("main.temp.files.detected"), originalAudioFile.getParentFile().getName());
                 // 返回 DELAY_RETRY 表示需要延迟重试，但不消耗重试次数
                 // 因为这不是真正的处理失败，只是暂时不适合处理
                 return ProcessResult.DELAY_RETRY;
             }
+
+            // 0.4 规格检查与规范化（可选）
+            normalizationResult = audioFormatNormalizer.normalizeIfNeeded(originalAudioFile);
+            processingAudioFile = normalizationResult.getProcessingFile();
             
             // 0.5. 获取专辑根目录（监控目录的第一级子目录）
-            File albumRootDir = fileSystemUtils.getAlbumRootDirectory(audioFile);
+            File albumRootDir = fileSystemUtils.getAlbumRootDirectory(originalAudioFile);
             String folderPath = albumRootDir.getAbsolutePath();
             
             // 0.5.1 统计专辑根目录内音乐文件数量（递归统计所有子文件夹）
-            int musicFilesInFolder = fileSystemUtils.countMusicFilesInFolder(audioFile);
+            int musicFilesInFolder = fileSystemUtils.countMusicFilesInFolder(originalAudioFile);
             
             // 0.6. 检测是否为散落在监控目录根目录的单个文件（保底处理）
-            boolean isLooseFileInMonitorRoot = fileSystemUtils.isLooseFileInMonitorRoot(audioFile);
+            boolean isLooseFileInMonitorRoot = fileSystemUtils.isLooseFileInMonitorRoot(originalAudioFile);
             
             MusicMetadata detailedMetadata = null;
             boolean isQuickScanMode = false; // 标记是否使用快速扫描模式处理
@@ -124,7 +135,7 @@ public class AudioFileProcessorService {
                 // 没有缓存且不是散落文件，进行快速扫描
                 log.info("尝试第一级快速扫描（基于标签和文件夹名称）...");
                 LogCollector.addLog("INFO", "📂 " + I18nUtil.getMessage("main.quick.scan.attempt", audioFile.getName()));
-                QuickScanService.QuickScanResult quickResult = quickScanService.quickScan(audioFile, musicFilesInFolder);
+                QuickScanService.QuickScanResult quickResult = quickScanService.quickScan(originalAudioFile, musicFilesInFolder);
 
                 if (quickResult != null && quickResult.isHighConfidence()) {
                     // 快速扫描成功，锁定专辑信息
@@ -171,7 +182,7 @@ public class AudioFileProcessorService {
             log.info("正在进行音频指纹识别以获取单曲详细元数据...");
             LogCollector.addLog("INFO", "🔍 " + I18nUtil.getMessage("main.fingerprint.identifying", audioFile.getName()));
             AudioFingerprintService.AcoustIdResult acoustIdResult =
-                fingerprintService.identifyAudioFile(audioFile);
+                fingerprintService.identifyAudioFile(processingAudioFile);
 
             // ===== 关键修复：在获取详细元数据之前，先执行时长序列匹配确定专辑 =====
             // 这样第一个文件就能使用正确的 preferredReleaseGroupId
@@ -253,14 +264,14 @@ public class AudioFileProcessorService {
                     LogCollector.addLog("INFO", "📋 " + I18nUtil.getMessage("main.acoustid.no.match.use.quick.scan", audioFile.getName()));
                     LogCollector.addLog("INFO", "📋 " + I18nUtil.getMessage("main.quick.scan.locked.album", lockedAlbumArtist, lockedAlbumTitle));
                     
-                    MusicMetadata sourceTagsForFallback = tagWriter.readTags(audioFile);
+                    MusicMetadata sourceTagsForFallback = tagWriter.readTags(originalAudioFile);
                     detailedMetadata = MetadataUtils.createMetadataFromQuickScan(
                         sourceTagsForFallback,
                         lockedAlbumTitle,
                         lockedAlbumArtist,
                         lockedReleaseGroupId,
                         lockedReleaseDate,
-                        audioFile.getName()
+                        originalAudioFile.getName()
                     );
                 }
             } else {
@@ -271,7 +282,7 @@ public class AudioFileProcessorService {
                 AudioFingerprintService.RecordingInfo bestMatch = MetadataUtils.findBestRecordingMatch(
                     acoustIdResult.getRecordings(),
                     lockedReleaseGroupId,
-                    audioFile.getName()
+                    originalAudioFile.getName()
                 );
 
                 // 检查 bestMatch 是否有完整信息
@@ -321,14 +332,14 @@ public class AudioFileProcessorService {
                         // 如果有快速扫描锁定的专辑信息，使用它
                         if (lockedAlbumTitle != null) {
                             log.info("使用快速扫描锁定的专辑信息作为备选");
-                            MusicMetadata sourceTagsForFallback = tagWriter.readTags(audioFile);
+                            MusicMetadata sourceTagsForFallback = tagWriter.readTags(originalAudioFile);
                             detailedMetadata = MetadataUtils.createMetadataFromQuickScan(
                                 sourceTagsForFallback,
                                 lockedAlbumTitle,
                                 lockedAlbumArtist,
                                 lockedReleaseGroupId,
                                 lockedReleaseDate,
-                                audioFile.getName()
+                                originalAudioFile.getName()
                             );
                         } else {
                             // 完全没有信息，创建基本元数据
@@ -439,7 +450,7 @@ public class AudioFileProcessorService {
             // ===== 读取源文件已有标签并合并 =====
             // 在快速扫描锁定专辑但音频指纹数据库缺失的情况下，保留源文件的作曲、作词、歌词、风格等信息
             log.info("读取源文件已有标签信息...");
-            MusicMetadata sourceMetadata = tagWriter.readTags(audioFile);
+            MusicMetadata sourceMetadata = tagWriter.readTags(originalAudioFile);
             if (sourceMetadata != null) {
                 log.info("合并源文件标签信息...");
                 detailedMetadata = MetadataUtils.mergeMetadata(sourceMetadata, detailedMetadata);
@@ -449,7 +460,7 @@ public class AudioFileProcessorService {
             
             // 4. 获取封面图片(多层降级策略)
             byte[] coverArtData = coverArtService.getCoverArtWithFallback(
-                audioFile, detailedMetadata, lockedReleaseGroupId, isLooseFileInMonitorRoot);
+                originalAudioFile, detailedMetadata, lockedReleaseGroupId, isLooseFileInMonitorRoot);
             
             if (coverArtData != null && coverArtData.length > 0) {
                 log.info("✓ 成功获取封面图片");
@@ -475,11 +486,11 @@ public class AudioFileProcessorService {
             // 注意：散落文件跳过专辑锁定和投票机制，直接处理
             if (isLooseFileInMonitorRoot) {
                 log.info("散落文件保底处理：直接写入元数据（随缘模式）");
-                albumBatchProcessor.processAndWriteFile(audioFile, detailedMetadata, coverArtData, false);
+                albumBatchProcessor.processAndWriteFile(processingAudioFile, originalAudioFile, detailedMetadata, coverArtData, false);
             } else if (lockedAlbumTitle != null) {
                 // 已有锁定的专辑信息（来自快速扫描或缓存），直接处理文件
                 log.info("使用已锁定的专辑信息: {}", lockedAlbumTitle);
-                albumBatchProcessor.processAndWriteFile(audioFile, detailedMetadata, coverArtData, isQuickScanMode);
+                albumBatchProcessor.processAndWriteFile(processingAudioFile, originalAudioFile, detailedMetadata, coverArtData, isQuickScanMode);
             } else {
                 // 未锁定专辑：收集样本进行投票
                 log.info("启用文件夹级别专辑锁定（{}首音乐文件）", musicFilesInFolder);
@@ -515,7 +526,15 @@ public class AudioFileProcessorService {
                 );
 
                 // 关键修复：使用原子操作添加待处理文件，避免竞态条件
-                albumBatchProcessor.addPendingFile(folderPath, audioFile, detailedMetadata, coverArtData);
+                albumBatchProcessor.addPendingFile(
+                    folderPath,
+                    originalAudioFile,
+                    processingAudioFile,
+                    normalizationResult != null ? normalizationResult.getTempDirectory() : null,
+                    detailedMetadata,
+                    coverArtData
+                );
+                deferNormalizationCleanup = normalizationResult != null && normalizationResult.isConverted();
 
                 // 尝试确定专辑
                 FolderAlbumCache.CachedAlbumInfo determinedAlbum = albumBatchProcessor.tryDetermineAlbum(
@@ -534,7 +553,7 @@ public class AudioFileProcessorService {
 
                     albumBatchProcessor.processPendingFilesWithAlbum(folderPath, determinedAlbum);
                 } else {
-                    log.info("专辑收集中，待处理文件已加入队列: {}", audioFile.getName());
+                    log.info("专辑收集中，待处理文件已加入队列: {}", originalAudioFile.getName());
 
                     // 检查是否所有文件都已加入待处理队列但专辑仍未确定
                     // 这种情况可能发生在样本收集过程中部分文件识别失败
@@ -550,31 +569,34 @@ public class AudioFileProcessorService {
 
         } catch (java.io.IOException e) {
             // 网络异常（包括 SocketException），返回 NETWORK_ERROR_RETRY 以触发重试并增加重试计数
-            log.error(I18nUtil.getMessage("main.network.error"), audioFile.getName(), e.getMessage());
+            log.error(I18nUtil.getMessage("main.network.error"), originalAudioFile.getName(), e.getMessage());
             log.info(I18nUtil.getMessage("main.retry.queued"));
             return ProcessResult.NETWORK_ERROR_RETRY;
 
         } catch (Exception e) {
             // 其他异常（如识别失败），不重试，但必须记录到数据库避免静默丢失
-            log.error(I18nUtil.getMessage("main.process.error"), audioFile.getName(), e);
+            log.error(I18nUtil.getMessage("main.process.error"), originalAudioFile.getName(), e);
 
             // 关键修复：记录失败文件到数据库，避免文件"静默丢失"
             try {
                 processedLogger.markFileAsProcessed(
-                    audioFile,
+                    originalAudioFile,
                     "FAILED",
                     "处理异常: " + e.getClass().getSimpleName(),
-                    audioFile.getName(),
+                    originalAudioFile.getName(),
                     "Unknown Album"
                 );
-                log.info("已将异常失败文件记录到数据库: {}", audioFile.getName());
+                log.info("已将异常失败文件记录到数据库: {}", originalAudioFile.getName());
             } catch (Exception recordError) {
-                log.error("记录异常失败文件到数据库失败: {} - {}", audioFile.getName(), recordError.getMessage());
+                log.error("记录异常失败文件到数据库失败: {} - {}", originalAudioFile.getName(), recordError.getMessage());
             }
 
             return ProcessResult.PERMANENT_FAIL; // 返回永久失败避免重试（非网络问题）
 
         } finally {
+            if (!deferNormalizationCleanup && normalizationResult != null && normalizationResult.isConverted()) {
+                audioFormatNormalizer.cleanup(normalizationResult);
+            }
             log.info("========================================");
         }
     }

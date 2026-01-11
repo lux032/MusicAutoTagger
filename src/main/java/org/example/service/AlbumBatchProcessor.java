@@ -32,66 +32,76 @@ public class AlbumBatchProcessor {
         this.processedLogger = processedLogger;
         this.coverArtService = coverArtService;
     }
-    
     /**
      * 处理并写入单个文件
      * @param audioFile 音频文件
+     * @param originalFile 原始文件（用于日志和去重记录）
      * @param metadata 元数据
      * @param coverArtData 封面数据
      * @param isQuickScanMode 是否为快速扫描模式（用于区分日志显示）
      */
-    public void processAndWriteFile(File audioFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
+    public void processAndWriteFile(File audioFile, File originalFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
+        File displayFile = originalFile != null ? originalFile : audioFile;
         try {
-            log.info("正在写入文件标签: {}", audioFile.getName());
+            log.info("正在写入文件标签: {}", displayFile.getName());
             boolean success = tagWriter.processFile(audioFile, metadata, coverArtData);
             
             if (success) {
                 if (isQuickScanMode) {
-                    log.info("✓ 文件处理成功（快速扫描模式）: {}", audioFile.getName());
-                    LogCollector.addLog("SUCCESS", "✓ " + I18nUtil.getMessage("main.process.success.quick.scan", audioFile.getName()));
+                    log.info("? 文件处理成功（快速扫描模式）: {}", displayFile.getName());
+                    LogCollector.addLog("SUCCESS", "? " + I18nUtil.getMessage("main.process.success.quick.scan", displayFile.getName()));
                 } else {
-                    log.info("✓ 文件处理成功: {}", audioFile.getName());
-                    LogCollector.addLog("SUCCESS", "✓ " + I18nUtil.getMessage("main.process.success.fingerprint", audioFile.getName()));
+                    log.info("? 文件处理成功: {}", displayFile.getName());
+                    LogCollector.addLog("SUCCESS", "? " + I18nUtil.getMessage("main.process.success.fingerprint", displayFile.getName()));
                 }
                 
                 // 记录文件已处理
                 processedLogger.markFileAsProcessed(
-                    audioFile,
+                    displayFile,
                     metadata.getRecordingId(),
                     metadata.getArtist(),
                     metadata.getTitle(),
                     metadata.getAlbum()
                 );
             } else {
-                log.error("✗ 文件处理失败: {}", audioFile.getName());
-                LogCollector.addLog("ERROR", "✗ " + I18nUtil.getMessage("main.process.error", audioFile.getName()));
+                log.error("? 文件处理失败: {}", displayFile.getName());
+                LogCollector.addLog("ERROR", "? " + I18nUtil.getMessage("main.process.error", displayFile.getName()));
                 // 关键修复：写入失败也要记录到数据库，避免文件"静默丢失"
                 processedLogger.markFileAsProcessed(
-                    audioFile,
+                    displayFile,
                     "WRITE_FAILED",
                     metadata.getArtist() != null ? metadata.getArtist() : "Unknown Artist",
-                    metadata.getTitle() != null ? metadata.getTitle() : audioFile.getName(),
+                    metadata.getTitle() != null ? metadata.getTitle() : displayFile.getName(),
                     metadata.getAlbum() != null ? metadata.getAlbum() : "Unknown Album"
                 );
-                log.info("已将写入失败文件记录到数据库: {}", audioFile.getName());
+                log.info("已将写入失败文件记录到数据库: {}", displayFile.getName());
             }
         } catch (Exception e) {
-            log.error(I18nUtil.getMessage("main.write.exception"), audioFile.getName(), e);
+            log.error(I18nUtil.getMessage("main.write.exception"), displayFile.getName(), e);
             // 关键修复：异常时也要记录到数据库，避免文件"静默丢失"
             try {
                 processedLogger.markFileAsProcessed(
-                    audioFile,
+                    displayFile,
                     "EXCEPTION",
                     metadata.getArtist() != null ? metadata.getArtist() : "Unknown Artist",
-                    metadata.getTitle() != null ? metadata.getTitle() : audioFile.getName(),
+                    metadata.getTitle() != null ? metadata.getTitle() : displayFile.getName(),
                     metadata.getAlbum() != null ? metadata.getAlbum() : "Unknown Album"
                 );
-                log.info("已将异常文件记录到数据库: {}", audioFile.getName());
+                log.info("已将异常文件记录到数据库: {}", displayFile.getName());
             } catch (Exception recordError) {
-                log.error("记录异常文件到数据库失败: {} - {}", audioFile.getName(), recordError.getMessage());
+                log.error("记录异常文件到数据库失败: {} - {}", displayFile.getName(), recordError.getMessage());
             }
         }
     }
+
+    /**
+     * 兼容旧调用：处理并写入单个文件
+     */
+    public void processAndWriteFile(File audioFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
+        processAndWriteFile(audioFile, audioFile, metadata, coverArtData, isQuickScanMode);
+    }
+
+
 
     /**
      * 批量处理文件夹内的待处理文件，统一应用确定的专辑信息
@@ -130,7 +140,7 @@ public class AlbumBatchProcessor {
         
         for (FolderAlbumCache.PendingFile pending : pendingFiles) {
             try {
-                File audioFile = pending.getAudioFile();
+                File audioFile = pending.getProcessingFile() != null ? pending.getProcessingFile() : pending.getAudioFile();
                 MusicMetadata metadata = (MusicMetadata) pending.getMetadata();
                 // 关键修复：如果成功获取了正确的封面，使用正确的封面；否则使用原有封面
                 byte[] coverArtData = (correctCoverArt != null && correctCoverArt.length > 0) ?
@@ -149,7 +159,7 @@ public class AlbumBatchProcessor {
                 }
                 
                 // 写入文件（metadata已包含作词、作曲、风格等信息）
-                processAndWriteFile(audioFile, metadata, coverArtData, false);
+                processAndWriteFile(audioFile, pending.getAudioFile(), metadata, coverArtData, false);
                 successCount++;
                 
             } catch (Exception e) {
@@ -170,6 +180,8 @@ public class AlbumBatchProcessor {
                 } catch (Exception recordError) {
                     log.error("记录失败文件到数据库失败: {}", pending.getAudioFile().getName(), recordError);
                 }
+            } finally {
+                cleanupPendingTemp(pending);
             }
         }
         
@@ -269,7 +281,8 @@ public class AlbumBatchProcessor {
                     for (FolderAlbumCache.PendingFile pending : pendingFiles) {
                         try {
                             MusicMetadata fileMetadata = (MusicMetadata) pending.getMetadata();
-                            processAndWriteFile(pending.getAudioFile(), fileMetadata, pending.getCoverArtData(), false);
+                            File processingFile = pending.getProcessingFile() != null ? pending.getProcessingFile() : pending.getAudioFile();
+                            processAndWriteFile(processingFile, pending.getAudioFile(), fileMetadata, pending.getCoverArtData(), false);
                         } catch (Exception e) {
                             log.error("关闭前处理文件失败: {}", pending.getAudioFile().getName(), e);
                             // 关键修复：记录失败文件到数据库，避免文件"静默丢失"
@@ -285,6 +298,8 @@ public class AlbumBatchProcessor {
                             } catch (Exception recordError) {
                                 log.error("记录关闭前失败文件到数据库失败: {} - {}", pending.getAudioFile().getName(), recordError.getMessage());
                             }
+                        } finally {
+                            cleanupPendingTemp(pending);
                         }
                     }
                     folderAlbumCache.clearPendingFiles(folderPath);
@@ -300,8 +315,9 @@ public class AlbumBatchProcessor {
     /**
      * 添加待处理文件到专辑缓存
      */
-    public void addPendingFile(String folderPath, File audioFile, MusicMetadata metadata, byte[] coverArtData) {
-        folderAlbumCache.addPendingFileIfAbsent(folderPath, audioFile, metadata, coverArtData);
+    public void addPendingFile(String folderPath, File audioFile, File processingFile, java.nio.file.Path tempDirectory,
+                               MusicMetadata metadata, byte[] coverArtData) {
+        folderAlbumCache.addPendingFileIfAbsent(folderPath, audioFile, processingFile, tempDirectory, metadata, coverArtData);
     }
     
     /**
@@ -332,5 +348,22 @@ public class AlbumBatchProcessor {
      */
     public void setFolderAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo) {
         folderAlbumCache.setFolderAlbum(folderPath, albumInfo);
+    }
+
+    private void cleanupPendingTemp(FolderAlbumCache.PendingFile pending) {
+        java.nio.file.Path tempDir = pending.getProcessingTempDir();
+        if (tempDir == null) {
+            return;
+        }
+        try {
+            java.nio.file.Files.deleteIfExists(pending.getProcessingFile().toPath());
+        } catch (java.io.IOException e) {
+            log.debug("Failed to delete normalized temp file: {} - {}", pending.getProcessingFile().getAbsolutePath(), e.getMessage());
+        }
+        try {
+            java.nio.file.Files.deleteIfExists(tempDir);
+        } catch (java.io.IOException e) {
+            log.debug("Failed to delete normalized temp dir: {} - {}", tempDir, e.getMessage());
+        }
     }
 }

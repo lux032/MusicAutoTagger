@@ -105,6 +105,16 @@ file.partialDirectory=/app/partial_files
 file.maxRetries=3
 
 # ========================================
+# Audio Normalize Configuration
+# ========================================
+
+# Normalize high-res audio (>24-bit or >48kHz) to 24-bit/48kHz before fingerprinting and saving
+audio.normalize.enabled=false
+
+# ffmpeg binary path (must be available in PATH or set full path)
+audio.normalize.ffmpegPath=ffmpeg
+
+# ========================================
 # Cover Art Cache Configuration
 # ========================================
 
