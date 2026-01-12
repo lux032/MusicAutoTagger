@@ -71,6 +71,10 @@ public class MusicConfig {
     private boolean audioNormalizeEnabled; // 是否将高规格音频转换为24/48
     private String audioNormalizeFfmpegPath; // ffmpeg 路径
 
+    // CUE 分割配置
+    private boolean cueSplitEnabled; // 是否启用 cue 分割
+    private String cueSplitOutputDir; // cue 分割输出目录
+
     // 发行地区优先级配置
     private List<String> releaseCountryPriority; // 发行地区优先级列表
 
@@ -112,6 +116,10 @@ public class MusicConfig {
         // 音频规格规范化默认配置
         this.audioNormalizeEnabled = false;
         this.audioNormalizeFfmpegPath = "ffmpeg";
+
+        // CUE 分割默认配置
+        this.cueSplitEnabled = false;
+        this.cueSplitOutputDir = null;
 
         // 发行地区优先级默认配置（空列表表示不按地区筛选）
         this.releaseCountryPriority = new ArrayList<>();
@@ -274,6 +282,14 @@ public class MusicConfig {
             }
             if (props.containsKey("audio.normalize.ffmpegPath")) {
                 this.audioNormalizeFfmpegPath = props.getProperty("audio.normalize.ffmpegPath");
+            }
+
+            // 加载 CUE 分割配置
+            if (props.containsKey("cue.split.enabled")) {
+                this.cueSplitEnabled = Boolean.parseBoolean(props.getProperty("cue.split.enabled"));
+            }
+            if (props.containsKey("cue.split.outputDir")) {
+                this.cueSplitOutputDir = props.getProperty("cue.split.outputDir");
             }
 
             // 加载发行地区优先级配置

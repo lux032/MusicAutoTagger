@@ -30,6 +30,7 @@ public class AudioFileProcessorService {
     private final FileSystemUtils fileSystemUtils;
     private final FolderAlbumCache folderAlbumCache;
     private final AudioFormatNormalizer audioFormatNormalizer;
+    private final CueSplitService cueSplitService;
     
     public AudioFileProcessorService(MusicConfig config,
                                      AudioFingerprintService fingerprintService,
@@ -56,6 +57,7 @@ public class AudioFileProcessorService {
         this.fileSystemUtils = fileSystemUtils;
         this.folderAlbumCache = folderAlbumCache;
         this.audioFormatNormalizer = new AudioFormatNormalizer(config);
+        this.cueSplitService = new CueSplitService(config, fileSystemUtils);
     }
     
     /**
@@ -92,6 +94,43 @@ public class AudioFileProcessorService {
                 // 返回 DELAY_RETRY 表示需要延迟重试，但不消耗重试次数
                 // 因为这不是真正的处理失败，只是暂时不适合处理
                 return ProcessResult.DELAY_RETRY;
+            }
+
+            // 0.35 cue 分割检测（仅 cue + 单一大文件场景）
+            CueSplitService.SplitResult splitResult = cueSplitService.trySplit(originalAudioFile);
+            if (splitResult.isPerformed()) {
+                log.info("Cue split detected, output dir: {}", splitResult.getOutputDir().getAbsolutePath());
+
+                ProcessResult aggregateResult = ProcessResult.SUCCESS;
+                for (File splitFile : splitResult.getSplitFiles()) {
+                    ProcessResult result = processAudioFile(splitFile);
+                    if (result == ProcessResult.NETWORK_ERROR_RETRY) {
+                        aggregateResult = ProcessResult.NETWORK_ERROR_RETRY;
+                    } else if (result == ProcessResult.DELAY_RETRY &&
+                               aggregateResult == ProcessResult.SUCCESS) {
+                        aggregateResult = ProcessResult.DELAY_RETRY;
+                    }
+                }
+
+                if (aggregateResult == ProcessResult.SUCCESS) {
+                    try {
+                        String album = splitResult.getCueInfo() != null ?
+                            splitResult.getCueInfo().getAlbumTitle() : "Unknown Album";
+                        String albumArtist = splitResult.getCueInfo() != null ?
+                            splitResult.getCueInfo().getAlbumArtist() : "Cue Split";
+                        processedLogger.markFileAsProcessed(
+                            originalAudioFile,
+                            "CUE_SPLIT",
+                            albumArtist != null ? albumArtist : "Cue Split",
+                            originalAudioFile.getName(),
+                            album != null ? album : "Unknown Album"
+                        );
+                    } catch (Exception e) {
+                        log.warn("Failed to mark cue source file as processed: {}", e.getMessage());
+                    }
+                }
+
+                return aggregateResult;
             }
 
             // 0.4 规格检查与规范化（可选）

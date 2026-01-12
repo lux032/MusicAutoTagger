@@ -115,6 +115,18 @@ audio.normalize.enabled=false
 audio.normalize.ffmpegPath=ffmpeg
 
 # ========================================
+# CUE Split Configuration
+# ========================================
+
+# Enable cue split for album images (cue + single large audio file)
+cue.split.enabled=false
+
+# Output directory for cue split files (separate from monitor directory)
+# Docker environment: Use container path /app/split_output
+# Windows local: Use absolute path, e.g., D:/MusicTest/SplitOutput
+cue.split.outputDir=/app/split_output
+
+# ========================================
 # Cover Art Cache Configuration
 # ========================================
 

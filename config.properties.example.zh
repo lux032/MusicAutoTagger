@@ -115,6 +115,18 @@ audio.normalize.enabled=false
 audio.normalize.ffmpegPath=ffmpeg
 
 # ========================================
+# CUE 分割配置
+# ========================================
+
+# 是否启用 cue 分割（cue + 单一大文件专辑）
+cue.split.enabled=false
+
+# cue 分割输出目录（与监控目录分离）
+# Docker环境：使用容器内路径 /app/split_output
+# Windows本地：使用绝对路径，例如 D:/MusicTest/SplitOutput
+cue.split.outputDir=/app/split_output
+
+# ========================================
 # 封面缓存配置
 # ========================================
 
