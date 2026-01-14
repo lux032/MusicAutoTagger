@@ -17,7 +17,7 @@ import java.util.Properties;
 public class I18nUtil {
 
     private static Properties messages;
-    private static String currentLanguage = "zh_CN"; // 默认中文
+    private static String currentLanguage = "en_US"; // 默认英文
 
     /**
      * 初始化国际化资源
@@ -25,7 +25,7 @@ public class I18nUtil {
      */
     public static void init(String language) {
         if (language == null || language.trim().isEmpty()) {
-            language = "zh_CN";
+            language = "en_US";
         }
 
         currentLanguage = language;
@@ -38,10 +38,10 @@ public class I18nUtil {
             messages.load(reader);
             log.info("Successfully loaded i18n resource file: {}", resourceFile);
         } catch (IOException | NullPointerException e) {
-            log.error("Failed to load i18n resource file: {}, falling back to default Chinese", resourceFile, e);
-            // 如果加载失败，尝试加载默认中文资源
-            if (!"zh_CN".equals(language)) {
-                init("zh_CN");
+            log.error("Failed to load i18n resource file: {}, falling back to default English", resourceFile, e);
+            // 如果加载失败，尝试加载默认英文资源
+            if (!"en_US".equals(language)) {
+                init("en_US");
             }
         }
     }

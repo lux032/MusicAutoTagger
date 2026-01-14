@@ -141,7 +141,7 @@ public class ApplicationLifecycleManager {
     public void startWebServer() {
         try {
             webServer = new WebServer(8080);
-            webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService);
+            webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this);
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.web.start.error"), e);
             log.warn(I18nUtil.getMessage("main.web.unavailable"));
@@ -154,6 +154,38 @@ public class ApplicationLifecycleManager {
     public void startMonitoring() {
         log.info(I18nUtil.getMessage("monitor.start.monitoring") + "...");
         fileMonitor.start();
+    }
+
+    /**
+     * 暂停文件监控
+     */
+    public void pauseMonitoring() {
+        if (fileMonitor != null) {
+            fileMonitor.pause();
+        }
+    }
+
+    /**
+     * 恢复文件监控
+     */
+    public void resumeMonitoring() {
+        if (fileMonitor != null) {
+            fileMonitor.resume();
+        }
+    }
+
+    /**
+     * 检查监控是否暂停
+     */
+    public boolean isMonitoringPaused() {
+        return fileMonitor != null && fileMonitor.isPaused();
+    }
+
+    /**
+     * 检查监控是否运行中
+     */
+    public boolean isMonitoringRunning() {
+        return fileMonitor != null && fileMonitor.isRunning();
     }
     
     /**

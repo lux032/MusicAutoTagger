@@ -2,7 +2,11 @@ package org.example.config;
 
 import lombok.Data;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -111,7 +115,7 @@ public class MusicConfig {
         this.dbConnectionTimeout = 30000;
 
         // 国际化默认配置
-        this.language = "zh_CN";
+        this.language = "en_US";
 
         // 音频规格规范化默认配置
         this.audioNormalizeEnabled = false;
@@ -123,6 +127,7 @@ public class MusicConfig {
 
         // 发行地区优先级默认配置（空列表表示不按地区筛选）
         this.releaseCountryPriority = new ArrayList<>();
+
     }
     
     /**
@@ -174,6 +179,15 @@ public class MusicConfig {
             }
             if (props.containsKey("file.createBackup")) {
                 this.createBackup = Boolean.parseBoolean(props.getProperty("file.createBackup"));
+            }
+            if (props.containsKey("file.supportedFormats")) {
+                String formats = props.getProperty("file.supportedFormats", "").trim();
+                if (!formats.isEmpty()) {
+                    this.supportedFormats = Arrays.stream(formats.split(","))
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .toArray(String[]::new);
+                }
             }
             if (props.containsKey("file.failedDirectory")) {
                 this.failedDirectory = props.getProperty("file.failedDirectory");
@@ -310,7 +324,86 @@ public class MusicConfig {
                 System.out.println("HTTP proxy enabled: " + proxyHost + ":" + proxyPort);
             }
         } catch (IOException e) {
-            System.out.println("Configuration file not found, using default configuration");
+            Path configPath = Paths.get("config.properties");
+            if (!Files.exists(configPath)) {
+                System.out.println("Configuration file not found, generating default configuration");
+                try {
+                    saveToFile(configPath);
+                    System.out.println("Default configuration saved to config.properties");
+                } catch (IOException ioException) {
+                    System.err.println("Failed to create default configuration: " + ioException.getMessage());
+                }
+            } else {
+                System.out.println("Configuration file not found, using default configuration");
+            }
+        }
+    }
+
+    private void saveToFile(Path configPath) throws IOException {
+        Properties props = new Properties();
+        props.setProperty("monitor.directory", monitorDirectory);
+        props.setProperty("monitor.outputDirectory", outputDirectory);
+        props.setProperty("monitor.scanInterval", String.valueOf(scanIntervalSeconds));
+        props.setProperty("musicbrainz.apiUrl", musicBrainzApiUrl);
+        props.setProperty("musicbrainz.coverArtApiUrl", coverArtApiUrl);
+        props.setProperty("musicbrainz.userAgent", userAgent);
+        if (acoustIdApiKey != null) {
+            props.setProperty("acoustid.apiKey", acoustIdApiKey);
+        }
+        props.setProperty("acoustid.apiUrl", acoustIdApiUrl);
+        props.setProperty("file.autoRename", String.valueOf(autoRename));
+        props.setProperty("file.createBackup", String.valueOf(createBackup));
+        if (supportedFormats != null && supportedFormats.length > 0) {
+            props.setProperty("file.supportedFormats", String.join(",", supportedFormats));
+        }
+        if (failedDirectory != null) {
+            props.setProperty("file.failedDirectory", failedDirectory);
+        }
+        if (partialDirectory != null) {
+            props.setProperty("file.partialDirectory", partialDirectory);
+        }
+        props.setProperty("file.maxRetries", String.valueOf(maxRetries));
+        props.setProperty("logging.detailed", String.valueOf(enableDetailedLogging));
+        if (processedFileLogPath != null) {
+            props.setProperty("logging.processedFileLogPath", processedFileLogPath);
+        }
+        if (coverArtCacheDirectory != null) {
+            props.setProperty("cache.coverArtDirectory", coverArtCacheDirectory);
+        }
+        props.setProperty("db.type", dbType);
+        props.setProperty("db.mysql.host", dbHost);
+        props.setProperty("db.mysql.port", String.valueOf(dbPort));
+        props.setProperty("db.mysql.database", dbDatabase);
+        props.setProperty("db.mysql.username", dbUsername);
+        props.setProperty("db.mysql.password", dbPassword == null ? "" : dbPassword);
+        props.setProperty("db.mysql.pool.maxPoolSize", String.valueOf(dbMaxPoolSize));
+        props.setProperty("db.mysql.pool.minIdle", String.valueOf(dbMinIdle));
+        props.setProperty("db.mysql.pool.connectionTimeout", String.valueOf(dbConnectionTimeout));
+        props.setProperty("proxy.enabled", String.valueOf(proxyEnabled));
+        if (proxyHost != null) {
+            props.setProperty("proxy.host", proxyHost);
+        }
+        props.setProperty("proxy.port", String.valueOf(proxyPort));
+        if (proxyUsername != null) {
+            props.setProperty("proxy.username", proxyUsername);
+        }
+        if (proxyPassword != null) {
+            props.setProperty("proxy.password", proxyPassword);
+        }
+        props.setProperty("i18n.language", language);
+        props.setProperty("lyrics.exportToFile", String.valueOf(exportLyricsToFile));
+        props.setProperty("audio.normalize.enabled", String.valueOf(audioNormalizeEnabled));
+        props.setProperty("audio.normalize.ffmpegPath", audioNormalizeFfmpegPath);
+        props.setProperty("cue.split.enabled", String.valueOf(cueSplitEnabled));
+        if (cueSplitOutputDir != null) {
+            props.setProperty("cue.split.outputDir", cueSplitOutputDir);
+        }
+        if (releaseCountryPriority != null && !releaseCountryPriority.isEmpty()) {
+            props.setProperty("release.countryPriority", String.join(",", releaseCountryPriority));
+        }
+
+        try (FileOutputStream fos = new FileOutputStream(configPath.toFile())) {
+            props.store(fos, "Auto-generated by MusicAutoTagger");
         }
     }
     

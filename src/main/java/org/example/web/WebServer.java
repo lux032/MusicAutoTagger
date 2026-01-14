@@ -16,6 +16,11 @@ import org.example.service.DatabaseService;
 import org.example.service.FolderAlbumCache;
 import org.example.service.ProcessedFileLogger;
 import org.example.util.I18nUtil;
+import org.example.util.AdminCredentialsStore;
+import org.example.core.ApplicationLifecycleManager;
+
+import jakarta.servlet.DispatcherType;
+import java.util.EnumSet;
 
 /**
  * 嵌入式 Web 服务器
@@ -38,7 +43,8 @@ public class WebServer {
                      CoverArtCache coverArtCache,
                      FolderAlbumCache folderAlbumCache,
                      MusicConfig config,
-                     DatabaseService databaseService) throws Exception {
+                     DatabaseService databaseService,
+                     ApplicationLifecycleManager lifecycleManager) throws Exception {
         
         server = new Server();
         
@@ -61,6 +67,8 @@ public class WebServer {
         // 创建 Servlet 上下文处理器
         ServletContextHandler servletHandler = new ServletContextHandler(ServletContextHandler.SESSIONS);
         servletHandler.setContextPath("/");
+        servletHandler.getSessionHandler().getSessionCookieConfig().setHttpOnly(true);
+        servletHandler.getSessionHandler().getSessionCookieConfig().setName("MAT_SESSION");
         
         // 注册 Dashboard API
         DashboardServlet dashboardServlet = new DashboardServlet(
@@ -74,6 +82,21 @@ public class WebServer {
         // 注册国际化 API
         I18nServlet i18nServlet = new I18nServlet();
         servletHandler.addServlet(new ServletHolder(i18nServlet), "/api/i18n");
+
+        // 注册认证 API
+        AuthServlet authServlet = new AuthServlet(AdminCredentialsStore.defaultStore());
+        servletHandler.addServlet(new ServletHolder(authServlet), "/api/auth/*");
+
+        // 注册配置 API
+        ConfigServlet configServlet = new ConfigServlet(config);
+        servletHandler.addServlet(new ServletHolder(configServlet), "/api/config");
+
+        // 注册控制 API (暂停/恢复/重启)
+        ControlServlet controlServlet = new ControlServlet(lifecycleManager);
+        servletHandler.addServlet(new ServletHolder(controlServlet), "/api/control/*");
+
+        // API 认证过滤器
+        servletHandler.addFilter(AuthFilter.class, "/api/*", EnumSet.of(DispatcherType.REQUEST));
 
         // 创建静态资源处理器
         ResourceHandler resourceHandler = new ResourceHandler();

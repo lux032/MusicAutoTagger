@@ -2,6 +2,7 @@ package org.example.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.example.config.MusicConfig;
+import org.example.util.I18nUtil;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.audio.AudioHeader;
@@ -31,6 +32,7 @@ public class AudioFormatNormalizer {
 
     public NormalizationResult normalizeIfNeeded(File sourceFile) {
         if (!config.isAudioNormalizeEnabled()) {
+            LogCollector.addLog("INFO", I18nUtil.getMessage("audio.normalize.disabled", sourceFile.getName()));
             return NormalizationResult.noop(sourceFile);
         }
 
@@ -60,9 +62,21 @@ public class AudioFormatNormalizer {
                 specs.bitDepth > 0 ? specs.bitDepth : 0,
                 TARGET_SAMPLE_RATE,
                 TARGET_BIT_DEPTH);
+            LogCollector.addLog(
+                "INFO",
+                I18nUtil.getMessage(
+                    "audio.normalize.success",
+                    sourceFile.getName(),
+                    specs.sampleRate,
+                    specs.bitDepth > 0 ? specs.bitDepth : 0,
+                    TARGET_SAMPLE_RATE,
+                    TARGET_BIT_DEPTH
+                )
+            );
             return NormalizationResult.converted(outputFile, tempDir);
         } catch (IOException e) {
             log.warn("Failed to normalize audio: {} - {}", sourceFile.getName(), e.getMessage());
+            LogCollector.addLog("WARN", I18nUtil.getMessage("audio.normalize.failed", sourceFile.getName()));
             cleanupTemp(tempDir, null);
             return NormalizationResult.noop(sourceFile);
         }
@@ -70,6 +84,7 @@ public class AudioFormatNormalizer {
 
     public boolean normalizeToTargetIfNeeded(File sourceFile, File targetFile) {
         if (!config.isAudioNormalizeEnabled()) {
+            LogCollector.addLog("INFO", I18nUtil.getMessage("audio.normalize.disabled", sourceFile.getName()));
             return false;
         }
 
@@ -82,9 +97,26 @@ public class AudioFormatNormalizer {
         }
 
         try {
-            return runFfmpeg(sourceFile, targetFile, specs.bitDepth);
+            boolean ok = runFfmpeg(sourceFile, targetFile, specs.bitDepth);
+            if (ok) {
+                LogCollector.addLog(
+                    "INFO",
+                    I18nUtil.getMessage(
+                        "audio.normalize.success",
+                        sourceFile.getName(),
+                        specs.sampleRate,
+                        specs.bitDepth > 0 ? specs.bitDepth : 0,
+                        TARGET_SAMPLE_RATE,
+                        TARGET_BIT_DEPTH
+                    )
+                );
+            } else {
+                LogCollector.addLog("WARN", I18nUtil.getMessage("audio.normalize.failed", sourceFile.getName()));
+            }
+            return ok;
         } catch (IOException e) {
             log.warn("Failed to normalize audio for partial output: {} - {}", sourceFile.getName(), e.getMessage());
+            LogCollector.addLog("WARN", I18nUtil.getMessage("audio.normalize.failed", sourceFile.getName()));
             return false;
         }
     }

@@ -67,7 +67,7 @@ public class FailedFileHandler {
             // 封面是必需条件：如果既没有内嵌封面也没有文件夹封面，不处理
             if (!hasEmbeddedCover && !hasFolderCover) {
                 log.info(I18nUtil.getMessage("main.partial.recognition.no.cover"));
-                LogCollector.addLog("INFO", "  ? " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
+                LogCollector.addLog("INFO", "  " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
                 return;
             }
             
@@ -76,7 +76,7 @@ public class FailedFileHandler {
             
             log.info("========================================");
             log.info(I18nUtil.getMessage("main.partial.recognition.detected"));
-            LogCollector.addLog("INFO", "? " + I18nUtil.getMessage("main.partial.recognition.detected") + ": " + audioFile.getName());
+            LogCollector.addLog("INFO", I18nUtil.getMessage("main.partial.recognition.detected") + ": " + audioFile.getName());
             log.info(I18nUtil.getMessage("main.partial.recognition.has.embedded.cover") + ": {}", hasEmbeddedCover);
             log.info(I18nUtil.getMessage("main.partial.recognition.has.folder.cover") + ": {}", hasFolderCover);
             log.info(I18nUtil.getMessage("main.partial.recognition.has.tags") + ": {}", hasPartialTags);
@@ -100,7 +100,7 @@ public class FailedFileHandler {
             
             // 复制文件到部分识别目录
             log.info(I18nUtil.getMessage("main.partial.recognition.copying") + ": {}", targetFile.getAbsolutePath());
-            LogCollector.addLog("INFO", "  → " + I18nUtil.getMessage("main.partial.recognition.copying") + ": " + relativePath);
+            LogCollector.addLog("INFO", "  -> " + I18nUtil.getMessage("main.partial.recognition.copying") + ": " + relativePath);
             File sourceFile = (processingFile != null && processingFile.exists()) ? processingFile : audioFile;
             Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             
@@ -120,7 +120,7 @@ public class FailedFileHandler {
             byte[] coverToEmbed = hasFolderCover ? folderCover : embeddedCover;
             if (coverToEmbed != null && !tagWriter.hasEmbeddedCover(targetFile)) {
                 log.info(I18nUtil.getMessage("main.partial.recognition.embedding.cover"));
-                LogCollector.addLog("INFO", "  → " + I18nUtil.getMessage("main.partial.recognition.embedding.cover"));
+                LogCollector.addLog("INFO", "  -> " + I18nUtil.getMessage("main.partial.recognition.embedding.cover"));
                 boolean embedSuccess = tagWriter.embedFolderCover(targetFile, coverToEmbed);
                 if (embedSuccess) {
                     log.info(I18nUtil.getMessage("main.partial.recognition.embed.success"));
@@ -178,7 +178,7 @@ public class FailedFileHandler {
             // 封面是必需条件：如果既没有内嵌封面也没有文件夹封面，不处理
             if (!anyHasEmbeddedCover && !hasFolderCover) {
                 log.info(I18nUtil.getMessage("main.partial.recognition.no.cover"));
-                LogCollector.addLog("INFO", "  ? " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
+                LogCollector.addLog("INFO", "  " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
                 return;
             }
             
@@ -187,7 +187,7 @@ public class FailedFileHandler {
             
             log.info("========================================");
             log.info(I18nUtil.getMessage("main.partial.recognition.album.detected", albumRootDir.getName()));
-            LogCollector.addLog("INFO", "? " + I18nUtil.getMessage("main.partial.recognition.album.detected", albumRootDir.getName()));
+            LogCollector.addLog("INFO", I18nUtil.getMessage("main.partial.recognition.album.detected", albumRootDir.getName()));
             log.info(I18nUtil.getMessage("main.partial.recognition.has.folder.cover") + ": {}", hasFolderCover);
             log.info(I18nUtil.getMessage("main.partial.recognition.has.tags") + ": {}", hasPartialTags);
             log.info("专辑文件数: {}", audioFiles.size());
@@ -204,7 +204,7 @@ public class FailedFileHandler {
             
             // 复制整个专辑文件夹到部分识别目录
             log.info(I18nUtil.getMessage("main.partial.recognition.copying.album") + ": {}", targetFolder.getAbsolutePath());
-            LogCollector.addLog("INFO", "  → " + I18nUtil.getMessage("main.partial.recognition.copying.album") + ": " + folderName);
+            LogCollector.addLog("INFO", "  -> " + I18nUtil.getMessage("main.partial.recognition.copying.album") + ": " + folderName);
             
             int[] counts = fileSystemUtils.copyDirectoryRecursively(albumRootDir.toPath(), targetFolder.toPath());
             int copiedCount = counts[0];
@@ -395,7 +395,7 @@ public class FailedFileHandler {
 
     public void handleLooseFileFailed(File audioFile, File processingFile) {
         log.warn("散落文件识别失败: {}", audioFile.getName());
-        LogCollector.addLog("WARN", "? " + I18nUtil.getMessage("main.recognition.failed.loose", audioFile.getName()));
+        LogCollector.addLog("WARN", I18nUtil.getMessage("main.recognition.failed.loose", audioFile.getName()));
         
         // 尝试处理部分识别文件
         handlePartialRecognitionFile(audioFile, processingFile);
@@ -423,7 +423,7 @@ public class FailedFileHandler {
      */
     public void handleAlbumFileFailed(File audioFile, File albumRootDir) {
         log.warn("专辑识别失败: {}", albumRootDir.getName());
-        LogCollector.addLog("WARN", "? " + I18nUtil.getMessage("main.recognition.failed.album", albumRootDir.getName(), audioFile.getName()));
+        LogCollector.addLog("WARN", I18nUtil.getMessage("main.recognition.failed.album", albumRootDir.getName(), audioFile.getName()));
         
         // 尝试处理整个专辑的部分识别（复制整个专辑到部分识别目录）
         handlePartialRecognitionAlbum(albumRootDir);

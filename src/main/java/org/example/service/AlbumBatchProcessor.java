@@ -49,10 +49,10 @@ public class AlbumBatchProcessor {
             if (success) {
                 if (isQuickScanMode) {
                     log.info("? 文件处理成功（快速扫描模式）: {}", displayFile.getName());
-                    LogCollector.addLog("SUCCESS", "? " + I18nUtil.getMessage("main.process.success.quick.scan", displayFile.getName()));
+                    LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.process.success.quick.scan", displayFile.getName()));
                 } else {
                     log.info("? 文件处理成功: {}", displayFile.getName());
-                    LogCollector.addLog("SUCCESS", "? " + I18nUtil.getMessage("main.process.success.fingerprint", displayFile.getName()));
+                    LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.process.success.fingerprint", displayFile.getName()));
                 }
                 
                 // 记录文件已处理
@@ -65,7 +65,7 @@ public class AlbumBatchProcessor {
                 );
             } else {
                 log.error("? 文件处理失败: {}", displayFile.getName());
-                LogCollector.addLog("ERROR", "? " + I18nUtil.getMessage("main.process.error", displayFile.getName()));
+                LogCollector.addLog("ERROR", I18nUtil.getMessage("main.process.error", displayFile.getName()));
                 // 关键修复：写入失败也要记录到数据库，避免文件"静默丢失"
                 processedLogger.markFileAsProcessed(
                     displayFile,

@@ -30,6 +30,7 @@ public class FileMonitorService {
     private final ProcessedFileLogger processedLogger;
     private final Map<WatchKey, Path> watchKeys;
     private volatile boolean running;
+    private volatile boolean paused;  // 暂停状态标志
     private static final long PROCESS_INTERVAL = 5000; // 每个文件处理间隔5秒,防止API限流
     private final int maxFileRetries; // 单个文件最大重试次数（从配置读取）
     private static final long RETRY_QUEUE_CHECK_INTERVAL = 60000; // 重试队列检查间隔60秒
@@ -48,6 +49,7 @@ public class FileMonitorService {
         this.processedLogger = processedLogger;
         this.watchKeys = new ConcurrentHashMap<>();
         this.running = false;
+        this.paused = false;
     }
     
     /**
@@ -121,7 +123,63 @@ public class FileMonitorService {
             log.error("停止文件监控失败", e);
         }
     }
-    
+
+    /**
+     * 暂停文件监控
+     */
+    public void pause() {
+        if (!running) {
+            log.warn("监控服务未运行，无法暂停");
+            return;
+        }
+        if (paused) {
+            log.warn("监控服务已处于暂停状态");
+            return;
+        }
+        paused = true;
+        log.info("监控服务已暂停");
+        LogCollector.addLog("INFO", "监控服务已暂停");
+    }
+
+    /**
+     * 恢复文件监控
+     */
+    public void resume() {
+        if (!running) {
+            log.warn("监控服务未运行，无法恢复");
+            return;
+        }
+        if (!paused) {
+            log.warn("监控服务未处于暂停状态");
+            return;
+        }
+        paused = false;
+        log.info("监控服务已恢复");
+        LogCollector.addLog("INFO", "监控服务已恢复");
+
+        // 恢复时重新扫描目录，确保暂停期间新增的文件被处理
+        log.info("重新扫描监控目录...");
+        LogCollector.addLog("INFO", "重新扫描监控目录以检测暂停期间新增的文件");
+        Path monitorPath = Paths.get(config.getMonitorDirectory());
+        if (Files.exists(monitorPath)) {
+            scanExistingFiles(monitorPath);
+        }
+    }
+
+    /**
+     * 检查监控服务是否暂停
+     */
+    public boolean isPaused() {
+        return paused;
+    }
+
+    /**
+     * 检查监控服务是否正在运行
+     */
+    public boolean isRunning() {
+        return running;
+    }
+
     /**
      * 监控循环
      */
@@ -157,6 +215,11 @@ public class FileMonitorService {
                     }
                     
                     if (isMusicFile(fullPath)) {
+                        // 暂停时不处理新文件事件，避免文件数量统计错误
+                        if (paused) {
+                            log.debug("监控已暂停，跳过文件事件: {}", fullPath.getFileName());
+                            continue;
+                        }
                         handleFileEvent(fullPath, kind);
                     }
                 }
@@ -251,6 +314,12 @@ public class FileMonitorService {
         
         while (running) {
             try {
+                // 检查是否暂停
+                if (paused) {
+                    Thread.sleep(1000);
+                    continue;
+                }
+
                 // 从队列取出文件(阻塞等待)
                 File file = fileQueue.poll(1, TimeUnit.SECONDS);
                 if (file == null) {

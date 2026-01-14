@@ -287,9 +287,576 @@
             border-top-color: white;
             animation: spin 0.8s linear infinite;
         }
+
+        .auth-bar {
+            margin-top: 12px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.9em;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .auth-bar button {
+            border: none;
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .auth-bar button:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .config-form {
+            display: grid;
+            gap: 14px;
+        }
+
+        .form-row {
+            display: grid;
+            gap: 6px;
+        }
+
+        .form-row label {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .form-row input {
+            border: 1px solid #d0d7e2;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 0.95em;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .form-row select {
+            border: 1px solid #d0d7e2;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 0.95em;
+            background: white;
+        }
+
+        .form-row input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+        }
+
+        .form-hint {
+            font-size: 0.8em;
+            color: #6b7280;
+        }
+
+        .config-actions {
+            margin-top: 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .config-status {
+            font-size: 0.85em;
+            color: #2563eb;
+        }
+
+        .login-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 20, 44, 0.8);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            z-index: 1000;
+        }
+
+        .login-card {
+            width: min(420px, 90vw);
+            background: white;
+            border-radius: 16px;
+            padding: 28px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+        }
+
+        .login-title {
+            font-size: 1.4em;
+            font-weight: 700;
+            margin-bottom: 10px;
+            color: #1f2937;
+        }
+
+        .login-subtitle {
+            color: #6b7280;
+            font-size: 0.95em;
+            margin-bottom: 18px;
+        }
+
+        .login-error {
+            display: none;
+            color: #dc2626;
+            background: #fee2e2;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 0.9em;
+            margin-bottom: 12px;
+        }
+
+        .login-actions {
+            margin-top: 18px;
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        .login-btn {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s ease;
+        }
+
+        .login-btn:hover {
+            background: #1d4ed8;
+        }
+
+        .login-btn.secondary {
+            background: #9ca3af;
+            margin-right: 8px;
+        }
+
+        .login-btn.secondary:hover {
+            background: #6b7280;
+        }
+
+        .card-text {
+            color: #4b5563;
+            line-height: 1.5;
+        }
+
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 20, 44, 0.7);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            z-index: 1100;
+        }
+
+        .modal-card {
+            width: min(1100px, 96vw);
+            max-height: 90vh;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 18px 24px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .modal-title {
+            font-size: 1.3em;
+            font-weight: 700;
+            color: #1f2937;
+        }
+
+        .icon-btn {
+            border: none;
+            background: transparent;
+            font-size: 1.4em;
+            cursor: pointer;
+            color: #6b7280;
+        }
+
+        .modal-tabs {
+            display: flex;
+            gap: 8px;
+            padding: 12px 20px;
+            border-bottom: 1px solid #e5e7eb;
+            flex-wrap: wrap;
+            background: #f9fafb;
+        }
+
+        .tab-btn {
+            border: none;
+            background: #e5e7eb;
+            color: #374151;
+            padding: 8px 14px;
+            border-radius: 999px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.9em;
+        }
+
+        .tab-btn.active {
+            background: #2563eb;
+            color: white;
+        }
+
+        .modal-body {
+            padding: 20px 24px;
+            overflow-y: auto;
+        }
+
+        .tab-panel {
+            display: none;
+        }
+
+        .tab-panel.active {
+            display: block;
+        }
+
+        .form-grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        }
+
+        .form-section-title {
+            font-weight: 700;
+            color: #1f2937;
+            margin-bottom: 10px;
+        }
+
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .checkbox-row input {
+            transform: scale(1.05);
+        }
+
+        .modal-footer {
+            padding: 16px 24px;
+            border-top: 1px solid #e5e7eb;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            background: #f9fafb;
+        }
+
+        .settings-note {
+            font-size: 0.85em;
+            color: #6b7280;
+        }
     </style>
 </head>
 <body>
+    <div class="login-overlay" id="loginOverlay">
+        <div class="login-card">
+            <div id="loginPanel">
+                <div class="login-title" data-i18n="web.login.title">面板登录</div>
+                <div class="login-subtitle" data-i18n="web.login.subtitle">请输入管理员账号以继续</div>
+                <div class="form-row" style="margin-bottom: 12px;">
+                    <label for="loginLanguage" data-i18n="web.language.label">语言</label>
+                    <select id="loginLanguage" disabled>
+                        <option value="en_US">English</option>
+                        <option value="zh_CN">中文</option>
+                    </select>
+                    <div class="form-hint" data-i18n="web.language.hint">登录后可切换语言</div>
+                </div>
+                <div class="login-error" id="loginError"></div>
+                <div class="form-row">
+                    <label for="loginUsername" data-i18n="web.login.username">用户名</label>
+                    <input id="loginUsername" type="text" autocomplete="username">
+                </div>
+                <div class="form-row" style="margin-top: 10px;">
+                    <label for="loginPassword" data-i18n="web.login.password">密码</label>
+                    <input id="loginPassword" type="password" autocomplete="current-password">
+                </div>
+                <div class="login-actions">
+                    <button class="login-btn" onclick="submitLogin()" data-i18n="web.login.submit">登录</button>
+                </div>
+            </div>
+            <div id="setupPanel" style="display: none;">
+                <div class="login-title" data-i18n="web.setup.title">创建管理员</div>
+                <div class="login-subtitle" data-i18n="web.setup.subtitle">首次使用需要创建管理员账号</div>
+                <div class="form-row" style="margin-bottom: 12px;">
+                    <label for="setupLanguage" data-i18n="web.language.label">语言</label>
+                    <select id="setupLanguage" disabled>
+                        <option value="en_US">English</option>
+                        <option value="zh_CN">中文</option>
+                    </select>
+                    <div class="form-hint" data-i18n="web.language.hint">登录后可切换语言</div>
+                </div>
+                <div class="login-error" id="setupError"></div>
+                <div class="form-row">
+                    <label for="setupUsername" data-i18n="web.setup.username">用户名</label>
+                    <input id="setupUsername" type="text" autocomplete="username">
+                </div>
+                <div class="form-row" style="margin-top: 10px;">
+                    <label for="setupPassword" data-i18n="web.setup.password">密码</label>
+                    <input id="setupPassword" type="password" autocomplete="new-password">
+                </div>
+                <div class="form-row" style="margin-top: 10px;">
+                    <label for="setupPasswordConfirm" data-i18n="web.setup.password.confirm">确认密码</label>
+                    <input id="setupPasswordConfirm" type="password" autocomplete="new-password">
+                </div>
+                <div class="login-actions">
+                    <button class="login-btn" onclick="submitSetup()" data-i18n="web.setup.submit">创建管理员</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="login-overlay" id="changeOverlay" style="display: none;">
+        <div class="login-card">
+            <div class="login-title" data-i18n="web.change.password.title">修改密码</div>
+            <div class="login-subtitle" data-i18n="web.change.password.subtitle">使用当前密码验证身份</div>
+            <div class="login-error" id="changeError"></div>
+            <div class="form-row">
+                <label for="changeCurrentPassword" data-i18n="web.change.password.current">当前密码</label>
+                <input id="changeCurrentPassword" type="password" autocomplete="current-password">
+            </div>
+            <div class="form-row" style="margin-top: 10px;">
+                <label for="changeNewPassword" data-i18n="web.change.password.new">新密码</label>
+                <input id="changeNewPassword" type="password" autocomplete="new-password">
+            </div>
+            <div class="form-row" style="margin-top: 10px;">
+                <label for="changeConfirmPassword" data-i18n="web.change.password.confirm">确认新密码</label>
+                <input id="changeConfirmPassword" type="password" autocomplete="new-password">
+            </div>
+            <div class="login-actions">
+                <button class="login-btn secondary" onclick="closeChangePassword()" data-i18n="web.cancel">取消</button>
+                <button class="login-btn" onclick="submitChangePassword()" data-i18n="web.change.password.submit">更新密码</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="settingsOverlay">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title" data-i18n="settings.title">设置</div>
+                <button class="icon-btn" onclick="closeSettings()">×</button>
+            </div>
+            <div class="modal-tabs">
+                <button class="tab-btn active" data-tab="tab-basic" onclick="switchTab('tab-basic')" data-i18n="settings.tab.basic">基础</button>
+                <button class="tab-btn" data-tab="tab-apis" onclick="switchTab('tab-apis')" data-i18n="settings.tab.apis">识别</button>
+                <button class="tab-btn" data-tab="tab-database" onclick="switchTab('tab-database')" data-i18n="settings.tab.database">数据库</button>
+                <button class="tab-btn" data-tab="tab-proxy" onclick="switchTab('tab-proxy')" data-i18n="settings.tab.proxy">代理</button>
+                <button class="tab-btn" data-tab="tab-advanced" onclick="switchTab('tab-advanced')" data-i18n="settings.tab.advanced">高级</button>
+            </div>
+            <div class="modal-body">
+                <div class="tab-panel active" id="tab-basic">
+                    <div class="form-section-title" data-i18n="settings.section.monitoring">监控与文件</div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="cfgMonitorDirectory" data-i18n="config.monitor.directory">监控目录</label>
+                            <input id="cfgMonitorDirectory" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgOutputDirectory" data-i18n="config.output.directory">输出目录</label>
+                            <input id="cfgOutputDirectory" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgScanInterval" data-i18n="config.scan.interval">扫描间隔（秒）</label>
+                            <input id="cfgScanInterval" type="number" min="1">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgSupportedFormats" data-i18n="config.supported.formats">支持格式</label>
+                            <input id="cfgSupportedFormats" type="text" placeholder="mp3,flac,m4a">
+                        </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgAutoRename" type="checkbox">
+                            <label for="cfgAutoRename" data-i18n="config.auto.rename">自动重命名</label>
+                        </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgCreateBackup" type="checkbox">
+                            <label for="cfgCreateBackup" data-i18n="config.create.backup">创建备份</label>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgMaxRetries" data-i18n="config.max.retries">最大重试次数</label>
+                            <input id="cfgMaxRetries" type="number" min="0">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgFailedDirectory" data-i18n="config.failed.directory">失败文件目录</label>
+                            <input id="cfgFailedDirectory" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgPartialDirectory" data-i18n="config.partial.directory">部分识别目录</label>
+                            <input id="cfgPartialDirectory" type="text">
+                        </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgEnableDetailedLogging" type="checkbox">
+                            <label for="cfgEnableDetailedLogging" data-i18n="config.logging.detailed">启用详细日志</label>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgProcessedFileLogPath" data-i18n="config.logging.processed.path">处理日志路径</label>
+                            <input id="cfgProcessedFileLogPath" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgCoverCacheDirectory" data-i18n="config.cover.cache.directory">封面缓存目录</label>
+                            <input id="cfgCoverCacheDirectory" type="text">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-panel" id="tab-apis">
+                    <div class="form-section-title" data-i18n="settings.section.apis">识别服务</div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="cfgMusicBrainzApiUrl" data-i18n="config.musicbrainz.api">MusicBrainz API</label>
+                            <input id="cfgMusicBrainzApiUrl" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgCoverArtApiUrl" data-i18n="config.coverart.api">Cover Art API</label>
+                            <input id="cfgCoverArtApiUrl" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgUserAgent" data-i18n="config.musicbrainz.useragent">User Agent</label>
+                            <input id="cfgUserAgent" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgAcoustIdApiKey" data-i18n="config.acoustid.key">AcoustID API Key</label>
+                            <input id="cfgAcoustIdApiKey" type="password">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgAcoustIdApiUrl" data-i18n="config.acoustid.url">AcoustID API</label>
+                            <input id="cfgAcoustIdApiUrl" type="text">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-panel" id="tab-database">
+                    <div class="form-section-title" data-i18n="settings.section.database">数据库</div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="cfgDbType" data-i18n="config.db.type">数据库类型</label>
+                            <select id="cfgDbType">
+                                <option value="file">file</option>
+                                <option value="mysql">mysql</option>
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgDbHost" data-i18n="config.db.host">主机</label>
+                            <input id="cfgDbHost" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgDbPort" data-i18n="config.db.port">端口</label>
+                            <input id="cfgDbPort" type="number" min="0">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgDbDatabase" data-i18n="config.db.database">数据库</label>
+                            <input id="cfgDbDatabase" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgDbUsername" data-i18n="config.db.username">用户名</label>
+                            <input id="cfgDbUsername" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgDbPassword" data-i18n="config.db.password">密码</label>
+                            <input id="cfgDbPassword" type="password">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgDbMaxPoolSize" data-i18n="config.db.max.pool">最大连接数</label>
+                            <input id="cfgDbMaxPoolSize" type="number" min="0">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgDbMinIdle" data-i18n="config.db.min.idle">最小空闲连接</label>
+                            <input id="cfgDbMinIdle" type="number" min="0">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgDbConnectionTimeout" data-i18n="config.db.timeout">连接超时</label>
+                            <input id="cfgDbConnectionTimeout" type="number" min="0">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-panel" id="tab-proxy">
+                    <div class="form-section-title" data-i18n="settings.section.proxy">代理</div>
+                    <div class="form-grid">
+                        <div class="form-row checkbox-row">
+                            <input id="cfgProxyEnabled" type="checkbox">
+                            <label for="cfgProxyEnabled" data-i18n="config.proxy.enabled">启用代理</label>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgProxyHost" data-i18n="config.proxy.host">代理地址</label>
+                            <input id="cfgProxyHost" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgProxyPort" data-i18n="config.proxy.port">代理端口</label>
+                            <input id="cfgProxyPort" type="number" min="0">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgProxyUsername" data-i18n="config.proxy.username">代理用户名</label>
+                            <input id="cfgProxyUsername" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgProxyPassword" data-i18n="config.proxy.password">代理密码</label>
+                            <input id="cfgProxyPassword" type="password">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tab-panel" id="tab-advanced">
+                    <div class="form-section-title" data-i18n="settings.section.advanced">高级</div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="cfgLanguage" data-i18n="config.language">界面语言</label>
+                            <select id="cfgLanguage">
+                                <option value="en_US">English</option>
+                                <option value="zh_CN">中文</option>
+                            </select>
+                        </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgExportLyricsToFile" type="checkbox">
+                            <label for="cfgExportLyricsToFile" data-i18n="config.lyrics.export">导出歌词文件</label>
+                        </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgAudioNormalizeEnabled" type="checkbox">
+                            <label for="cfgAudioNormalizeEnabled" data-i18n="config.audio.normalize.enabled">启用音频规格规范化</label>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgAudioNormalizeFfmpegPath" data-i18n="config.audio.normalize.ffmpeg">FFmpeg 路径</label>
+                            <input id="cfgAudioNormalizeFfmpegPath" type="text">
+                        </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgCueSplitEnabled" type="checkbox">
+                            <label for="cfgCueSplitEnabled" data-i18n="config.cue.split.enabled">启用 CUE 分割</label>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgCueSplitOutputDirectory" data-i18n="config.cue.output.directory">CUE 分割输出目录</label>
+                            <input id="cfgCueSplitOutputDirectory" type="text">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgReleaseCountryPriority" data-i18n="config.release.country.priority">发行地区优先级</label>
+                            <input id="cfgReleaseCountryPriority" type="text" placeholder="JP,US,GB">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <span class="settings-note" data-i18n="settings.restart.note">配置更新后需要重启服务生效</span>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <span class="config-status" id="configStatus"></span>
+                    <button class="refresh-btn" onclick="saveConfig()" style="margin: 0;" data-i18n="config.save">保存配置</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <div class="header">
             <h1>🎵 音乐自动标记系统</h1>
@@ -300,6 +867,20 @@
                     <span id="connectionText">连接中...</span>
                 </div>
                 <span id="lastUpdate">--</span>
+            </div>
+            <div class="auth-bar" id="authBar" style="display: none;">
+                <span id="authUser"></span>
+                <button onclick="openSettings()" data-i18n="web.settings">设置</button>
+                <button onclick="openChangePassword()" data-i18n="web.change.password">修改密码</button>
+                <button onclick="logout()" data-i18n="web.logout">退出登录</button>
+            </div>
+            <div class="auth-bar" id="controlBar" style="display: none;">
+                <span class="status-indicator">
+                    <span class="status-dot" id="monitorStatus"></span>
+                    <span id="monitorStatusText" data-i18n="control.monitoring">监控中</span>
+                </span>
+                <button id="pauseResumeBtn" onclick="toggleMonitoring()" data-i18n="control.pause">暂停监控</button>
+                <button onclick="restartService()" style="background: rgba(220, 53, 69, 0.3);" data-i18n="control.restart">重启服务</button>
             </div>
         </div>
 
@@ -357,10 +938,11 @@
             <div class="grid">
                 <div class="card">
                     <div class="card-title">
-                        <span class="card-icon">⚙️</span>
-                        系统配置
+                        <span class="card-icon">⚙</span>
+                        <span data-i18n="card.settings">设置</span>
                     </div>
-                    <div id="configInfo"></div>
+                    <p class="card-text" data-i18n="settings.card.desc">所有配置已集中到设置面板中管理。</p>
+                    <button class="refresh-btn" onclick="openSettings()" style="margin: 10px auto 0;" data-i18n="settings.open">打开设置</button>
                 </div>
 
                 <div class="card">
@@ -418,10 +1000,120 @@
     <script>
         // 国际化消息对象
         let i18nMessages = {};
+        let authState = { authenticated: false, csrfToken: null, username: null, needsSetup: false };
+        let currentLanguage = 'en_US';
 
         // 获取国际化文本
         function t(key, defaultValue) {
             return i18nMessages[key] || defaultValue || key;
+        }
+
+        function showLoginOverlay(show) {
+            document.getElementById('loginOverlay').style.display = show ? 'flex' : 'none';
+        }
+
+        function showChangeOverlay(show) {
+            document.getElementById('changeOverlay').style.display = show ? 'flex' : 'none';
+        }
+
+        function setAuthOverlayMode(mode) {
+            const loginPanel = document.getElementById('loginPanel');
+            const setupPanel = document.getElementById('setupPanel');
+            if (mode === 'setup') {
+                loginPanel.style.display = 'none';
+                setupPanel.style.display = 'block';
+            } else {
+                loginPanel.style.display = 'block';
+                setupPanel.style.display = 'none';
+            }
+        }
+
+        function updateAuthBar() {
+            const authBar = document.getElementById('authBar');
+            const controlBar = document.getElementById('controlBar');
+            const authUser = document.getElementById('authUser');
+            if (authState.authenticated) {
+                authUser.textContent = t('web.logged.in.as') + ' ' + authState.username;
+                authBar.style.display = 'flex';
+                controlBar.style.display = 'flex';
+                loadControlStatus();
+            } else {
+                authBar.style.display = 'none';
+                controlBar.style.display = 'none';
+            }
+        }
+
+        function setAuthState(data) {
+            authState = {
+                authenticated: !!data.authenticated,
+                csrfToken: data.csrfToken || null,
+                username: data.username || null,
+                needsSetup: !!data.needsSetup
+            };
+            updateAuthBar();
+        }
+
+        // 监控状态
+        let monitoringPaused = false;
+
+        // 加载控制状态
+        async function loadControlStatus() {
+            try {
+                const response = await authFetch('/api/control/');
+                if (!response.ok) return;
+                const data = await response.json();
+                monitoringPaused = data.monitoringPaused;
+                updateControlUI();
+            } catch (err) {
+                console.error('加载控制状态失败:', err);
+            }
+        }
+
+        // 更新控制UI
+        function updateControlUI() {
+            const statusDot = document.getElementById('monitorStatus');
+            const statusText = document.getElementById('monitorStatusText');
+            const btn = document.getElementById('pauseResumeBtn');
+
+            if (monitoringPaused) {
+                statusDot.style.background = '#fbbf24';
+                statusDot.style.animation = 'none';
+                statusText.textContent = t('control.paused');
+                btn.textContent = t('control.resume');
+                btn.setAttribute('data-i18n', 'control.resume');
+            } else {
+                statusDot.style.background = '#4ade80';
+                statusDot.style.animation = 'pulse 2s infinite';
+                statusText.textContent = t('control.monitoring');
+                btn.textContent = t('control.pause');
+                btn.setAttribute('data-i18n', 'control.pause');
+            }
+        }
+
+        // 切换监控状态
+        async function toggleMonitoring() {
+            const action = monitoringPaused ? 'resume' : 'pause';
+            try {
+                const response = await authFetch('/api/control/' + action, { method: 'POST' });
+                if (!response.ok) throw new Error('操作失败');
+                const data = await response.json();
+                monitoringPaused = data.monitoringPaused;
+                updateControlUI();
+            } catch (err) {
+                alert(t('control.error') + ': ' + err.message);
+            }
+        }
+
+        // 重启服务
+        async function restartService() {
+            if (!confirm(t('control.restart.confirm'))) return;
+            try {
+                const response = await authFetch('/api/control/restart', { method: 'POST' });
+                if (!response.ok) throw new Error('操作失败');
+                alert(t('control.restart.success'));
+            } catch (err) {
+                alert(t('control.error') + ': ' + err.message);
+            }
         }
 
         // 加载国际化资源
@@ -431,6 +1123,7 @@
                 if (!response.ok) throw new Error('Failed to load i18n');
                 const data = await response.json();
                 i18nMessages = data.messages || {};
+                currentLanguage = data.language || 'en_US';
                 console.log('国际化资源加载成功，语言:', data.language);
                 return true;
             } catch (err) {
@@ -460,7 +1153,7 @@
                 '处理统计': 'card.processing.stats',
                 '封面缓存': 'card.cover.cache',
                 '文件夹缓存': 'card.folder.cache',
-                '系统配置': 'card.system.config',
+                '设置': 'card.settings',
                 '系统信息': 'card.system.info',
                 '最近处理的文件': 'card.recent.files'
             };
@@ -492,6 +1185,219 @@
             if (mainRefreshBtn && !mainRefreshBtn.hasAttribute('data-i18n')) {
                 mainRefreshBtn.textContent = '🔄 ' + t('web.refresh.stats');
             }
+
+            const loginLang = document.getElementById('loginLanguage');
+            if (loginLang) {
+                loginLang.value = currentLanguage;
+            }
+            const setupLang = document.getElementById('setupLanguage');
+            if (setupLang) {
+                setupLang.value = currentLanguage;
+            }
+        }
+
+        async function authFetch(url, options = {}) {
+            const opts = { credentials: 'same-origin', ...options };
+            opts.headers = opts.headers || {};
+            if (authState.csrfToken && opts.method && opts.method.toUpperCase() !== 'GET') {
+                opts.headers['X-CSRF-Token'] = authState.csrfToken;
+            }
+            if (!opts.headers['Content-Type'] && opts.body) {
+                opts.headers['Content-Type'] = 'application/json';
+            }
+            const response = await fetch(url, opts);
+            if (response.status === 401) {
+                document.getElementById('content').style.display = 'none';
+                await checkAuth();
+                throw new Error(t('web.login.required'));
+            }
+            return response;
+        }
+
+        async function checkAuth() {
+            try {
+                const response = await fetch('/api/auth/status');
+                if (!response.ok) throw new Error('auth status failed');
+                const data = await response.json();
+                setAuthState(data);
+                if (data.needsSetup) {
+                    setAuthOverlayMode('setup');
+                    showLoginOverlay(true);
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('content').style.display = 'none';
+                    closeSettings();
+                    return false;
+                }
+                if (!data.authenticated) {
+                    setAuthOverlayMode('login');
+                    showLoginOverlay(true);
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('content').style.display = 'none';
+                    closeSettings();
+                }
+                if (data.authenticated) {
+                    showLoginOverlay(false);
+                }
+                return data.authenticated;
+            } catch (err) {
+                setAuthState({ authenticated: false });
+                setAuthOverlayMode('login');
+                showLoginOverlay(true);
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('content').style.display = 'none';
+                closeSettings();
+                return false;
+            }
+        }
+
+        async function submitLogin() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            const errorEl = document.getElementById('loginError');
+            errorEl.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    let errorMessage = t('web.login.failed');
+                    if (data.error === 'admin.not.setup') {
+                        setAuthOverlayMode('setup');
+                        errorMessage = t('web.setup.required');
+                    }
+                    errorEl.textContent = errorMessage;
+                    errorEl.style.display = 'block';
+                    return;
+                }
+                setAuthState(data);
+                showLoginOverlay(false);
+                document.getElementById('loginPassword').value = '';
+                loadData();
+                loadLogs();
+                loadConfig();
+            } catch (err) {
+                errorEl.textContent = t('web.login.failed');
+                errorEl.style.display = 'block';
+            }
+        }
+
+        async function submitSetup() {
+            const username = document.getElementById('setupUsername').value.trim();
+            const password = document.getElementById('setupPassword').value;
+            const confirmPassword = document.getElementById('setupPasswordConfirm').value;
+            const errorEl = document.getElementById('setupError');
+            errorEl.style.display = 'none';
+
+            if (password !== confirmPassword) {
+                errorEl.textContent = t('web.setup.password.mismatch');
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/auth/setup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    const errorMessage = data.error === 'admin.already.setup'
+                        ? t('web.setup.already')
+                        : data.error === 'password.too.short'
+                            ? t('web.setup.password.short')
+                            : t('web.setup.failed');
+                    errorEl.textContent = errorMessage;
+                    errorEl.style.display = 'block';
+                    if (data.error === 'admin.already.setup') {
+                        setAuthOverlayMode('login');
+                    }
+                    return;
+                }
+                setAuthState(data);
+                showLoginOverlay(false);
+                document.getElementById('setupPassword').value = '';
+                document.getElementById('setupPasswordConfirm').value = '';
+                loadData();
+                loadLogs();
+                loadConfig();
+            } catch (err) {
+                errorEl.textContent = t('web.setup.failed');
+                errorEl.style.display = 'block';
+            }
+        }
+
+        function openChangePassword() {
+            if (!authState.authenticated) {
+                return;
+            }
+            document.getElementById('changeError').style.display = 'none';
+            document.getElementById('changeCurrentPassword').value = '';
+            document.getElementById('changeNewPassword').value = '';
+            document.getElementById('changeConfirmPassword').value = '';
+            showChangeOverlay(true);
+        }
+
+        function closeChangePassword() {
+            showChangeOverlay(false);
+        }
+
+        async function submitChangePassword() {
+            const currentPassword = document.getElementById('changeCurrentPassword').value;
+            const newPassword = document.getElementById('changeNewPassword').value;
+            const confirmPassword = document.getElementById('changeConfirmPassword').value;
+            const errorEl = document.getElementById('changeError');
+            errorEl.style.display = 'none';
+
+            if (newPassword !== confirmPassword) {
+                errorEl.textContent = t('web.change.password.mismatch');
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            try {
+                const response = await authFetch('/api/auth/password', {
+                    method: 'POST',
+                    body: JSON.stringify({ currentPassword, newPassword })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    const errorMessage = data.error === 'password.too.short'
+                        ? t('web.change.password.short')
+                        : data.error === 'invalid.credentials'
+                            ? t('web.change.password.invalid')
+                            : t('web.change.password.failed');
+                    errorEl.textContent = errorMessage;
+                    errorEl.style.display = 'block';
+                    return;
+                }
+                document.getElementById('changeCurrentPassword').value = '';
+                document.getElementById('changeNewPassword').value = '';
+                document.getElementById('changeConfirmPassword').value = '';
+                closeChangePassword();
+                updateConfigStatus(t('web.change.password.success'), false);
+            } catch (err) {
+                errorEl.textContent = t('web.change.password.failed');
+                errorEl.style.display = 'block';
+            }
+        }
+
+        async function logout() {
+            try {
+                await authFetch('/api/auth/logout', { method: 'POST' });
+            } catch (err) {
+                // Ignore logout errors
+            }
+            setAuthState({ authenticated: false });
+            setAuthOverlayMode('login');
+            showLoginOverlay(true);
+            document.getElementById('content').style.display = 'none';
+            closeSettings();
+            isFirstLoad = true;
         }
 
         // 安全的文本转义函数，防止XSS攻击
@@ -533,6 +1439,9 @@
             const error = document.getElementById('error');
 
             try {
+                if (!authState.authenticated) {
+                    return;
+                }
                 if (isFirstLoad) {
                     loading.style.display = 'block';
                     content.style.display = 'none';
@@ -540,7 +1449,7 @@
                 updateConnectionStatus('loading', t('web.refreshing'));
                 error.style.display = 'none';
 
-                const response = await fetch('/api/dashboard');
+                const response = await authFetch('/api/dashboard');
                 if (!response.ok) throw new Error('获取数据失败');
 
                 const data = await response.json();
@@ -558,33 +1467,6 @@
                 if (data.folderCache) {
                     document.getElementById('folderCached').textContent = data.folderCache.totalFolders ?? 0;
                     document.getElementById('pendingFiles').textContent = data.folderCache.pendingFiles ?? 0;
-                }
-
-                // 更新配置信息（安全方式）
-                const configInfo = document.getElementById('configInfo');
-                configInfo.innerHTML = '';
-                if (data.config) {
-                    for (const [key, value] of Object.entries(data.config)) {
-                        const row = document.createElement('div');
-                        row.className = 'info-row';
-
-                        const label = document.createElement('span');
-                        label.className = 'info-label';
-                        label.textContent = formatLabel(key);
-
-                        const val = document.createElement('span');
-                        val.className = 'info-value';
-                        val.textContent = value;
-                        val.title = value; // 鼠标悬停显示完整内容
-                        val.style.maxWidth = '200px';
-                        val.style.overflow = 'hidden';
-                        val.style.textOverflow = 'ellipsis';
-                        val.style.whiteSpace = 'nowrap';
-
-                        row.appendChild(label);
-                        row.appendChild(val);
-                        configInfo.appendChild(row);
-                    }
                 }
 
                 // 更新系统信息（安全方式）
@@ -675,10 +1557,185 @@
             return labels[key] || key;
         }
 
+        async function loadConfig() {
+            try {
+                if (!authState.authenticated) {
+                    return;
+                }
+                const response = await authFetch('/api/config');
+                if (!response.ok) throw new Error('获取配置失败');
+                const data = await response.json();
+                const cfg = data.config || {};
+                document.getElementById('cfgMonitorDirectory').value = cfg.monitorDirectory || '';
+                document.getElementById('cfgOutputDirectory').value = cfg.outputDirectory || '';
+                document.getElementById('cfgScanInterval').value = cfg.scanIntervalSeconds ?? '';
+                document.getElementById('cfgSupportedFormats').value = cfg.supportedFormats || '';
+                document.getElementById('cfgAutoRename').checked = !!cfg.autoRename;
+                document.getElementById('cfgCreateBackup').checked = !!cfg.createBackup;
+                document.getElementById('cfgMaxRetries').value = cfg.maxRetries ?? '';
+                document.getElementById('cfgFailedDirectory').value = cfg.failedDirectory || '';
+                document.getElementById('cfgPartialDirectory').value = cfg.partialDirectory || '';
+                document.getElementById('cfgEnableDetailedLogging').checked = !!cfg.enableDetailedLogging;
+                document.getElementById('cfgProcessedFileLogPath').value = cfg.processedFileLogPath || '';
+                document.getElementById('cfgCoverCacheDirectory').value = cfg.coverArtCacheDirectory || '';
+                document.getElementById('cfgMusicBrainzApiUrl').value = cfg.musicBrainzApiUrl || '';
+                document.getElementById('cfgCoverArtApiUrl').value = cfg.coverArtApiUrl || '';
+                document.getElementById('cfgUserAgent').value = cfg.userAgent || '';
+                document.getElementById('cfgAcoustIdApiKey').value = cfg.acoustIdApiKey || '';
+                document.getElementById('cfgAcoustIdApiUrl').value = cfg.acoustIdApiUrl || '';
+                document.getElementById('cfgDbType').value = cfg.dbType || 'file';
+                document.getElementById('cfgDbHost').value = cfg.dbHost || '';
+                document.getElementById('cfgDbPort').value = cfg.dbPort ?? '';
+                document.getElementById('cfgDbDatabase').value = cfg.dbDatabase || '';
+                document.getElementById('cfgDbUsername').value = cfg.dbUsername || '';
+                document.getElementById('cfgDbPassword').value = cfg.dbPassword || '';
+                document.getElementById('cfgDbMaxPoolSize').value = cfg.dbMaxPoolSize ?? '';
+                document.getElementById('cfgDbMinIdle').value = cfg.dbMinIdle ?? '';
+                document.getElementById('cfgDbConnectionTimeout').value = cfg.dbConnectionTimeout ?? '';
+                document.getElementById('cfgProxyEnabled').checked = !!cfg.proxyEnabled;
+                document.getElementById('cfgProxyHost').value = cfg.proxyHost || '';
+                document.getElementById('cfgProxyPort').value = cfg.proxyPort ?? '';
+                document.getElementById('cfgProxyUsername').value = cfg.proxyUsername || '';
+                document.getElementById('cfgProxyPassword').value = cfg.proxyPassword || '';
+                document.getElementById('cfgLanguage').value = cfg.language || 'en_US';
+                document.getElementById('cfgExportLyricsToFile').checked = !!cfg.exportLyricsToFile;
+                document.getElementById('cfgAudioNormalizeEnabled').checked = !!cfg.audioNormalizeEnabled;
+                document.getElementById('cfgAudioNormalizeFfmpegPath').value = cfg.audioNormalizeFfmpegPath || '';
+                document.getElementById('cfgCueSplitEnabled').checked = !!cfg.cueSplitEnabled;
+                document.getElementById('cfgCueSplitOutputDirectory').value = cfg.cueSplitOutputDir || '';
+                document.getElementById('cfgReleaseCountryPriority').value = cfg.releaseCountryPriority || '';
+                document.getElementById('loginLanguage').value = cfg.language || 'en_US';
+                document.getElementById('setupLanguage').value = cfg.language || 'en_US';
+            } catch (err) {
+                updateConfigStatus(t('config.load.failed'), true);
+            }
+        }
+
+        async function saveConfig() {
+            const payload = {
+                monitorDirectory: getValue('cfgMonitorDirectory'),
+                outputDirectory: getValue('cfgOutputDirectory'),
+                scanIntervalSeconds: getNumberValue('cfgScanInterval'),
+                supportedFormats: getValue('cfgSupportedFormats'),
+                autoRename: document.getElementById('cfgAutoRename').checked,
+                createBackup: document.getElementById('cfgCreateBackup').checked,
+                maxRetries: getNumberValue('cfgMaxRetries'),
+                failedDirectory: getValue('cfgFailedDirectory'),
+                partialDirectory: getValue('cfgPartialDirectory'),
+                enableDetailedLogging: document.getElementById('cfgEnableDetailedLogging').checked,
+                processedFileLogPath: getValue('cfgProcessedFileLogPath'),
+                coverArtCacheDirectory: getValue('cfgCoverCacheDirectory'),
+                musicBrainzApiUrl: getValue('cfgMusicBrainzApiUrl'),
+                coverArtApiUrl: getValue('cfgCoverArtApiUrl'),
+                userAgent: getValue('cfgUserAgent'),
+                acoustIdApiKey: getValue('cfgAcoustIdApiKey'),
+                acoustIdApiUrl: getValue('cfgAcoustIdApiUrl'),
+                dbType: getValue('cfgDbType'),
+                dbHost: getValue('cfgDbHost'),
+                dbPort: getNumberValue('cfgDbPort'),
+                dbDatabase: getValue('cfgDbDatabase'),
+                dbUsername: getValue('cfgDbUsername'),
+                dbPassword: getValue('cfgDbPassword'),
+                dbMaxPoolSize: getNumberValue('cfgDbMaxPoolSize'),
+                dbMinIdle: getNumberValue('cfgDbMinIdle'),
+                dbConnectionTimeout: getNumberValue('cfgDbConnectionTimeout'),
+                proxyEnabled: document.getElementById('cfgProxyEnabled').checked,
+                proxyHost: getValue('cfgProxyHost'),
+                proxyPort: getNumberValue('cfgProxyPort'),
+                proxyUsername: getValue('cfgProxyUsername'),
+                proxyPassword: getValue('cfgProxyPassword'),
+                language: getValue('cfgLanguage'),
+                exportLyricsToFile: document.getElementById('cfgExportLyricsToFile').checked,
+                audioNormalizeEnabled: document.getElementById('cfgAudioNormalizeEnabled').checked,
+                audioNormalizeFfmpegPath: getValue('cfgAudioNormalizeFfmpegPath'),
+                cueSplitEnabled: document.getElementById('cfgCueSplitEnabled').checked,
+                cueSplitOutputDir: getValue('cfgCueSplitOutputDirectory'),
+                releaseCountryPriority: getValue('cfgReleaseCountryPriority')
+            };
+
+            try {
+                const response = await authFetch('/api/config', {
+                    method: 'PUT',
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    if (data.error === 'path.must.be.absolute') {
+                        updateConfigStatus(t('config.error.absolute'), true);
+                    } else if (data.error === 'required.field') {
+                        updateConfigStatus(t('config.error.required'), true);
+                    } else if (data.error === 'number.invalid') {
+                        updateConfigStatus(t('config.error.number'), true);
+                    } else if (data.error === 'language.invalid') {
+                        updateConfigStatus(t('config.error.language'), true);
+                    } else if (data.error === 'db.type.invalid') {
+                        updateConfigStatus(t('config.error.db.type'), true);
+                    } else if (data.error === 'supported.formats.invalid') {
+                        updateConfigStatus(t('config.error.formats'), true);
+                    } else {
+                        updateConfigStatus(t('config.save.failed'), true);
+                    }
+                    return;
+                }
+                updateConfigStatus(t('config.save.success.restart'), false);
+            } catch (err) {
+                updateConfigStatus(t('config.save.failed'), true);
+            }
+        }
+
+        function updateConfigStatus(message, isError) {
+            const status = document.getElementById('configStatus');
+            if (!status) {
+                return;
+            }
+            status.textContent = message || '';
+            status.style.color = isError ? '#dc2626' : '#2563eb';
+        }
+
+        function getValue(id) {
+            const el = document.getElementById(id);
+            if (!el) return null;
+            const value = String(el.value || '').trim();
+            return value === '' ? null : value;
+        }
+
+        function getNumberValue(id) {
+            const raw = getValue(id);
+            if (raw == null) return null;
+            const num = Number(raw);
+            return Number.isNaN(num) ? null : num;
+        }
+
+        function openSettings() {
+            if (!authState.authenticated) {
+                return;
+            }
+            updateConfigStatus('', false);
+            document.getElementById('settingsOverlay').style.display = 'flex';
+            switchTab('tab-basic');
+            loadConfig();
+        }
+
+        function closeSettings() {
+            document.getElementById('settingsOverlay').style.display = 'none';
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.getAttribute('data-tab') === tabId);
+            });
+            document.querySelectorAll('.tab-panel').forEach(panel => {
+                panel.classList.toggle('active', panel.id === tabId);
+            });
+        }
+
         // 加载日志（安全方式）
         async function loadLogs() {
             try {
-                const response = await fetch('/api/logs?limit=100');
+                if (!authState.authenticated) {
+                    return;
+                }
+                const response = await authFetch('/api/logs?limit=100');
                 if (!response.ok) throw new Error('获取日志失败');
 
                 const data = await response.json();
@@ -790,9 +1847,27 @@
             await loadI18n();
             // 应用国际化
             applyI18n();
-            // 然后加载数据
-            loadData();
-            loadLogs();
+            const authed = await checkAuth();
+            document.getElementById('loginPassword').addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    submitLogin();
+                }
+            });
+            document.getElementById('setupPasswordConfirm').addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    submitSetup();
+                }
+            });
+            document.getElementById('changeConfirmPassword').addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') {
+                    submitChangePassword();
+                }
+            });
+            if (authed) {
+                loadData();
+                loadLogs();
+                loadConfig();
+            }
             updateRunningTime();
         });
 

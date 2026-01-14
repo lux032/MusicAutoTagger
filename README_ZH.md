@@ -62,17 +62,9 @@
 ## 🚀 快速开始 (Docker Compose)
 
 这是最简单的运行方式。无需安装 Java 环境。
+配置在登录后设置面板完成。
 
-1.  **下载配置文件模板**
-    下载仓库中的 `config.properties.example` 并重命名为 `config.properties`。
-
-2.  **申请 API Key (免费)**
-    访问 [AcoustID](https://acoustid.org/new-application) 申请一个 API Key，填入配置文件：
-    ```properties
-    acoustid.apiKey=YOUR_API_KEY_HERE
-    ```
-
-3.  **创建 `docker-compose.yml`**
+1.  **创建 `docker-compose.yml`**
     ```yaml
     version: '3.8'
     services:
@@ -80,67 +72,25 @@
         image: ghcr.io/lux032/musicautotagger:latest
         container_name: music-tagger
         ports:
-          - "8080:8080"                         # Web 监控面板端口
+          - "8080:8080"
         volumes:
-          # 监控目录：待处理的音乐文件源文件夹
-          # 左侧（主机）：你实际的下载文件夹路径
-          # 右侧（容器）：必须与 config.properties 中的 'monitor.directory' 一致（默认：/music）
           - /path/to/downloads:/music
-          
-          # 输出目录：整理后的音乐库存储位置
-          # 左侧（主机）：你的音乐库存储路径
-          # 右侧（容器）：必须与 config.properties 中的 'monitor.outputDirectory' 一致（默认：/app/tagged_music）
           - /path/to/music_library:/app/tagged_music
-          
-          # 配置文件
+          - ./data:/app/data
           - ./config.properties:/app/config.properties
-    
-          # 失败文件目录（识别失败文件隔离）
-          - /path/to/failed:/app/failed_files
-    
-          # 部分识别目录（可选，存放有标签/封面但指纹识别失败的文件）
-          - /path/to/partial:/app/partial_files
-    
-          # 封面缓存目录（持久化下载的封面，重启后保留）
-          - /path/to/cover_cache:/app/.cover_cache
-    
-          # 日志目录（持久化处理日志）
-          - /path/to/logs:/app/logs
         restart: unless-stopped
     ```
-    
-    **目录挂载详解：**
-    
-    | 主机路径（左侧） | 容器路径（右侧） | 用途说明 | 是否必需 |
-    |-----------------|------------------|---------|----------|
-    | `/path/to/downloads` | `/music` | 监控的源文件夹 | ✅ 必需 |
-    | `/path/to/music_library` | `/app/tagged_music` | 整理后的音乐输出 | ✅ 必需 |
-    | `./config.properties` | `/app/config.properties` | 配置文件 | ✅ 必需 |
-    | `/path/to/failed` | `/app/failed_files` | 识别失败文件隔离 | ✅ 必需 |
-    | `/path/to/partial` | `/app/partial_files` | 部分识别文件（可选） | ⚠️ 可选 |
-    | `/path/to/cover_cache` | `/app/.cover_cache` | 封面图片缓存 | ✅ 必需 |
-    | `/path/to/logs` | `/app/logs` | 处理日志 | ✅ 必需 |
-    
-    **重要说明：**
-    - **左侧**路径是你**主机上**的实际路径（例如你的 NAS 或服务器路径）
-    - **右侧**路径是 **Docker 容器内部**的路径
-    - 右侧的容器路径必须与 [`config.properties`](config.properties.example) 中对应的配置项一致
-    - NAS 用户示例：
-      ```yaml
-      volumes:
-        - /share/Downloads/Music:/music                    # QNAP/群晖的下载文件夹
-        - /share/Music:/app/tagged_music                   # 你的音乐库
-        - /share/Docker/music-tagger/config.properties:/app/config.properties
-      ```
-
-4.  **启动服务**
+2.  **启动服务**
     ```bash
     docker-compose up -d
     ```
 
-5.  **访问 Web 监控面板**
+3.  **访问 Web 监控面板**
 
     启动后，在浏览器中访问 `http://localhost:8080` 即可查看实时监控面板。
+    面板使用本地管理员账号，存放在 `data/admin.json`。
+    第一次访问会提示创建管理员账号。
+    如果 `config.properties` 不存在，程序启动时会自动生成默认配置。
 
     面板功能包括：
     - 📊 **实时统计**：已处理文件数、封面缓存、文件夹缓存等
@@ -162,16 +112,15 @@
 # 1. 编译
 mvn clean package
 
-# 2. 配置
-cp config.properties.example config.properties
-# 编辑 config.properties 填入 API Key
-
-# 3. 运行
+# 2. 运行
 java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 
-# 4. 访问 Web 面板
+# 3. 访问 Web 面板
 # 浏览器打开 http://localhost:8080
 ```
+
+配置会在首次启动时自动生成。
+API Key/数据库/代理/路径/语言等在登录后设置面板中配置。
 
 ## 📚 文档指南
 
@@ -179,54 +128,7 @@ java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 - **数据库配置**：默认使用文件记录处理状态，如需使用 MySQL 请参阅 [数据库设置](docs/DATABASE_SETUP.md)
 - **Windows 指南**：[Windows 构建与测试](docs/WINDOWS_BUILD_GUIDE.md)
 
-## ⚙️ 详细配置文件说明
-
-完整的配置模板请参考 `config.properties.example`。以下是常用配置项说明：
-
-### 📁 路径配置
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `monitor.directory` | 监控的源目录 (Docker内路径) | `/music` |
-| `monitor.outputDirectory` | 输出目标目录 (Docker内路径) | `/app/tagged_music` |
-| `file.failedDirectory` | 识别失败文件存放目录 | `/app/failed_files` |
-| `file.partialDirectory` | 部分识别文件存放目录（可选，必须有封面） | `/app/partial_files` |
-| `cache.coverArtDirectory` | 封面图片缓存目录 | `/app/.cover_cache` |
-| `logging.processedFileLogPath` | 已处理文件日志路径 | `/app/logs/processed_files.log` |
-
-### 🔑 API 配置
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `acoustid.apiKey` | **[必填]** AcoustID API 密钥 | - |
-| `musicbrainz.userAgent` | 用于 API 请求的 User-Agent | `MusicDemo/1.0 ( your-email@example.com )` |
-| `monitor.scanInterval` | 目录扫描间隔 (秒) | `30` |
-
-### 🛠️ 功能开关
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `file.autoRename` | 是否自动重命名文件 | `true` |
-| `file.maxRetries` | 网络错误最大重试次数 | `3` |
-| `logging.detailed` | 是否启用详细日志 | `true` |
-| `lyrics.exportToFile` | 是否将歌词导出为独立的 .lrc 文件（用于 Plex 等媒体服务器） | `false` |
-| `release.countryPriority` | 专辑发行地区优先级（如 `JP,US,GB,XW`），仅影响同一专辑内的版本选择 | 空 |
-
-### 💾 数据库配置
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `db.type` | 数据库类型 (`file` 或 `mysql`) | `file` |
-| `db.mysql.host` | MySQL 主机地址 | `localhost` |
-| `db.mysql.port` | MySQL 端口 | `3306` |
-| `db.mysql.database` | 数据库名 | `music_demo` |
-| `db.mysql.username` | 数据库用户名 | `root` |
-| `db.mysql.password` | 数据库密码 | - |
-
-### 🌐 代理配置 (可选)
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `proxy.enabled` | 是否启用代理 | `false` |
-| `proxy.host` | 代理主机 | `127.0.0.1` |
-| `proxy.port` | 代理端口 | `7890` |
-
-## 🤝 贡献与支持
+## 贡献与支持
 
 欢迎提交 Issue 或 Pull Request！
 

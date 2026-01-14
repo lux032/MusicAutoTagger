@@ -59,20 +59,11 @@ Since music releases are extremely complex (Singles, EPs, Albums, Compilations, 
   - `/Downloads/Adele_21/` (Contains songs from the 21 album)
 
 **Reason**: When files are isolated in separate folders, the program can better determine that they belong to the same album based on context, avoiding misidentification of album tracks as "Best Of" compilations or "Single" versions.
-## 🚀 Quick Start (Docker Compose)
+## Quick Start (Docker Compose)
 
-The easiest way to run the application. No Java installation required.
+The easiest way to run the application. Configuration is done in the web UI after login.
 
-1.  **Download Config Template**
-    Download `config.properties.example` from the repository and rename it to `config.properties`.
-
-2.  **Get API Key (Free)**
-    Visit [AcoustID](https://acoustid.org/new-application) to apply for an API Key and add it to your config:
-    ```properties
-    acoustid.apiKey=YOUR_API_KEY_HERE
-    ```
-
-3.  **Create `docker-compose.yml`**
+1.  **Create docker-compose.yml**
     ```yaml
     version: '3.8'
     services:
@@ -80,73 +71,26 @@ The easiest way to run the application. No Java installation required.
         image: ghcr.io/lux032/musicautotagger:latest
         container_name: music-tagger
         ports:
-          - "8080:8080"                         # Web monitoring dashboard port
+          - "8080:8080"  # Web dashboard
         volumes:
-          # Monitor directory: Source folder containing music files to process
-          # Left side (host): Your actual download folder path
-          # Right side (container): Must match 'monitor.directory' in config.properties (default: /music)
           - /path/to/downloads:/music
-          
-          # Output directory: Destination for organized music library
-          # Left side (host): Your music library storage location
-          # Right side (container): Must match 'monitor.outputDirectory' in config.properties (default: /app/tagged_music)
           - /path/to/music_library:/app/tagged_music
-          
-          # Configuration file
+          - ./data:/app/data
           - ./config.properties:/app/config.properties
-          
-          # Failed files directory (for identification failures)
-          - /path/to/failed:/app/failed_files
-          
-          # Partial recognition directory (optional, for files with tags/cover but failed fingerprinting)
-          - /path/to/partial:/app/partial_files
-          
-          # Cover cache directory (persists downloaded covers across restarts)
-          - /path/to/cover_cache:/app/.cover_cache
-          
-          # Logs directory (persists processing logs)
-          - /path/to/logs:/app/logs
         restart: unless-stopped
     ```
-    
-    **Volume Mounting Explained:**
-    
-    | Host Path (Left) | Container Path (Right) | Purpose | Required |
-    |-----------------|------------------------|---------|----------|
-    | `/path/to/downloads` | `/music` | Source folder to monitor | ✅ Yes |
-    | `/path/to/music_library` | `/app/tagged_music` | Organized music output | ✅ Yes |
-    | `./config.properties` | `/app/config.properties` | Configuration file | ✅ Yes |
-    | `/path/to/failed` | `/app/failed_files` | Failed file isolation | ✅ Yes |
-    | `/path/to/partial` | `/app/partial_files` | Partial recognition files (optional) | ⚠️ Optional |
-    | `/path/to/cover_cache` | `/app/.cover_cache` | Cover art cache | ✅ Yes |
-    | `/path/to/logs` | `/app/logs` | Processing logs | ✅ Yes |
-    
-    **Important Notes:**
-    - The **left side** paths are on your **host machine** (e.g., your NAS or server)
-    - The **right side** paths are **inside the Docker container**
-    - The container paths on the right side must match the corresponding settings in [`config.properties`](config.properties.example)
-    - Example for NAS users:
-      ```yaml
-      volumes:
-        - /share/Downloads/Music:/music                    # QNAP/Synology downloads folder
-        - /share/Music:/app/tagged_music                   # Your music library
-        - /share/Docker/music-tagger/config.properties:/app/config.properties
-      ```
 
-4.  **Start Service**
+2.  **Start Service**
     ```bash
     docker-compose up -d
     ```
 
-5.  **Access Web Monitoring Dashboard**
+3.  **Access Web Monitoring Dashboard**
 
-    After starting, open `http://localhost:8080` in your browser to view the real-time monitoring dashboard.
-
-    Dashboard features:
-    - 📊 **Real-time Statistics**: Processed files count, cover cache, folder cache, etc.
-    - 📝 **Recent Files**: View details of recently processed music files
-    - 📋 **Runtime Logs**: Real-time system logs with auto-scroll support
-    - ⚙️ **System Info**: View configuration parameters and system status
+    Open `http://localhost:8080` in your browser.
+    - First visit will prompt you to create an admin account (stored in `data/admin.json`).
+    - If `config.properties` is missing, the app auto-generates it on startup.
+    - All settings (API keys, database, proxy, paths, language) are managed in the web UI.
 
 ## 💻 Local Installation
 
@@ -162,69 +106,21 @@ If you prefer to run it locally for development or testing:
 # 1. Build
 mvn clean package
 
-# 2. Config
-cp config.properties.example config.properties
-# Edit config.properties and fill in API Key
-
-# 3. Run
+# 2. Run
 java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 
-# 4. Access Web Dashboard
+# 3. Access Web Dashboard
 # Open http://localhost:8080 in your browser
 ```
+
+Configuration is created automatically on first run.
+All settings (API keys, database, proxy, paths, language) are managed in the web UI after login.
 
 ## 📚 Documentation
 
 - **QNAP NAS Users**: See [QNAP Deployment Guide](docs/QNAP_DEPLOYMENT_GUIDE.md) (Chinese)
 - **Database Setup**: Default is file-based. For MySQL setup, see [Database Setup](docs/DATABASE_SETUP.md)
 - **Windows Guide**: [Windows Build & Test](docs/WINDOWS_BUILD_GUIDE.md)
-
-## ⚙️ Configuration Reference
-
-For a complete template, see `config.properties.example`. Here are the most common settings:
-
-### 📁 Paths
-| Setting | Description | Default |
-|--------|------|--------|
-| `monitor.directory` | Source directory to monitor (Inside Docker) | `/music` |
-| `monitor.outputDirectory` | Target output directory (Inside Docker) | `/app/tagged_music` |
-| `file.failedDirectory` | Directory for failed files | `/app/failed_files` |
-| `file.partialDirectory` | Directory for partial recognition files (Optional, must have cover) | `/app/partial_files` |
-| `cache.coverArtDirectory` | Cover art cache directory | `/app/.cover_cache` |
-| `logging.processedFileLogPath` | Processed file log path | `/app/logs/processed_files.log` |
-
-### 🔑 API
-| Setting | Description | Default |
-|--------|------|--------|
-| `acoustid.apiKey` | **[Required]** AcoustID API Key | - |
-| `musicbrainz.userAgent` | User-Agent for API requests | `MusicDemo/1.0 ( your-email@example.com )` |
-| `monitor.scanInterval` | Scan interval (seconds) | `30` |
-
-### 🛠️ Features
-| Setting | Description | Default |
-|--------|------|--------|
-| `file.autoRename` | Rename files automatically | `true` |
-| `file.maxRetries` | Max retries for network errors | `3` |
-| `logging.detailed` | Enable detailed logging | `true` |
-| `lyrics.exportToFile` | Export lyrics as separate .lrc file (for Plex and other media servers) | `false` |
-| `release.countryPriority` | Preferred release countries (e.g., `JP,US,GB,XW`). Only affects version selection within the same album | Empty |
-
-### 💾 Database
-| Setting | Description | Default |
-|--------|------|--------|
-| `db.type` | Database type (`file` or `mysql`) | `file` |
-| `db.mysql.host` | MySQL Host | `localhost` |
-| `db.mysql.port` | MySQL Port | `3306` |
-| `db.mysql.database` | Database Name | `music_demo` |
-| `db.mysql.username` | Username | `root` |
-| `db.mysql.password` | Password | - |
-
-### 🌐 Proxy (Optional)
-| Setting | Description | Default |
-|--------|------|--------|
-| `proxy.enabled` | Enable HTTP Proxy | `false` |
-| `proxy.host` | Proxy Host | `127.0.0.1` |
-| `proxy.port` | Proxy Port | `7890` |
 
 ## 🤝 Contribution
 

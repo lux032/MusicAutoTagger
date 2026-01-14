@@ -173,13 +173,13 @@ public class AudioFileProcessorService {
             } else if (!isLooseFileInMonitorRoot) {
                 // 没有缓存且不是散落文件，进行快速扫描
                 log.info("尝试第一级快速扫描（基于标签和文件夹名称）...");
-                LogCollector.addLog("INFO", "📂 " + I18nUtil.getMessage("main.quick.scan.attempt", audioFile.getName()));
+                LogCollector.addLog("INFO", I18nUtil.getMessage("main.quick.scan.attempt", audioFile.getName()));
                 QuickScanService.QuickScanResult quickResult = quickScanService.quickScan(originalAudioFile, musicFilesInFolder);
 
                 if (quickResult != null && quickResult.isHighConfidence()) {
                     // 快速扫描成功，锁定专辑信息
                     log.info("✓ 快速扫描成功，锁定专辑信息");
-                    LogCollector.addLog("SUCCESS", "✓ " + I18nUtil.getMessage("main.quick.scan.success", audioFile.getName()));
+                    LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.quick.scan.success", audioFile.getName()));
                     isQuickScanMode = true; // 标记为快速扫描模式
                     MusicMetadata quickMetadata = quickResult.getMetadata();
                     
@@ -219,7 +219,7 @@ public class AudioFileProcessorService {
             
             // ===== 无论快速扫描是否成功，都进行指纹识别获取单曲详细信息 =====
             log.info("正在进行音频指纹识别以获取单曲详细元数据...");
-            LogCollector.addLog("INFO", "🔍 " + I18nUtil.getMessage("main.fingerprint.identifying", audioFile.getName()));
+            LogCollector.addLog("INFO", I18nUtil.getMessage("main.fingerprint.identifying", audioFile.getName()));
             AudioFingerprintService.AcoustIdResult acoustIdResult =
                 fingerprintService.identifyAudioFile(processingAudioFile);
 
@@ -286,7 +286,7 @@ public class AudioFileProcessorService {
                 if (lockedAlbumTitle == null) {
                     log.warn(I18nUtil.getMessage("main.fingerprint.failed"), audioFile.getName());
                     log.info("该文件的 AcoustID 未关联到 MusicBrainz 录音信息");
-                    LogCollector.addLog("WARN", "⚠ " + I18nUtil.getMessage("main.acoustid.no.match", audioFile.getName()));
+                    LogCollector.addLog("WARN", I18nUtil.getMessage("main.acoustid.no.match", audioFile.getName()));
                     log.info("建议：手动添加标签或等待 MusicBrainz 社区完善数据");
 
                     // 处理识别失败
@@ -300,8 +300,8 @@ public class AudioFileProcessorService {
                 } else {
                     // 有锁定的专辑信息（快速扫描成功），使用锁定的专辑信息继续处理
                     log.info("AcoustID 未关联到详细录音信息，但快速扫描已锁定专辑，继续处理");
-                    LogCollector.addLog("INFO", "📋 " + I18nUtil.getMessage("main.acoustid.no.match.use.quick.scan", audioFile.getName()));
-                    LogCollector.addLog("INFO", "📋 " + I18nUtil.getMessage("main.quick.scan.locked.album", lockedAlbumArtist, lockedAlbumTitle));
+                    LogCollector.addLog("INFO", I18nUtil.getMessage("main.acoustid.no.match.use.quick.scan", audioFile.getName()));
+                    LogCollector.addLog("INFO", I18nUtil.getMessage("main.quick.scan.locked.album", lockedAlbumArtist, lockedAlbumTitle));
                     
                     MusicMetadata sourceTagsForFallback = tagWriter.readTags(originalAudioFile);
                     detailedMetadata = MetadataUtils.createMetadataFromQuickScan(
@@ -339,7 +339,7 @@ public class AudioFileProcessorService {
                     LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.identify.success", displayArtist, displayTitle));
                 } else {
                     log.info("AcoustID 返回了 Recording ID: {}，但缺少详细信息，将从 MusicBrainz 查询", bestMatch.getRecordingId());
-                    LogCollector.addLog("INFO", "🔍 " + I18nUtil.getMessage("main.acoustid.has.recording.id"));
+                    LogCollector.addLog("INFO", I18nUtil.getMessage("main.acoustid.has.recording.id"));
                 }
 
                 // 始终传入实际的文件数量，让 MusicBrainz 在回退匹配时能正确选择
