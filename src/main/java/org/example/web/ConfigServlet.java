@@ -7,6 +7,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import org.example.config.MusicConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.FileInputStream;
@@ -28,6 +30,7 @@ import java.util.Set;
 public class ConfigServlet extends HttpServlet {
 
     private static final String SESSION_CSRF_KEY = "csrfToken";
+    private static final Logger log = LoggerFactory.getLogger(ConfigServlet.class);
 
     private final MusicConfig config;
     private final Gson gson;
@@ -164,7 +167,13 @@ public class ConfigServlet extends HttpServlet {
             persistUpdates(propertyUpdates);
             applyUpdates(updates);
         } catch (IOException e) {
-            respondJson(resp, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, Map.of("error", "save.failed"));
+            log.error("Failed to save config", e);
+            Map<String, Object> error = new HashMap<>();
+            error.put("error", "save.failed");
+            if (isConfigDebugEnabled()) {
+                error.put("detail", e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+            respondJson(resp, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, error);
             return;
         }
 
@@ -235,7 +244,20 @@ public class ConfigServlet extends HttpServlet {
                 props.setProperty(entry.getKey(), entry.getValue());
             }
         }
+        try {
+            writeConfigAtomically(props);
+        } catch (IOException e) {
+            log.warn("Atomic config save failed, attempting direct write", e);
+            try {
+                writeConfigDirectly(props);
+            } catch (IOException directError) {
+                directError.addSuppressed(e);
+                throw directError;
+            }
+        }
+    }
 
+    private void writeConfigAtomically(java.util.Properties props) throws IOException {
         Path tempPath = configPath.resolveSibling("config.properties.tmp");
         try (FileOutputStream fos = new FileOutputStream(tempPath.toFile())) {
             props.store(fos, "Updated by web panel");
@@ -248,12 +270,31 @@ public class ConfigServlet extends HttpServlet {
                 Files.move(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException moveError) {
                 Files.copy(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
-                Files.deleteIfExists(tempPath);
+                deleteTempQuietly(tempPath);
             }
         } catch (IOException moveError) {
             Files.copy(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
-            Files.deleteIfExists(tempPath);
+            deleteTempQuietly(tempPath);
         }
+    }
+
+    private void writeConfigDirectly(java.util.Properties props) throws IOException {
+        try (FileOutputStream fos = new FileOutputStream(configPath.toFile())) {
+            props.store(fos, "Updated by web panel");
+        }
+    }
+
+    private void deleteTempQuietly(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException e) {
+            log.debug("Failed to delete temp config file: {}", path);
+        }
+    }
+
+    private boolean isConfigDebugEnabled() {
+        String value = System.getenv("MTG_CONFIG_DEBUG");
+        return value != null && value.equalsIgnoreCase("true");
     }
 
     private void applyUpdates(Map<String, Object> updates) {
