@@ -26,6 +26,10 @@ COPY --from=builder /app/target/MusicDemo-*.jar app.jar
 # 复制配置文件模板
 COPY config.properties.example config.properties
 
+# 复制启动脚本
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # 创建数据目录（用于挂载音乐文件）
 RUN mkdir -p /music
 
@@ -36,4 +40,4 @@ ENV JAVA_OPTS="-Xmx512m -Xms256m"
 EXPOSE 8080
 
 # 启动应用
-ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
+ENTRYPOINT ["/app/entrypoint.sh"]

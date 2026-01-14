@@ -73,6 +73,10 @@
         container_name: music-tagger
         ports:
           - "8080:8080"
+        environment:
+          - PUID=1000
+          - PGID=1000
+          - UMASK=022
         volumes:
           - /path/to/downloads:/music
           - /path/to/music_library:/app/tagged_music
@@ -80,6 +84,9 @@
           - ./config.properties:/app/config.properties
         restart: unless-stopped
     ```
+
+    `PUID`/`PGID` 设置为 NAS 挂载目录所属用户/组的 UID/GID，`UMASK` 控制默认权限。
+
 2.  **启动服务**
     ```bash
     docker-compose up -d

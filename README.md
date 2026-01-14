@@ -72,6 +72,10 @@ The easiest way to run the application. Configuration is done in the web UI afte
         container_name: music-tagger
         ports:
           - "8080:8080"  # Web dashboard
+        environment:
+          - PUID=1000
+          - PGID=1000
+          - UMASK=022
         volumes:
           - /path/to/downloads:/music
           - /path/to/music_library:/app/tagged_music
@@ -79,6 +83,8 @@ The easiest way to run the application. Configuration is done in the web UI afte
           - ./config.properties:/app/config.properties
         restart: unless-stopped
     ```
+
+    Set `PUID`/`PGID` to match the NAS user/group that owns your mounted folders. `UMASK` controls default permissions.
 
 2.  **Start Service**
     ```bash

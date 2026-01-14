@@ -16,9 +16,14 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.EnumSet;
+import java.util.Set;
 
 /**
  * 音乐标签写入服务
@@ -49,11 +54,13 @@ public class TagWriterService {
             // 2. 创建目标目录
             if (!targetFile.getParentFile().exists()) {
                 targetFile.getParentFile().mkdirs();
+                ensureWritablePermissions(targetFile.getParentFile().toPath(), true);
             }
 
             // 3. 复制文件
             log.info("复制文件: {} -> {}", sourceFile.getName(), targetFile.getName());
             Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            ensureWritablePermissions(targetFile.toPath(), false);
 
             // 4. 更新标签
             log.info("开始更新标签: {}", targetFile.getName());
@@ -160,6 +167,7 @@ public class TagWriterService {
         if (!parentDir.exists()) {
             log.info("创建目录: {}", parentDir.getAbsolutePath());
             parentDir.mkdirs();
+            ensureWritablePermissions(parentDir.toPath(), true);
         }
 
         return targetFile;
@@ -366,6 +374,7 @@ public class TagWriterService {
                             java.nio.charset.StandardCharsets.UTF_8))) {
                 writer.write(lyrics);
             }
+            ensureWritablePermissions(lyricsFile.toPath(), false);
             
             log.info("歌词文件已导出: {}", lyricsFile.getName());
             
@@ -413,6 +422,7 @@ public class TagWriterService {
             
             Files.copy(originalFile.toPath(), backupFile.toPath(), 
                 StandardCopyOption.REPLACE_EXISTING);
+            ensureWritablePermissions(backupFile.toPath(), false);
             
             log.info("已创建备份: {}", backupFile.getName());
             return backupFile;
@@ -454,6 +464,57 @@ public class TagWriterService {
         result = result.replaceAll("\\s+", " ").trim();
         
         return result;
+    }
+
+    private void ensureWritablePermissions(Path path, boolean isDirectory) {
+        try {
+            if (Files.getFileAttributeView(path, PosixFileAttributeView.class) == null) {
+                return;
+            }
+            String modeKey = isDirectory ? "MTG_DIR_MODE" : "MTG_FILE_MODE";
+            String configuredMode = System.getenv(modeKey);
+            if (configuredMode == null || configuredMode.isBlank()) {
+                String enabled = System.getenv("MTG_CHMOD");
+                if (enabled != null && enabled.equalsIgnoreCase("false")) {
+                    return;
+                }
+                configuredMode = isDirectory ? "rwxrwxrwx" : "rw-rw-rw-";
+            }
+            Set<PosixFilePermission> permissions = parsePermissions(configuredMode.trim());
+            Files.setPosixFilePermissions(path, permissions);
+        } catch (Exception e) {
+            log.debug("无法设置文件权限: {}", path);
+        }
+    }
+
+    private Set<PosixFilePermission> parsePermissions(String mode) {
+        if (mode.matches("[0-7]{3,4}")) {
+            String digits = mode.length() == 4 ? mode.substring(1) : mode;
+            Set<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
+            applyPermissions(permissions, digits.charAt(0), PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
+            applyPermissions(permissions, digits.charAt(1), PosixFilePermission.GROUP_READ,
+                PosixFilePermission.GROUP_WRITE, PosixFilePermission.GROUP_EXECUTE);
+            applyPermissions(permissions, digits.charAt(2), PosixFilePermission.OTHERS_READ,
+                PosixFilePermission.OTHERS_WRITE, PosixFilePermission.OTHERS_EXECUTE);
+            return permissions;
+        }
+        return PosixFilePermissions.fromString(mode);
+    }
+
+    private void applyPermissions(Set<PosixFilePermission> permissions, char digit,
+                                  PosixFilePermission read, PosixFilePermission write,
+                                  PosixFilePermission execute) {
+        int value = digit - '0';
+        if ((value & 4) != 0) {
+            permissions.add(read);
+        }
+        if ((value & 2) != 0) {
+            permissions.add(write);
+        }
+        if ((value & 1) != 0) {
+            permissions.add(execute);
+        }
     }
     
     /**

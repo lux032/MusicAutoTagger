@@ -244,7 +244,15 @@ public class ConfigServlet extends HttpServlet {
         try {
             Files.move(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
+            try {
+                Files.move(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException moveError) {
+                Files.copy(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
+                Files.deleteIfExists(tempPath);
+            }
+        } catch (IOException moveError) {
+            Files.copy(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
+            Files.deleteIfExists(tempPath);
         }
     }
 
