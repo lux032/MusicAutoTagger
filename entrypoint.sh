@@ -16,8 +16,14 @@ if [ -n "$PUID" ] || [ -n "$PGID" ]; then
     groupadd -g "$PGID" "$GROUP_NAME" >/dev/null 2>&1 || addgroup --gid "$PGID" "$GROUP_NAME"
   fi
 
-  if id -u "$APP_USER" >/dev/null 2>&1; then
-    usermod -u "$PUID" -g "$GROUP_NAME" "$APP_USER" >/dev/null 2>&1 || true
+  EXISTING_USER_BY_UID="$(getent passwd "$PUID" | cut -d: -f1 || true)"
+  if [ -n "$EXISTING_USER_BY_UID" ] && [ "$EXISTING_USER_BY_UID" != "$APP_USER" ]; then
+    APP_USER="$EXISTING_USER_BY_UID"
+  elif id -u "$APP_USER" >/dev/null 2>&1; then
+    CURRENT_UID="$(id -u "$APP_USER")"
+    if [ "$CURRENT_UID" != "$PUID" ]; then
+      usermod -u "$PUID" -g "$GROUP_NAME" "$APP_USER" >/dev/null 2>&1 || true
+    fi
   else
     useradd -u "$PUID" -g "$GROUP_NAME" -M -s /bin/sh "$APP_USER" >/dev/null 2>&1 \
       || adduser --uid "$PUID" --ingroup "$GROUP_NAME" --disabled-password --gecos "" "$APP_USER"
