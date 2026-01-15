@@ -2,6 +2,8 @@
 
 <div align="center">
 
+<img src="MusicAutoTagger_icon.png" alt="Music Auto Tagger Logo" width="160" />
+
 [![Java](https://img.shields.io/badge/Java-17%2B-orange.svg)](https://www.java.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
 [![MusicBrainz](https://img.shields.io/badge/Data-MusicBrainz-purple.svg)](https://musicbrainz.org/)

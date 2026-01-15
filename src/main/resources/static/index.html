@@ -29,9 +29,27 @@
             margin-bottom: 30px;
         }
 
+        .logo-title {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            margin-bottom: 10px;
+        }
+
+        .app-logo {
+            width: 54px;
+            height: 54px;
+            border-radius: 12px;
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+        }
+
+        .logo-title h1 {
+            margin: 0;
+        }
+
         .header h1 {
             font-size: 2.5em;
-            margin-bottom: 10px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
         }
 
@@ -859,7 +877,10 @@
 
     <div class="container">
         <div class="header">
-            <h1>🎵 音乐自动标记系统</h1>
+            <div class="logo-title">
+                <img class="app-logo" src="logo.png" alt="Music Auto Tagger Logo">
+                <h1>音乐自动标记系统</h1>
+            </div>
             <p>实时监控 · 智能整理 · 数据统计</p>
             <div class="status-bar">
                 <div class="status-indicator">
@@ -1138,7 +1159,7 @@
             document.title = t('web.title');
 
             // 更新页面文本
-            document.querySelector('.header h1').textContent = '🎵 ' + t('web.title').split(' - ')[0];
+            document.querySelector('.header h1').textContent = t('web.title').split(' - ')[0];
             document.querySelector('.header p').textContent = t('web.subtitle');
             document.getElementById('connectionText').textContent = t('web.connecting');
 
