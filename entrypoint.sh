@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+# Java 完整路径，避免 PATH 环境变量问题
+JAVA_BIN="${JAVA_HOME:-/opt/java/openjdk}/bin/java"
+
 APP_USER=music
 APP_GROUP=music
 
@@ -39,11 +42,11 @@ if [ -n "$PUID" ] || [ -n "$PGID" ]; then
     umask "$UMASK"
   fi
 
-  exec su -m -s /bin/sh -c "exec java $JAVA_OPTS -jar /app/app.jar" "$APP_USER"
+  exec su -m -s /bin/sh -c "exec $JAVA_BIN $JAVA_OPTS -jar /app/app.jar" "$APP_USER"
 fi
 
 if [ -n "$UMASK" ]; then
   umask "$UMASK"
 fi
 
-exec java $JAVA_OPTS -jar /app/app.jar
+exec $JAVA_BIN $JAVA_OPTS -jar /app/app.jar
