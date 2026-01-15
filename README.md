@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="MusicAutoTagger_icon.png" alt="Music Auto Tagger Logo" width="160" />
+<img src="src/main/resources/static/MusicAutoTagger_icon.png" alt="Music Auto Tagger Logo" width="160" />
 
 [![Java](https://img.shields.io/badge/Java-17%2B-orange.svg)](https://www.java.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
@@ -20,7 +20,7 @@
 
 ## 📊 Web Monitoring Dashboard
 
-![Web Dashboard](src/main/resources/static/web.png)
+![Web Dashboard](src/main/resources/static/webEN.png)
 
 The built-in real-time monitoring dashboard provides:
 - 📊 Real-time statistics and processing progress
