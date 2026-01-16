@@ -841,7 +841,10 @@
                         </div>
                         <div class="form-row checkbox-row">
                             <input id="cfgAudioNormalizeEnabled" type="checkbox">
-                            <label for="cfgAudioNormalizeEnabled" data-i18n="config.audio.normalize.enabled">启用音频规格规范化</label>
+                            <label for="cfgAudioNormalizeEnabled" data-i18n="config.audio.normalize.enabled">启用高规格音频降级</label>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-hint" data-i18n="config.audio.normalize.hint">将 &gt;24bit 或 &gt;48kHz 的音频降级为 24bit/48kHz 再处理</div>
                         </div>
                         <div class="form-row">
                             <label for="cfgAudioNormalizeFfmpegPath" data-i18n="config.audio.normalize.ffmpeg">FFmpeg 路径</label>
