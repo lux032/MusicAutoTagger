@@ -72,7 +72,7 @@ mvn clean package
 继续在命令行执行：
 
 ```powershell
-mvn exec:java -Dexec.mainClass="org.example.Main"
+mvn exec:java -Dexec.mainClass="com.lux032.musicautotagger.Main"
 ```
 
 程序启动后，你会看到类似以下的日志：

@@ -122,7 +122,7 @@ mvn clean install
 ### 启动应用程序
 
 ```bash
-mvn compile exec:java -Dexec.mainClass="org.example.Main"
+mvn compile exec:java -Dexec.mainClass="com.lux032.musicautotagger.Main"
 ```
 
 ### 查看日志记录
