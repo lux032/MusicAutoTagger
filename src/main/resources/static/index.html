@@ -342,6 +342,12 @@
             color: #333;
         }
 
+        .label-with-tip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
         .form-row input {
             border: 1px solid #d0d7e2;
             border-radius: 8px;
@@ -367,6 +373,46 @@
         .form-hint {
             font-size: 0.8em;
             color: #6b7280;
+        }
+
+        .info-tip {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            border: 1px solid #c7d2fe;
+            background: #eef2ff;
+            color: #3730a3;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            margin-left: 6px;
+        }
+
+        .info-tip .tip-text {
+            display: none;
+            position: absolute;
+            left: 50%;
+            top: calc(100% + 8px);
+            transform: translateX(-50%);
+            min-width: 220px;
+            max-width: 320px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: #111827;
+            color: #f9fafb;
+            font-size: 12px;
+            line-height: 1.4;
+            z-index: 10;
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+            white-space: normal;
+        }
+
+        .info-tip:hover .tip-text {
+            display: block;
         }
 
         .config-actions {
@@ -556,10 +602,19 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            flex-wrap: nowrap;
         }
 
         .checkbox-row input {
             transform: scale(1.05);
+        }
+
+        .checkbox-row label {
+            flex: 0 1 auto;
+        }
+
+        .checkbox-row .info-tip {
+            flex: 0 0 auto;
         }
 
         .modal-footer {
@@ -710,7 +765,12 @@
                             <input id="cfgFailedDirectory" type="text">
                         </div>
                         <div class="form-row">
-                            <label for="cfgPartialDirectory" data-i18n="config.partial.directory">部分识别目录</label>
+                            <label for="cfgPartialDirectory" class="label-with-tip">
+                                <span data-i18n="config.partial.directory">部分识别目录</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text" data-i18n="config.partial.directory.hint">当曲目信息只识别出部分字段时，会移动到此目录，便于后续人工补全或再次处理。</span>
+                                </span>
+                            </label>
                             <input id="cfgPartialDirectory" type="text">
                         </div>
                         <div class="form-row checkbox-row">
@@ -841,10 +901,12 @@
                         </div>
                         <div class="form-row checkbox-row">
                             <input id="cfgAudioNormalizeEnabled" type="checkbox">
-                            <label for="cfgAudioNormalizeEnabled" data-i18n="config.audio.normalize.enabled">启用高规格音频降级</label>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-hint" data-i18n="config.audio.normalize.hint">将 &gt;24bit 或 &gt;48kHz 的音频降级为 24bit/48kHz 再处理</div>
+                            <label for="cfgAudioNormalizeEnabled" class="label-with-tip">
+                                <span data-i18n="config.audio.normalize.enabled">启用高规格音频降级</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text" data-i18n="config.audio.normalize.hint">将 &gt;24bit 或 &gt;48kHz 的音频降级为 24bit/48kHz 再处理</span>
+                                </span>
+                            </label>
                         </div>
                         <div class="form-row">
                             <label for="cfgAudioNormalizeFfmpegPath" data-i18n="config.audio.normalize.ffmpeg">FFmpeg 路径</label>
@@ -859,7 +921,12 @@
                             <input id="cfgCueSplitOutputDirectory" type="text">
                         </div>
                         <div class="form-row">
-                            <label for="cfgReleaseCountryPriority" data-i18n="config.release.country.priority">发行地区优先级</label>
+                            <label for="cfgReleaseCountryPriority" class="label-with-tip">
+                                <span data-i18n="config.release.country.priority">发行地区优先级</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text" data-i18n="config.release.country.priority.hint">按逗号分隔国家或地区代码，例如 JP,US,GB。越靠前优先级越高。</span>
+                                </span>
+                            </label>
                             <input id="cfgReleaseCountryPriority" type="text" placeholder="JP,US,GB">
                         </div>
                     </div>
