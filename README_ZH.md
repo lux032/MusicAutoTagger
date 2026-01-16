@@ -115,6 +115,7 @@
 - JDK 17+
 - Maven 3.6+
 - [Chromaprint (fpcalc)](https://acoustid.org/chromaprint) (需添加到系统 PATH)
+- [FFmpeg](https://ffmpeg.org/) (需添加到系统 PATH)
 
 ### 编译与运行
 ```bash
@@ -164,6 +165,7 @@ MIT 许可证是一个宽松的开源许可证，允许你：
 - [AcoustID](https://acoustid.org/) - 音频指纹识别服务
 - [LrcLib](https://lrclib.net/) - 歌词服务
 - [Cover Art Archive](https://coverartarchive.org/) - 封面图片服务
+- [FFmpeg](https://ffmpeg.org/) - 音频处理工具
 
 ---
 **Disclaimer**: This tool relies on third-party services (MusicBrainz, AcoustID, LrcLib). Please respect their Terms of Service.

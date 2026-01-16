@@ -108,6 +108,7 @@ If you prefer to run it locally for development or testing:
 - JDK 17+
 - Maven 3.6+
 - [Chromaprint (fpcalc)](https://acoustid.org/chromaprint) (Must be added to system PATH)
+- [FFmpeg](https://ffmpeg.org/) (Must be added to system PATH)
 
 ### Build & Run
 ```bash
@@ -157,6 +158,7 @@ This tool relies on the following third-party services. Please respect their res
 - [AcoustID](https://acoustid.org/) - Audio fingerprinting service
 - [LrcLib](https://lrclib.net/) - Lyrics service
 - [Cover Art Archive](https://coverartarchive.org/) - Album art service
+- [FFmpeg](https://ffmpeg.org/) - Audio processing toolkit
 
 ---
 **Disclaimer**: This tool relies on third-party services (MusicBrainz, AcoustID, LrcLib). Please respect their Terms of Service.
