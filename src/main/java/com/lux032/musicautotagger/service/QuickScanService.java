@@ -63,6 +63,17 @@ public class QuickScanService {
      * @return 如果快速扫描成功返回结果,否则返回null进入第二级扫描
      */
     public QuickScanResult quickScan(File audioFile, int musicFilesInFolder) {
+        return quickScan(audioFile, musicFilesInFolder, null);
+    }
+
+    /**
+     * 执行快速扫描（可指定预提取的时长序列）
+     * @param audioFile 音频文件
+     * @param musicFilesInFolder 文件夹内音乐文件数量
+     * @param folderDurations 预提取的时长序列（可为空）
+     * @return 如果快速扫描成功返回结果,否则返回null进入第二级扫描
+     */
+    public QuickScanResult quickScan(File audioFile, int musicFilesInFolder, List<Integer> folderDurations) {
         log.info("========================================");
         log.info("开始第一级快速扫描: {}", audioFile.getName());
         log.info("========================================");
@@ -90,19 +101,24 @@ public class QuickScanService {
             
             log.info("找到 {} 个候选专辑", searchResults.size());
             
-            // 3. 提取文件夹时长序列
-            List<Integer> folderDurations = extractFolderDurations(audioFile.getParentFile());
+            // 3. 提取文件夹时长序列（如有预提取则直接使用）
+            List<Integer> durationsToUse = folderDurations;
+            if (durationsToUse == null || durationsToUse.isEmpty()) {
+                durationsToUse = extractFolderDurations(audioFile.getParentFile());
+            } else {
+                cacheFolderDurations(audioFile.getParentFile(), durationsToUse);
+            }
             
-            if (folderDurations == null || folderDurations.isEmpty()) {
+            if (durationsToUse == null || durationsToUse.isEmpty()) {
                 log.warn("无法提取文件夹时长序列,进入第二级扫描");
                 return null;
             }
             
-            log.info("文件夹时长序列: {}首", folderDurations.size());
+            log.info("文件夹时长序列: {}首", durationsToUse.size());
             
             // 4. 为每个候选专辑获取时长序列并匹配
             QuickScanResult bestMatch = findBestMatchByDuration(
-                searchResults, folderDurations, musicFilesInFolder
+                searchResults, durationsToUse, musicFilesInFolder
             );
             
             if (bestMatch != null && bestMatch.getSimilarity() >= QUICK_MATCH_THRESHOLD) {
@@ -122,6 +138,24 @@ public class QuickScanService {
         } catch (Exception e) {
             log.warn("快速扫描过程出错,进入第二级扫描: {}", e.getMessage());
             return null;
+        }
+    }
+
+    private void cacheFolderDurations(File folder, List<Integer> durations) {
+        if (durations == null || durations.isEmpty()) {
+            return;
+        }
+        try {
+            File albumRootDir = getAlbumRootDirectory(folder);
+            String folderPath;
+            try {
+                folderPath = albumRootDir.getCanonicalPath();
+            } catch (java.io.IOException e) {
+                folderPath = albumRootDir.getAbsolutePath();
+            }
+            folderDurationCache.put(folderPath, durations);
+        } catch (Exception e) {
+            log.debug("缓存时长序列失败: {}", e.getMessage());
         }
     }
     

@@ -779,6 +779,20 @@ public class FolderAlbumCache {
             folderSampleCollectors.size()
         );
     }
+
+    /**
+     * 缓存文件夹时长序列（用于统一使用预处理后的时长序列）
+     */
+    public void cacheFolderDurationSequence(String folderPath, List<Integer> durations) {
+        if (folderPath == null || folderPath.isEmpty()) {
+            return;
+        }
+        if (durations == null || durations.isEmpty()) {
+            return;
+        }
+        folderDurationSequences.put(folderPath, durations);
+        log.debug("已缓存文件夹时长序列: {} ({}首)", folderPath, durations.size());
+    }
     
     // ==================== 内部类 ====================
     
