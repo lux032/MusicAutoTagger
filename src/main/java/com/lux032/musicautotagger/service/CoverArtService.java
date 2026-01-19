@@ -217,7 +217,7 @@ public class CoverArtService {
     
     /**
      * 在目录中查找封面图片
-     * 支持的文件名: cover.jpg, cover.png, folder.jpg, folder.png, album.jpg, album.png
+     * 支持的文件名: cover/folder/album/front/artwork/albumart/albumartsmall + jpg/jpeg/png/webp
      */
     public byte[] findCoverInDirectory(File directory) {
         if (directory == null || !directory.exists() || !directory.isDirectory()) {
@@ -225,22 +225,34 @@ public class CoverArtService {
         }
         
         // 支持的封面文件名(优先级顺序)
-        String[] coverNames = {"cover", "folder", "album", "front"};
+        String[] coverNames = {"cover", "folder", "album", "front", "artwork", "albumart", "albumartsmall"};
         String[] extensions = {".jpg", ".jpeg", ".png", ".webp"};
-        
+
+        File[] files = directory.listFiles();
+        if (files == null) {
+            return null;
+        }
+
+        // Case-insensitive match to support Linux filesystems (e.g., Cover.jpg).
         for (String coverName : coverNames) {
             for (String ext : extensions) {
-                File coverFile = new File(directory, coverName + ext);
-                if (coverFile.exists() && coverFile.isFile()) {
-                    try {
-                        byte[] imageData = Files.readAllBytes(coverFile.toPath());
-                        if (imageData != null && imageData.length > 0) {
-                            log.info("找到封面文件: {}", coverFile.getName());
-                            // 压缩图片到2MB以内
-                            return ImageCompressor.compressImage(imageData);
+                String expectedName = coverName + ext;
+                for (File file : files) {
+                    if (!file.isFile()) {
+                        continue;
+                    }
+                    String fileNameLower = file.getName().toLowerCase();
+                    if (fileNameLower.equals(expectedName)) {
+                        try {
+                            byte[] imageData = Files.readAllBytes(file.toPath());
+                            if (imageData != null && imageData.length > 0) {
+                                log.info("找到封面文件: {}", file.getName());
+                                // 压缩图片到2MB以内
+                                return ImageCompressor.compressImage(imageData);
+                            }
+                        } catch (Exception e) {
+                            log.debug("读取封面文件失败: {} - {}", file.getName(), e.getMessage());
                         }
-                    } catch (Exception e) {
-                        log.debug("读取封面文件失败: {} - {}", coverFile.getName(), e.getMessage());
                     }
                 }
             }
