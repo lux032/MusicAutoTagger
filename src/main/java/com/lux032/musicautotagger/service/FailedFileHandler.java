@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * 失败文件处理服务
@@ -85,6 +86,10 @@ public class FailedFileHandler {
             
             // 构建目标文件路径，保留文件夹结构
             File targetFile = new File(config.getPartialDirectory(), relativePath);
+            File sourceFile = (processingFile != null && processingFile.exists()) ? processingFile : audioFile;
+            if (isFlacFile(sourceFile)) {
+                targetFile = withFlacExtension(targetFile);
+            }
             
             // 创建目标目录
             if (!targetFile.getParentFile().exists()) {
@@ -100,7 +105,6 @@ public class FailedFileHandler {
             // 复制文件到部分识别目录
             log.info(I18nUtil.getMessage("main.partial.recognition.copying") + ": {}", targetFile.getAbsolutePath());
             LogCollector.addLog("INFO", "  -> " + I18nUtil.getMessage("main.partial.recognition.copying") + ": " + relativePath);
-            File sourceFile = (processingFile != null && processingFile.exists()) ? processingFile : audioFile;
             Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             
             // 如果使用了转码文件，尽量保留原始标签
@@ -220,6 +224,7 @@ public class FailedFileHandler {
             for (File audioFile : audioFiles) {
                 Path relative = albumRootPath.relativize(audioFile.toPath());
                 File targetAudioFile = new File(targetFolder, relative.toString());
+                File flacTargetFile = withFlacExtension(targetAudioFile);
 
                 if (!targetAudioFile.exists()) {
                     continue;
@@ -228,6 +233,14 @@ public class FailedFileHandler {
                 boolean converted = audioFormatNormalizer.normalizeToTargetIfNeeded(audioFile, targetAudioFile);
                 if (converted) {
                     normalizedCount++;
+                    if (!targetAudioFile.equals(flacTargetFile)) {
+                        try {
+                            Files.deleteIfExists(targetAudioFile.toPath());
+                        } catch (IOException e) {
+                            log.debug("Failed to delete non-flac target file: {} - {}", targetAudioFile.getAbsolutePath(), e.getMessage());
+                        }
+                        targetAudioFile = flacTargetFile;
+                    }
                     com.lux032.musicautotagger.model.MusicMetadata sourceTags = tagWriter.readTags(audioFile);
                     if (sourceTags != null) {
                         tagWriter.updateTagsOnExistingFile(targetAudioFile, sourceTags, null);
@@ -272,6 +285,17 @@ public class FailedFileHandler {
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.partial.recognition.album.failed") + ": {}", albumRootDir.getName(), e);
         }
+    }
+
+    private static boolean isFlacFile(File file) {
+        return file.getName().toLowerCase(Locale.ROOT).endsWith(".flac");
+    }
+
+    private static File withFlacExtension(File file) {
+        String name = file.getName();
+        int dotIndex = name.lastIndexOf('.');
+        String baseName = dotIndex > 0 ? name.substring(0, dotIndex) : name;
+        return new File(file.getParentFile(), baseName + ".flac");
     }
     
     /**

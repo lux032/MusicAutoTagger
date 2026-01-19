@@ -49,7 +49,7 @@ public class AudioFormatNormalizer {
         Path tempDir = null;
         try {
             tempDir = Files.createTempDirectory("music-normalize-");
-            File outputFile = tempDir.resolve(sourceFile.getName()).toFile();
+            File outputFile = buildFlacOutputFile(sourceFile, tempDir.toFile());
 
             if (!runFfmpeg(sourceFile, outputFile, specs.bitDepth)) {
                 cleanupTemp(tempDir, outputFile);
@@ -82,6 +82,9 @@ public class AudioFormatNormalizer {
         }
     }
 
+    /**
+     * 输出将始终为 .flac，targetFile 仅作为基名/目录参考。
+     */
     public boolean normalizeToTargetIfNeeded(File sourceFile, File targetFile) {
         if (!config.isAudioNormalizeEnabled()) {
             LogCollector.addLog("INFO", I18nUtil.getMessage("audio.normalize.disabled", sourceFile.getName()));
@@ -97,7 +100,8 @@ public class AudioFormatNormalizer {
         }
 
         try {
-            boolean ok = runFfmpeg(sourceFile, targetFile, specs.bitDepth);
+            File outputFile = buildFlacOutputFile(targetFile, targetFile.getParentFile());
+            boolean ok = runFfmpeg(sourceFile, outputFile, specs.bitDepth);
             if (ok) {
                 LogCollector.addLog(
                     "INFO",
@@ -158,12 +162,17 @@ public class AudioFormatNormalizer {
         command.add("-i");
         command.add(sourceFile.getAbsolutePath());
         command.add("-vn");
-        command.add("-ar");
-        command.add(String.valueOf(TARGET_SAMPLE_RATE));
-        if (bitDepth > TARGET_BIT_DEPTH) {
-            command.add("-sample_fmt");
-            command.add("s24");
-        }
+        command.add("-af");
+        String dither = bitDepth > TARGET_BIT_DEPTH ? ":dither_method=triangular" : "";
+        command.add(String.format(
+            "aresample=%d:resampler=soxr:precision=28:cutoff=0.95%s",
+            TARGET_SAMPLE_RATE,
+            dither
+        ));
+        command.add("-c:a");
+        command.add("flac");
+        command.add("-f");
+        command.add("flac");
         command.add(outputFile.getAbsolutePath());
 
         ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -191,6 +200,13 @@ public class AudioFormatNormalizer {
             return false;
         }
         return outputFile.exists();
+    }
+
+    private File buildFlacOutputFile(File baseFile, File targetDir) {
+        String name = baseFile.getName();
+        int dotIndex = name.lastIndexOf('.');
+        String baseName = dotIndex > 0 ? name.substring(0, dotIndex) : name;
+        return new File(targetDir, baseName + ".flac");
     }
 
     private void cleanupTemp(Path tempDir, File outputFile) {
