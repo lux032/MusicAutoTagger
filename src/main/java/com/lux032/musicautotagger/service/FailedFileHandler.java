@@ -60,8 +60,8 @@ public class FailedFileHandler {
             // 检查是否有内嵌封面
             boolean hasEmbeddedCover = tagWriter.hasEmbeddedCover(audioFile);
             
-            // 检查文件夹中是否有封面
-            byte[] folderCover = coverArtService.findCoverInDirectory(audioFile.getParentFile());
+            // 检查文件夹中是否有封面（包含专辑根目录回退）
+            byte[] folderCover = findFolderCoverWithAlbumFallback(audioFile);
             boolean hasFolderCover = (folderCover != null && folderCover.length > 0);
             
             // 封面是必需条件：如果既没有内嵌封面也没有文件夹封面，不处理
@@ -157,7 +157,7 @@ public class FailedFileHandler {
         }
         
         try {
-            // 检查文件夹中是否有封面
+            // 检查文件夹中是否有封面（优先专辑根目录，必要时回退到子目录）
             byte[] folderCover = coverArtService.findCoverInDirectory(albumRootDir);
             boolean hasFolderCover = (folderCover != null && folderCover.length > 0);
             
@@ -167,6 +167,10 @@ public class FailedFileHandler {
             
             if (audioFiles.isEmpty()) {
                 return;
+            }
+            
+            if (folderCover == null || folderCover.length == 0) {
+                folderCover = findCoverInAudioParents(audioFiles);
             }
             
             // 检查是否有任何文件有内嵌封面
@@ -296,6 +300,68 @@ public class FailedFileHandler {
         int dotIndex = name.lastIndexOf('.');
         String baseName = dotIndex > 0 ? name.substring(0, dotIndex) : name;
         return new File(file.getParentFile(), baseName + ".flac");
+    }
+
+    private byte[] findFolderCoverWithAlbumFallback(File audioFile) {
+        if (audioFile == null) {
+            return null;
+        }
+
+        File parentDir = audioFile.getParentFile();
+        if (parentDir != null) {
+            log.info("部分识别封面检测(同目录): {}", parentDir.getAbsolutePath());
+        }
+        byte[] cover = coverArtService.findCoverInDirectory(parentDir);
+        if (cover != null && cover.length > 0) {
+            log.info("部分识别封面命中(同目录)");
+            return cover;
+        }
+
+        File albumRootDir = fileSystemUtils.getAlbumRootDirectory(audioFile);
+        if (albumRootDir == null) {
+            return null;
+        }
+
+        log.info("部分识别封面检测(专辑根目录): {}", albumRootDir.getAbsolutePath());
+        if (parentDir != null && parentDir.equals(albumRootDir)) {
+            return null;
+        }
+
+        cover = coverArtService.findCoverInDirectory(albumRootDir);
+        if (cover != null && cover.length > 0) {
+            log.info("部分识别封面命中(专辑根目录)");
+        }
+        return cover;
+    }
+
+    private byte[] findCoverInAudioParents(List<File> audioFiles) {
+        if (audioFiles == null || audioFiles.isEmpty()) {
+            return null;
+        }
+
+        List<String> checked = new ArrayList<>();
+        for (File audioFile : audioFiles) {
+            if (audioFile == null) {
+                continue;
+            }
+            File parent = audioFile.getParentFile();
+            if (parent == null) {
+                continue;
+            }
+            String parentPath = parent.getAbsolutePath();
+            if (checked.contains(parentPath)) {
+                continue;
+            }
+            log.info("部分识别封面检测(音轨父目录): {}", parentPath);
+            checked.add(parentPath);
+            byte[] cover = coverArtService.findCoverInDirectory(parent);
+            if (cover != null && cover.length > 0) {
+                log.info("部分识别封面命中(音轨父目录)");
+                return cover;
+            }
+        }
+
+        return null;
     }
     
     /**
