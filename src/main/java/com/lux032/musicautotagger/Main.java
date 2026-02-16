@@ -1,5 +1,7 @@
 package com.lux032.musicautotagger;
 
+import java.util.concurrent.CountDownLatch;
+
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.core.ApplicationLifecycleManager;
@@ -64,13 +66,34 @@ public class Main {
             // 7. 启动文件监控
             lifecycleManager.startMonitoring();
             
-            // 8. 等待用户输入以停止程序
+            // 8. 注册 Shutdown Hook，处理 SIGTERM/SIGINT 信号（Docker stop 等场景）
+            CountDownLatch shutdownLatch = new CountDownLatch(1);
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                lifecycleManager.shutdown();
+                shutdownLatch.countDown();
+            }));
+
+            // 9. 等待停止信号
             System.out.println("\n" + I18nUtil.getMessage("main.system.running"));
             System.out.println(I18nUtil.getMessage("main.press.enter.to.stop"));
-            System.in.read();
-            
-            // 9. 优雅关闭
-            lifecycleManager.shutdown();
+
+            // 启动一个线程监听 stdin，支持本地运行时按 Enter 停止
+            Thread stdinThread = new Thread(() -> {
+                try {
+                    while (System.in.read() != -1) {
+                        // 读到有效输入（如 Enter 键），触发关闭
+                        shutdownLatch.countDown();
+                        return;
+                    }
+                    // stdin 关闭（Docker 环境），不做任何操作，等待 SIGTERM
+                } catch (Exception ignored) {
+                }
+            });
+            stdinThread.setDaemon(true);
+            stdinThread.start();
+
+            // 主线程阻塞，直到收到关闭信号
+            shutdownLatch.await();
             
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.error"), e);
