@@ -9,6 +9,7 @@ import com.lux032.musicautotagger.util.I18nUtil;
 import com.lux032.musicautotagger.web.WebServer;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 应用程序生命周期管理器
@@ -19,7 +20,8 @@ import java.io.IOException;
 public class ApplicationLifecycleManager {
     
     private final MusicConfig config;
-    
+    private final AtomicBoolean shutdownCalled = new AtomicBoolean(false);
+
     // 基础服务实例
     private DatabaseService databaseService;
     private FileMonitorService fileMonitor;
@@ -199,6 +201,9 @@ public class ApplicationLifecycleManager {
      * 优雅关闭所有服务
      */
     public void shutdown() {
+        if (!shutdownCalled.compareAndSet(false, true)) {
+            return;
+        }
         log.info(I18nUtil.getMessage("app.shutting.down"));
 
         try {
