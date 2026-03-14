@@ -48,6 +48,7 @@ The built-in real-time monitoring dashboard provides:
 - 🔄 **Smart Retry**: Automatically handles network failures with retry logic and isolates failed files for later inspection.
 - 📊 **Web Monitoring Dashboard**: 🆕 Built-in real-time monitoring dashboard to visualize processing progress, system status, and runtime logs.
 - 🌐 **Multi-language Support**: 🆕 Supports both Chinese and English interfaces, easily switchable via configuration file, providing localized experience for global users.
+- 🤖 **LLM Artist Matching**: 🆕 Optional LLM-assisted matching for partial recognition scenarios. When files have tags and covers but fingerprint recognition fails, uses LLM to fuzzy match artist names (supports romanization, aliases, translations, etc.) and automatically archives to the correct artist folder. Supports multiple LLM endpoints with automatic retry.
 
 ## ⚠️ Best Practice: How to Get the Most Accurate Results
 

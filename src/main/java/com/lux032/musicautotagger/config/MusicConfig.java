@@ -82,6 +82,12 @@ public class MusicConfig {
     // 发行地区优先级配置
     private List<String> releaseCountryPriority; // 发行地区优先级列表
 
+    // LLM 匹配配置
+    private boolean enableLLMMatching; // 是否启用 LLM 辅助艺术家匹配
+    private List<String> llmApiKeys; // LLM API Keys（支持多个）
+    private List<String> llmApiUrls; // LLM API URLs（支持多个）
+    private List<String> llmModels; // LLM 模型名称（支持多个）
+
     private static MusicConfig instance;
     
     private MusicConfig() {
@@ -127,6 +133,12 @@ public class MusicConfig {
 
         // 发行地区优先级默认配置（空列表表示不按地区筛选）
         this.releaseCountryPriority = new ArrayList<>();
+
+        // LLM 匹配默认配置
+        this.enableLLMMatching = false;
+        this.llmApiKeys = new ArrayList<>();
+        this.llmApiUrls = new ArrayList<>();
+        this.llmModels = new ArrayList<>();
 
     }
     
@@ -319,6 +331,41 @@ public class MusicConfig {
                 }
             }
 
+            // 加载 LLM 匹配配置
+            if (props.containsKey("llm.matching.enabled")) {
+                this.enableLLMMatching = Boolean.parseBoolean(props.getProperty("llm.matching.enabled"));
+            }
+            if (props.containsKey("llm.apiKey")) {
+                String keys = props.getProperty("llm.apiKey", "").trim();
+                if (!keys.isEmpty()) {
+                    this.llmApiKeys = Arrays.asList(keys.split(","))
+                        .stream()
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(java.util.stream.Collectors.toList());
+                }
+            }
+            if (props.containsKey("llm.apiUrl")) {
+                String urls = props.getProperty("llm.apiUrl", "").trim();
+                if (!urls.isEmpty()) {
+                    this.llmApiUrls = Arrays.asList(urls.split(","))
+                        .stream()
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(java.util.stream.Collectors.toList());
+                }
+            }
+            if (props.containsKey("llm.model")) {
+                String models = props.getProperty("llm.model", "").trim();
+                if (!models.isEmpty()) {
+                    this.llmModels = Arrays.asList(models.split(","))
+                        .stream()
+                        .map(String::trim)
+                        .filter(s -> !s.isEmpty())
+                        .collect(java.util.stream.Collectors.toList());
+                }
+            }
+
             System.out.println("Configuration file loaded successfully");
             if (proxyEnabled) {
                 System.out.println("HTTP proxy enabled: " + proxyHost + ":" + proxyPort);
@@ -400,6 +447,16 @@ public class MusicConfig {
         }
         if (releaseCountryPriority != null && !releaseCountryPriority.isEmpty()) {
             props.setProperty("release.countryPriority", String.join(",", releaseCountryPriority));
+        }
+        props.setProperty("llm.matching.enabled", String.valueOf(enableLLMMatching));
+        if (llmApiKeys != null && !llmApiKeys.isEmpty()) {
+            props.setProperty("llm.apiKey", String.join(",", llmApiKeys));
+        }
+        if (llmApiUrls != null && !llmApiUrls.isEmpty()) {
+            props.setProperty("llm.apiUrl", String.join(",", llmApiUrls));
+        }
+        if (llmModels != null && !llmModels.isEmpty()) {
+            props.setProperty("llm.model", String.join(",", llmModels));
         }
 
         try (FileOutputStream fos = new FileOutputStream(configPath.toFile())) {

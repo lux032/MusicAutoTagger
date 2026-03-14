@@ -266,3 +266,24 @@ lyrics.exportToFile=false
 #    - 如果内存有限，可以在 docker-compose.yml 中调整 JAVA_OPTS
 #
 # ========================================
+
+# ========================================
+# LLM 艺术家匹配配置（可选）
+# ========================================
+
+# 启用 LLM 智能匹配（仅对部分识别流程生效）
+# 当文件进入部分识别目录后，使用 LLM 匹配艺术家名称
+# 支持罗马音、别名等模糊匹配，匹配成功后自动移动到输出目录
+llm.matching.enabled=false
+
+# LLM API Key（支持多个，用逗号分隔，按顺序重试）
+# 示例：key1,key2,key3
+llm.apiKey=
+
+# LLM API URL（支持多个，用逗号分隔）
+# 示例：https://api.anthropic.com/v1/messages,https://api.openai.com/v1/chat/completions
+llm.apiUrl=https://api.anthropic.com/v1/messages
+
+# LLM 模型名称（支持多个，用逗号分隔）
+# 示例：claude-3-5-sonnet-20241022,gpt-4
+llm.model=claude-3-5-sonnet-20241022

@@ -27,8 +27,9 @@ public class FailedFileHandler {
     private final ProcessedFileLogger processedLogger;
     private final FileSystemUtils fileSystemUtils;
     private final AudioFormatNormalizer audioFormatNormalizer;
+    private final ArtistMatchingService artistMatchingService;
     
-    public FailedFileHandler(MusicConfig config, TagWriterService tagWriter, 
+    public FailedFileHandler(MusicConfig config, TagWriterService tagWriter,
                              CoverArtService coverArtService, ProcessedFileLogger processedLogger,
                              FileSystemUtils fileSystemUtils) {
         this.config = config;
@@ -37,6 +38,7 @@ public class FailedFileHandler {
         this.processedLogger = processedLogger;
         this.fileSystemUtils = fileSystemUtils;
         this.audioFormatNormalizer = new AudioFormatNormalizer(config);
+        this.artistMatchingService = new ArtistMatchingService(config);
     }
 
     /**
@@ -133,7 +135,13 @@ public class FailedFileHandler {
                     LogCollector.addLog("WARN", "  " + I18nUtil.getMessage("main.partial.recognition.embed.failed"));
                 }
             }
-            
+
+            // LLM 匹配逻辑：如果启用且源文件有艺术家标签，尝试匹配并移动到 outputDirectory
+            if (config.isEnableLLMMatching() && tryLLMMatchAndMove(audioFile, targetFile)) {
+                log.info("LLM 匹配成功，文件已移动到 outputDirectory");
+                return;
+            }
+
             log.info(I18nUtil.getMessage("main.partial.recognition.complete") + ": {}", targetFile.getAbsolutePath());
             LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.partial.recognition.complete") + ": " + relativePath);
             log.info("========================================");
@@ -202,7 +210,7 @@ public class FailedFileHandler {
             // 构建目标文件夹路径
             String folderName = albumRootDir.getName();
             File targetFolder = new File(config.getPartialDirectory(), folderName);
-            
+
             // 如果目标文件夹已存在，跳过复制
             if (targetFolder.exists()) {
                 log.debug("部分识别专辑文件夹已存在，跳过复制: {}", targetFolder.getAbsolutePath());
@@ -280,6 +288,13 @@ public class FailedFileHandler {
                 log.info("封面内嵌完成: 成功 {} 个, 跳过 {} 个(已有封面), 失败 {} 个",
                     embedSuccessCount, embedSkipCount, embedFailCount);
                 LogCollector.addLog("SUCCESS", "  " + I18nUtil.getMessage("main.partial.recognition.embed.album.complete", embedSuccessCount, embedSkipCount));
+            }
+
+            // LLM 匹配逻辑：如果启用且源文件有艺术家标签，尝试匹配并移动到 outputDirectory
+            log.info("LLM 匹配配置检查: enabled={}", config.isEnableLLMMatching());
+            if (config.isEnableLLMMatching() && !audioFiles.isEmpty() && tryLLMMatchAndMoveAlbum(audioFiles.get(0), targetFolder)) {
+                log.info("LLM 匹配成功，专辑已移动到 outputDirectory");
+                return;
             }
 
             log.info(I18nUtil.getMessage("main.partial.recognition.album.complete") + ": {}", targetFolder.getAbsolutePath());
@@ -363,7 +378,250 @@ public class FailedFileHandler {
 
         return null;
     }
-    
+
+    /**
+     * 尝试使用 LLM 匹配艺术家并移动文件到 outputDirectory
+     * @return true 如果匹配成功并移动，false 否则
+     */
+    private boolean tryLLMMatchAndMove(File sourceFile, File partialFile) {
+        try {
+            // 读取源文件的艺术家标签
+            com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(sourceFile);
+            if (metadata == null || metadata.getArtist() == null || metadata.getArtist().trim().isEmpty()) {
+                log.debug("源文件没有艺术家标签，跳过 LLM 匹配");
+                return false;
+            }
+
+            String sourceArtist = metadata.getArtist();
+            log.info("检测到源文件艺术家标签: {}", sourceArtist);
+
+            // 调用 LLM 匹配
+            ArtistMatchingService.MatchResult matchResult = artistMatchingService.matchArtist(sourceArtist);
+            if (matchResult == null) {
+                log.info("LLM 未找到匹配的艺术家");
+                return false;
+            }
+
+            String matchedArtist = matchResult.getMatchedArtist();
+            log.info("LLM 匹配到艺术家: {}", matchedArtist);
+
+            // 构建目标路径：outputDirectory/艺术家/专辑/文件
+            String albumName = metadata.getAlbum();
+            if (albumName == null || albumName.trim().isEmpty()) {
+                albumName = "Unknown Album";
+            }
+
+            File artistDir = new File(config.getOutputDirectory(), matchedArtist);
+            File albumDir = new File(artistDir, albumName);
+            albumDir.mkdirs();
+
+            File finalFile = new File(albumDir, partialFile.getName());
+
+            // 移动文件
+            Files.move(partialFile.toPath(), finalFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            log.info("文件已移动到: {}", finalFile.getAbsolutePath());
+            LogCollector.addLog("SUCCESS", "LLM 匹配成功，文件移动到: " + matchedArtist + "/" + albumName);
+
+            return true;
+        } catch (Exception e) {
+            log.error("LLM 匹配处理失败: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
+    /**
+     * 尝试使用 LLM 匹配艺术家并移动整个专辑到 outputDirectory
+     * @return true 如果匹配成功并移动，false 否则
+     */
+    private boolean tryLLMMatchAndMoveAlbum(File sourceFile, File partialFolder) {
+        try {
+            // 收集专辑中所有音频文件
+            List<File> audioFiles = new ArrayList<>();
+            collectAudioFiles(partialFolder, audioFiles);
+
+            if (audioFiles.isEmpty()) {
+                return false;
+            }
+
+            // 检查是否有多个不同的艺术家
+            String finalArtist = checkMultipleArtists(audioFiles);
+
+            if (finalArtist == null) {
+                // 没有艺术家标签，跳过
+                log.debug("源文件没有艺术家标签，跳过 LLM 匹配");
+                return false;
+            }
+
+            String matchedArtist;
+            if (finalArtist.equals("Various Artists")) {
+                // 多艺术家专辑，直接使用 Various Artists
+                matchedArtist = "Various Artists";
+                log.info("检测到多艺术家专辑，使用 Various Artists");
+            } else {
+                // 单一艺术家，进行 LLM 匹配
+                log.info("检测到源文件艺术家标签: {}", finalArtist);
+                ArtistMatchingService.MatchResult matchResult = artistMatchingService.matchArtist(finalArtist);
+                if (matchResult == null) {
+                    log.info("LLM 未找到匹配的艺术家");
+                    return false;
+                }
+                matchedArtist = matchResult.getMatchedArtist();
+                log.info("LLM 匹配到艺术家: {}", matchedArtist);
+            }
+
+            com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(sourceFile);
+            String albumName = metadata.getAlbum();
+            if (albumName == null || albumName.trim().isEmpty()) {
+                albumName = "Unknown Album";
+            }
+
+            File artistDir = new File(config.getOutputDirectory(), matchedArtist);
+            File albumDir = new File(artistDir, albumName);
+            albumDir.mkdirs();
+
+            // 移动整个文件夹
+            File finalFolder = new File(artistDir, albumName);
+            fileSystemUtils.copyDirectoryRecursively(partialFolder.toPath(), finalFolder.toPath());
+
+            // 更新标签
+            if (matchedArtist.equals("Various Artists")) {
+                // 多艺术家：只设置专辑艺术家为 Various Artists
+                updateAlbumArtistInFolder(finalFolder, "Various Artists");
+            } else {
+                // 单艺术家：更新所有文件的艺术家标签
+                updateArtistTagsInFolder(finalFolder, matchedArtist);
+            }
+
+            // 删除 partialDirectory 中的文件夹
+            deleteDirectory(partialFolder);
+
+            log.info("专辑已移动到: {}", finalFolder.getAbsolutePath());
+            LogCollector.addLog("SUCCESS", "LLM 匹配成功，专辑移动到: " + matchedArtist + "/" + albumName);
+
+            return true;
+        } catch (Exception e) {
+            log.error("LLM 匹配处理失败: {}", e.getMessage(), e);
+            return false;
+        }
+    }
+
+    private void deleteDirectory(File dir) {
+        if (dir.isDirectory()) {
+            File[] files = dir.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    deleteDirectory(file);
+                }
+            }
+        }
+        dir.delete();
+    }
+
+    /**
+     * 检查专辑中是否有多个不同的艺术家
+     * @return 艺术家名称，如果是多艺术家返回 "Various Artists"，如果没有艺术家返回 null
+     */
+    private String checkMultipleArtists(List<File> audioFiles) {
+        String firstArtist = null;
+        boolean hasMultipleArtists = false;
+
+        for (File file : audioFiles) {
+            try {
+                com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(file);
+                if (metadata == null || metadata.getArtist() == null || metadata.getArtist().trim().isEmpty()) {
+                    continue;
+                }
+
+                String artist = metadata.getArtist().trim();
+                if (firstArtist == null) {
+                    firstArtist = artist;
+                } else if (!firstArtist.equals(artist)) {
+                    hasMultipleArtists = true;
+                    break;
+                }
+            } catch (Exception e) {
+                log.debug("读取标签失败: {}", file.getName());
+            }
+        }
+
+        if (firstArtist == null) {
+            return null;
+        }
+        return hasMultipleArtists ? "Various Artists" : firstArtist;
+    }
+
+    /**
+     * 递归收集文件夹中的所有音频文件
+     */
+    private void collectAudioFiles(File folder, List<File> result) {
+        File[] files = folder.listFiles();
+        if (files == null) return;
+
+        for (File file : files) {
+            if (file.isDirectory()) {
+                collectAudioFiles(file, result);
+            } else if (file.isFile() && isAudioFile(file)) {
+                result.add(file);
+            }
+        }
+    }
+
+    /**
+     * 更新文件夹中所有音频文件的艺术家标签
+     */
+    private void updateArtistTagsInFolder(File folder, String newArtist) {
+        File[] files = folder.listFiles();
+        if (files == null) return;
+
+        for (File file : files) {
+            if (file.isDirectory()) {
+                updateArtistTagsInFolder(file, newArtist);
+            } else if (file.isFile() && isAudioFile(file)) {
+                try {
+                    com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(file);
+                    if (metadata != null) {
+                        metadata.setArtist(newArtist);
+                        tagWriter.updateTagsOnExistingFile(file, metadata, null);
+                        log.debug("已更新艺术家标签: {} -> {}", file.getName(), newArtist);
+                    }
+                } catch (Exception e) {
+                    log.warn("更新标签失败: {} - {}", file.getName(), e.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * 更新文件夹中所有音频文件的专辑艺术家标签
+     */
+    private void updateAlbumArtistInFolder(File folder, String albumArtist) {
+        File[] files = folder.listFiles();
+        if (files == null) return;
+
+        for (File file : files) {
+            if (file.isDirectory()) {
+                updateAlbumArtistInFolder(file, albumArtist);
+            } else if (file.isFile() && isAudioFile(file)) {
+                try {
+                    com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(file);
+                    if (metadata != null) {
+                        metadata.setAlbumArtist(albumArtist);
+                        tagWriter.updateTagsOnExistingFile(file, metadata, null);
+                        log.debug("已更新专辑艺术家标签: {} -> {}", file.getName(), albumArtist);
+                    }
+                } catch (Exception e) {
+                    log.warn("更新标签失败: {} - {}", file.getName(), e.getMessage());
+                }
+            }
+        }
+    }
+
+    private boolean isAudioFile(File file) {
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".mp3") || name.endsWith(".flac") ||
+               name.endsWith(".m4a") || name.endsWith(".wav");
+    }
+
     /**
      * 复制失败的单个文件到失败目录
      */

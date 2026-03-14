@@ -306,3 +306,24 @@ release.countryPriority=
 #    - Restart application after changing language
 #
 # ========================================
+
+# ========================================
+# LLM Artist Matching Configuration (Optional)
+# ========================================
+
+# Enable LLM intelligent matching (only for partial recognition)
+# When files enter partial recognition directory, use LLM to match artist names
+# Supports romanization, aliases, etc. Auto-moves to output directory on success
+llm.matching.enabled=false
+
+# LLM API Keys (supports multiple, comma-separated, retry in order)
+# Example: key1,key2,key3
+llm.apiKey=
+
+# LLM API URLs (supports multiple, comma-separated)
+# Example: https://api.anthropic.com/v1/messages,https://api.openai.com/v1/chat/completions
+llm.apiUrl=https://api.anthropic.com/v1/messages
+
+# LLM Model Names (supports multiple, comma-separated)
+# Example: claude-3-5-sonnet-20241022,gpt-4
+llm.model=claude-3-5-sonnet-20241022

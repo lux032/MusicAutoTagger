@@ -82,7 +82,11 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("audioNormalizeFfmpegPath", "audio.normalize.ffmpegPath"),
             Map.entry("cueSplitEnabled", "cue.split.enabled"),
             Map.entry("cueSplitOutputDir", "cue.split.outputDir"),
-            Map.entry("releaseCountryPriority", "release.countryPriority")
+            Map.entry("releaseCountryPriority", "release.countryPriority"),
+            Map.entry("enableLLMMatching", "llm.matching.enabled"),
+            Map.entry("llmApiKey", "llm.apiKey"),
+            Map.entry("llmApiUrl", "llm.apiUrl"),
+            Map.entry("llmModel", "llm.model")
         );
         this.absolutePathFields = Set.of(
             "monitorDirectory",
@@ -157,6 +161,10 @@ public class ConfigServlet extends HttpServlet {
         handleBoolean(body, updates, propertyUpdates, "cueSplitEnabled");
         handleString(body, updates, propertyUpdates, "cueSplitOutputDir", false);
         handleString(body, updates, propertyUpdates, "releaseCountryPriority", false);
+        handleBoolean(body, updates, propertyUpdates, "enableLLMMatching");
+        handleString(body, updates, propertyUpdates, "llmApiKey", false);
+        handleString(body, updates, propertyUpdates, "llmApiUrl", false);
+        handleString(body, updates, propertyUpdates, "llmModel", false);
 
         if (updates.isEmpty()) {
             respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "no.updates"));
@@ -226,6 +234,16 @@ public class ConfigServlet extends HttpServlet {
         data.put("releaseCountryPriority", config.getReleaseCountryPriority() == null || config.getReleaseCountryPriority().isEmpty()
             ? null
             : String.join(",", config.getReleaseCountryPriority()));
+        data.put("enableLLMMatching", config.isEnableLLMMatching());
+        data.put("llmApiKey", config.getLlmApiKeys() == null || config.getLlmApiKeys().isEmpty()
+            ? null
+            : String.join(",", config.getLlmApiKeys()));
+        data.put("llmApiUrl", config.getLlmApiUrls() == null || config.getLlmApiUrls().isEmpty()
+            ? null
+            : String.join(",", config.getLlmApiUrls()));
+        data.put("llmModel", config.getLlmModels() == null || config.getLlmModels().isEmpty()
+            ? null
+            : String.join(",", config.getLlmModels()));
         return data;
     }
 
@@ -414,6 +432,24 @@ public class ConfigServlet extends HttpServlet {
             List<String> priorities = (List<String>) updates.get("releaseCountryPriority");
             config.setReleaseCountryPriority(priorities);
         }
+        if (updates.containsKey("enableLLMMatching")) {
+            config.setEnableLLMMatching((Boolean) updates.get("enableLLMMatching"));
+        }
+        if (updates.containsKey("llmApiKey")) {
+            @SuppressWarnings("unchecked")
+            List<String> keys = (List<String>) updates.get("llmApiKey");
+            config.setLlmApiKeys(keys);
+        }
+        if (updates.containsKey("llmApiUrl")) {
+            @SuppressWarnings("unchecked")
+            List<String> urls = (List<String>) updates.get("llmApiUrl");
+            config.setLlmApiUrls(urls);
+        }
+        if (updates.containsKey("llmModel")) {
+            @SuppressWarnings("unchecked")
+            List<String> models = (List<String>) updates.get("llmModel");
+            config.setLlmModels(models);
+        }
     }
 
     private void handleString(Map<String, Object> body, Map<String, Object> updates,
@@ -474,6 +510,21 @@ public class ConfigServlet extends HttpServlet {
                 .toList();
             updates.put(field, priorities);
             setPropertyUpdate(propertyUpdates, field, String.join(",", priorities));
+            return;
+        }
+
+        if ("llmApiKey".equals(field) || "llmApiUrl".equals(field) || "llmModel".equals(field)) {
+            if (trimmedValue == null || trimmedValue.isEmpty()) {
+                updates.put(field, new ArrayList<String>());
+                setPropertyUpdate(propertyUpdates, field, null);
+                return;
+            }
+            List<String> values = Arrays.stream(trimmedValue.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+            updates.put(field, values);
+            setPropertyUpdate(propertyUpdates, field, String.join(",", values));
             return;
         }
 
