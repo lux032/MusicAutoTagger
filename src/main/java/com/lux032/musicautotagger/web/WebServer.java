@@ -17,6 +17,7 @@ import com.lux032.musicautotagger.service.FolderAlbumCache;
 import com.lux032.musicautotagger.service.ProcessedFileLogger;
 import com.lux032.musicautotagger.service.ReviewQueueService;
 import com.lux032.musicautotagger.service.ReviewResolutionService;
+import com.lux032.musicautotagger.service.RecoveryService;
 import com.lux032.musicautotagger.util.I18nUtil;
 import com.lux032.musicautotagger.util.AdminCredentialsStore;
 import com.lux032.musicautotagger.core.ApplicationLifecycleManager;
@@ -48,7 +49,7 @@ public class WebServer {
                      DatabaseService databaseService,
                      ApplicationLifecycleManager lifecycleManager) throws Exception {
         start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService,
-            lifecycleManager, null, null);
+            lifecycleManager, null, null, null);
     }
 
     /**
@@ -61,7 +62,8 @@ public class WebServer {
                      DatabaseService databaseService,
                      ApplicationLifecycleManager lifecycleManager,
                      ReviewQueueService reviewQueueService,
-                     ReviewResolutionService reviewResolutionService) throws Exception {
+                     ReviewResolutionService reviewResolutionService,
+                     RecoveryService recoveryService) throws Exception {
         
         server = new Server();
         
@@ -114,8 +116,13 @@ public class WebServer {
 
         // 注册待人工确认 API（写入型，会触发文件写入与移动）
         if (reviewQueueService != null && reviewResolutionService != null) {
-            ReviewServlet reviewServlet = new ReviewServlet(reviewQueueService, reviewResolutionService);
+            ReviewServlet reviewServlet = new ReviewServlet(reviewQueueService, reviewResolutionService, recoveryService);
             servletHandler.addServlet(new ServletHolder(reviewServlet), "/api/review/*");
+        }
+
+        // 注册部分识别 / 识别失败恢复 API
+        if (recoveryService != null) {
+            servletHandler.addServlet(new ServletHolder(new RecoveryServlet(recoveryService)), "/api/recovery/*");
         }
 
         // API 认证过滤器

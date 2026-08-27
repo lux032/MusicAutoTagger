@@ -101,7 +101,11 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("enableLLMMatching", "llm.matching.enabled"),
             Map.entry("llmApiKey", "llm.apiKey"),
             Map.entry("llmApiUrl", "llm.apiUrl"),
-            Map.entry("llmModel", "llm.model")
+            Map.entry("llmModel", "llm.model"),
+            Map.entry("llmWebSearchEnabled", "llm.webSearchEnabled"),
+            Map.entry("recoveryWorkDirectory", "recovery.workDirectory"),
+            Map.entry("recoveryTrashDirectory", "recovery.trashDirectory"),
+            Map.entry("recoveryTrashRetentionDays", "recovery.trash.retentionDays")
         );
         this.absolutePathFields = Set.of(
             "monitorDirectory",
@@ -111,6 +115,8 @@ public class ConfigServlet extends HttpServlet {
             "processedFileLogPath",
             "coverArtCacheDirectory",
             "cueSplitOutputDir"
+            // recoveryWorkDirectory / recoveryTrashDirectory 不列入：
+            // 默认值 data/recovery-trash 是相对路径，强制绝对路径会让默认值无法原样回写
         );
         this.allowedLanguages = Set.of("zh_CN", "en_US");
         this.allowedDbTypes = Set.of("file", "mysql");
@@ -193,6 +199,10 @@ public class ConfigServlet extends HttpServlet {
         handleString(body, updates, propertyUpdates, "llmApiKey", false);
         handleString(body, updates, propertyUpdates, "llmApiUrl", false);
         handleString(body, updates, propertyUpdates, "llmModel", false);
+        handleString(body, updates, propertyUpdates, "llmWebSearchEnabled", false);
+        handleString(body, updates, propertyUpdates, "recoveryWorkDirectory", false);
+        handleString(body, updates, propertyUpdates, "recoveryTrashDirectory", false);
+        handleInteger(body, updates, propertyUpdates, "recoveryTrashRetentionDays");
 
         if (updates.isEmpty()) {
             respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "no.updates"));
@@ -274,6 +284,12 @@ public class ConfigServlet extends HttpServlet {
         data.put("llmModel", config.getLlmModels() == null || config.getLlmModels().isEmpty()
             ? null
             : String.join(",", config.getLlmModels()));
+        data.put("llmWebSearchEnabled", config.getLlmWebSearchEnabled() == null ? null
+            : config.getLlmWebSearchEnabled().stream().map(String::valueOf)
+                .collect(java.util.stream.Collectors.joining(",")));
+        data.put("recoveryWorkDirectory", config.getRecoveryWorkDirectory());
+        data.put("recoveryTrashDirectory", config.getRecoveryTrashDirectory());
+        data.put("recoveryTrashRetentionDays", config.getRecoveryTrashRetentionDays());
         return data;
     }
 
@@ -481,6 +497,23 @@ public class ConfigServlet extends HttpServlet {
             List<String> models = (List<String>) updates.get("llmModel");
             config.setLlmModels(models);
         }
+        if (updates.containsKey("llmWebSearchEnabled")) {
+            @SuppressWarnings("unchecked")
+            List<Boolean> flags = (List<Boolean>) updates.get("llmWebSearchEnabled");
+            config.setLlmWebSearchEnabled(flags);
+        }
+        if (updates.containsKey("recoveryWorkDirectory")) {
+            config.setRecoveryWorkDirectory((String) updates.get("recoveryWorkDirectory"));
+        }
+        if (updates.containsKey("recoveryTrashDirectory")) {
+            // 置空时回退到默认值，null 会在 saveConfig 里抛 NPE
+            String trashDirectory = (String) updates.get("recoveryTrashDirectory");
+            config.setRecoveryTrashDirectory(
+                trashDirectory == null || trashDirectory.isBlank() ? "data/recovery-trash" : trashDirectory);
+        }
+        if (updates.containsKey("recoveryTrashRetentionDays")) {
+            config.setRecoveryTrashRetentionDays((Integer) updates.get("recoveryTrashRetentionDays"));
+        }
     }
 
     private void handleString(Map<String, Object> body, Map<String, Object> updates,
@@ -568,6 +601,16 @@ public class ConfigServlet extends HttpServlet {
                 .toList();
             updates.put(field, values);
             setPropertyUpdate(propertyUpdates, field, String.join(",", values));
+            return;
+        }
+
+        if ("llmWebSearchEnabled".equals(field)) {
+            List<Boolean> flags = trimmedValue == null ? new ArrayList<>()
+                : Arrays.stream(trimmedValue.split(","))
+                    .map(String::trim).map(Boolean::parseBoolean).toList();
+            updates.put(field, flags);
+            setPropertyUpdate(propertyUpdates, field, flags.stream().map(String::valueOf)
+                .collect(java.util.stream.Collectors.joining(",")));
             return;
         }
 

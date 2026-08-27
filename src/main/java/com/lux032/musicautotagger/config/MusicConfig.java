@@ -99,6 +99,8 @@ public class MusicConfig {
     private List<String> llmApiKeys; // LLM API Keys（支持多个）
     private List<String> llmApiUrls; // LLM API URLs（支持多个）
     private List<String> llmModels; // LLM 模型名称（支持多个）
+    /** 与 LLM 端点按下标对应：是否允许参与原生 Web Search */
+    private List<Boolean> llmWebSearchEnabled;
 
     // LLM 通用调用参数（阶段七 #21）
     /** 协议：auto / anthropic / openai（auto 时按 URL 猜） */
@@ -121,6 +123,13 @@ public class MusicConfig {
     private boolean partialRequireReadableTags;
     /** album / tracknumber 的最低覆盖率 */
     private double partialMinTagCoverage;
+
+    // 恢复与联网辅助识别
+    /** 原子归档工作目录；空值时使用 outputDirectory/.recovery-work */
+    private String recoveryWorkDirectory;
+    /** 成功后隔离副本回收站保留天数：0 立即删除，-1 永久保留 */
+    private int recoveryTrashRetentionDays;
+    private String recoveryTrashDirectory;
 
     private static MusicConfig instance;
     
@@ -178,6 +187,7 @@ public class MusicConfig {
         this.llmApiKeys = new ArrayList<>();
         this.llmApiUrls = new ArrayList<>();
         this.llmModels = new ArrayList<>();
+        this.llmWebSearchEnabled = new ArrayList<>();
 
         // LLM 通用调用参数默认值
         this.llmProvider = "auto";
@@ -194,6 +204,10 @@ public class MusicConfig {
         // 部分识别准入默认值：封面 + 标签可读性双门槛
         this.partialRequireReadableTags = true;
         this.partialMinTagCoverage = 0.8;
+
+        this.recoveryWorkDirectory = null;
+        this.recoveryTrashRetentionDays = 7;
+        this.recoveryTrashDirectory = "data/recovery-trash";
 
     }
     
@@ -431,6 +445,15 @@ public class MusicConfig {
                         .collect(java.util.stream.Collectors.toList());
                 }
             }
+            if (props.containsKey("llm.webSearchEnabled")) {
+                String flags = props.getProperty("llm.webSearchEnabled", "").trim();
+                if (!flags.isEmpty()) {
+                    this.llmWebSearchEnabled = Arrays.stream(flags.split(","))
+                        .map(String::trim)
+                        .map(Boolean::parseBoolean)
+                        .collect(java.util.stream.Collectors.toList());
+                }
+            }
 
             // 加载 LLM 通用调用参数（阶段七 #21）
             if (props.containsKey("llm.provider")) {
@@ -467,6 +490,19 @@ public class MusicConfig {
                 this.llmAlbumAutoApplyMinConfidence = parseDoubleInRange(
                     props.getProperty("llm.album.autoApplyMinConfidence"),
                     this.llmAlbumAutoApplyMinConfidence, 0.0, 1.0, "llm.album.autoApplyMinConfidence");
+            }
+
+            // 加载恢复与原子归档配置
+            if (props.containsKey("recovery.workDirectory")) {
+                this.recoveryWorkDirectory = props.getProperty("recovery.workDirectory").trim();
+            }
+            if (props.containsKey("recovery.trashDirectory")) {
+                this.recoveryTrashDirectory = props.getProperty("recovery.trashDirectory").trim();
+            }
+            if (props.containsKey("recovery.trash.retentionDays")) {
+                this.recoveryTrashRetentionDays = parseIntInRange(
+                    props.getProperty("recovery.trash.retentionDays"),
+                    this.recoveryTrashRetentionDays, -1, 365, "recovery.trash.retentionDays");
             }
 
             // 加载部分识别准入配置（阶段八 #23/#24）
@@ -625,6 +661,10 @@ public class MusicConfig {
         if (llmModels != null && !llmModels.isEmpty()) {
             props.setProperty("llm.model", String.join(",", llmModels));
         }
+        if (llmWebSearchEnabled != null && !llmWebSearchEnabled.isEmpty()) {
+            props.setProperty("llm.webSearchEnabled", llmWebSearchEnabled.stream()
+                .map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
+        }
         props.setProperty("llm.provider", llmProvider == null ? "auto" : llmProvider);
         props.setProperty("llm.maxTokens", String.valueOf(llmMaxTokens));
         props.setProperty("llm.temperature", String.valueOf(llmTemperature));
@@ -635,6 +675,14 @@ public class MusicConfig {
         props.setProperty("llm.album.autoApplyMinConfidence", String.valueOf(llmAlbumAutoApplyMinConfidence));
         props.setProperty("file.partial.requireReadableTags", String.valueOf(partialRequireReadableTags));
         props.setProperty("file.partial.minTagCoverage", String.valueOf(partialMinTagCoverage));
+        if (recoveryWorkDirectory != null && !recoveryWorkDirectory.isEmpty()) {
+            props.setProperty("recovery.workDirectory", recoveryWorkDirectory);
+        }
+        // Properties 不接受 null value，直接 setProperty 会抛 NPE 并让整个配置保存失败
+        if (recoveryTrashDirectory != null && !recoveryTrashDirectory.isEmpty()) {
+            props.setProperty("recovery.trashDirectory", recoveryTrashDirectory);
+        }
+        props.setProperty("recovery.trash.retentionDays", String.valueOf(recoveryTrashRetentionDays));
 
         try (FileOutputStream fos = new FileOutputStream(configPath.toFile())) {
             props.store(fos, "Auto-generated by MusicAutoTagger");

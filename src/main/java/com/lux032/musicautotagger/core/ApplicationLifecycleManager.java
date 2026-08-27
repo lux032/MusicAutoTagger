@@ -46,6 +46,7 @@ public class ApplicationLifecycleManager {
     // 阶段六：待人工确认链路
     private ReviewQueueService reviewQueueService;
     private ReviewResolutionService reviewResolutionService;
+    private RecoveryService recoveryService;
     
     public ApplicationLifecycleManager(MusicConfig config) {
         this.config = config;
@@ -158,6 +159,11 @@ public class ApplicationLifecycleManager {
             folderAlbumCache
         );
         audioFileProcessorService.setReviewQueueService(reviewQueueService);
+
+        // 部分识别 / 失败目录的人工重新识别入口
+        recoveryService = new RecoveryService(
+            config, audioFileProcessorService, processedLogger, reviewQueueService,
+            failedFileHandler, fileSystemUtils, tagWriter, fingerprintService);
         
         // Level 4: 初始化文件监控服务
         log.info(I18nUtil.getMessage("app.init.file.monitor"));
@@ -174,7 +180,7 @@ public class ApplicationLifecycleManager {
         try {
             webServer = new WebServer(8080);
             webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this,
-                reviewQueueService, reviewResolutionService);
+                reviewQueueService, reviewResolutionService, recoveryService);
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.web.start.error"), e);
             log.warn(I18nUtil.getMessage("main.web.unavailable"));
@@ -239,6 +245,9 @@ public class ApplicationLifecycleManager {
 
         try {
             // 按依赖关系逆序关闭服务
+            if (recoveryService != null) {
+                recoveryService.close();
+            }
             
             // 关闭 Web 服务器
             if (webServer != null && webServer.isRunning()) {

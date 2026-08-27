@@ -120,14 +120,20 @@ public class FileSystemUtils {
      * 不可靠时调用方仍可将 count 用于队列/样本规模控制，但不得用于候选发行版评分或硬门槛。
      */
     public MusicFileCountResult inspectMusicFilesInFolder(File audioFile) {
+        return inspectMusicFilesInFolder(audioFile, null);
+    }
+
+    /** 恢复任务可显式固定 Album Root，避免按 monitorDirectory 重新推导。 */
+    public MusicFileCountResult inspectMusicFilesInFolder(File audioFile, File explicitAlbumRoot) {
         File parentDir = audioFile.getParentFile();
         if (parentDir == null || !parentDir.exists() || !parentDir.isDirectory()) {
             return new MusicFileCountResult(1, false,
                 Collections.singletonList("无法确定文件所在目录"), Collections.emptyList());
         }
 
-        boolean looseFile = isLooseFileInMonitorRoot(audioFile);
-        File scanRoot = looseFile ? parentDir : getAlbumRootDirectory(audioFile);
+        boolean looseFile = explicitAlbumRoot == null && isLooseFileInMonitorRoot(audioFile);
+        File scanRoot = explicitAlbumRoot != null ? explicitAlbumRoot
+            : (looseFile ? parentDir : getAlbumRootDirectory(audioFile));
 
         String cacheKey = scanRoot.getAbsolutePath();
         CachedInspection cached = inspectionCache.get(cacheKey);

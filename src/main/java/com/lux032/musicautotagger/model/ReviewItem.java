@@ -20,6 +20,26 @@ import java.util.List;
 @Data
 public class ReviewItem {
 
+    public enum VerificationSource {
+        MUSICBRAINZ,
+        ONLINE_SEARCH,
+        SYNTHESIZED,
+        MANUAL_REJECTED
+    }
+
+    /**
+     * 恢复任务的提交阶段。
+     *
+     * 输出目录提交成功与隔离副本入回收站是两步文件系统操作，
+     * 中间崩溃会造成「输出已完成但源文件还在」的不一致状态，
+     * 重试时会撞上 destination.exists 而永远卡住。
+     * 提交成功后立即落盘 COMMITTED，启动时只补做剩余收尾，不重写输出。
+     */
+    public enum RecoveryCommitState {
+        COMMITTED,
+        COMPLETED
+    }
+
     public enum Status {
         /** 等待人工确认 */
         PENDING_REVIEW,
@@ -65,6 +85,25 @@ public class ReviewItem {
 
     /** 人工处置结果说明 */
     private String resolutionNote;
+
+    /** 确认结果来自 MusicBrainz、联网来源还是合成信息 */
+    private VerificationSource verificationSource;
+
+    /** 恢复任务原始来源，确认成功后用于把隔离副本移入回收站 */
+    private String recoverySourceType;
+    private String recoverySourcePath;
+    /** 提交阶段；为 COMMITTED 说明输出已落地，仅剩回收站收尾 */
+    private RecoveryCommitState recoveryCommitState;
+    /** 已提交到输出目录的顶层路径，供启动收尾核对 */
+    private List<String> committedOutputPaths = new ArrayList<>();
+    /** 本地证据摘要；文件发生变化时旧联网候选会过期 */
+    private String evidenceHash;
+    private boolean onlineEvidenceStale;
+    private long onlineSearchedAt;
+    private String onlineSearchProvider;
+    private String onlineSearchModel;
+    private List<OnlineCandidate> onlineCandidates = new ArrayList<>();
+    private List<OnlineEvidence> onlineClues = new ArrayList<>();
 
     /**
      * LLM 封闭式判定结果（阶段七 #22）
@@ -136,6 +175,54 @@ public class ReviewItem {
      * 分两级：
      * - Release Group 级：来自 AcoustID 的候选（零额外 API 调用）
      * - Release 级：人工打开详情时才从 MusicBrainz 展开，包含曲目数 / 格式 / 时长序列
+     */
+    @Data
+    public static class OnlineEvidence {
+        private String url;
+        private String domain;
+        private String title;
+        private String snippet;
+        private long retrievedAt;
+        /** HIGH / MEDIUM / LOW */
+        private String reliability;
+    }
+
+    @Data
+    public static class OnlineTrack {
+        private int discNo;
+        private int trackNo;
+        private String title;
+        private String artist;
+        private Integer duration;
+        private String matchedFilePath;
+        private double matchConfidence;
+    }
+
+    @Data
+    public static class OnlineCandidate {
+        private String id;
+        private String title;
+        private String artist;
+        private String albumArtist;
+        private String releaseDate;
+        private String edition;
+        private String country;
+        private String label;
+        private String catalogNumber;
+        private String coverUrl;
+        private String coverSourceUrl;
+        private double confidence;
+        private double trackCoverage;
+        private boolean officialCandidate;
+        private String reason;
+        private List<OnlineTrack> tracks = new ArrayList<>();
+        private List<OnlineEvidence> sources = new ArrayList<>();
+        /** 首期只开放专辑级编辑，逐曲覆盖字段为后续预留 */
+        private List<OnlineTrack> manualTrackOverrides = new ArrayList<>();
+    }
+
+    /**
+     * 候选专辑快照
      */
     @Data
     public static class CandidateSnapshot {

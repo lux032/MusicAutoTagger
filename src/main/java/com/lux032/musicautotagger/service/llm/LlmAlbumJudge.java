@@ -255,7 +255,7 @@ public class LlmAlbumJudge {
      * 宽容解析：模型有时会包上 ```json 代码块或加一句寒暄，
      * 这里取第一个平衡的 {...} 片段再交给 Gson。
      */
-    static JsonObject parseJsonObject(String text) {
+    public static JsonObject parseJsonObject(String text) {
         if (text == null) {
             return null;
         }

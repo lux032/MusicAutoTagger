@@ -93,6 +93,64 @@ public class ReviewQueueService {
         return id == null ? null : items.get(id);
     }
 
+    /**
+     * 为恢复目录创建一个不修改文件的待确认条目，供原生联网搜索写入候选。
+     *
+     * 如果同一目录已经有普通（MusicBrainz）待确认条目，只把联网证据附加上去，
+     * <b>绝不触碰它的 files</b>：那些 FileEntry 里可能带着规范化转码后的 stagedPath，
+     * 以及指纹识别得到的曲目级元数据与候选的对应关系，
+     * 覆盖后人工确认阶段会去处理错误的一批文件。
+     */
+    public synchronized ReviewItem enqueueRecoveryFolder(String folderPath, String sourceType,
+                                                         List<File> audioFiles,
+                                                         TagWriterService tagWriter,
+                                                         String evidenceHash) {
+        ReviewItem existing = findPendingByFolder(folderPath);
+        ReviewItem item = existing != null ? existing : new ReviewItem();
+
+        // 只有新建条目、或本来就由恢复流程创建的条目，才归恢复流程所有
+        boolean recoveryOwned = existing == null || existing.getRecoverySourceType() != null;
+
+        if (existing == null) {
+            item.setId(UUID.randomUUID().toString());
+            item.setCreatedAt(System.currentTimeMillis());
+            item.setFolderPath(folderPath);
+            item.setFolderName(new File(folderPath).getName());
+            item.setStatus(ReviewItem.Status.PENDING_REVIEW);
+            item.setReason("联网辅助识别");
+            items.put(item.getId(), item);
+        } else if (!recoveryOwned) {
+            String reason = existing.getReason();
+            if (reason == null || !reason.contains("联网辅助识别")) {
+                existing.setReason((reason == null || reason.isBlank() ? "" : reason + " + ") + "联网辅助识别（仅参考）");
+            }
+            log.info("目录已有普通待确认条目，联网候选仅作为参考附加，不覆盖已有文件列表: {}", folderPath);
+        }
+
+        item.setEvidenceHash(evidenceHash);
+        item.setOnlineEvidenceStale(false);
+        item.setUpdatedAt(System.currentTimeMillis());
+
+        if (recoveryOwned) {
+            item.setRecoverySourceType(sourceType);
+            item.setRecoverySourcePath(folderPath);
+
+            List<ReviewItem.FileEntry> entries = new ArrayList<>();
+            for (File audio : audioFiles) {
+                ReviewItem.FileEntry entry = new ReviewItem.FileEntry();
+                entry.setOriginalPath(audio.getAbsolutePath());
+                entry.setFileName(audio.getName());
+                MusicMetadata metadata = tagWriter == null ? null : tagWriter.readTags(audio);
+                entry.setMetadata(metadata == null ? new MusicMetadata() : stripHeavyFields(metadata));
+                if (metadata != null) entry.setDuration(metadata.getDuration());
+                entries.add(entry);
+            }
+            item.setFiles(entries);
+        }
+        saveQuietly();
+        return item;
+    }
+
     public synchronized int countPending() {
         int count = 0;
         for (ReviewItem item : items.values()) {

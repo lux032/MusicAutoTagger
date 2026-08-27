@@ -34,9 +34,31 @@ import java.util.Set;
 public class TagWriterService {
     
     private final MusicConfig config;
+    /**
+     * 恢复任务线程专用输出根目录，不影响并发运行的常规监控线程。
+     *
+     * 重要约束：覆盖值不会跨线程传递。调用方必须保证
+     * setThreadOutputRoot → processFile → clearThreadOutputRoot 全程在同一线程内完成。
+     * 若处理链路中途派发到线程池，文件会静默写入真实 outputDirectory 而绕过原子提交。
+     * RecoveryService.commitWorkspace 的文件数校验是针对这种情况的运行时兵库。
+     */
+    private final ThreadLocal<Path> outputRootOverride = new ThreadLocal<>();
     
     public TagWriterService(MusicConfig config) {
         this.config = config;
+    }
+
+    public void setThreadOutputRoot(File root) {
+        outputRootOverride.set(root.toPath().toAbsolutePath());
+    }
+
+    public void clearThreadOutputRoot() {
+        outputRootOverride.remove();
+    }
+
+    private Path outputRoot() {
+        Path override = outputRootOverride.get();
+        return override != null ? override : Paths.get(config.getOutputDirectory());
     }
     
     /**
@@ -152,16 +174,16 @@ public class TagWriterService {
             if (metadata.getAlbum() != null && !metadata.getAlbum().isEmpty()) {
                 // 有专辑艺术家和专辑信息: 输出目录/专辑艺术家/专辑/文件名
                 String albumDir = sanitizeFileName(metadata.getAlbum());
-                targetPath = Paths.get(config.getOutputDirectory(), artistDir, albumDir, newFileName);
+                targetPath = outputRoot().resolve(artistDir).resolve(albumDir).resolve(newFileName);
                 log.info("目标路径: {}/{}/{} (专辑艺术家: {})", artistDir, albumDir, newFileName, folderArtist);
             } else {
                 // 只有艺术家信息: 输出目录/专辑艺术家/文件名
-                targetPath = Paths.get(config.getOutputDirectory(), artistDir, newFileName);
+                targetPath = outputRoot().resolve(artistDir).resolve(newFileName);
                 log.info("目标路径: {}/{} (无专辑信息)", artistDir, newFileName);
             }
         } else {
             // 没有艺术家信息: 直接放在输出目录下
-            targetPath = Paths.get(config.getOutputDirectory(), newFileName);
+            targetPath = outputRoot().resolve(newFileName);
             log.warn("目标路径: {} (无艺术家信息)", newFileName);
         }
 
@@ -175,6 +197,19 @@ public class TagWriterService {
         }
 
         return targetFile;
+    }
+
+    /**
+     * 将单个文件处理到指定根目录。恢复任务用它先构建完整工作区，
+     * 避免逐首直接写入最终 outputDirectory。
+     */
+    public boolean processFileToRoot(File sourceFile, MusicMetadata metadata, byte[] coverArtData, File rootDirectory) {
+        setThreadOutputRoot(rootDirectory);
+        try {
+            return processFile(sourceFile, metadata, coverArtData);
+        } finally {
+            clearThreadOutputRoot();
+        }
     }
 
     /**

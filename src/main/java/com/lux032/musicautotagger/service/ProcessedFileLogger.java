@@ -194,6 +194,53 @@ public class ProcessedFileLogger {
     }
 
     /**
+     * 删除指定路径的已处理记录，供用户主动重新识别时使用。
+     * 文件模式会原子式重写日志；MySQL 模式按 file_path 删除。
+     */
+    public void removeProcessedRecord(File file) {
+        if (file == null) {
+            return;
+        }
+        String filePath = file.getAbsolutePath();
+        if (isDbMode) {
+            try (Connection conn = databaseService.getConnection();
+                 PreparedStatement pstmt = conn.prepareStatement("DELETE FROM processed_files WHERE file_path = ?")) {
+                pstmt.setString(1, filePath);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException("删除已处理记录失败", e);
+            }
+            return;
+        }
+
+        synchronized (fileWriteLock) {
+            File logFile = new File(config.getProcessedFileLogPath());
+            if (!logFile.exists()) {
+                return;
+            }
+            File tempFile = new File(logFile.getAbsolutePath() + ".rewrite.tmp");
+            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
+                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (!line.startsWith(filePath + "|")) {
+                        writer.write(line);
+                        writer.newLine();
+                    }
+                }
+            } catch (IOException e) {
+                throw new RuntimeException("重写已处理日志失败", e);
+            }
+            try {
+                java.nio.file.Files.move(tempFile.toPath(), logFile.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                throw new RuntimeException("替换已处理日志失败", e);
+            }
+        }
+    }
+
+    /**
      * 计算文件MD5哈希值
      */
     private String calculateFileHash(File file) throws IOException {

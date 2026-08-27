@@ -43,11 +43,18 @@ public class ReviewServlet extends HttpServlet {
 
     private final ReviewQueueService reviewQueue;
     private final ReviewResolutionService resolutionService;
+    private final com.lux032.musicautotagger.service.RecoveryService recoveryService;
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     public ReviewServlet(ReviewQueueService reviewQueue, ReviewResolutionService resolutionService) {
+        this(reviewQueue, resolutionService, null);
+    }
+
+    public ReviewServlet(ReviewQueueService reviewQueue, ReviewResolutionService resolutionService,
+                         com.lux032.musicautotagger.service.RecoveryService recoveryService) {
         this.reviewQueue = reviewQueue;
         this.resolutionService = resolutionService;
+        this.recoveryService = recoveryService;
     }
 
     @Override
@@ -118,6 +125,14 @@ public class ReviewServlet extends HttpServlet {
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
                     return;
                 }
+                case "online-confirm": {
+                    if (recoveryService == null) throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
+                    ReviewItem item = recoveryService.confirmOnlineCandidate(id, str(body.get("candidateId")),
+                        str(body.get("albumTitle")), str(body.get("albumArtist")), str(body.get("releaseDate")),
+                        str(body.get("edition")), str(body.get("archiveDirectoryName")));
+                    respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
+                    return;
+                }
                 case "llm": {
                     // 阶段七 #22：LLM 辅助判定。封闭选择题（从候选中选 / 都不是），
                     // 结论默认仍是「待人工确认」，除非 llm.album.autoApply 显式打开。
@@ -131,6 +146,9 @@ public class ReviewServlet extends HttpServlet {
         } catch (ReviewResolutionService.ResolutionException e) {
             log.warn("待确认条目处置被拒绝: {} - {}", id, e.getMessage());
             respond(resp, e.getHttpStatus(), Map.of("error", e.getMessage()));
+        } catch (java.io.IOException e) {
+            log.warn("联网候选确认被拒绝: {} - {}", id, e.getMessage());
+            respond(resp, 400, Map.of("error", e.getMessage() == null ? "online.confirm.failed" : e.getMessage()));
         } catch (Exception e) {
             log.error("待确认条目处置失败: {}", id, e);
             respond(resp, 500, Map.of("error", String.valueOf(e.getMessage())));
@@ -195,6 +213,10 @@ public class ReviewServlet extends HttpServlet {
         map.put("updatedAt", item.getUpdatedAt());
         map.put("resolutionNote", item.getResolutionNote());
         map.put("llmSuggestion", toLlmView(item.getLlmSuggestion()));
+        map.put("verificationSource", item.getVerificationSource() == null ? null : item.getVerificationSource().name());
+        map.put("onlineCandidateCount", item.getOnlineCandidates() == null ? 0 : item.getOnlineCandidates().size());
+        map.put("onlineEvidenceStale", item.isOnlineEvidenceStale());
+        map.put("onlineSearchedAt", item.getOnlineSearchedAt());
         return map;
     }
 
@@ -261,6 +283,10 @@ public class ReviewServlet extends HttpServlet {
             }
         }
         map.put("files", files);
+        map.put("onlineSearchProvider", item.getOnlineSearchProvider());
+        map.put("onlineSearchModel", item.getOnlineSearchModel());
+        map.put("onlineClues", item.getOnlineClues());
+        map.put("onlineCandidates", item.getOnlineCandidates());
         return map;
     }
 

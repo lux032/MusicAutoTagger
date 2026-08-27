@@ -41,6 +41,8 @@ public class AudioFileProcessorService {
     private final Map<String, Integer> folderUnprocessedCounts = new java.util.concurrent.ConcurrentHashMap<>();
     /** 人工确认队列（可选，未启用时为 null） */
     private ReviewQueueService reviewQueueService;
+    /** 人工恢复任务显式指定的专辑根目录，避免隔离目录被误判为监控目录结构。 */
+    private final ThreadLocal<File> recoveryAlbumRoot = new ThreadLocal<>();
     
     public AudioFileProcessorService(MusicConfig config,
                                      AudioFingerprintService fingerprintService,
@@ -76,6 +78,19 @@ public class AudioFileProcessorService {
      */
     public void setReviewQueueService(ReviewQueueService reviewQueueService) {
         this.reviewQueueService = reviewQueueService;
+    }
+
+    /**
+     * 从 partial/failed 隔离目录手动重试。
+     * 显式传入整张专辑的根目录，确保多碟子目录也作为同一个文件夹处理。
+     */
+    public ProcessResult processRecoveryFile(File audioFile, File albumRootDir) {
+        recoveryAlbumRoot.set(albumRootDir);
+        try {
+            return processAudioFile(audioFile);
+        } finally {
+            recoveryAlbumRoot.remove();
+        }
     }
     
     /**
@@ -152,7 +167,9 @@ public class AudioFileProcessorService {
             }
 
             // 0.5. 获取专辑根目录（监控目录的第一级子目录）
-            File albumRootDir = fileSystemUtils.getAlbumRootDirectory(originalAudioFile);
+            File explicitRecoveryRoot = recoveryAlbumRoot.get();
+            File albumRootDir = explicitRecoveryRoot != null
+                ? explicitRecoveryRoot : fileSystemUtils.getAlbumRootDirectory(originalAudioFile);
             String folderPath = albumRootDir.getAbsolutePath();
             
             // 0.5.1 统计专辑根目录内音乐文件数量，并评估这个数字是否适合参与专辑匹配。
@@ -160,7 +177,7 @@ public class AudioFileProcessorService {
             //   reliable=false（hard）  -> 禁止曲目数参与评分与门槛
             //   safeForFastLock=false     -> 仅禁用「第一文件立即锁定」这类激进优化
             FileSystemUtils.MusicFileCountResult musicFileCount =
-                fileSystemUtils.inspectMusicFilesInFolder(originalAudioFile);
+                fileSystemUtils.inspectMusicFilesInFolder(originalAudioFile, explicitRecoveryRoot);
             int musicFilesInFolder = musicFileCount.getCount();
             boolean musicFilesCountReliable = musicFileCount.isReliable();
             boolean safeForFastLock = musicFileCount.isSafeForFastLock();
@@ -174,7 +191,8 @@ public class AudioFileProcessorService {
             }
 
             // 0.6. 检测是否为散落在监控目录根目录的单个文件（保底处理）
-            boolean isLooseFileInMonitorRoot = fileSystemUtils.isLooseFileInMonitorRoot(originalAudioFile);
+            boolean isLooseFileInMonitorRoot = explicitRecoveryRoot == null
+                && fileSystemUtils.isLooseFileInMonitorRoot(originalAudioFile);
 
             // 0.4 规格检查与规范化（文件夹级别）
             FolderNormalizationPlan normalizationPlan = null;
@@ -223,6 +241,12 @@ public class AudioFileProcessorService {
                 List<Integer> folderDurations = null;
                 if (normalizationPlan != null) {
                     folderDurations = normalizationPlan.getOrComputeDurationSequence(fingerprintService);
+                    folderAlbumCache.cacheFolderDurationSequence(folderPath, folderDurations);
+                } else if (explicitRecoveryRoot != null) {
+                    List<File> recoveryFiles = new ArrayList<>();
+                    fileSystemUtils.collectAudioFilesForMarking(explicitRecoveryRoot, recoveryFiles);
+                    recoveryFiles.sort(AudioFileOrdering.comparator());
+                    folderDurations = fingerprintService.extractDurationSequence(recoveryFiles);
                     folderAlbumCache.cacheFolderDurationSequence(folderPath, folderDurations);
                 }
                 QuickScanService.QuickScanResult quickResult = quickScanService.quickScan(

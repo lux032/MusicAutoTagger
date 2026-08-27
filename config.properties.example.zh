@@ -328,6 +328,16 @@ llm.album.judge.enabled=false
 llm.album.autoApply=false
 llm.album.autoApplyMinConfidence=0.85
 
+# 原生联网搜索参与开关，与 llm.apiKey/apiUrl/model 按下标对应。
+# 只有明确设置为 true 的端点才参与联网辅助识别。
+llm.webSearchEnabled=false
+
+# 恢复任务原子工作目录；留空时默认使用 {outputDirectory}/.recovery-work
+recovery.workDirectory=
+# 恢复回收站：0=立即删除，-1=永久保留，1..365=保留天数
+recovery.trashDirectory=data/recovery-trash
+recovery.trash.retentionDays=7
+
 # ========================================
 # 人工确认队列（阶段六）
 # ========================================

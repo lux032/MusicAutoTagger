@@ -373,6 +373,17 @@ llm.album.judge.enabled=false
 llm.album.autoApply=false
 llm.album.autoApplyMinConfidence=0.85
 
+# Native web search participation flags, matched by index with llm.apiKey/apiUrl/model.
+# Only endpoints explicitly set to true are used by online assisted identification.
+# OpenAI endpoints must support Responses API web_search; Anthropic endpoints must support Web Search Tool.
+llm.webSearchEnabled=false
+
+# Recovery atomic workspace. Empty defaults to {outputDirectory}/.recovery-work
+recovery.workDirectory=
+# Recovery trash directory and retention: 0=delete immediately, -1=keep forever, 1..365 days
+recovery.trashDirectory=data/recovery-trash
+recovery.trash.retentionDays=7
+
 # ========================================
 # Manual Review Queue (Phase 6)
 # ========================================

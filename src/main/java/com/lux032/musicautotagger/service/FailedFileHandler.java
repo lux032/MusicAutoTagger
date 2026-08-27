@@ -441,6 +441,22 @@ public class FailedFileHandler {
      * 尝试使用 LLM 匹配艺术家并移动文件到 outputDirectory
      * @return true 如果匹配成功并移动，false 否则
      */
+    /**
+     * 对部分识别目录中的现有文件/文件夹手动执行一次 LLM 艺术家辅助匹配。
+     * 与自动流程共用同一套封闭候选匹配逻辑，不允许模型自由编造艺术家目录。
+     */
+    public boolean retryPartialWithLlm(File partialItem) {
+        if (partialItem == null || !partialItem.exists()) {
+            return false;
+        }
+        if (partialItem.isFile()) {
+            return tryLLMMatchAndMove(partialItem, partialItem);
+        }
+        List<File> audioFiles = new ArrayList<>();
+        collectAudioFiles(partialItem, audioFiles);
+        return !audioFiles.isEmpty() && tryLLMMatchAndMoveAlbum(audioFiles.get(0), partialItem);
+    }
+
     private boolean tryLLMMatchAndMove(File sourceFile, File partialFile) {
         try {
             // 读取源文件的艺术家标签

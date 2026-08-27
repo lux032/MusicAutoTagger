@@ -253,6 +253,16 @@
                 </div>
             </div>`;
 
+        const onlineRows = (item.onlineCandidates || []).map(c => `<div style="border:1px solid #dbe4ff;border-radius:10px;padding:12px;margin:10px 0;background:#f8faff">
+            <div><strong>${escapeHtml(c.title || '')}</strong>${c.edition ? ' · ' + escapeHtml(c.edition) : ''}</div>
+            <div class="hint">${escapeHtml(c.albumArtist || c.artist || '')} · ${escapeHtml(c.releaseDate || '日期未知')} · 置信度 ${((c.confidence||0)*100).toFixed(0)}%</div>
+            <div class="hint">${escapeHtml(c.reason || '')}</div>
+            <div class="hint">曲目表 ${(c.tracks||[]).length} 首 · 来源 ${(c.sources||[]).length} 个</div>
+            ${(c.sources||[]).map(s=>`<div class="hint">[${escapeHtml(s.reliability||'')}] ${linkOrText(s.url, s.title||s.domain||s.url)}${s.snippet?' — '+escapeHtml(s.snippet):''}</div>`).join('')}
+            ${safeUrl(c.coverUrl)?`<div class="hint">联网封面：${linkOrText(c.coverUrl,'预览')}（确认时默认不自动使用）</div>`:''}
+            ${pending && !item.onlineEvidenceStale ? `<button class="btn primary" style="margin-top:8px" onclick='confirmOnline(${JSON.stringify(c.id)},${JSON.stringify(c.title||'')},${JSON.stringify(c.albumArtist||c.artist||'')},${JSON.stringify(c.releaseDate||'')},${JSON.stringify(c.edition||'')})'>确认联网候选</button>` : ''}
+        </div>`).join('');
+
         const fileRows = (item.files || []).map(f => `<tr>
             <td>${escapeHtml(f.fileName || '')}</td>
             <td>${escapeHtml(f.title || '')}</td>
@@ -290,6 +300,13 @@
 
             ${llmBlock}
 
+            ${(item.onlineCandidates||[]).length || (item.onlineClues||[]).length ? `<div class="section">
+                <div class="section-title">联网搜索候选 ${item.onlineEvidenceStale ? '<span class="badge rejected">证据已过期</span>' : ''}</div>
+                <div class="hint">提供商 ${escapeHtml(item.onlineSearchProvider||'')} · 模型 ${escapeHtml(item.onlineSearchModel||'')} · 检索时间 ${item.onlineSearchedAt?new Date(item.onlineSearchedAt).toLocaleString():'-'}</div>
+                ${onlineRows || '<div class="empty">未找到满足来源门槛的正式候选</div>'}
+                ${(item.onlineClues||[]).length ? `<details><summary>查看其他搜索线索（${item.onlineClues.length}）— 未达来源门槛，仅供参考</summary>${item.onlineClues.map(s=>`<div class="hint">${linkOrText(s.url, s.title||s.url||'线索')}</div>`).join('')}</details>`:''}
+            </div>` : ''}
+
             <div class="section">
                 <div class="section-title">文件（${(item.files || []).length}）</div>
                 <table>
@@ -316,6 +333,17 @@
             </div>
             ${item.resolutionNote ? `<div class="hint">处置结果：${escapeHtml(item.resolutionNote)}</div>` : ''}
         `;
+    }
+
+    async function confirmOnline(candidateId,title,artist,releaseDate,edition) {
+        if (!currentId) return;
+        const albumTitle = prompt('最终专辑名：', title); if (albumTitle === null) return;
+        const albumArtist = prompt('最终专辑艺术家：', artist); if (albumArtist === null) return;
+        const date = prompt('发行日期（保留来源精度，可留空）：', releaseDate || ''); if (date === null) return;
+        const finalEdition = prompt('版本信息（与专辑名分开保存，可留空）：', edition || ''); if (finalEdition === null) return;
+        const archiveDirectoryName = prompt('归档目录名（留空则自动生成）：', ''); if (archiveDirectoryName === null) return;
+        if (!confirm('确认按该联网候选原子归档整个专辑？所有文件会先写入工作目录，全部成功后才提交。')) return;
+        await runAction('/api/review/online-confirm', {id:currentId,candidateId,albumTitle,albumArtist,releaseDate:date,edition:finalEdition,archiveDirectoryName});
     }
 
     async function confirmCandidate(releaseId, releaseGroupId) {
@@ -377,6 +405,19 @@
         return String(text == null ? '' : text)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // 联网候选里的 URL 可能直接来自模型输出，只放行 http/https，挡住 javascript: 等协议
+    function safeUrl(url) {
+        const raw = String(url == null ? '' : url).trim();
+        if (!/^https?:\/\//i.test(raw)) return null;
+        return escapeHtml(raw);
+    }
+
+    function linkOrText(url, label) {
+        const href = safeUrl(url);
+        const text = escapeHtml(label || url || '来源');
+        return href ? `<a href="${href}" target="_blank" rel="noopener">${text}</a>` : text;
     }
 
     init();
