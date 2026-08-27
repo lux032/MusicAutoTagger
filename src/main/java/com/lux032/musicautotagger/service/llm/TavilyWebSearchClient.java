@@ -150,15 +150,48 @@ public class TavilyWebSearchClient implements WebSearchClient {
     private String heuristicQuery(String userPrompt) {
         for (String line : userPrompt.split("\n")) {
             if (line.startsWith("FOLDER: ")) {
-                String folder = line.substring(8).trim()
-                    .replaceAll("[\\[\\]{}()_.]+", " ")
-                    .replaceAll("(?i)\\b(flac|mp3|wav|24bit|16bit|44 1khz|96khz|web|cd|dsd|hi res|tak|ape)\\b", " ")
-                    .replaceAll("\\s+", " ")
-                    .trim();
-                return folder.isEmpty() ? null : folder + " album";
+                String cleaned = cleanFolderName(line.substring(8).trim());
+                return cleaned == null ? null : cleaned + " album";
             }
         }
         return null;
+    }
+
+    /**
+     * 把「tuki. — バブル - Bubble (2026) [WEB FLAC 24⧸48]」这类目录名
+     * 清洗成「tuki バブル Bubble 2026」。
+     *
+     * 重点处理两件事：
+     *   1. 括号段落绝大多数是音源/规格标注，整段丢弃，但先把年份抢救出来（年份对检索有用）；
+     *   2. 文件名里的 / 常被替换成全角除号 ⧸ / ／，不还原就识别不出 24/48 这类采样率串，
+     *      会把「24⧸48」当普通词带进检索词（旧实现就是这么错的）。
+     */
+    static String cleanFolderName(String folder) {
+        if (folder == null || folder.isBlank()) {
+            return null;
+        }
+        String text = folder.replace('\u29f8', '/').replace('\uff0f', '/');
+
+        java.util.regex.Matcher yearMatcher =
+            java.util.regex.Pattern.compile("\\b(19|20)\\d{2}\\b").matcher(text);
+        String year = yearMatcher.find() ? yearMatcher.group() : null;
+
+        text = text.replaceAll("[\\[({][^\\])}]*[\\])}]", " ")
+            .replaceAll("(?i)\\b\\d{1,2}\\s?bits?\\b", " ")
+            .replaceAll("(?i)\\b\\d+(\\.\\d+)?\\s?k?hz\\b", " ")
+            // 24/48、16/44.1 这类「位深/采样率」组合
+            .replaceAll("\\b\\d{2}\\s?/\\s?\\d{2,3}(\\.\\d)?\\b", " ")
+            .replaceAll("(?i)\\b(flac|mp3|wav|alac|aac|dsd|dsf|tak|ape|tta|web|webrip|cd|cdrip|vinyl|"
+                + "hi\\s?-?\\s?res|hires|eac|log|cue|scans?|mora|ototoy|e\\s?-?onkyo)\\b", " ")
+            .replaceAll("[_.]+", " ")
+            .replaceAll("[\u2014\u2013\u2015~|/\\\\]+", " ")
+            .replaceAll("\\s+", " ")
+            .trim();
+
+        if (year != null && !text.contains(year)) {
+            text = text + " " + year;
+        }
+        return text.isEmpty() ? null : text;
     }
 
     // ==================== 第二步：调用 Tavily ====================

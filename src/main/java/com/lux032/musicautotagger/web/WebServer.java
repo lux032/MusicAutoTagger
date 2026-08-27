@@ -110,6 +110,9 @@ public class WebServer {
         ConfigServlet configServlet = new ConfigServlet(config);
         servletHandler.addServlet(new ServletHolder(configServlet), "/api/config");
 
+        // 注册 LLM 供应商 API（供应商 CRUD + 从供应商拉取模型列表）
+        servletHandler.addServlet(new ServletHolder(new LlmProviderServlet(config)), "/api/llm/providers/*");
+
         // 注册控制 API (暂停/恢复/重启)
         ControlServlet controlServlet = new ControlServlet(lifecycleManager);
         servletHandler.addServlet(new ServletHolder(controlServlet), "/api/control/*");

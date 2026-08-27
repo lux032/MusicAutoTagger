@@ -42,6 +42,17 @@ public interface LlmProvider {
     // ==================== 选择实现 ====================
 
     /**
+     * 按供应商显式配置的格式选择实现。
+     *
+     * 新配置结构下协议是用户选的，不再从 URL 推断：
+     * 中转站常见「路径长得像 Anthropic、实际只接受 OpenAI 报文」的组合，
+     * 猜错时端点多半直接回 404 空体，根本无从诊断。
+     */
+    static LlmProvider forFormat(String format) {
+        return "anthropic".equalsIgnoreCase(format) ? new Anthropic() : new OpenAiCompatible();
+    }
+
+    /**
      * 按配置或 URL 猜测协议。
      *
      * 判断依据只用 URL 形态，不做网络探测：

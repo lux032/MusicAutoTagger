@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.service.llm;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonSyntaxException;
+import com.lux032.musicautotagger.config.LlmEndpoint;
 import com.lux032.musicautotagger.config.MusicConfig;
 import lombok.extern.slf4j.Slf4j;
 
@@ -89,13 +90,7 @@ public class LlmClient {
     }
 
     public int endpointCount() {
-        List<String> keys = config.getLlmApiKeys();
-        List<String> urls = config.getLlmApiUrls();
-        List<String> models = config.getLlmModels();
-        if (keys == null || urls == null || models == null) {
-            return 0;
-        }
-        return Math.min(keys.size(), Math.min(urls.size(), models.size()));
+        return config.getActiveLlmEndpoints().size();
     }
 
     /**
@@ -104,8 +99,8 @@ public class LlmClient {
      * @param maxTokens <= 0 时使用配置里的默认值
      */
     public LlmResponse complete(String systemPrompt, String userPrompt, int maxTokens) throws LlmException {
-        int count = endpointCount();
-        if (count == 0) {
+        List<LlmEndpoint> endpoints = config.getActiveLlmEndpoints();
+        if (endpoints.isEmpty()) {
             throw new LlmException("llm.not.configured");
         }
 
@@ -113,11 +108,13 @@ public class LlmClient {
         int maxRetries = Math.max(0, config.getLlmMaxRetries());
         Exception lastError = null;
 
-        for (int i = 0; i < count; i++) {
-            String apiKey = config.getLlmApiKeys().get(i);
-            String apiUrl = config.getLlmApiUrls().get(i);
-            String model = config.getLlmModels().get(i);
-            LlmProvider provider = LlmProvider.resolve(config.getLlmProvider(), apiUrl);
+        for (int i = 0; i < endpoints.size(); i++) {
+            LlmEndpoint endpoint = endpoints.get(i);
+            String apiKey = endpoint.getApiKey();
+            String apiUrl = endpoint.getApiUrl();
+            String model = endpoint.getModel();
+            // 协议来自供应商的显式配置，不再从 URL 猜
+            LlmProvider provider = LlmProvider.forFormat(endpoint.getFormat());
 
             for (int attempt = 0; attempt <= maxRetries; attempt++) {
                 try {
@@ -128,17 +125,20 @@ public class LlmClient {
                     if (attempt < maxRetries) {
                         long backoff = BASE_BACKOFF_MILLIS * (1L << attempt);
                         log.warn("LLM #{} ({}) 调用失败，{}ms 后重试 ({}/{}): {}",
-                            i + 1, model, backoff, attempt + 1, maxRetries, e.getMessage());
+                            i + 1, endpoint.label(), backoff, attempt + 1, maxRetries, e.getMessage());
                         // 退避等待被中断（关机 / 取消）时必须立即放弃，
                         // 否则恢复中断标志后仍会接着向外部 API 发下一次请求
                         sleepOrAbort(backoff);
                     } else {
-                        log.warn("LLM #{} ({}) 重试用尽: {}", i + 1, model, e.getMessage());
+                        log.warn("LLM #{} ({}) 重试用尽: {}", i + 1, endpoint.label(), e.getMessage());
                     }
                 } catch (Exception e) {
                     // 非可重试错误（鉴权失败 / 模型名错误 / 响应结构不符）：直接换下一个端点
+                    // 必须带上 URL 与协议：404 这类错误的响应体常常是空的，
+                    // 只报「http 404」无法判断到底是路径写错还是模型名不存在
                     lastError = e;
-                    log.warn("LLM #{} ({}) 调用失败且不可重试: {}", i + 1, model, e.getMessage());
+                    log.warn("LLM #{} ({} / {} / {}) 调用失败且不可重试: {}",
+                        i + 1, endpoint.label(), provider.name(), apiUrl, e.getMessage());
                     break;
                 }
             }
@@ -186,10 +186,10 @@ public class LlmClient {
 
         int status = response.statusCode();
         if (status == 429 || status >= 500) {
-            throw new RetryableException("http " + status + ": " + truncate(response.body()));
+            throw new RetryableException(describeHttpError(status, apiUrl, provider, response.body()));
         }
         if (status != 200) {
-            throw new LlmException("http " + status + ": " + truncate(response.body()));
+            throw new LlmException(describeHttpError(status, apiUrl, provider, response.body()));
         }
 
         JsonObject json;
@@ -239,6 +239,32 @@ public class LlmClient {
             Thread.currentThread().interrupt();
             throw new LlmException("interrupted", e);
         }
+    }
+
+    /**
+     * 拼出带定位信息的错误描述。
+     *
+     * 网关 / 中转站返回 404 时经常不带任何响应体，此时原先的「http 404: 」
+     * 完全无法诊断。这里把 URL、协议写进去，并对最常见的路径配错给出直接提示。
+     */
+    private static String describeHttpError(int status, String apiUrl, LlmProvider provider, String body) {
+        StringBuilder sb = new StringBuilder("http ").append(status)
+            .append(" @ ").append(apiUrl)
+            .append(" [").append(provider.name()).append("]");
+        if (status == 404) {
+            sb.append(" （路径或模型不存在：Anthropic 协议应为 /v1/messages，")
+              .append("OpenAI 兼容应为 /v1/chat/completions；")
+              .append("注意 llm.apiUrl 的路径形态会决定自动选择的协议，两者不匹配时中转站多半直接返回 404）");
+        } else if (status == 401 || status == 403) {
+            sb.append("（鉴权失败：检查 llm.apiKey 与该端点是否匹配）");
+        }
+        String detail = truncate(body);
+        if (detail != null && !detail.isBlank()) {
+            sb.append(": ").append(detail);
+        } else {
+            sb.append("（响应体为空）");
+        }
+        return sb.toString();
     }
 
     private static String truncate(String text) {

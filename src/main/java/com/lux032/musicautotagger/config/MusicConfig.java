@@ -96,10 +96,30 @@ public class MusicConfig {
 
     // LLM 匹配配置
     private boolean enableLLMMatching; // 是否启用 LLM 辅助艺术家匹配
-    private List<String> llmApiKeys; // LLM API Keys（支持多个）
-    private List<String> llmApiUrls; // LLM API URLs（支持多个）
-    private List<String> llmModels; // LLM 模型名称（支持多个）
-    /** 与 LLM 端点按下标对应：是否允许参与原生 Web Search */
+
+    /**
+     * 供应商配置（当前结构）。存在独立的 JSON 文件里，见 {@link LlmProviderStore}。
+     * 调用侧请用 {@link #getActiveLlmEndpoints()}，不要直接遍历本字段。
+     */
+    private List<LlmProviderConfig> llmProviders;
+    private String llmProvidersPath;
+    /**
+     * 是否允许「拉取模型」访问内网 / 非 https 地址。
+     *
+     * 默认 false：该功能会让服务端请求用户填写的任意 URL，等于把一个登录会话升级成
+     * SSRF 原语（探测容器内网、云元数据服务）。自建 Ollama / vLLM 需要时再显式打开。
+     */
+    private boolean llmAllowPrivateEndpoints;
+
+    // 以下四个平行列表是旧结构，仅用于首次启动时迁移到 llmProviders。
+    // 迁移完成（即 llm-providers.json 已存在）后它们不再参与任何运行时判断。
+    @Deprecated
+    private List<String> llmApiKeys;
+    @Deprecated
+    private List<String> llmApiUrls;
+    @Deprecated
+    private List<String> llmModels;
+    @Deprecated
     private List<Boolean> llmWebSearchEnabled;
 
     // LLM 通用调用参数（阶段七 #21）
@@ -212,6 +232,9 @@ public class MusicConfig {
 
         // LLM 匹配默认配置
         this.enableLLMMatching = false;
+        this.llmProviders = new ArrayList<>();
+        this.llmProvidersPath = "data/llm-providers.json";
+        this.llmAllowPrivateEndpoints = false;
         this.llmApiKeys = new ArrayList<>();
         this.llmApiUrls = new ArrayList<>();
         this.llmModels = new ArrayList<>();
@@ -496,6 +519,16 @@ public class MusicConfig {
                         .collect(java.util.stream.Collectors.toList());
                 }
             }
+            if (props.containsKey("llm.allowPrivateEndpoints")) {
+                this.llmAllowPrivateEndpoints =
+                    Boolean.parseBoolean(props.getProperty("llm.allowPrivateEndpoints"));
+            }
+            if (props.containsKey("llm.providersPath")) {
+                String path = props.getProperty("llm.providersPath", "").trim();
+                if (!path.isEmpty()) {
+                    this.llmProvidersPath = path;
+                }
+            }
 
             // 加载 LLM 通用调用参数（阶段七 #21）
             if (props.containsKey("llm.provider")) {
@@ -624,6 +657,65 @@ public class MusicConfig {
                 System.out.println("Configuration file not found, using default configuration");
             }
         }
+
+        // 供应商配置独立存储，必须在 properties 读完后加载（迁移需要用到旧字段）
+        loadLlmProviders();
+    }
+
+    /**
+     * 加载供应商配置；JSON 文件不存在时从旧的四个平行列表迁移一次并落盘。
+     *
+     * 迁移只发生在文件缺失时，所以一旦用户在面板上改过供应商，
+     * config.properties 里残留的旧配置行就永远不会再覆盖它。
+     */
+    private void loadLlmProviders() {
+        List<LlmProviderConfig> loaded = LlmProviderStore.load(llmProvidersPath);
+        if (loaded != null) {
+            this.llmProviders = loaded;
+            return;
+        }
+        this.llmProviders = LlmProviderStore.migrateFromLegacy(
+            llmApiKeys, llmApiUrls, llmModels, llmWebSearchEnabled, llmProvider);
+        if (this.llmProviders.isEmpty()) {
+            return;
+        }
+        try {
+            LlmProviderStore.save(llmProvidersPath, this.llmProviders);
+            System.out.println("Migrated " + this.llmProviders.size()
+                + " legacy LLM endpoint(s) to " + llmProvidersPath);
+        } catch (IOException e) {
+            // 落盘失败不影响本次运行（内存里已经是新结构），下次启动会重试迁移
+            System.err.println("Failed to persist migrated LLM providers: " + e.getMessage());
+        }
+    }
+
+    public void saveLlmProviders() throws IOException {
+        LlmProviderStore.save(llmProvidersPath, llmProviders);
+    }
+
+    /**
+     * 展开成调用侧用的端点列表，顺序即故障转移顺序（供应商顺序 -> 供应商内模型顺序）。
+     * 未启用、缺少必填项的供应商与模型在这里统一过滤，调用侧无需再判空。
+     */
+    public List<LlmEndpoint> getActiveLlmEndpoints() {
+        List<LlmEndpoint> endpoints = new ArrayList<>();
+        if (llmProviders == null) {
+            return endpoints;
+        }
+        for (LlmProviderConfig provider : llmProviders) {
+            if (provider == null || !provider.isUsable()) {
+                continue;
+            }
+            for (LlmProviderConfig.Model model : provider.getModels()) {
+                if (model == null || !model.isEnabled() || model.getId() == null || model.getId().isBlank()) {
+                    continue;
+                }
+                endpoints.add(new LlmEndpoint(
+                    provider.getId(), provider.getName(), provider.getApiUrl(), provider.getApiKey(),
+                    model.getId(), provider.normalizedFormat(), model.isWebSearch()));
+            }
+        }
+        return endpoints;
     }
 
     private static int parseIntSafe(String value, int defaultValue) {
@@ -741,19 +833,11 @@ public class MusicConfig {
             props.setProperty("review.stagingDirectory", reviewStagingDirectory);
         }
         props.setProperty("llm.matching.enabled", String.valueOf(enableLLMMatching));
-        if (llmApiKeys != null && !llmApiKeys.isEmpty()) {
-            props.setProperty("llm.apiKey", String.join(",", llmApiKeys));
-        }
-        if (llmApiUrls != null && !llmApiUrls.isEmpty()) {
-            props.setProperty("llm.apiUrl", String.join(",", llmApiUrls));
-        }
-        if (llmModels != null && !llmModels.isEmpty()) {
-            props.setProperty("llm.model", String.join(",", llmModels));
-        }
-        if (llmWebSearchEnabled != null && !llmWebSearchEnabled.isEmpty()) {
-            props.setProperty("llm.webSearchEnabled", llmWebSearchEnabled.stream()
-                .map(String::valueOf).collect(java.util.stream.Collectors.joining(",")));
-        }
+        // 供应商与模型不再写回 properties（已迁到 llm-providers.json），
+        // 否则两处存储会分叉，而迁移只在 JSON 缺失时发生，用户永远看不到旧值生效
+        props.setProperty("llm.providersPath", llmProvidersPath == null
+            ? "data/llm-providers.json" : llmProvidersPath);
+        props.setProperty("llm.allowPrivateEndpoints", String.valueOf(llmAllowPrivateEndpoints));
         props.setProperty("llm.provider", llmProvider == null ? "auto" : llmProvider);
         props.setProperty("llm.maxTokens", String.valueOf(llmMaxTokens));
         props.setProperty("llm.temperature", String.valueOf(llmTemperature));

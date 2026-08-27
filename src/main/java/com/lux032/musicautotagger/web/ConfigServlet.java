@@ -43,7 +43,6 @@ public class ConfigServlet extends HttpServlet {
      * 带下标是为了在用户删除或调整 LLM 配置行之后,仍能把占位符准确还原成对应的那把 key,
      * 否则按位置还原会把 key 配到错误的行上
      */
-    private static final String SECRET_MASK_INDEXED_PREFIX = SECRET_MASK + "#";
 
     private final MusicConfig config;
     private final Gson gson;
@@ -99,11 +98,9 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("releaseCountryPriority", "release.countryPriority"),
             Map.entry("reviewEnabled", "review.enabled"),
             Map.entry("enableLLMMatching", "llm.matching.enabled"),
-            Map.entry("llmApiKey", "llm.apiKey"),
-            Map.entry("llmApiUrl", "llm.apiUrl"),
-            Map.entry("llmModel", "llm.model"),
-            Map.entry("llmWebSearchEnabled", "llm.webSearchEnabled"),
-            Map.entry("llmProvider", "llm.provider"),
+            // 供应商 / 模型 / 协议 已移到 /api/llm/providers（存 llm-providers.json），
+            // 这里不再接管，否则两套存储会写出分叉
+            Map.entry("llmAllowPrivateEndpoints", "llm.allowPrivateEndpoints"),
             Map.entry("llmMaxTokens", "llm.maxTokens"),
             Map.entry("llmTemperature", "llm.temperature"),
             Map.entry("llmTimeoutSeconds", "llm.timeoutSeconds"),
@@ -146,7 +143,6 @@ public class ConfigServlet extends HttpServlet {
             "dbPassword",
             "proxyPassword",
             "acoustIdApiKey",
-            "llmApiKey",
             "tavilyApiKey"
         );
     }
@@ -218,11 +214,7 @@ public class ConfigServlet extends HttpServlet {
         // 阶段六：待人工确认开关（队列路径 / 暂存目录仍为只读，只能改 config.properties）
         handleBoolean(body, updates, propertyUpdates, "reviewEnabled");
         handleBoolean(body, updates, propertyUpdates, "enableLLMMatching");
-        handleString(body, updates, propertyUpdates, "llmApiKey", false);
-        handleString(body, updates, propertyUpdates, "llmApiUrl", false);
-        handleString(body, updates, propertyUpdates, "llmModel", false);
-        handleString(body, updates, propertyUpdates, "llmWebSearchEnabled", false);
-        handleString(body, updates, propertyUpdates, "llmProvider", false);
+        handleBoolean(body, updates, propertyUpdates, "llmAllowPrivateEndpoints");
         handleInteger(body, updates, propertyUpdates, "llmMaxTokens");
         handleDouble(body, updates, propertyUpdates, "llmTemperature");
         handleInteger(body, updates, propertyUpdates, "llmTimeoutSeconds");
@@ -320,17 +312,7 @@ public class ConfigServlet extends HttpServlet {
             ? null
             : String.join(",", config.getReleaseCountryPriority()));
         data.put("enableLLMMatching", config.isEnableLLMMatching());
-        data.put("llmApiKey", maskSecretList(config.getLlmApiKeys()));
-        data.put("llmApiUrl", config.getLlmApiUrls() == null || config.getLlmApiUrls().isEmpty()
-            ? null
-            : String.join(",", config.getLlmApiUrls()));
-        data.put("llmModel", config.getLlmModels() == null || config.getLlmModels().isEmpty()
-            ? null
-            : String.join(",", config.getLlmModels()));
-        data.put("llmWebSearchEnabled", config.getLlmWebSearchEnabled() == null ? null
-            : config.getLlmWebSearchEnabled().stream().map(String::valueOf)
-                .collect(java.util.stream.Collectors.joining(",")));
-        data.put("llmProvider", config.getLlmProvider());
+        data.put("llmAllowPrivateEndpoints", config.isLlmAllowPrivateEndpoints());
         data.put("llmMaxTokens", config.getLlmMaxTokens());
         data.put("llmTemperature", config.getLlmTemperature());
         data.put("llmTimeoutSeconds", config.getLlmTimeoutSeconds());
@@ -547,31 +529,10 @@ public class ConfigServlet extends HttpServlet {
         if (updates.containsKey("enableLLMMatching")) {
             config.setEnableLLMMatching((Boolean) updates.get("enableLLMMatching"));
         }
-        if (updates.containsKey("llmApiKey")) {
-            @SuppressWarnings("unchecked")
-            List<String> keys = (List<String>) updates.get("llmApiKey");
-            config.setLlmApiKeys(keys);
-        }
-        if (updates.containsKey("llmApiUrl")) {
-            @SuppressWarnings("unchecked")
-            List<String> urls = (List<String>) updates.get("llmApiUrl");
-            config.setLlmApiUrls(urls);
-        }
-        if (updates.containsKey("llmModel")) {
-            @SuppressWarnings("unchecked")
-            List<String> models = (List<String>) updates.get("llmModel");
-            config.setLlmModels(models);
-        }
-        if (updates.containsKey("llmWebSearchEnabled")) {
-            @SuppressWarnings("unchecked")
-            List<Boolean> flags = (List<Boolean>) updates.get("llmWebSearchEnabled");
-            config.setLlmWebSearchEnabled(flags);
+        if (updates.containsKey("llmAllowPrivateEndpoints")) {
+            config.setLlmAllowPrivateEndpoints((Boolean) updates.get("llmAllowPrivateEndpoints"));
         }
         // 这些字段走直接 setter，不经过配置文件加载时的 parseIntInRange，因此在这里钳制
-        if (updates.containsKey("llmProvider")) {
-            String provider = (String) updates.get("llmProvider");
-            config.setLlmProvider(provider == null || provider.isBlank() ? "auto" : provider.trim());
-        }
         if (updates.containsKey("llmMaxTokens")) {
             config.setLlmMaxTokens(clamp((Integer) updates.get("llmMaxTokens"), 1, 32000));
         }
@@ -670,15 +631,8 @@ public class ConfigServlet extends HttpServlet {
         }
 
         // 密钥字段: 前端读到的是占位符,原样回传即表示「保持不变」
-        if (secretFields.contains(field)) {
-            if ("llmApiKey".equals(field)) {
-                trimmedValue = restoreMaskedKeys(trimmedValue, config.getLlmApiKeys());
-                if (trimmedValue != null && trimmedValue.isEmpty()) {
-                    trimmedValue = null;
-                }
-            } else if (SECRET_MASK.equals(trimmedValue)) {
-                return;
-            }
+        if (secretFields.contains(field) && SECRET_MASK.equals(trimmedValue)) {
+            return;
         }
 
         if (required && trimmedValue == null) {
@@ -727,31 +681,6 @@ public class ConfigServlet extends HttpServlet {
                 .toList();
             updates.put(field, priorities);
             setPropertyUpdate(propertyUpdates, field, String.join(",", priorities));
-            return;
-        }
-
-        if ("llmApiKey".equals(field) || "llmApiUrl".equals(field) || "llmModel".equals(field)) {
-            if (trimmedValue == null || trimmedValue.isEmpty()) {
-                updates.put(field, new ArrayList<String>());
-                setPropertyUpdate(propertyUpdates, field, null);
-                return;
-            }
-            List<String> values = Arrays.stream(trimmedValue.split(","))
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .toList();
-            updates.put(field, values);
-            setPropertyUpdate(propertyUpdates, field, String.join(",", values));
-            return;
-        }
-
-        if ("llmWebSearchEnabled".equals(field)) {
-            List<Boolean> flags = trimmedValue == null ? new ArrayList<>()
-                : Arrays.stream(trimmedValue.split(","))
-                    .map(String::trim).map(Boolean::parseBoolean).toList();
-            updates.put(field, flags);
-            setPropertyUpdate(propertyUpdates, field, flags.stream().map(String::valueOf)
-                .collect(java.util.stream.Collectors.joining(",")));
             return;
         }
 
@@ -871,76 +800,6 @@ public class ConfigServlet extends HttpServlet {
      */
     private String maskSecret(String value) {
         return isSet(value) ? SECRET_MASK : null;
-    }
-
-    /**
-     * 列表型密钥逐项打码,并给每项带上下标
-     * 保留项数是为了让前端仍能把 key 与对应的 URL、模型逐一配对
-     */
-    private String maskSecretList(List<String> values) {
-        if (values == null || values.isEmpty()) {
-            return null;
-        }
-        List<String> masked = new ArrayList<>(values.size());
-        for (int i = 0; i < values.size(); i++) {
-            masked.add(SECRET_MASK_INDEXED_PREFIX + i);
-        }
-        return String.join(",", masked);
-    }
-
-    /**
-     * 把列表型密钥中的占位符还原成原值
-     *
-     * 用户只改了其中一把 key 时,提交上来的形如 {@code ********#0,新key,********#2},
-     * 需要按占位符自带的下标取回原值。用下标而不是位置,是为了在用户删除或重排
-     * LLM 配置行之后,不会把 key 配到错误的行上。
-     *
-     * @param incoming      前端提交的逗号分隔值
-     * @param currentValues 当前已保存的密钥列表
-     * @return 还原后的逗号分隔值
-     */
-    private String restoreMaskedKeys(String incoming, List<String> currentValues) {
-        if (incoming == null || incoming.isEmpty()) {
-            return incoming;
-        }
-
-        List<String> resolved = new ArrayList<>();
-        for (String part : incoming.split(",", -1)) {
-            String trimmed = part.trim();
-            if (trimmed.isEmpty()) {
-                continue;
-            }
-
-            if (trimmed.startsWith(SECRET_MASK_INDEXED_PREFIX)) {
-                String existing = lookupSecretByIndex(currentValues,
-                    trimmed.substring(SECRET_MASK_INDEXED_PREFIX.length()));
-                if (existing != null) {
-                    resolved.add(existing);
-                }
-                // 下标无效(如原值已被删除)时丢弃该项,避免写入字面量占位符
-                continue;
-            }
-
-            if (SECRET_MASK.equals(trimmed)) {
-                // 不带下标的占位符无法定位原值,同样丢弃
-                continue;
-            }
-
-            resolved.add(trimmed);
-        }
-        return String.join(",", resolved);
-    }
-
-    private String lookupSecretByIndex(List<String> currentValues, String rawIndex) {
-        if (currentValues == null) {
-            return null;
-        }
-        try {
-            int index = Integer.parseInt(rawIndex);
-            return index >= 0 && index < currentValues.size() ? currentValues.get(index) : null;
-        } catch (NumberFormatException e) {
-            return null;
-        }
     }
 
     private boolean isSet(String value) {

@@ -824,28 +824,37 @@
                                 </span>
                             </label>
                         </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgLlmAllowPrivateEndpoints" type="checkbox">
+                            <label for="cfgLlmAllowPrivateEndpoints" class="label-with-tip">
+                                <span>允许内网 / HTTP 端点</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">默认关闭。「拉取模型」会让服务端去请求你填的地址，允许内网地址等于把一个登录会话变成内网探测工具（SSRF）。只有要接自建 Ollama / vLLM 时才打开。</span>
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-section-title" style="margin-top: 20px;">供应商与模型</div>
+                    <div class="form-grid">
                         <div class="form-row">
-                            <label data-i18n="config.llm.configs">LLM 配置（按顺序重试）</label>
-                            <div id="llmConfigsList" style="display: flex; flex-direction: column; gap: 10px;"></div>
-                            <button type="button" onclick="addLLMConfig()" style="margin-top: 10px; padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;" data-i18n="config.llm.add">添加 LLM</button>
+                            <label class="label-with-tip">
+                                <span>供应商列表</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">自上而下依次尝试：先按供应商顺序，同一供应商内再按模型顺序。前一个失败才会用下一个。</span>
+                                </span>
+                            </label>
+                            <div id="llmProvidersList" style="display: flex; flex-direction: column; gap: 12px;"></div>
+                            <div style="display: flex; gap: 8px; margin-top: 10px;">
+                                <button type="button" onclick="addLlmProvider()" style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">添加供应商</button>
+                                <button type="button" onclick="saveLlmProviders()" style="padding: 8px 16px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer;">保存供应商</button>
+                                <span id="llmProvidersStatus" style="align-self: center; font-size: 0.88em; color: #666;"></span>
+                            </div>
                         </div>
                     </div>
 
                     <div class="form-section-title" style="margin-top: 20px;">LLM 调用参数</div>
                     <div class="form-grid">
-                        <div class="form-row">
-                            <label for="cfgLlmProvider" class="label-with-tip">
-                                <span>协议</span>
-                                <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">auto = 根据 API URL 自动判断。只有第三方中转端点的 URL 看不出厂商时才需要手动指定。</span>
-                                </span>
-                            </label>
-                            <select id="cfgLlmProvider">
-                                <option value="auto">auto</option>
-                                <option value="openai">openai</option>
-                                <option value="anthropic">anthropic</option>
-                            </select>
-                        </div>
                         <div class="form-row">
                             <label for="cfgLlmMaxTokens" class="label-with-tip">
                                 <span>最大输出 Token</span>
@@ -1884,41 +1893,196 @@
             return labels[key] || key;
         }
 
-        // LLM 配置管理
-        let llmConfigs = [];
+        // ==================== LLM 供应商管理 ====================
+        // 供应商走独立的 /api/llm/providers，不跟其他配置一起提交：
+        // 它是嵌套结构（供应商 -> 多个模型），塑不进配置面板那套平铺的字段提交机制。
+        let llmProviders = [];
+        const SECRET_MASK = '********';
 
-        function addLLMConfig(apiKey = '', apiUrl = '', model = '', webSearch = false) {
-            llmConfigs.push({ apiKey, apiUrl, model, webSearch });
-            renderLLMConfigs();
+        async function loadLlmProviders() {
+            try {
+                const response = await authFetch('/api/llm/providers');
+                if (!response.ok) throw new Error('获取供应商失败');
+                const data = await response.json();
+                llmProviders = data.providers || [];
+            } catch (e) {
+                llmProviders = [];
+            }
+            renderLlmProviders();
         }
 
-        function removeLLMConfig(index) {
-            llmConfigs.splice(index, 1);
-            renderLLMConfigs();
+        function addLlmProvider() {
+            llmProviders.push({
+                id: '', name: '', apiUrl: '', apiKey: '',
+                format: 'openai', enabled: true, models: []
+            });
+            renderLlmProviders();
         }
 
-        /** 只保留 key/url/model 都填全的端点，保证四个逗号列表严格按下标对齐 */
-        function validLlmConfigs() {
-            return llmConfigs.filter(c => (c.apiKey || '').trim() && (c.apiUrl || '').trim() && (c.model || '').trim());
+        function removeLlmProvider(index) {
+            llmProviders.splice(index, 1);
+            renderLlmProviders();
         }
 
-        function renderLLMConfigs() {
-            const container = document.getElementById('llmConfigsList');
-            container.innerHTML = llmConfigs.map((cfg, i) => `
+        function removeLlmModel(providerIndex, modelIndex) {
+            llmProviders[providerIndex].models.splice(modelIndex, 1);
+            renderLlmProviders();
+        }
+
+        /** 拉取失败时的手动退路：部分中转站不提供 /models */
+        function addLlmModelManually(index) {
+            const id = prompt('模型名称');
+            if (!id || !id.trim()) return;
+            llmProviders[index].models.push({ id: id.trim(), enabled: true, webSearch: false });
+            renderLlmProviders();
+        }
+
+        async function fetchLlmModels(index) {
+            const provider = llmProviders[index];
+            const status = document.getElementById(`llmProviderStatus${index}`);
+            status.textContent = '拉取中...';
+            status.style.color = '#666';
+            try {
+                const response = await authFetch('/api/llm/providers/models', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        id: provider.id, apiUrl: provider.apiUrl,
+                        apiKey: provider.apiKey, format: provider.format
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    // detail 里带着实际请求的 URL 与状态码，直接摆出来，不要吐一个笼统的「失败」
+                    throw new Error(data.detail || data.error || '拉取失败');
+                }
+                const models = data.models || [];
+                showLlmModelPicker(index, models);
+                status.textContent = `拉到 ${models.length} 个模型`;
+                status.style.color = '#10b981';
+            } catch (e) {
+                status.textContent = e.message;
+                status.style.color = '#ef4444';
+            }
+        }
+
+        function showLlmModelPicker(index, models) {
+            const provider = llmProviders[index];
+            const selected = new Set((provider.models || []).map(m => m.id));
+            const container = document.getElementById(`llmModelPicker${index}`);
+            container.style.display = 'block';
+            container.innerHTML = `
+                <input type="text" placeholder="过滤模型..." oninput="filterLlmModelPicker(${index}, this.value)"
+                    style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                <div id="llmModelPickerList${index}" style="max-height: 200px; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; padding: 6px;">
+                    ${models.map(id => `
+                        <label class="llm-model-option" data-model="${escapeHtml(id)}"
+                            style="display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 0.88em;">
+                            <input type="checkbox" value="${escapeHtml(id)}" ${selected.has(id) ? 'checked' : ''}>
+                            <span>${escapeHtml(id)}</span>
+                        </label>`).join('')}
+                </div>
+                <button type="button" onclick="applyLlmModelPicker(${index})"
+                    style="margin-top: 6px; padding: 6px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">使用选中的模型</button>`;
+        }
+
+        function filterLlmModelPicker(index, keyword) {
+            const lower = (keyword || '').toLowerCase();
+            document.querySelectorAll(`#llmModelPickerList${index} .llm-model-option`).forEach(el => {
+                el.style.display = el.dataset.model.toLowerCase().includes(lower) ? 'flex' : 'none';
+            });
+        }
+
+        function applyLlmModelPicker(index) {
+            const checked = Array.from(
+                document.querySelectorAll(`#llmModelPickerList${index} input[type=checkbox]:checked`)
+            ).map(el => el.value);
+            const existing = new Map((llmProviders[index].models || []).map(m => [m.id, m]));
+            // 保留已有模型的开关状态，避免重新选一次就把 webSearch 勾选冲掉
+            llmProviders[index].models = checked.map(id => existing.get(id)
+                || { id, enabled: true, webSearch: false });
+            renderLlmProviders();
+        }
+
+        function renderLlmProviders() {
+            const container = document.getElementById('llmProvidersList');
+            if (!container) return;
+            if (llmProviders.length === 0) {
+                container.innerHTML = '<div style="color: #888; font-size: 0.9em;">尚未配置任何供应商</div>';
+                return;
+            }
+            container.innerHTML = llmProviders.map((p, i) => `
                 <div style="border: 1px solid #ddd; padding: 12px; border-radius: 4px; background: #f9fafb;">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <strong>LLM #${i + 1}</strong>
-                        <button type="button" onclick="removeLLMConfig(${i})" style="padding: 4px 8px; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer;">删除</button>
+                        <label style="display: flex; align-items: center; gap: 6px;">
+                            <input type="checkbox" ${p.enabled !== false ? 'checked' : ''}
+                                onchange="llmProviders[${i}].enabled = this.checked">
+                            <strong>供应商 #${i + 1}</strong>
+                        </label>
+                        <button type="button" onclick="removeLlmProvider(${i})" style="padding: 4px 8px; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer;">删除</button>
                     </div>
-                    <input type="password" placeholder="API Key" value="${cfg.apiKey}" onchange="llmConfigs[${i}].apiKey = this.value" style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
-                    <input type="text" placeholder="API URL" value="${cfg.apiUrl}" onchange="llmConfigs[${i}].apiUrl = this.value" style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
-                    <input type="text" placeholder="Model" value="${cfg.model}" onchange="llmConfigs[${i}].model = this.value" style="width: 100%; margin-bottom: 8px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
-                    <label style="display: flex; align-items: center; gap: 6px; font-size: 0.88em; color: #444;">
-                        <input type="checkbox" ${cfg.webSearch ? 'checked' : ''} onchange="llmConfigs[${i}].webSearch = this.checked">
-                        <span>参与联网辅助识别（需端点支持原生 Web Search）</span>
-                    </label>
+                    <input type="text" placeholder="名称（如 OpenAI 官方）" value="${escapeHtml(p.name || '')}"
+                        onchange="llmProviders[${i}].name = this.value"
+                        style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                    <input type="text" placeholder="API URL（完整路径，如 https://api.openai.com/v1/chat/completions）"
+                        value="${escapeHtml(p.apiUrl || '')}" onchange="llmProviders[${i}].apiUrl = this.value"
+                        style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                    <input type="password" placeholder="API Key" value="${escapeHtml(p.apiKey || '')}"
+                        onchange="llmProviders[${i}].apiKey = this.value" autocomplete="off"
+                        style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                    <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                        <select onchange="llmProviders[${i}].format = this.value"
+                            style="padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                            <option value="openai" ${p.format !== 'anthropic' ? 'selected' : ''}>OpenAI 格式</option>
+                            <option value="anthropic" ${p.format === 'anthropic' ? 'selected' : ''}>Claude 格式</option>
+                        </select>
+                        <button type="button" onclick="fetchLlmModels(${i})"
+                            style="padding: 6px 12px; background: #6366f1; color: white; border: none; border-radius: 4px; cursor: pointer;">拉取模型</button>
+                        <button type="button" onclick="addLlmModelManually(${i})"
+                            style="padding: 6px 12px; background: #9ca3af; color: white; border: none; border-radius: 4px; cursor: pointer;">手动添加</button>
+                        <span id="llmProviderStatus${i}" style="font-size: 0.85em; color: #666;"></span>
+                    </div>
+                    <div id="llmModelPicker${i}" style="display: none; margin-bottom: 8px;"></div>
+                    <div style="font-size: 0.88em; color: #444;">
+                        ${(p.models || []).length === 0
+                            ? '<div style="color: #888;">尚未选择模型（未选模型的供应商不会被调用）</div>'
+                            : (p.models || []).map((m, j) => `
+                            <div style="display: flex; align-items: center; gap: 10px; padding: 4px 0; border-top: 1px solid #eee;">
+                                <label style="display: flex; align-items: center; gap: 4px;">
+                                    <input type="checkbox" ${m.enabled !== false ? 'checked' : ''}
+                                        onchange="llmProviders[${i}].models[${j}].enabled = this.checked">
+                                    <span>${escapeHtml(m.id || '')}</span>
+                                </label>
+                                <label style="display: flex; align-items: center; gap: 4px; color: #666;">
+                                    <input type="checkbox" ${m.webSearch ? 'checked' : ''}
+                                        onchange="llmProviders[${i}].models[${j}].webSearch = this.checked">
+                                    <span>参与原生联网搜索</span>
+                                </label>
+                                <button type="button" onclick="removeLlmModel(${i}, ${j})"
+                                    style="margin-left: auto; padding: 2px 8px; background: #e5e7eb; border: none; border-radius: 4px; cursor: pointer;">移除</button>
+                            </div>`).join('')}
+                    </div>
                 </div>
             `).join('');
+        }
+
+        async function saveLlmProviders() {
+            const status = document.getElementById('llmProvidersStatus');
+            status.textContent = '保存中...';
+            status.style.color = '#666';
+            try {
+                const response = await authFetch('/api/llm/providers', {
+                    method: 'PUT',
+                    body: JSON.stringify({ providers: llmProviders })
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || '保存失败');
+                status.textContent = `已保存，当前可用端点 ${data.endpointCount} 个`;
+                status.style.color = '#10b981';
+                await loadLlmProviders();
+            } catch (e) {
+                status.textContent = e.message;
+                status.style.color = '#ef4444';
+            }
         }
 
         async function loadConfig() {
@@ -1948,27 +2112,9 @@
                 document.getElementById('cfgAcoustIdApiKey').value = cfg.acoustIdApiKey || '';
                 document.getElementById('cfgAcoustIdApiUrl').value = cfg.acoustIdApiUrl || '';
                 document.getElementById('cfgEnableLLMMatching').checked = !!cfg.enableLLMMatching;
-                // 加载 LLM 配置列表
-                llmConfigs = [];
-                const apiKeys = (cfg.llmApiKey || '').split(',').filter(s => s.trim());
-                const apiUrls = (cfg.llmApiUrl || '').split(',').filter(s => s.trim());
-                const models = (cfg.llmModel || '').split(',').filter(s => s.trim());
-                // 与 key/url/model 按下标对应；未配置的端点一律视为不参与联网
-                const webFlags = (cfg.llmWebSearchEnabled || '').split(',').map(s => s.trim() === 'true');
-                const maxLen = Math.max(apiKeys.length, apiUrls.length, models.length);
-                for (let i = 0; i < maxLen; i++) {
-                    llmConfigs.push({
-                        apiKey: apiKeys[i] || '',
-                        apiUrl: apiUrls[i] || '',
-                        model: models[i] || '',
-                        webSearch: webFlags[i] === true
-                    });
-                }
-                if (llmConfigs.length === 0) {
-                    llmConfigs.push({ apiKey: '', apiUrl: '', model: '', webSearch: false });
-                }
-                renderLLMConfigs();
-                document.getElementById('cfgLlmProvider').value = cfg.llmProvider || 'auto';
+                document.getElementById('cfgLlmAllowPrivateEndpoints').checked = !!cfg.llmAllowPrivateEndpoints;
+                // 供应商走独立接口，不在 /api/config 里
+                await loadLlmProviders();
                 document.getElementById('cfgLlmMaxTokens').value = cfg.llmMaxTokens ?? '';
                 document.getElementById('cfgLlmTemperature').value = cfg.llmTemperature ?? '';
                 document.getElementById('cfgLlmTimeoutSeconds').value = cfg.llmTimeoutSeconds ?? '';
@@ -2041,13 +2187,7 @@
                 acoustIdApiKey: getValue('cfgAcoustIdApiKey'),
                 acoustIdApiUrl: getValue('cfgAcoustIdApiUrl'),
                 enableLLMMatching: document.getElementById('cfgEnableLLMMatching').checked,
-                // 四个字段必须锁步过滤。各自 filter 会在某个端点缺项时造成下标错位，
-                // 把 A 的 key 配到 B 的 url 上去。
-                llmApiKey: validLlmConfigs().map(c => c.apiKey.trim()).join(','),
-                llmApiUrl: validLlmConfigs().map(c => c.apiUrl.trim()).join(','),
-                llmModel: validLlmConfigs().map(c => c.model.trim()).join(','),
-                llmWebSearchEnabled: validLlmConfigs().map(c => c.webSearch === true).join(','),
-                llmProvider: getValue('cfgLlmProvider'),
+                llmAllowPrivateEndpoints: document.getElementById('cfgLlmAllowPrivateEndpoints').checked,
                 llmMaxTokens: getNumberValue('cfgLlmMaxTokens'),
                 llmTemperature: getNumberValue('cfgLlmTemperature'),
                 llmTimeoutSeconds: getNumberValue('cfgLlmTimeoutSeconds'),

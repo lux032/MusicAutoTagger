@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.lux032.musicautotagger.config.LlmEndpoint;
 import com.lux032.musicautotagger.config.MusicConfig;
 import lombok.extern.slf4j.Slf4j;
 
@@ -12,6 +13,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 /** OpenAI Responses / Anthropic Messages 原生 Web Search 适配器。 */
@@ -28,19 +30,28 @@ public class NativeWebSearchClient implements WebSearchClient {
 
     @Override
     public boolean hasEnabledEndpoint() {
-        for (int i = 0; i < endpointCount(); i++) if (enabled(i)) return true;
-        return false;
+        return !searchEndpoints().isEmpty();
+    }
+
+    /** 只取勾选了「参与原生联网搜索」的模型 */
+    private List<LlmEndpoint> searchEndpoints() {
+        List<LlmEndpoint> all = config.getActiveLlmEndpoints();
+        List<LlmEndpoint> enabled = new ArrayList<>();
+        for (LlmEndpoint endpoint : all) if (endpoint.isWebSearch()) enabled.add(endpoint);
+        return enabled;
     }
 
     @Override
     public SearchResponse search(String systemPrompt, String userPrompt) throws LlmClient.LlmException {
         Exception last = null;
-        for (int i = 0; i < endpointCount(); i++) {
-            if (!enabled(i)) continue;
-            String url = config.getLlmApiUrls().get(i);
-            String key = config.getLlmApiKeys().get(i);
-            String model = config.getLlmModels().get(i);
-            String provider = provider(url);
+        List<LlmEndpoint> endpoints = searchEndpoints();
+        for (int i = 0; i < endpoints.size(); i++) {
+            LlmEndpoint endpoint = endpoints.get(i);
+            String url = endpoint.getApiUrl();
+            String key = endpoint.getApiKey();
+            String model = endpoint.getModel();
+            // 协议来自供应商的显式配置，不再逐个端点猜 URL 形态
+            String provider = endpoint.getFormat();
             for (int attempt = 0; attempt <= Math.max(0, config.getLlmMaxRetries()); attempt++) {
                 try {
                     return "anthropic".equals(provider)
@@ -170,20 +181,6 @@ public class NativeWebSearchClient implements WebSearchClient {
     private void addCitation(SearchResponse r, String url, String title, String snippet) {
         if (url == null || url.isBlank()) return;
         r.addCitation(Citation.of(url, title, snippet));
-    }
-    private int endpointCount(){ return Math.min(config.getLlmApiKeys().size(), Math.min(config.getLlmApiUrls().size(), config.getLlmModels().size())); }
-    private boolean enabled(int i){ List<Boolean> f=config.getLlmWebSearchEnabled(); return f!=null && i<f.size() && Boolean.TRUE.equals(f.get(i)); }
-    /**
-     * 按端点逐个判定协议：URL 特征优先，全局 llm.provider 仅作兜底。
-     * 早期实现只要全局配置含 anthropic 就把所有端点当 Anthropic 调，多端点混配会全线失败。
-     */
-    private String provider(String url){
-        if(url!=null){
-            if(url.contains("anthropic")||url.contains("/messages")) return "anthropic";
-            if(url.contains("openai")||url.contains("/responses")||url.contains("/chat/completions")) return "openai";
-        }
-        String configured=config.getLlmProvider()==null?"":config.getLlmProvider().toLowerCase();
-        return configured.contains("anthropic")?"anthropic":"openai";
     }
     private String string(JsonObject o,String k){ return o!=null&&o.has(k)&&o.get(k).isJsonPrimitive()?o.get(k).getAsString():null; }
     private String truncate(String s){ return s==null?"":s.substring(0,Math.min(300,s.length())); }
