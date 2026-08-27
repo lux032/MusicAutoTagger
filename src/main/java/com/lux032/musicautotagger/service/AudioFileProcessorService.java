@@ -37,6 +37,8 @@ public class AudioFileProcessorService {
     private final AudioFormatNormalizer audioFormatNormalizer;
     private final CueSplitService cueSplitService;
     private final Map<String, FolderNormalizationPlan> folderNormalizationPlans = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 文件夹路径 -> 尚未处理的音乐文件数（批量 flush 后失效） */
+    private final Map<String, Integer> folderUnprocessedCounts = new java.util.concurrent.ConcurrentHashMap<>();
     
     public AudioFileProcessorService(MusicConfig config,
                                      AudioFingerprintService fingerprintService,
@@ -183,6 +185,11 @@ public class AudioFileProcessorService {
                 lockedReleaseId = cachedAlbum.getReleaseId();  // 获取具体的 Release ID
                 lockedReleaseDate = cachedAlbum.getReleaseDate();
                 
+            } else if (folderAlbumCache.isFolderUnresolved(folderPath)) {
+                // 该文件夹已被判定为「专辑未确定」（如 MusicBrainz 未收录的精选集）。
+                // 后续新增文件不再尝试快速扫描，避免同一文件夹出现
+                // 「一部分走 unresolved、一部分被归入另一张专辑」的分裂结果。
+                log.info("文件夹已判定为「专辑未确定」，跳过快速扫描，直接进入指纹识别");
             } else if (!isLooseFileInMonitorRoot) {
                 // 没有缓存且不是散落文件，进行快速扫描
                 log.info("尝试第一级快速扫描（基于标签和文件夹名称）...");
@@ -316,6 +323,10 @@ public class AudioFileProcessorService {
                         failedFileHandler.handleLooseFileFailed(originalAudioFile, processingAudioFile);
                     } else {
                         failedFileHandler.handleAlbumFileFailed(originalAudioFile, albumRootDir);
+                        // 该文件不会进入 pending，但之前统计的「剩余未处理数」把它算进去了。
+                        // 必须失效重算，否则 pendingCount 永远追不上 remainingUnprocessed，
+                        // 剩余待处理文件会一直挂到关机才被 flush。
+                        folderUnprocessedCounts.remove(folderPath);
                     }
 
                     return ProcessResult.PERMANENT_FAIL; // 识别失败，不重试但记录
@@ -380,7 +391,16 @@ public class AudioFileProcessorService {
                 // 即使 AcoustID 返回的信息不完整，只要有 Recording ID 就可以查询
                 // 关键修复：传递 lockedReleaseId 以确保版本一致性，传递 fileDurationSeconds 用于时长匹配备选方案
                 log.info("正在从 MusicBrainz 获取详细元数据 (Recording ID: {})...", bestMatch.getRecordingId());
-                detailedMetadata = musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesParam, lockedReleaseGroupId, lockedReleaseId, fileDurationSeconds);
+
+                // 关键修复：只有「监控目录根部的散落单文件」才允许按曲目数猜专辑（随缘模式）。
+                // 对于专辑文件夹，如果前面的快速扫描和时长序列匹配都没能锁定专辑，
+                // 说明 MusicBrainz 里很可能根本没有这张专辑（如新发行的精选集），
+                // 此时宁可返回「专辑未确定」，也不能把它归入曲目所属的旧专辑。
+                boolean allowAlbumGuess = isLooseFileInMonitorRoot;
+                if (!allowAlbumGuess && lockedReleaseGroupId == null) {
+                    log.info("专辑文件夹尚未锁定专辑，已禁用「按曲目数猜测专辑」，避免错误归入旧专辑");
+                }
+                detailedMetadata = musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesParam, lockedReleaseGroupId, lockedReleaseId, fileDurationSeconds, allowAlbumGuess);
 
                 if (detailedMetadata == null) {
                     log.warn("无法从 MusicBrainz 获取详细元数据");
@@ -598,11 +618,16 @@ public class AudioFileProcessorService {
                 deferNormalizationCleanup = normalizationResult != null && normalizationResult.isConverted();
 
                 // 尝试确定专辑
+                // 关键：传入「剩余未处理文件数」而不是让 FolderAlbumCache 自己去看 pending 队列长度。
+                // pending 队列在第一个文件时恒为 1，会把所需样本数压到 1，
+                // 导致第一首文件立即以单样本进入普通分析，绕过快速通道的严格门槛。
+                int remainingUnprocessed = getRemainingUnprocessedCount(folderPath, albumRootDir);
                 FolderAlbumCache.CachedAlbumInfo determinedAlbum = albumBatchProcessor.tryDetermineAlbum(
                     folderPath,
                     audioFile.getName(),
                     musicFilesInFolder,
-                    albumInfo
+                    albumInfo,
+                    remainingUnprocessed
                 );
 
                 if (determinedAlbum != null) {
@@ -613,15 +638,20 @@ public class AudioFileProcessorService {
                     log.info("========================================");
 
                     albumBatchProcessor.processPendingFilesWithAlbum(folderPath, determinedAlbum);
+                    folderUnprocessedCounts.remove(folderPath);
                 } else {
                     log.info("专辑收集中，待处理文件已加入队列: {}", originalAudioFile.getName());
 
                     // 检查是否所有文件都已加入待处理队列但专辑仍未确定
                     // 这种情况可能发生在样本收集过程中部分文件识别失败
+                    // 注意：源文件处理后不会离开监控目录，所以不能只拿 musicFilesInFolder 比较，
+                    // 否则「一张专辑只剩少量新文件」时永远触发不了，文件会一直挂到关机。
                     int pendingCount = albumBatchProcessor.getPendingFileCount(folderPath);
-                    if (pendingCount >= musicFilesInFolder) {
-                        log.warn("所有文件已加入待处理队列但专辑仍未确定，强制处理");
+                    if (pendingCount >= musicFilesInFolder || pendingCount >= remainingUnprocessed) {
+                        log.warn("所有待处理文件均已入队但专辑仍未确定（pending={}, 剩余未处理={}, 文件夹总数={}）",
+                            pendingCount, remainingUnprocessed, musicFilesInFolder);
                         albumBatchProcessor.forceProcessPendingFiles(folderPath, albumInfo);
+                        folderUnprocessedCounts.remove(folderPath);
                     }
                 }
             }
@@ -660,6 +690,54 @@ public class AudioFileProcessorService {
             }
             log.info("========================================");
         }
+    }
+
+    /**
+     * 获取文件夹内「尚未被处理过」的音乐文件总数
+     *
+     * 为什么需要它：
+     * 源文件处理后是被复制到输出目录而非移走，仍然留在监控目录里，
+     * 因此 countMusicFilesInFolder() 数的是磁盘上的全部文件，不会随处理进度缩小。
+     * 而样本收集需要知道「本次运行到底还有多少文件会进来」。
+     *
+     * 结果按文件夹缓存，避免 DB 模式下每个文件都做 N 次查询。
+     * 批量 flush 后会失效重算。
+     */
+    private int getRemainingUnprocessedCount(String folderPath, File albumRootDir) {
+        Integer cached = folderUnprocessedCounts.get(folderPath);
+        if (cached != null) {
+            return cached;
+        }
+
+        int count = 0;
+        try {
+            List<File> audioFiles = new ArrayList<>();
+            fileSystemUtils.collectAudioFilesForMarking(albumRootDir, audioFiles);
+            for (File f : audioFiles) {
+                if (processedLogger == null || !processedLogger.isFileProcessed(f)) {
+                    count++;
+                }
+            }
+            log.info("文件夹 {} 共 {} 个音乐文件，其中尚未处理: {} 个",
+                albumRootDir.getName(), audioFiles.size(), count);
+        } catch (Exception e) {
+            log.warn("统计剩余未处理文件数失败，退回保守值: {}", e.getMessage());
+            count = 0;
+        }
+
+        if (count <= 0) {
+            // 当前文件本身就是未处理的，至少为 1
+            count = 1;
+        }
+
+        // 只缓存足够大的统计值。
+        // 逐首下载场景下，第一首完成时目录里可能只有 1 个文件，
+        // 若把这个“1”永久缓存，后续到达的文件就永远无法把样本要求抬回去。
+        // 小值不缓存（此时文件少，重算代价也低），让它能随文件到达而增长。
+        if (count >= 3) {
+            folderUnprocessedCounts.put(folderPath, count);
+        }
+        return count;
     }
 
     private FolderNormalizationPlan getOrPrepareNormalizationPlan(File originalAudioFile, File albumRootDir, boolean isLooseFileInMonitorRoot) {

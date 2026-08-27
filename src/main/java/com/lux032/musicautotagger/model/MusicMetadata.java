@@ -15,6 +15,13 @@ public class MusicMetadata {
     private String albumArtist;
     private String album;
     private String releaseDate;
+    /**
+     * 显式「清空年份」标志。
+     * releaseDate 为空只表示「不更新」，无法表达「删除原有年份」。
+     * 专辑未确定时必须删除原文件里可能存在的旧专辑年份，否则会出现
+     * 「专辑名 = 新精选集，年份 = 1998（旧专辑）」这种矛盾结果。
+     */
+    private boolean clearReleaseDate;
     private List<String> genres;
     private String composer;
     private String lyricist;

@@ -7,7 +7,9 @@ import com.lux032.musicautotagger.util.I18nUtil;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -107,6 +109,17 @@ public class AlbumBatchProcessor {
      * 批量处理文件夹内的待处理文件，统一应用确定的专辑信息
      */
     public void processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo) {
+        processPendingFilesWithAlbum(folderPath, albumInfo, false);
+    }
+
+    /**
+     * 批量处理文件夹内的待处理文件，统一应用确定的专辑信息
+     *
+     * @param unresolvedAlbum 是否为「专辑未确定」模式。为 true 时会显式清空年份标签，
+     *                        避免原文件里旧专辑的年份残留下来。
+     */
+    public void processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo,
+                                             boolean unresolvedAlbum) {
         List<FolderAlbumCache.PendingFile> pendingFiles = folderAlbumCache.getPendingFiles(folderPath);
         
         if (pendingFiles == null || pendingFiles.isEmpty()) {
@@ -154,7 +167,13 @@ public class AlbumBatchProcessor {
                 metadata.setAlbum(albumInfo.getAlbumTitle());
                 metadata.setAlbumArtist(albumInfo.getAlbumArtist());
                 metadata.setReleaseGroupId(albumInfo.getReleaseGroupId());
-                if (albumInfo.getReleaseDate() != null && !albumInfo.getReleaseDate().isEmpty()) {
+                if (unresolvedAlbum) {
+                    // 专辑未确定：宁可没有年份，也不能保留旧专辑的年份。
+                    // 注意：releaseDate 置空只会让写入逻辑「跳过不写」，原文件的 YEAR 仍会残留，
+                    // 因此必须同时置 clearReleaseDate 标志，让 TagWriter 显式删除该字段。
+                    metadata.setReleaseDate(null);
+                    metadata.setClearReleaseDate(true);
+                } else if (albumInfo.getReleaseDate() != null && !albumInfo.getReleaseDate().isEmpty()) {
                     metadata.setReleaseDate(albumInfo.getReleaseDate());
                 }
                 
@@ -200,28 +219,224 @@ public class AlbumBatchProcessor {
     }
     
     /**
-     * 强制处理待处理文件（当专辑无法确定时使用最佳猜测）
+     * 当专辑无法确定时的处理
+     *
+     * 关键修复：以前这里会拿「某一首歌识别出的专辑」当作整张专辑强行写入，
+     * 导致一张 MusicBrainz 未收录的精选集被整个归到第一首歌所属的旧专辑下。
+     * 现在改为：不猜。保留每首歌已经查准的曲目级信息，专辑信息用文件夹名/原标签合成。
      */
+    @Deprecated
     public void forceProcessPendingFiles(String folderPath, FolderAlbumCache.AlbumIdentificationInfo bestGuess) {
-        log.info("========================================");
-        log.info("强制处理待处理文件，使用最佳猜测专辑: {}", bestGuess.getAlbumTitle());
-        log.info("========================================");
+        // bestGuess 已不再使用：以前拿它当「最佳猜测专辑」正是错误归档的根源。
+        processPendingFilesAsUnresolvedAlbum(folderPath);
+    }
 
-        FolderAlbumCache.CachedAlbumInfo forcedAlbum = new FolderAlbumCache.CachedAlbumInfo(
-            bestGuess.getReleaseGroupId(),
-            null,  // releaseId - 强制处理时没有具体的 Release ID
-            bestGuess.getAlbumTitle(),
-            bestGuess.getAlbumArtist(),
-            bestGuess.getTrackCount(),
-            bestGuess.getReleaseDate(),
-            0.5, // 低置信度
-            FolderAlbumCache.CacheSource.VOTING  // 标记来源为投票/猜测
+    /**
+     * 按「专辑未确定」处理待处理文件
+     *
+     * 适用场景：MusicBrainz 里根本没有这张专辑（典型例子：新发行的精选集）。
+     * 此时：
+     *   - 每首歌的歌名/歌手/作曲/作词 都是指纹识别出来的，是准确的 → 保留
+     *   - 缺的只是「专辑名」→ 用原文件标签或文件夹名合成
+     *   - 专辑艺术家如果不一致 → 写 Various Artists（否则 Plex/Emby 会把一张精选集拆成一堆单曲专辑）
+     */
+    public void processPendingFilesAsUnresolvedAlbum(String folderPath) {
+        List<FolderAlbumCache.PendingFile> pendingFiles = folderAlbumCache.getPendingFiles(folderPath);
+
+        if (pendingFiles == null || pendingFiles.isEmpty()) {
+            log.warn("文件夹没有待处理文件: {}", folderPath);
+            return;
+        }
+
+        FolderAlbumCache.CachedAlbumInfo synthesized = buildUnresolvedAlbumInfo(folderPath, pendingFiles);
+
+        log.warn("========================================");
+        log.warn("⚠ 专辑无法在 MusicBrainz 中确定，按「专辑未确定」处理");
+        log.warn("  文件夹: {}", new File(folderPath).getName());
+        log.warn("  合成专辑名: {}", synthesized.getAlbumTitle());
+        log.warn("  合成专辑艺术家: {}", synthesized.getAlbumArtist());
+        log.warn("  曲目级信息（歌名/歌手/作曲/作词）仍使用指纹识别结果，是准确的");
+        log.warn("========================================");
+        LogCollector.addLog("WARN", "专辑未确定，已用文件夹名合成专辑信息: " + synthesized.getAlbumTitle());
+
+        // 关键：只标记 unresolved，**不把合成结果写入普通专辑缓存**。
+        //
+        // 合成的专辑信息是未经验证的，一旦写入 folderAlbumCache，
+        // 同目录后续新增的文件会把它当成「已锁定的专辑」走普通分支，导致：
+        //   1) 不再设置 clearReleaseDate → 旧专辑年份在增量文件上重新残留
+        //   2) 不再重算专辑艺术家 → 新增其他艺术家的曲目时仍沿用旧值，不会降为 Various Artists
+        //
+        // 不写缓存后，后续文件会重新进入 pending 并由 isFolderUnresolved() 拦住专辑匹配，
+        // 收齐后重新合成（年份再次被清除、艺术家基于当前批次重算）。
+        folderAlbumCache.markFolderUnresolved(folderPath);
+
+        processPendingFilesWithAlbum(folderPath, synthesized, true);
+    }
+
+    /**
+     * 合成「专辑未确定」时的专辑信息
+     */
+    private FolderAlbumCache.CachedAlbumInfo buildUnresolvedAlbumInfo(
+            String folderPath, List<FolderAlbumCache.PendingFile> pendingFiles) {
+
+        // 1. 专辑名：优先用「原文件标签」里的专辑名，否则用清洗后的文件夹名。
+        //    注意：这里必须重新读取原文件标签，不能用 pending.getMetadata()。
+        //    因为 pending 里是识别后的 detailedMetadata，而 mergeMetadata() 只会保留
+        //    composer / lyricist / lyrics / genres，并不会保留源文件的 album，
+        //    在 allowAlbumGuess=false 时 md.getAlbum() 几乎恒为 null。
+        Map<String, Integer> albumVotes = new HashMap<>();
+        Map<String, Integer> artistVotes = new HashMap<>();
+        int filesWithRecognizedArtist = 0;
+
+        for (FolderAlbumCache.PendingFile pending : pendingFiles) {
+            // 专辑名：从原文件标签读
+            try {
+                MusicMetadata originalTags = tagWriter.readTags(pending.getAudioFile());
+                if (originalTags != null) {
+                    String album = originalTags.getAlbum();
+                    if (isMeaningfulAlbumName(album)) {
+                        albumVotes.merge(album.trim(), 1, Integer::sum);
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("读取原文件标签失败: {} - {}", pending.getAudioFile().getName(), e.getMessage());
+            }
+
+            // 艺术家：用识别后的元数据（指纹识别结果比原标签准）
+            MusicMetadata md = (MusicMetadata) pending.getMetadata();
+            if (md != null) {
+                String artist = md.getAlbumArtist() != null ? md.getAlbumArtist() : md.getArtist();
+                if (artist != null && !artist.trim().isEmpty()) {
+                    artistVotes.merge(artist.trim(), 1, Integer::sum);
+                    filesWithRecognizedArtist++;
+                }
+            }
+        }
+
+        // 避免「一票原标签」压过文件夹名：
+        // 分母用**全部待处理文件数**而非「能读出标签的文件数」，
+        // 否则 10 个文件中只有 2 个能读出标签时，2/2 = 100% 会让两个文件决定整张专辑的名字。
+        String albumTitle = null;
+        String mostVotedAlbum = pickMostVoted(albumVotes);
+        if (mostVotedAlbum != null) {
+            int votes = albumVotes.get(mostVotedAlbum);
+            int denominator = Math.max(1, pendingFiles.size());
+            int requiredVotes = (int) Math.ceil(denominator * 0.6);
+            // 多文件发行至少需要 2 票，避免单个文件的脏标签决定整张专辑
+            if (denominator >= 2) {
+                requiredVotes = Math.max(2, requiredVotes);
+            }
+            if (votes >= requiredVotes) {
+                albumTitle = mostVotedAlbum;
+                log.info("使用原文件标签中的专辑名: {} ({}/{} 个文件一致)",
+                    albumTitle, votes, denominator);
+            } else {
+                log.info("原标签专辑名「{}」仅 {}/{} 个文件一致（需 {}），改用文件夹名",
+                    mostVotedAlbum, votes, denominator, requiredVotes);
+            }
+        }
+
+        if (albumTitle == null) {
+            albumTitle = cleanFolderName(new File(folderPath).getName());
+            log.info("使用清洗后的文件夹名作为专辑名: {}", albumTitle);
+        }
+        if (albumTitle == null || albumTitle.trim().isEmpty()) {
+            albumTitle = "Unknown Album";
+        }
+
+        // 2. 专辑艺术家：只有当所有文件的艺术家一致时才用它，否则 Various Artists
+        //    这一步很关键：精选集里每首歌艺术家都不同，
+        //    如果不写 Various Artists，Plex/Emby 会把一张专辑拆成 N 个单曲专辑。
+        //    注意：不能只看「不同艺术家的个数是否为 1」——
+        //    如果 10 个文件里只有 1 个识别出了艺术家，其余 9 个缺失，
+        //    artistVotes.size() 也是 1，会被误判为「全专辑艺术家一致」。
+        String albumArtist;
+        boolean allFilesHaveArtist = (filesWithRecognizedArtist == pendingFiles.size());
+        if (artistVotes.size() == 1 && allFilesHaveArtist) {
+            albumArtist = artistVotes.keySet().iterator().next();
+            log.info("全部 {} 个文件艺术家一致，专辑艺术家使用: {}", pendingFiles.size(), albumArtist);
+        } else if (artistVotes.size() == 1) {
+            albumArtist = "Various Artists";
+            log.info("艺术家虽只有 1 种，但仅 {}/{} 个文件识别出艺术家，保守起见写入 Various Artists",
+                filesWithRecognizedArtist, pendingFiles.size());
+        } else {
+            albumArtist = "Various Artists";
+            log.info("检测到 {} 个不同艺术家，专辑艺术家写入 Various Artists（避免 Plex/Emby 拆分专辑）",
+                artistVotes.size());
+        }
+        albumArtist = MusicMetadata.normalizeAlbumArtist(albumArtist);
+
+        return new FolderAlbumCache.CachedAlbumInfo(
+            null,   // releaseGroupId - MusicBrainz 没有这张专辑
+            null,   // releaseId
+            albumTitle,
+            albumArtist,
+            pendingFiles.size(),
+            "",     // releaseDate - 宁可留空，也不用旧专辑的年份
+            0.0,    // 置信度 0：表示未经验证
+            FolderAlbumCache.CacheSource.UNKNOWN
         );
+    }
 
-        // 设置缓存以避免后续文件重复触发
-        folderAlbumCache.setFolderAlbum(folderPath, forcedAlbum);
+    /**
+     * 专辑名是否有意义（过滤常见占位值）
+     */
+    private boolean isMeaningfulAlbumName(String album) {
+        if (album == null || album.trim().isEmpty()) {
+            return false;
+        }
+        String normalized = album.trim().toLowerCase();
+        if (normalized.equals("unknown album") || normalized.equals("unknown")
+            || normalized.equals("various") || normalized.equals("various artists")
+            || normalized.equals("untitled") || normalized.equals("no album")
+            || normalized.equals("未知专辑") || normalized.equals("未命名专辑")) {
+            return false;
+        }
+        // "Track 01" / "CD1" / 纯数字 等占位值
+        if (normalized.matches("^(track|cd|disc)\\s*\\d+$") || normalized.matches("^\\d+$")) {
+            return false;
+        }
+        return true;
+    }
 
-        processPendingFilesWithAlbum(folderPath, forcedAlbum);
+    private String pickMostVoted(Map<String, Integer> votes) {
+        String best = null;
+        int bestCount = 0;
+        for (Map.Entry<String, Integer> e : votes.entrySet()) {
+            if (e.getValue() > bestCount) {
+                bestCount = e.getValue();
+                best = e.getKey();
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 清洗文件夹名，得到一个像样的专辑名
+     * 例："[2024.01.01] Best of XXX [FLAC][VIZL-1777]" -> "Best of XXX"
+     */
+    private String cleanFolderName(String folderName) {
+        if (folderName == null || folderName.trim().isEmpty()) {
+            return "Unknown Album";
+        }
+
+        String cleaned = folderName;
+        // 去掉方括号/圆括号包裹的发行编号、格式标记、日期等
+        cleaned = cleaned.replaceAll("\\[[^\\]]*\\]", " ");
+        cleaned = cleaned.replaceAll("\\([^\\)]*\\)", " ");
+        cleaned = cleaned.replaceAll("\\{[^\\}]*\\}", " ");
+        // 去掉常见的格式/采集标记
+        cleaned = cleaned.replaceAll("(?i)\\b(FLAC|ALAC|WAV|MP3|APE|DSD|SACD|Hi-?Res|24bit|16bit|\\d{2,3}kHz|WEB|CD\\d*|Disc\\s*\\d+)\\b", " ");
+        // 去掉首尾的分隔符和多余空白
+        cleaned = cleaned.replaceAll("[\\s_\\-~\u2013\u2014]+$", "");
+        cleaned = cleaned.replaceAll("^[\\s_\\-~\u2013\u2014]+", "");
+        cleaned = cleaned.replaceAll("\\s+", " ").trim();
+
+        if (cleaned.isEmpty()) {
+            // 全被清洗掉了，退回原始文件夹名
+            return folderName.trim();
+        }
+        return cleaned;
     }
     
     /**
@@ -256,25 +471,13 @@ public class AlbumBatchProcessor {
                 log.info("使用缓存的专辑信息: {}", cachedAlbum.getAlbumTitle());
                 processPendingFilesWithAlbum(folderPath, cachedAlbum);
             } else {
-                // 没有缓存，使用第一个待处理文件的元数据作为最佳猜测
+                // 关键修复：以前这里会「拿第一个文件的专辑当整张专辑」，
+                // 导致精选集被整个归到第一首歌所属的旧专辑下。现在改为不猜。
                 FolderAlbumCache.PendingFile firstPending = pendingFiles.get(0);
                 MusicMetadata metadata = (MusicMetadata) firstPending.getMetadata();
 
-                if (metadata != null && metadata.getAlbum() != null) {
-                    log.warn("没有确定的专辑信息，使用第一个文件的元数据作为最佳猜测: {}", metadata.getAlbum());
-
-                    FolderAlbumCache.CachedAlbumInfo guessedAlbum = new FolderAlbumCache.CachedAlbumInfo(
-                        metadata.getReleaseGroupId(),
-                        null,  // releaseId - 猜测时没有具体的 Release ID
-                        metadata.getAlbum(),
-                        metadata.getAlbumArtist() != null ? metadata.getAlbumArtist() : metadata.getArtist(),
-                        metadata.getTrackCount(),
-                        metadata.getReleaseDate(),
-                        0.3, // 低置信度
-                        FolderAlbumCache.CacheSource.UNKNOWN  // 标记来源为未知（猜测）
-                    );
-
-                    processPendingFilesWithAlbum(folderPath, guessedAlbum);
+                if (metadata != null) {
+                    processPendingFilesAsUnresolvedAlbum(folderPath);
                 } else {
                     // 元数据也没有，直接写入每个文件自己的元数据
                     log.warn("无法确定专辑信息，直接写入每个文件自己的元数据");
@@ -327,6 +530,19 @@ public class AlbumBatchProcessor {
                                                               int musicFilesInFolder, 
                                                               FolderAlbumCache.AlbumIdentificationInfo albumInfo) {
         return folderAlbumCache.addSample(folderPath, fileName, musicFilesInFolder, albumInfo);
+    }
+
+    /**
+     * 尝试确定专辑（携带剩余未处理文件数）
+     *
+     * @param remainingUnprocessedCount 文件夹内尚未处理的音乐文件总数，
+     *        用于正确计算本次运行能收集到多少样本（不能用 pending 队列长度代替）
+     */
+    public FolderAlbumCache.CachedAlbumInfo tryDetermineAlbum(String folderPath, String fileName,
+                                                              int musicFilesInFolder,
+                                                              FolderAlbumCache.AlbumIdentificationInfo albumInfo,
+                                                              int remainingUnprocessedCount) {
+        return folderAlbumCache.addSample(folderPath, fileName, musicFilesInFolder, albumInfo, remainingUnprocessedCount);
     }
     
     /**

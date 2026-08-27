@@ -288,7 +288,16 @@ public class TagWriterService {
             tag.setField(FieldKey.ALBUM, metadata.getAlbum());
         }
         
-        if (metadata.getReleaseDate() != null && !metadata.getReleaseDate().isEmpty()) {
+        if (metadata.isClearReleaseDate()) {
+            // 专辑未确定：必须显式删除原文件中可能残留的旧专辑年份，
+            // 否则会出现「专辑名已更新、年份还是旧专辑」的矛盾结果。
+            try {
+                tag.deleteField(FieldKey.YEAR);
+                log.info("专辑未确定，已清空年份标签（避免残留旧专辑年份）");
+            } catch (Exception e) {
+                log.warn("清空年份标签失败: {}", e.getMessage());
+            }
+        } else if (metadata.getReleaseDate() != null && !metadata.getReleaseDate().isEmpty()) {
             // 直接写入完整日期,不再只提取年份
             tag.setField(FieldKey.YEAR, metadata.getReleaseDate());
         }

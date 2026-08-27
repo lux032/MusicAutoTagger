@@ -111,6 +111,21 @@ public class MusicBrainzClient {
      * @param fileDurationSeconds 当前文件的时长（秒），用于时长匹配备选方案
      */
     public MusicMetadata getRecordingById(String recordingId, int musicFilesInFolder, String preferredReleaseGroupId, String preferredReleaseId, int fileDurationSeconds) throws IOException, InterruptedException {
+        // 默认允许「按曲目数猜测专辑」，保持旧调用方的行为不变
+        return getRecordingById(recordingId, musicFilesInFolder, preferredReleaseGroupId, preferredReleaseId, fileDurationSeconds, true);
+    }
+
+    /**
+     * 通过 Recording ID 查询音乐信息（可控制是否允许「按曲目数猜测专辑」）
+     *
+     * @param allowAlbumGuess 当没有锁定的 Release/ReleaseGroup 时，是否允许退化为
+     *                        「挑一个曲目数最接近的 release」。
+     *                        传 false 时，若无法可信地确定专辑，将返回不带专辑信息的曲目级元数据，
+     *                        由上层按「专辑未确定」处理，避免把曲目错误归入某张旧专辑。
+     */
+    public MusicMetadata getRecordingById(String recordingId, int musicFilesInFolder, String preferredReleaseGroupId,
+                                          String preferredReleaseId, int fileDurationSeconds,
+                                          boolean allowAlbumGuess) throws IOException, InterruptedException {
         rateLimit();
 
         // 增加 media 来获取曲目数信息，增加 artist-rels 和 work-rels 以获取作曲家、作词家信息
@@ -119,7 +134,7 @@ public class MusicBrainzClient {
 
         try {
             String response = executeRequest(url);
-            MusicMetadata metadata = parseRecordingResponse(response, musicFilesInFolder, preferredReleaseGroupId, preferredReleaseId, fileDurationSeconds);
+            MusicMetadata metadata = parseRecordingResponse(response, musicFilesInFolder, preferredReleaseGroupId, preferredReleaseId, fileDurationSeconds, allowAlbumGuess);
             
             // 尝试获取封面 URL
             if (metadata.getReleaseGroupId() != null) {
@@ -811,7 +826,7 @@ public class MusicBrainzClient {
      * @param preferredReleaseId 优先选择的 Release ID（确保版本一致性）
      * @param fileDurationSeconds 当前文件的时长（秒），用于时长匹配备选方案
      */
-    private MusicMetadata parseRecordingResponse(String json, int musicFilesInFolder, String preferredReleaseGroupId, String preferredReleaseId, int fileDurationSeconds) throws IOException, InterruptedException {
+    private MusicMetadata parseRecordingResponse(String json, int musicFilesInFolder, String preferredReleaseGroupId, String preferredReleaseId, int fileDurationSeconds, boolean allowAlbumGuess) throws IOException, InterruptedException {
         JsonNode root = objectMapper.readTree(json);
          
         MusicMetadata metadata = new MusicMetadata();
@@ -834,8 +849,16 @@ public class MusicBrainzClient {
         
         // 解析并选择最佳专辑
         JsonNode releases = root.path("releases");
+        JsonNode bestRelease = null;
         if (releases.isArray() && releases.size() > 0) {
-            JsonNode bestRelease = selectBestRelease(releases, musicFilesInFolder, preferredReleaseGroupId, preferredReleaseId);
+            bestRelease = selectBestRelease(releases, musicFilesInFolder, preferredReleaseGroupId, preferredReleaseId, allowAlbumGuess);
+            if (bestRelease == null) {
+                log.warn("⚠ 无法可信地确定该曲目所属专辑（{} 个候选版本均不可信）", releases.size());
+                log.warn("  仅返回曲目级元数据，由上层按「专辑未确定」处理，不会强行归入某张旧专辑");
+            }
+        }
+
+        if (bestRelease != null) {
             metadata.setAlbum(bestRelease.path("title").asText());
             metadata.setReleaseDate(bestRelease.path("date").asText());
             metadata.setReleaseGroupId(bestRelease.path("release-group").path("id").asText());
@@ -892,8 +915,18 @@ public class MusicBrainzClient {
             
             return metadata;
         }
-        
-        // 如果没有找到任何releases,返回基本元数据
+
+        // 没有可信的专辑信息：仍然返回曲目级元数据（流派 / 作曲 / 作词都是可靠的）
+        JsonNode tagsWithoutRelease = root.path("tags");
+        if (tagsWithoutRelease.isArray() && tagsWithoutRelease.size() > 0) {
+            List<String> genres = new ArrayList<>();
+            for (JsonNode tag : tagsWithoutRelease) {
+                genres.add(tag.path("name").asText());
+            }
+            metadata.setGenres(genres);
+        }
+        parseComposerAndLyricist(root, metadata);
+
         return metadata;
     }
     
@@ -1141,8 +1174,10 @@ public class MusicBrainzClient {
      * @param musicFilesInFolder 文件所在文件夹的音乐文件数量
      * @param preferredReleaseGroupId 优先选择的 Release Group ID
      * @param preferredReleaseId 优先选择的 Release ID（确保版本一致性）
+     * @param allowAlbumGuess 当上面两级都没命中时，是否允许退化为「按曲目数猜一个」。
+     *                        传 false 时直接返回 null，表示「这首曲目所属的专辑无法确定」。
      */
-    private JsonNode selectBestRelease(JsonNode releases, int musicFilesInFolder, String preferredReleaseGroupId, String preferredReleaseId) {
+    private JsonNode selectBestRelease(JsonNode releases, int musicFilesInFolder, String preferredReleaseGroupId, String preferredReleaseId, boolean allowAlbumGuess) {
         // --- Stage 0: 优先匹配具体的 Release ID（最高优先级）---
         if (preferredReleaseId != null && !preferredReleaseId.isEmpty()) {
             for (JsonNode release : releases) {
@@ -1167,6 +1202,16 @@ public class MusicBrainzClient {
             log.warn("Recording's releases did not contain the preferred Release Group ID: {}. Falling back to best match logic.", preferredReleaseGroupId);
         }
         // --- End of new logic ---
+
+        // --- Stage 2: 没有任何锁定信息 ---
+        // 关键修复：以前这里会「挑一个曲目数最接近的 release」并且用 releases.get(0) 兜底，
+        // 导致 MusicBrainz 里根本没有收录的专辑（例如新发行的精选集）被错误归入曲目所属的旧专辑。
+        // 现在只有在明确允许猜测的场景（如监控目录根部的散落单文件）才继续往下走。
+        if (!allowAlbumGuess) {
+            log.warn("未命中锁定的 Release / Release Group，且当前场景禁止「按曲目数猜测专辑」");
+            log.warn("  判定为：该曲目所属专辑无法确定（可能是 MusicBrainz 尚未收录的专辑）");
+            return null;
+        }
 
         JsonNode bestRelease = null;
         int bestScore = -1;

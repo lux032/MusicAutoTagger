@@ -417,16 +417,18 @@ public class DurationSequenceService {
 
             if (combinedScore > bestCombinedScore) {
                 bestCombinedScore = combinedScore;
-                bestMatch = new AlbumMatchResult(candidate, combinedScore);
+                // 同时保留原始 DTW 分，供上层做「音频是否真的强匹配」的硬判断
+                bestMatch = new AlbumMatchResult(candidate, combinedScore, durationSimilarity);
             }
         }
 
         // 检查是否达到最小匹配阈值
         if (bestMatch != null && bestCombinedScore >= MIN_MATCH_THRESHOLD) {
-            log.info("✓ 选择最佳匹配: {} - {} (综合得分: {:.2f}, 格式: {})",
+            log.info("✓ 选择最佳匹配: {} - {} (综合得分: {}, 原始时长相似度: {}, 格式: {})",
                 bestMatch.getAlbumInfo().getAlbumTitle(),
                 bestMatch.getAlbumInfo().getAlbumArtist(),
-                bestCombinedScore,
+                String.format("%.2f", bestCombinedScore),
+                String.format("%.2f", bestMatch.getDurationSimilarity()),
                 bestMatch.getAlbumInfo().getMediaFormat());
             return bestMatch;
         } else {
@@ -694,12 +696,27 @@ public class DurationSequenceService {
     @Data
     public static class AlbumMatchResult {
         private AlbumDurationInfo albumInfo;
-        private double similarity; // 相似度分数
+        /**
+         * 综合排序分。
+         * 注意：该分数可能包含文件夹名称相似度、媒体格式匹配等**非音频证据**的加分，
+         * 因此**不得**用作「音频时长是否真的对上了」的硬门槛，只能用于候选间排序。
+         */
+        private double similarity;
+        /**
+         * 原始时长序列（DTW）相似度，不含名称/格式加分。
+         * 需要「音频层面确实强匹配」的判断（如第一首文件立即锁定整个文件夹）必须用这个分数。
+         */
+        private double durationSimilarity;
         private MatchQuality quality; // 匹配质量
         
         public AlbumMatchResult(AlbumDurationInfo albumInfo, double similarity) {
+            this(albumInfo, similarity, similarity);
+        }
+
+        public AlbumMatchResult(AlbumDurationInfo albumInfo, double similarity, double durationSimilarity) {
             this.albumInfo = albumInfo;
             this.similarity = similarity;
+            this.durationSimilarity = durationSimilarity;
             this.quality = evaluateQuality(similarity);
         }
         

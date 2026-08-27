@@ -31,6 +31,9 @@ public class FolderAlbumCache {
     
     // 新增：文件夹路径 -> 时长序列
     private final Map<String, List<Integer>> folderDurationSequences = new ConcurrentHashMap<>();
+
+    // 新增：被判定为「专辑无法确定」的文件夹（大概率是 MusicBrainz 尚未收录的专辑 / 自制精选集）
+    private final Set<String> unresolvedFolders = ConcurrentHashMap.newKeySet();
     
     // 依赖服务
     private final DurationSequenceService durationSequenceService;
@@ -42,6 +45,27 @@ public class FolderAlbumCache {
     private static final double CONFIDENCE_THRESHOLD = 0.6; // 60%以上的歌曲匹配同一专辑才认为可信
     private static final int LARGE_ALBUM_THRESHOLD = 10; // 10首以上认为是大型专辑
     private static final double TRACK_COUNT_TOLERANCE = 0.3; // 曲目数容差30%
+
+    // 候选专辑覆盖率阈值：
+    // 如果没有任何一张候选专辑能覆盖超过这个比例的样本，
+    // 说明这个文件夹里的歌分别来自很多张不同的专辑（典型的精选集），
+    // 而 MusicBrainz 里并没有「这张精选集」本身。
+    private static final double MIN_CANDIDATE_COVERAGE = 0.6;
+
+    // 做出「MusicBrainz 未收录」这个负面判定所需的最少有效样本数。
+    // 只有 2 个样本时，覆盖率只可能是 50% 或 100%，60% 的阈值实际等于要求全票一致，
+    // 只要有一个样本的 AcoustID 候选缺了共同 Release Group 就会误判。
+    private static final int MIN_SAMPLES_FOR_UNRESOLVED = 3;
+
+    // 第一个文件就立即锁定整个文件夹的门槛（明显高于普通阈值 0.7）。
+    // 因为立即锁定会跳过后续的样本收集与候选覆盖率检测，
+    // 只有强匹配才允许走这条快速通道，否则一次误判会污染整个文件夹。
+    //
+    // 重要：必须对「原始 DTW 相似度」设门槛，而不能用综合得分。
+    // 综合得分 = DTW×0.7 + 名称×0.3 + 名称加分 0.1 + 格式加分 0.15，
+    // 例如 DTW 仅 0.55、但文件夹名与格式都匹配时综合得分可达 0.935，
+    // 会让一个音频层面并不匹配的候选轻松越过门槛。
+    private static final double FIRST_FILE_LOCK_MIN_DURATION_SIMILARITY = 0.85;
     
     // 时长序列匹配开关
     private boolean useDurationSequenceMatching = true;
@@ -169,6 +193,21 @@ public class FolderAlbumCache {
      * @return 如果样本收集完成并确定了专辑，返回确定的专辑信息，否则返回null
      */
     public CachedAlbumInfo addSample(String folderPath, String fileName, int musicFilesCount, AlbumIdentificationInfo albumInfo) {
+        // 旧调用：无法得知剩余未处理文件数，保守地按「整个文件夹都需要处理」处理
+        return addSample(folderPath, fileName, musicFilesCount, albumInfo, musicFilesCount);
+    }
+
+    /**
+     * 添加识别样本
+     *
+     * @param remainingUnprocessedCount 该文件夹下「尚未被处理过」的音乐文件总数。
+     *        用于判断本次运行到底能收集到多少个样本。
+     *        注意：**不能**用瞬时的 pending 队列长度代替——
+     *        第一个文件刚入队时 pending 恒为 1，会把所需样本数压到 1，
+     *        导致第一首文件立即以单样本进入普通分析，绕过快速通道的严格门槛与覆盖率检测。
+     */
+    public CachedAlbumInfo addSample(String folderPath, String fileName, int musicFilesCount,
+                                     AlbumIdentificationInfo albumInfo, int remainingUnprocessedCount) {
         // 如果已经确定了专辑，直接返回（不再收集样本）
         CachedAlbumInfo cached = folderAlbumCache.get(folderPath);
         if (cached != null) {
@@ -194,16 +233,20 @@ public class FolderAlbumCache {
         // 动态计算所需样本数：对于小型专辑，使用更少的样本
         int requiredSamples = calculateRequiredSamples(musicFilesCount);
 
-        // 获取当前待处理文件数量
-        int pendingFileCount = getPendingFileCount(folderPath);
-
-        // 关键修复：如果待处理文件数量少于所需样本数，调整所需样本数
-        // 这种情况发生在专辑大部分文件已处理，只剩少数几个文件时
+        // 关键修复：以前这里用「当前 pending 队列长度」去压低所需样本数，
+        // 但它无法区分「专辑刚开始处理，只有第一首入队」与「专辑真的只剩少量文件」。
+        // 顺序处理时第一首文件天然满足 pendingFileCount(1) < requiredSamples，
+        // 于是每张专辑都会在第一首就以单样本提前进入普通分析，
+        // 绕过快速通道的原始 DTW 严格门槛，也使候选覆盖率检测（需 3 样本）永远无法生效。
+        //
+        // 改为使用「剩余未处理文件数」——这个值来自已处理记录，不会因队列瞬时状态而波动。
+        // 注意：源文件处理后是被复制而非移走，仍留在监控目录，
+        // 因此 musicFilesCount 不会随处理进度缩小，不能直接拿它当分母。
         int effectiveRequiredSamples = requiredSamples;
-        if (pendingFileCount > 0 && pendingFileCount < requiredSamples) {
-            effectiveRequiredSamples = pendingFileCount;
-            log.info("待处理文件数({})少于所需样本数({})，调整为: {}",
-                pendingFileCount, requiredSamples, effectiveRequiredSamples);
+        if (remainingUnprocessedCount > 0 && remainingUnprocessedCount < requiredSamples) {
+            effectiveRequiredSamples = Math.max(1, remainingUnprocessedCount);
+            log.info("文件夹剩余未处理文件数({})少于所需样本数({})，调整为: {}",
+                remainingUnprocessedCount, requiredSamples, effectiveRequiredSamples);
         }
 
         log.info("添加专辑识别样本: {} - {} (样本数: {}/{})",
@@ -296,7 +339,20 @@ public class FolderAlbumCache {
         if (samples.isEmpty()) {
             return null;
         }
-        
+
+        // 已经判定过是「专辑未确定」的文件夹，不重复检测、不重复请求 MusicBrainz
+        if (isFolderUnresolved(folderPath)) {
+            log.debug("文件夹已判定为「专辑未确定」，跳过专辑匹配: {}", folderPath);
+            return null;
+        }
+
+        // 关键新增：候选专辑覆盖率检测
+        // 先判断「这个文件夹到底是不是一张 MusicBrainz 里存在的专辑」，
+        // 而不是直接去「从候选里挑一个最像的」。
+        if (isLikelyNotInMusicBrainz(folderPath, samples)) {
+            return null;
+        }
+
         // 如果启用时长序列匹配，使用新方法
         if (useDurationSequenceMatching) {
             return analyzeSamplesWithDurationSequence(folderPath, samples, musicFilesCount);
@@ -306,6 +362,113 @@ public class FolderAlbumCache {
         return analyzeSamplesWithVoting(samples, musicFilesCount);
     }
     
+    /**
+     * 候选专辑覆盖率检测：判断这个文件夹是否「大概率是 MusicBrainz 尚未收录的专辑」。
+     *
+     * 原理：
+     * 每个文件经指纹识别后，都会得到一组「这首歌出现在哪些专辑里」的候选。
+     * - 如果这真是一张专辑：几乎每个文件的候选里都会包含同一张专辑 → 覆盖率接近 100%
+     * - 如果这是一张精选集（而 MusicBrainz 没有收录）：每首歌分别来自不同的旧专辑，
+     *   任何一张旧专辑都只能覆盖少数几首 → 覆盖率很低
+     *
+     * @return true 表示判定为「专辑无法确定」，不应该再去匹配任何旧专辑
+     */
+    private boolean isLikelyNotInMusicBrainz(String folderPath, List<AlbumIdentificationInfo> samples) {
+        // 统计每个候选专辑被多少个样本支持
+        Map<String, Integer> coverageCount = new LinkedHashMap<>();
+        Map<String, String> titleOf = new LinkedHashMap<>();
+        int samplesWithCandidates = 0;
+
+        for (AlbumIdentificationInfo sample : samples) {
+            Set<String> rgIdsOfThisSample = new HashSet<>();
+
+            // 样本自己选定的专辑
+            if (sample.getReleaseGroupId() != null && !sample.getReleaseGroupId().isEmpty()) {
+                rgIdsOfThisSample.add(sample.getReleaseGroupId());
+                titleOf.putIfAbsent(sample.getReleaseGroupId(), sample.getAlbumTitle());
+            }
+            // AcoustID 返回的全部候选
+            if (sample.getAllCandidateReleaseGroups() != null) {
+                for (CandidateReleaseGroup c : sample.getAllCandidateReleaseGroups()) {
+                    if (c.getReleaseGroupId() != null && !c.getReleaseGroupId().isEmpty()) {
+                        rgIdsOfThisSample.add(c.getReleaseGroupId());
+                        titleOf.putIfAbsent(c.getReleaseGroupId(), c.getTitle());
+                    }
+                }
+            }
+
+            if (rgIdsOfThisSample.isEmpty()) {
+                continue;
+            }
+            samplesWithCandidates++;
+            for (String rgId : rgIdsOfThisSample) {
+                coverageCount.merge(rgId, 1, Integer::sum);
+            }
+        }
+
+        // 样本太少时不做负面判定。
+        // 1 个样本覆盖率恒为 100%，毫无意义；
+        // 2 个样本只能得到 50% 或 100%，60% 阈值实际等于要求全票一致，容易误伤 EP / 单曲。
+        if (samplesWithCandidates < MIN_SAMPLES_FOR_UNRESOLVED) {
+            log.debug("有效样本仅 {} 个（需要 {} 个），不做「MusicBrainz 未收录」判定",
+                samplesWithCandidates, MIN_SAMPLES_FOR_UNRESOLVED);
+            return false;
+        }
+
+        // 找出覆盖率最高的候选
+        String bestRgId = null;
+        int bestCount = 0;
+        for (Map.Entry<String, Integer> e : coverageCount.entrySet()) {
+            if (e.getValue() > bestCount) {
+                bestCount = e.getValue();
+                bestRgId = e.getKey();
+            }
+        }
+
+        double maxCoverage = (double) bestCount / samplesWithCandidates;
+
+        log.info("=== 候选专辑覆盖率检测 ===");
+        log.info("有效样本数: {}, 不同候选专辑数: {}", samplesWithCandidates, coverageCount.size());
+        log.info("最高覆盖率: {}/{} = {}%  ({})",
+            bestCount, samplesWithCandidates,
+            String.format("%.1f", maxCoverage * 100),
+            bestRgId != null ? titleOf.get(bestRgId) : "无");
+
+        if (maxCoverage < MIN_CANDIDATE_COVERAGE) {
+            log.warn("========================================");
+            log.warn("⚠ 判定：这个文件夹大概率是 MusicBrainz 尚未收录的专辑");
+            log.warn("  理由：没有任何一张候选专辑能解释足够多的曲目（最高只覆盖 {}%，需要 {}%）",
+                String.format("%.1f", maxCoverage * 100),
+                String.format("%.0f", MIN_CANDIDATE_COVERAGE * 100));
+            log.warn("  这通常意味着：这是一张精选集 / 自制合辑，曲目分别来自 {} 张不同的专辑",
+                coverageCount.size());
+            log.warn("  处理：不会强行归入任何一张旧专辑，改为按「专辑未确定」处理");
+            log.warn("========================================");
+            LogCollector.addLog("WARN", "检测到可能是 MusicBrainz 未收录的专辑（精选集），已避免错误归入旧专辑");
+            markFolderUnresolved(folderPath);
+            return true;
+        }
+
+        log.info("覆盖率达标，继续正常的专辑匹配流程");
+        return false;
+    }
+
+    /**
+     * 标记文件夹为「专辑未确定」
+     */
+    public void markFolderUnresolved(String folderPath) {
+        if (folderPath != null && !folderPath.isEmpty()) {
+            unresolvedFolders.add(folderPath);
+        }
+    }
+
+    /**
+     * 文件夹是否已被判定为「专辑未确定」
+     */
+    public boolean isFolderUnresolved(String folderPath) {
+        return folderPath != null && unresolvedFolders.contains(folderPath);
+    }
+
     /**
      * 使用时长序列匹配分析样本
      * 关键改进：使用 AcoustID 返回的所有候选专辑，而不仅仅是样本中已选定的 releaseGroupId
@@ -491,6 +654,14 @@ public class FolderAlbumCache {
             return null;
         }
         
+        // 关键守卫：该文件夹已被判定为「专辑未确定」（如 MusicBrainz 未收录的精选集），
+        // 后续新增的文件不得再走快速通道去匹配旧专辑，
+        // 否则同一个文件夹会出现「一部分文件走 unresolved、一部分被归入旧专辑」的分裂结果。
+        if (isFolderUnresolved(folderPath)) {
+            log.info("文件夹已判定为「专辑未确定」，跳过第一文件快速匹配: {}", folderPath);
+            return null;
+        }
+
         // 检查是否已有缓存
         CachedAlbumInfo cached = folderAlbumCache.get(folderPath);
         if (cached != null) {
@@ -581,11 +752,48 @@ public class FolderAlbumCache {
             if (matchResult != null) {
                 DurationSequenceService.AlbumDurationInfo bestAlbum = matchResult.getAlbumInfo();
                 double similarity = matchResult.getSimilarity();
-                
+
+                // 关键门槛：立即锁定会跳过后续的样本收集与候选覆盖率检测，
+                // 因此只允许「音频层面确实强匹配」才能走这条快速通道。
+                //
+                // 注意：这里必须用 durationSimilarity（原始 DTW 分），
+                // 而不能用 similarity（综合得分）——后者含有文件夹名称与媒体格式的加分，
+                // 一个 DTW 仅 0.55 的错误候选可能因名称/格式加分而拿到 0.93 的综合分。
+                double durationSimilarity = matchResult.getDurationSimilarity();
+                int candidateTrackCount = bestAlbum.getDurations() != null ? bestAlbum.getDurations().size() : 0;
+                int trackCountDiff = Math.abs(candidateTrackCount - musicFilesCount);
+                int allowedDiff = Math.max(1, (int) Math.ceil(musicFilesCount * 0.15));
+
+                if (durationSimilarity < FIRST_FILE_LOCK_MIN_DURATION_SIMILARITY) {
+                    log.info("第一个文件的原始时长相似度 {} 未达到立即锁定门槛 {}（综合得分 {}），不锁定整个文件夹",
+                        String.format("%.2f", durationSimilarity),
+                        String.format("%.2f", FIRST_FILE_LOCK_MIN_DURATION_SIMILARITY),
+                        String.format("%.2f", similarity));
+                    log.info("  将改为正常的样本收集流程，以便后续执行候选专辑覆盖率检测");
+                    return null;
+                }
+
+                // 防御性检查：快速通道风险高，曲目数信息缺失时宁可不走
+                if (candidateTrackCount <= 0 || musicFilesCount <= 0) {
+                    log.info("曲目数信息不足（候选 {} 首 / 文件夹 {} 个），不允许第一首立即锁定",
+                        candidateTrackCount, musicFilesCount);
+                    return null;
+                }
+
+                if (trackCountDiff > allowedDiff) {
+                    log.info("第一个文件匹配到的专辑曲目数({})与文件夹文件数({})差距过大，不立即锁定",
+                        candidateTrackCount, musicFilesCount);
+                    log.info("  将改为正常的样本收集流程，以便后续执行候选专辑覆盖率检测");
+                    return null;
+                }
+
                 log.info("=== 时长序列匹配成功（第一个文件立即确定） ===");
                 log.info("最佳专辑: {} (Release Group ID: {})", bestAlbum.getAlbumTitle(), bestAlbum.getReleaseGroupId());
-                log.info("相似度: {:.2f}", similarity);
-                
+                log.info("原始时长相似度: {}（门槛 {}）, 综合得分: {}",
+                    String.format("%.2f", durationSimilarity),
+                    String.format("%.2f", FIRST_FILE_LOCK_MIN_DURATION_SIMILARITY),
+                    String.format("%.2f", similarity));
+
                 CachedAlbumInfo albumInfo = new CachedAlbumInfo(
                     bestAlbum.getReleaseGroupId(),
                     bestAlbum.getReleaseId(),  // 传递 Release ID
@@ -669,14 +877,38 @@ public class FolderAlbumCache {
         
         // 是否为大型专辑
         boolean isLargeAlbum = musicFilesCount >= LARGE_ALBUM_THRESHOLD;
-        
+
+        // 0. 关键：先过滤掉「根本没有专辑信息」的样本。
+        //    开启 allowAlbumGuess=false 后，MusicBrainz 可能返回 albumTitle / releaseGroupId 均为空的元数据。
+        //    如果不过滤，同一艺术家的多个空样本会聚合成 "null|Artist" 这个投票键，
+        //    以 100% 置信度产出一个「标题为空的已确定专辑」，反而绕过 unresolved 链路。
+        List<AlbumIdentificationInfo> validSamples = new ArrayList<>();
+        for (AlbumIdentificationInfo sample : samples) {
+            if (isUsableAlbumSample(sample)) {
+                validSamples.add(sample);
+            }
+        }
+
+        if (validSamples.isEmpty()) {
+            log.warn("没有任何包含有效专辑信息的样本（共 {} 个样本），保持「专辑未确定」", samples.size());
+            return null;
+        }
+
+        if (validSamples.size() < samples.size()) {
+            log.info("已过滤掉 {} 个无专辑信息的样本，实际参与投票: {} 个",
+                samples.size() - validSamples.size(), validSamples.size());
+        }
+
         // 1. 统计专辑出现次数
         Map<String, AlbumVoteInfo> albumVotes = new HashMap<>();
-        for (AlbumIdentificationInfo sample : samples) {
+        for (AlbumIdentificationInfo sample : validSamples) {
             String albumKey = getAlbumKey(sample);
             AlbumVoteInfo voteInfo = albumVotes.computeIfAbsent(albumKey, k -> new AlbumVoteInfo(sample));
             voteInfo.incrementVote();
         }
+
+        // 后续置信度的分母使用「有效样本数」
+        samples = validSamples;
         
         // 2. 选择最佳专辑
         AlbumVoteInfo bestVote = null;
@@ -743,7 +975,21 @@ public class FolderAlbumCache {
             return album.getReleaseGroupId();
         }
         // 如果没有 ReleaseGroupId，使用专辑名+艺术家
+        // 注意：调用方必须先用 isUsableAlbumSample() 过滤，避免生成 "null|Artist" 这种无效键
         return album.getAlbumTitle() + "|" + album.getAlbumArtist();
+    }
+
+    /**
+     * 样本是否包含可用于投票的专辑信息
+     * 要求：至少有 ReleaseGroupId 或非空的专辑名
+     */
+    private boolean isUsableAlbumSample(AlbumIdentificationInfo sample) {
+        if (sample == null) {
+            return false;
+        }
+        boolean hasReleaseGroupId = sample.getReleaseGroupId() != null && !sample.getReleaseGroupId().isEmpty();
+        boolean hasAlbumTitle = sample.getAlbumTitle() != null && !sample.getAlbumTitle().trim().isEmpty();
+        return hasReleaseGroupId && hasAlbumTitle;
     }
     
     /**
@@ -767,6 +1013,7 @@ public class FolderAlbumCache {
         folderAlbumCache.remove(folderPath);
         folderSampleCollectors.remove(folderPath);
         folderDurationSequences.remove(folderPath);
+        unresolvedFolders.remove(folderPath);
         log.info("已清除文件夹专辑缓存: {}", folderPath);
     }
     
