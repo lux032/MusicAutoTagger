@@ -36,7 +36,10 @@ public class OnlineIdentificationService {
         + "Include at most five candidates. Preserve source URLs.";
 
     private final MusicConfig config;
-    private final WebSearchClient searchClient;
+    // 两个实现都在启动时建好（构造开销只是持有 config 与一个 HttpClient），
+    // 运行时按配置切换，避免「改了 provider 却要重启才生效」这种半生效状态
+    private final WebSearchClient nativeSearchClient;
+    private final WebSearchClient tavilySearchClient;
     private final ReviewQueueService reviewQueue;
     private final TagWriterService tagWriter;
     private final AudioFingerprintService fingerprintService;
@@ -46,7 +49,8 @@ public class OnlineIdentificationService {
     public OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
                                        TagWriterService tagWriter, AudioFingerprintService fingerprintService) {
         this.config = config;
-        this.searchClient = createSearchClient(config);
+        this.nativeSearchClient = new NativeWebSearchClient(config);
+        this.tavilySearchClient = new TavilyWebSearchClient(config, new LlmClient(config));
         this.reviewQueue = reviewQueue;
         this.tagWriter = tagWriter;
         this.fingerprintService = fingerprintService;
@@ -54,19 +58,18 @@ public class OnlineIdentificationService {
     }
 
     /**
-     * 按 llm.webSearch.provider 选择联网搜索实现。
+     * 按 llm.webSearch.provider 选择联网搜索实现。每次调用都重新读配置，
+     * 因此在 Web 面板上切换搜索来源无需重启。
      *
      * 模型原生 web search 在第三方端点上普遍不可用（不实现 /responses、不支持 tools、
      * 或声称支持但从不真正检索），因此提供 tavily 这条「外部检索器 + 普通 chat 归纳」的路径。
      */
-    private static WebSearchClient createSearchClient(MusicConfig config) {
-        if ("tavily".equalsIgnoreCase(config.getWebSearchProvider())) {
-            return new TavilyWebSearchClient(config, new LlmClient(config));
-        }
-        return new NativeWebSearchClient(config);
+    private WebSearchClient searchClient() {
+        return "tavily".equalsIgnoreCase(config.getWebSearchProvider())
+            ? tavilySearchClient : nativeSearchClient;
     }
 
-    public boolean isAvailable() { return searchClient.hasEnabledEndpoint(); }
+    public boolean isAvailable() { return searchClient().hasEnabledEndpoint(); }
 
     public ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover) throws Exception {
         List<File> files = collect(albumRoot);
@@ -84,7 +87,9 @@ public class OnlineIdentificationService {
         String prompt = buildPrompt(albumRoot, files, durations, analyzeCover);
 
         // 第一轮结果立即持久化；只有证据不足才执行第二轮。
-        WebSearchClient.SearchResponse first = searchClient.search(SYSTEM, prompt);
+        // 同一次识别的两轮搜索必须用同一个实现：中途配置变更不应让第二轮换一套证据来源
+        WebSearchClient client = searchClient();
+        WebSearchClient.SearchResponse first = client.search(SYSTEM, prompt);
         Parsed parsed = parse(first);
         matchAll(parsed, files, durations);
         save(item, first, parsed, evidenceHash);
@@ -94,7 +99,7 @@ public class OnlineIdentificationService {
                 + "\nRun a second, narrower search using aliases, original-language names, catalog numbers, official pages, Discogs or VGMdb."
                 + " Return the same JSON schema.";
             try {
-                WebSearchClient.SearchResponse second = searchClient.search(SYSTEM, secondPrompt);
+                WebSearchClient.SearchResponse second = client.search(SYSTEM, secondPrompt);
                 Parsed secondParsed = parse(second);
                 merge(parsed, secondParsed);
                 mergeEvidence(parsed.clues, second.getCitations());
