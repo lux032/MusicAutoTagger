@@ -19,12 +19,12 @@ import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.util.Timeout;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.util.I18nUtil;
+import com.lux032.musicautotagger.util.ProcessRunner;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -44,6 +44,10 @@ public class AudioFingerprintService {
     // 重试配置
     private static final int MAX_RETRIES = 3; // 最大重试次数
     private static final long RETRY_DELAY_MS = 5000; // 重试间隔5秒
+
+    // fpcalc 子进程超时配置(防止损坏文件或挂起的网络存储卡死整条处理流水线)
+    private static final long FPCALC_TIMEOUT_SECONDS = 120;        // 指纹/时长提取超时
+    private static final long FPCALC_VERSION_TIMEOUT_SECONDS = 10; // 可用性探测超时
     
     public AudioFingerprintService(MusicConfig config) {
         this.config = config;
@@ -95,32 +99,12 @@ public class AudioFingerprintService {
         }
         
         // 执行 fpcalc 命令
-        ProcessBuilder processBuilder = new ProcessBuilder(
+        String jsonOutput = runFpcalc(FPCALC_TIMEOUT_SECONDS,
             fpcalcPath,
             "-json",
             audioFile.getAbsolutePath()
         );
         
-        Process process = processBuilder.start();
-        
-        // 读取输出
-        StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line);
-            }
-        }
-        
-        // 等待进程完成
-        int exitCode = process.waitFor();
-        if (exitCode != 0) {
-            throw new IOException("fpcalc 执行失败，退出码: " + exitCode);
-        }
-        
-        // 解析 JSON 输出
-        String jsonOutput = output.toString();
         log.debug("fpcalc 输出: {}", jsonOutput);
         
         JsonNode root = objectMapper.readTree(jsonOutput);
@@ -145,33 +129,13 @@ public class AudioFingerprintService {
         }
         
         // 执行 fpcalc 命令(仅获取时长,不生成指纹)
-        ProcessBuilder processBuilder = new ProcessBuilder(
+        String jsonOutput = runFpcalc(FPCALC_TIMEOUT_SECONDS,
             fpcalcPath,
             "-json",
             "-length", "0",  // 不计算指纹,只获取元数据
             audioFile.getAbsolutePath()
         );
         
-        Process process = processBuilder.start();
-        
-        // 读取输出
-        StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line);
-            }
-        }
-        
-        // 等待进程完成
-        int exitCode = process.waitFor();
-        if (exitCode != 0) {
-            throw new IOException("fpcalc 执行失败，退出码: " + exitCode);
-        }
-        
-        // 解析 JSON 输出
-        String jsonOutput = output.toString();
         JsonNode root = objectMapper.readTree(jsonOutput);
         
         int duration = root.path("duration").asInt();
@@ -439,15 +403,24 @@ public class AudioFingerprintService {
      */
     public boolean isFpcalcAvailable() {
         try {
-            ProcessBuilder pb = new ProcessBuilder(fpcalcPath, "-version");
-            Process process = pb.start();
-            int exitCode = process.waitFor();
-            return exitCode == 0;
-        } catch (IOException | InterruptedException e) {
+            runFpcalc(FPCALC_VERSION_TIMEOUT_SECONDS, fpcalcPath, "-version");
+            return true;
+        } catch (IOException e) {
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return false;
         }
     }
-    
+
+    /**
+     * 执行 fpcalc 子进程并返回其输出
+     * 超时与输出消费的处理见 {@link ProcessRunner}
+     */
+    private String runFpcalc(long timeoutSeconds, String... command) throws IOException, InterruptedException {
+        return ProcessRunner.run(Arrays.asList(command), timeoutSeconds);
+    }
+
     /**
      * 关闭客户端
      */

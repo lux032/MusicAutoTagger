@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.service;
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.util.FileSystemUtils;
+import com.lux032.musicautotagger.util.ProcessRunner;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -32,6 +33,8 @@ public class CueSplitService {
     private static final Set<String> COVER_EXTENSIONS = new HashSet<>(
         Arrays.asList("jpg", "jpeg", "png", "bmp", "gif", "webp", "tif", "tiff"));
     private static final String DONE_MARKER = ".cue-split.done";
+    /** 切分单条音轨的超时上限,防止 ffmpeg 挂起拖垮唯一的处理线程 */
+    private static final long FFMPEG_TIMEOUT_SECONDS = 1800;
     private static final Map<String, Object> SPLIT_LOCKS = new ConcurrentHashMap<>();
 
     private final MusicConfig config;
@@ -293,17 +296,21 @@ public class CueSplitService {
             }
             command.add(outputFile.getAbsolutePath());
 
-            ProcessBuilder builder = new ProcessBuilder(command);
-            builder.redirectErrorStream(true);
-            Process process = builder.start();
-            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-            int exitCode = process.waitFor();
-
-            if (exitCode != 0) {
+            ProcessRunner.Result result;
+            try {
+                result = ProcessRunner.execute(command, FFMPEG_TIMEOUT_SECONDS);
+            } catch (IOException e) {
                 if (outputFile.exists()) {
                     Files.deleteIfExists(outputFile.toPath());
                 }
-                throw new IOException("ffmpeg failed: " + output.trim());
+                throw e;
+            }
+
+            if (!result.isSuccess()) {
+                if (outputFile.exists()) {
+                    Files.deleteIfExists(outputFile.toPath());
+                }
+                throw new IOException("ffmpeg failed: " + result.getOutput().trim());
             }
 
             outputFiles.add(outputFile);

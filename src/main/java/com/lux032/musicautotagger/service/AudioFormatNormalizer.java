@@ -3,14 +3,13 @@ package com.lux032.musicautotagger.service;
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.util.I18nUtil;
+import com.lux032.musicautotagger.util.ProcessRunner;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.audio.AudioHeader;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -23,6 +22,8 @@ import java.util.List;
 public class AudioFormatNormalizer {
     private static final int TARGET_SAMPLE_RATE = 48000;
     private static final int TARGET_BIT_DEPTH = 24;
+    /** 重采样整首曲目的超时上限,防止 ffmpeg 挂起拖垮唯一的处理线程 */
+    private static final long FFMPEG_TIMEOUT_SECONDS = 1800;
 
     private final MusicConfig config;
 
@@ -175,28 +176,16 @@ public class AudioFormatNormalizer {
         command.add("flac");
         command.add(outputFile.getAbsolutePath());
 
-        ProcessBuilder processBuilder = new ProcessBuilder(command);
-        processBuilder.redirectErrorStream(true);
-        Process process = processBuilder.start();
-
-        StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append(System.lineSeparator());
-            }
-        }
-
-        int exitCode;
+        ProcessRunner.Result result;
         try {
-            exitCode = process.waitFor();
+            result = ProcessRunner.execute(command, FFMPEG_TIMEOUT_SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("ffmpeg interrupted", e);
         }
 
-        if (exitCode != 0) {
-            log.warn("ffmpeg normalize failed (code {}): {}", exitCode, output.toString().trim());
+        if (!result.isSuccess()) {
+            log.warn("ffmpeg normalize failed (code {}): {}", result.getExitCode(), result.getOutput().trim());
             return false;
         }
         return outputFile.exists();
