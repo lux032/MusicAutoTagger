@@ -160,8 +160,14 @@ public class LlmProviderServlet extends HttpServlet {
         }
 
         try {
-            List<String> models = catalog.fetch(apiUrl, apiKey, format);
-            respondJson(resp, HttpServletResponse.SC_OK, Map.of("models", models));
+            LlmModelCatalog.Result result = catalog.fetch(apiUrl, apiKey, format);
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("models", result.models);
+            payload.put("modelsUrl", result.modelsUrl);
+            // 用户只填到域名时，拉取成功也不代表调用地址是对的，
+            // 把探测到的完整路径送回去让前端建议回填
+            payload.put("suggestedApiUrl", result.suggestedApiUrl);
+            respondJson(resp, HttpServletResponse.SC_OK, payload);
         } catch (LlmModelCatalog.CatalogException e) {
             log.warn("拉取模型列表失败: {}", e.getMessage());
             respondJson(resp, HttpServletResponse.SC_BAD_GATEWAY,

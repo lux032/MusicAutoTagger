@@ -45,11 +45,25 @@ public class LlmModelCatalog {
         }
     }
 
+    /** 拉取结果：除模型列表外，还告诉前端到底是哪个地址生效了 */
+    public static class Result {
+        public final List<String> models;
+        public final String modelsUrl;
+        /** 由生效的 models 地址反推出的调用地址，供前端建议用户回填 */
+        public final String suggestedApiUrl;
+
+        Result(List<String> models, String modelsUrl, String suggestedApiUrl) {
+            this.models = models;
+            this.modelsUrl = modelsUrl;
+            this.suggestedApiUrl = suggestedApiUrl;
+        }
+    }
+
     /**
-     * @param apiUrl 用户填写的完整请求地址（如 https://host/v1/chat/completions）
+     * @param apiUrl 用户填写的请求地址，允许只填到域名或基址
      * @param format openai | anthropic
      */
-    public List<String> fetch(String apiUrl, String apiKey, String format) throws CatalogException {
+    public Result fetch(String apiUrl, String apiKey, String format) throws CatalogException {
         if (apiUrl == null || apiUrl.isBlank()) {
             throw new CatalogException("llm.models.url.required");
         }
@@ -57,10 +71,22 @@ public class LlmModelCatalog {
             throw new CatalogException("llm.models.key.required");
         }
 
-        String modelsUrl = toModelsUrl(apiUrl);
-        assertOutboundAllowed(modelsUrl);
-
         boolean anthropic = "anthropic".equalsIgnoreCase(format);
+        List<String> attempts = new ArrayList<>();
+        for (String modelsUrl : candidateModelsUrls(apiUrl)) {
+            assertOutboundAllowed(modelsUrl);
+            try {
+                List<String> models = request(modelsUrl, apiKey, anthropic);
+                return new Result(models, modelsUrl, toApiUrl(modelsUrl, anthropic));
+            } catch (CatalogException e) {
+                attempts.add(e.getMessage());
+            }
+        }
+        // 逐条列出试过的地址：反代的路径前缀千奇百怪，只报最后一次失败会误导用户
+        throw new CatalogException(String.join(" | ", attempts));
+    }
+
+    private List<String> request(String modelsUrl, String apiKey, boolean anthropic) throws CatalogException {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(modelsUrl))
             .timeout(TIMEOUT)
             .GET();
@@ -78,7 +104,7 @@ public class LlmModelCatalog {
                 .build();
             response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
-            throw new CatalogException("llm.models.network: " + e.getMessage());
+            throw new CatalogException("llm.models.network @ " + modelsUrl + ": " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new CatalogException("llm.models.interrupted");
@@ -96,16 +122,56 @@ public class LlmModelCatalog {
     }
 
     /**
+     * 列出值得一试的模型列表地址。
+     *
+     * 用户常常只填到域名（反代场景尤其如此），此时无法判断 API 挂在根上还是 /v1 下，
+     * 因此按「路径推导 -> {base}/v1/models -> {base}/models」依次尝试。
+     */
+    static List<String> candidateModelsUrls(String apiUrl) {
+        List<String> candidates = new ArrayList<>();
+        String derived = toModelsUrl(apiUrl);
+        candidates.add(derived);
+
+        String root = rootOf(apiUrl);
+        for (String candidate : List.of(root + "/v1/models", root + "/models")) {
+            if (!candidates.contains(candidate)) {
+                candidates.add(candidate);
+            }
+        }
+        return candidates;
+    }
+
+    private static String rootOf(String apiUrl) {
+        try {
+            URI uri = URI.create(apiUrl.trim());
+            String scheme = uri.getScheme() == null ? "https" : uri.getScheme();
+            String authority = uri.getAuthority();
+            if (authority == null || authority.isBlank()) {
+                return trimSlash(apiUrl.trim());
+            }
+            return scheme + "://" + authority;
+        } catch (Exception e) {
+            return trimSlash(apiUrl.trim());
+        }
+    }
+
+    /** 由生效的 models 地址反推调用地址，供前端建议用户把 API URL 补全 */
+    static String toApiUrl(String modelsUrl, boolean anthropic) {
+        if (!modelsUrl.endsWith("/models")) {
+            return null;
+        }
+        String base = modelsUrl.substring(0, modelsUrl.length() - "/models".length());
+        return base + (anthropic ? "/messages" : "/chat/completions");
+    }
+
+    /**
      * 由请求地址推导模型列表地址。
      *
      * 用户填的是完整的调用路径，而模型列表固定在同级的 /models 上，
      * 所以这里把已知的调用后缀替换掉，其余情况退化为「同级目录 + models」。
      */
     static String toModelsUrl(String apiUrl) {
-        String url = apiUrl.trim();
-        while (url.endsWith("/")) {
-            url = url.substring(0, url.length() - 1);
-        }
+        String url = trimSlash(apiUrl.trim());
         String lower = url.toLowerCase(Locale.ROOT);
         for (String suffix : List.of("/chat/completions", "/completions", "/messages", "/responses")) {
             if (lower.endsWith(suffix)) {
@@ -121,6 +187,14 @@ public class LlmModelCatalog {
             return url + "/models";
         }
         return url.substring(0, lastSlash) + "/models";
+    }
+
+    private static String trimSlash(String url) {
+        String result = url;
+        while (result.endsWith("/")) {
+            result = result.substring(0, result.length() - 1);
+        }
+        return result;
     }
 
     /** 兼容三种常见返回形态：{data:[...]}、{models:[...]}、裸数组 */

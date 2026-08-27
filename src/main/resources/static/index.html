@@ -1959,10 +1959,33 @@
                 showLlmModelPicker(index, models);
                 status.textContent = `拉到 ${models.length} 个模型`;
                 status.style.color = '#10b981';
+                // 拉模型走的是 /models，和实际聊天路径不是一回事：
+                // 用户只填域名时拉取能成功，但真正调用会 404，所以这里主动提示补全
+                if (data.suggestedApiUrl && data.suggestedApiUrl !== provider.apiUrl) {
+                    showLlmApiUrlSuggestion(index, data.suggestedApiUrl);
+                }
             } catch (e) {
                 status.textContent = e.message;
                 status.style.color = '#ef4444';
             }
+        }
+
+        function showLlmApiUrlSuggestion(index, suggested) {
+            const box = document.getElementById(`llmUrlSuggestion${index}`);
+            if (!box) return;
+            box.style.display = 'block';
+            box.innerHTML = `
+                <div style="background: #fef9c3; border: 1px solid #fde047; border-radius: 4px; padding: 8px; font-size: 0.85em;">
+                    当前 API URL 不是完整的调用地址，拉取模型能成功但实际调用会失败。
+                    探测到的地址：<code>${escapeHtml(suggested)}</code>
+                    <button type="button" onclick="applyLlmApiUrl(${index}, '${escapeHtml(suggested)}')"
+                        style="margin-left: 8px; padding: 3px 10px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">使用它</button>
+                </div>`;
+        }
+
+        function applyLlmApiUrl(index, url) {
+            llmProviders[index].apiUrl = url;
+            renderLlmProviders();
         }
 
         function showLlmModelPicker(index, models) {
@@ -2041,6 +2064,7 @@
                             style="padding: 6px 12px; background: #9ca3af; color: white; border: none; border-radius: 4px; cursor: pointer;">手动添加</button>
                         <span id="llmProviderStatus${i}" style="font-size: 0.85em; color: #666;"></span>
                     </div>
+                    <div id="llmUrlSuggestion${i}" style="display: none; margin-bottom: 8px;"></div>
                     <div id="llmModelPicker${i}" style="display: none; margin-bottom: 8px;"></div>
                     <div style="font-size: 0.88em; color: #444;">
                         ${(p.models || []).length === 0
