@@ -32,6 +32,19 @@ public class ConfigServlet extends HttpServlet {
     private static final String SESSION_CSRF_KEY = "csrfToken";
     private static final Logger log = LoggerFactory.getLogger(ConfigServlet.class);
 
+    /**
+     * 返回给前端的密钥占位符
+     * 前端每次保存都会把读到的值原样回传,所以占位符必须能被识别为「不修改」
+     */
+    private static final String SECRET_MASK = "********";
+
+    /**
+     * 列表型密钥的占位符前缀,后面跟下标(如 {@code ********#0})
+     * 带下标是为了在用户删除或调整 LLM 配置行之后,仍能把占位符准确还原成对应的那把 key,
+     * 否则按位置还原会把 key 配到错误的行上
+     */
+    private static final String SECRET_MASK_INDEXED_PREFIX = SECRET_MASK + "#";
+
     private final MusicConfig config;
     private final Gson gson;
     private final Path configPath;
@@ -39,6 +52,7 @@ public class ConfigServlet extends HttpServlet {
     private final Set<String> absolutePathFields;
     private final Set<String> allowedLanguages;
     private final Set<String> allowedDbTypes;
+    private final Set<String> secretFields;
 
     public ConfigServlet(MusicConfig config) {
         this.config = config;
@@ -99,6 +113,13 @@ public class ConfigServlet extends HttpServlet {
         );
         this.allowedLanguages = Set.of("zh_CN", "en_US");
         this.allowedDbTypes = Set.of("file", "mysql");
+        // 这些字段不以明文返回给前端: 一旦有会话被拿到,否则等于所有凭据一次性泄露
+        this.secretFields = Set.of(
+            "dbPassword",
+            "proxyPassword",
+            "acoustIdApiKey",
+            "llmApiKey"
+        );
     }
 
     @Override
@@ -157,7 +178,11 @@ public class ConfigServlet extends HttpServlet {
         handleString(body, updates, propertyUpdates, "language", false);
         handleBoolean(body, updates, propertyUpdates, "exportLyricsToFile");
         handleBoolean(body, updates, propertyUpdates, "audioNormalizeEnabled");
-        handleString(body, updates, propertyUpdates, "audioNormalizeFfmpegPath", false);
+        // audioNormalizeFfmpegPath 会被直接当作可执行文件启动
+        // (见 AudioFormatNormalizer.runFfmpeg 与 CueSplitService.splitTracks),
+        // 若允许从 Web 修改,等于把「拿到一个会话」直接升级成「以容器身份任意命令执行」。
+        // 该项改为只读: 仅能通过 config.properties 修改,改完需重启。
+        rejectIfChanged(body, "audioNormalizeFfmpegPath", config.getAudioNormalizeFfmpegPath());
         handleBoolean(body, updates, propertyUpdates, "cueSplitEnabled");
         handleString(body, updates, propertyUpdates, "cueSplitOutputDir", false);
         handleString(body, updates, propertyUpdates, "releaseCountryPriority", false);
@@ -200,7 +225,8 @@ public class ConfigServlet extends HttpServlet {
         data.put("musicBrainzApiUrl", config.getMusicBrainzApiUrl());
         data.put("coverArtApiUrl", config.getCoverArtApiUrl());
         data.put("userAgent", config.getUserAgent());
-        data.put("acoustIdApiKey", config.getAcoustIdApiKey());
+        data.put("acoustIdApiKey", maskSecret(config.getAcoustIdApiKey()));
+        data.put("acoustIdApiKeySet", isSet(config.getAcoustIdApiKey()));
         data.put("acoustIdApiUrl", config.getAcoustIdApiUrl());
         data.put("supportedFormats", config.getSupportedFormats() == null ? null : String.join(",", config.getSupportedFormats()));
         data.put("autoRename", config.isAutoRename());
@@ -216,7 +242,8 @@ public class ConfigServlet extends HttpServlet {
         data.put("dbPort", config.getDbPort());
         data.put("dbDatabase", config.getDbDatabase());
         data.put("dbUsername", config.getDbUsername());
-        data.put("dbPassword", config.getDbPassword());
+        data.put("dbPassword", maskSecret(config.getDbPassword()));
+        data.put("dbPasswordSet", isSet(config.getDbPassword()));
         data.put("dbMaxPoolSize", config.getDbMaxPoolSize());
         data.put("dbMinIdle", config.getDbMinIdle());
         data.put("dbConnectionTimeout", config.getDbConnectionTimeout());
@@ -224,7 +251,8 @@ public class ConfigServlet extends HttpServlet {
         data.put("proxyHost", config.getProxyHost());
         data.put("proxyPort", config.getProxyPort());
         data.put("proxyUsername", config.getProxyUsername());
-        data.put("proxyPassword", config.getProxyPassword());
+        data.put("proxyPassword", maskSecret(config.getProxyPassword()));
+        data.put("proxyPasswordSet", isSet(config.getProxyPassword()));
         data.put("language", config.getLanguage());
         data.put("exportLyricsToFile", config.isExportLyricsToFile());
         data.put("audioNormalizeEnabled", config.isAudioNormalizeEnabled());
@@ -235,9 +263,7 @@ public class ConfigServlet extends HttpServlet {
             ? null
             : String.join(",", config.getReleaseCountryPriority()));
         data.put("enableLLMMatching", config.isEnableLLMMatching());
-        data.put("llmApiKey", config.getLlmApiKeys() == null || config.getLlmApiKeys().isEmpty()
-            ? null
-            : String.join(",", config.getLlmApiKeys()));
+        data.put("llmApiKey", maskSecretList(config.getLlmApiKeys()));
         data.put("llmApiUrl", config.getLlmApiUrls() == null || config.getLlmApiUrls().isEmpty()
             ? null
             : String.join(",", config.getLlmApiUrls()));
@@ -418,9 +444,7 @@ public class ConfigServlet extends HttpServlet {
         if (updates.containsKey("audioNormalizeEnabled")) {
             config.setAudioNormalizeEnabled((Boolean) updates.get("audioNormalizeEnabled"));
         }
-        if (updates.containsKey("audioNormalizeFfmpegPath")) {
-            config.setAudioNormalizeFfmpegPath((String) updates.get("audioNormalizeFfmpegPath"));
-        }
+        // audioNormalizeFfmpegPath 为只读字段,不接受来自 API 的修改(见 doPut 中的说明)
         if (updates.containsKey("cueSplitEnabled")) {
             config.setCueSplitEnabled((Boolean) updates.get("cueSplitEnabled"));
         }
@@ -462,6 +486,18 @@ public class ConfigServlet extends HttpServlet {
         String trimmedValue = rawValue == null ? null : rawValue.trim();
         if (trimmedValue != null && trimmedValue.isEmpty()) {
             trimmedValue = null;
+        }
+
+        // 密钥字段: 前端读到的是占位符,原样回传即表示「保持不变」
+        if (secretFields.contains(field)) {
+            if ("llmApiKey".equals(field)) {
+                trimmedValue = restoreMaskedKeys(trimmedValue, config.getLlmApiKeys());
+                if (trimmedValue != null && trimmedValue.isEmpty()) {
+                    trimmedValue = null;
+                }
+            } else if (SECRET_MASK.equals(trimmedValue)) {
+                return;
+            }
         }
 
         if (required && trimmedValue == null) {
@@ -581,6 +617,107 @@ public class ConfigServlet extends HttpServlet {
 
     private void throwValidation(String error, String field) throws IOException {
         throw new ValidationException(error, field);
+    }
+
+    /**
+     * 拒绝对只读字段的修改
+     *
+     * 前端保存时会把所有字段原样回传,所以只在值确实发生变化时才报错,
+     * 避免正常保存被误伤。
+     */
+    private void rejectIfChanged(Map<String, Object> body, String field, String currentValue) throws IOException {
+        if (!body.containsKey(field)) {
+            return;
+        }
+        String incoming = asString(body.get(field));
+        String normalizedIncoming = incoming == null ? "" : incoming.trim();
+        String normalizedCurrent = currentValue == null ? "" : currentValue.trim();
+        if (!normalizedIncoming.equals(normalizedCurrent)) {
+            log.warn("拒绝通过 API 修改只读字段 {}(当前值 [{}],请求值 [{}])",
+                field, normalizedCurrent, normalizedIncoming);
+            throwValidation("field.readonly", field);
+        }
+    }
+
+    /**
+     * 有值则返回占位符,无值则返回 null
+     */
+    private String maskSecret(String value) {
+        return isSet(value) ? SECRET_MASK : null;
+    }
+
+    /**
+     * 列表型密钥逐项打码,并给每项带上下标
+     * 保留项数是为了让前端仍能把 key 与对应的 URL、模型逐一配对
+     */
+    private String maskSecretList(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return null;
+        }
+        List<String> masked = new ArrayList<>(values.size());
+        for (int i = 0; i < values.size(); i++) {
+            masked.add(SECRET_MASK_INDEXED_PREFIX + i);
+        }
+        return String.join(",", masked);
+    }
+
+    /**
+     * 把列表型密钥中的占位符还原成原值
+     *
+     * 用户只改了其中一把 key 时,提交上来的形如 {@code ********#0,新key,********#2},
+     * 需要按占位符自带的下标取回原值。用下标而不是位置,是为了在用户删除或重排
+     * LLM 配置行之后,不会把 key 配到错误的行上。
+     *
+     * @param incoming      前端提交的逗号分隔值
+     * @param currentValues 当前已保存的密钥列表
+     * @return 还原后的逗号分隔值
+     */
+    private String restoreMaskedKeys(String incoming, List<String> currentValues) {
+        if (incoming == null || incoming.isEmpty()) {
+            return incoming;
+        }
+
+        List<String> resolved = new ArrayList<>();
+        for (String part : incoming.split(",", -1)) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+
+            if (trimmed.startsWith(SECRET_MASK_INDEXED_PREFIX)) {
+                String existing = lookupSecretByIndex(currentValues,
+                    trimmed.substring(SECRET_MASK_INDEXED_PREFIX.length()));
+                if (existing != null) {
+                    resolved.add(existing);
+                }
+                // 下标无效(如原值已被删除)时丢弃该项,避免写入字面量占位符
+                continue;
+            }
+
+            if (SECRET_MASK.equals(trimmed)) {
+                // 不带下标的占位符无法定位原值,同样丢弃
+                continue;
+            }
+
+            resolved.add(trimmed);
+        }
+        return String.join(",", resolved);
+    }
+
+    private String lookupSecretByIndex(List<String> currentValues, String rawIndex) {
+        if (currentValues == null) {
+            return null;
+        }
+        try {
+            int index = Integer.parseInt(rawIndex);
+            return index >= 0 && index < currentValues.size() ? currentValues.get(index) : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private boolean isSet(String value) {
+        return value != null && !value.isEmpty();
     }
 
     private boolean isCsrfValid(HttpServletRequest req) {

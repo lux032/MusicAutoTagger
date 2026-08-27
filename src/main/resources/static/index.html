@@ -927,8 +927,13 @@
                             </label>
                         </div>
                         <div class="form-row">
-                            <label for="cfgAudioNormalizeFfmpegPath" data-i18n="config.audio.normalize.ffmpeg">FFmpeg 路径</label>
-                            <input id="cfgAudioNormalizeFfmpegPath" type="text">
+                            <label for="cfgAudioNormalizeFfmpegPath" class="label-with-tip">
+                                <span data-i18n="config.audio.normalize.ffmpeg">FFmpeg 路径</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text" data-i18n="config.audio.normalize.ffmpeg.readonly.hint">出于安全考虑此项只读：该路径会被直接执行，只能在 config.properties 中修改，改后需重启</span>
+                                </span>
+                            </label>
+                            <input id="cfgAudioNormalizeFfmpegPath" type="text" readonly disabled>
                         </div>
                         <div class="form-row checkbox-row">
                             <input id="cfgCueSplitEnabled" type="checkbox">
