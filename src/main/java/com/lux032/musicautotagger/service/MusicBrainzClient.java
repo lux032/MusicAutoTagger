@@ -10,7 +10,9 @@ import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.HttpResponse;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.util.Timeout;
@@ -37,7 +39,8 @@ public class MusicBrainzClient {
     private long lastRequestTime = 0;
     private static final long REQUEST_INTERVAL = 1000; // MusicBrainz 要求至少1秒间隔
     private static final int MAX_RETRIES = 3; // 最大重试次数
-    private static final long RETRY_DELAY_MS = 10000; // 重试间隔10秒
+    private static final long RETRY_DELAY_MS = 10000; // 首次重试间隔10秒,之后指数退避
+    private static final long MAX_RETRY_DELAY_MS = 60000; // 单次重试等待上限60秒
     
     public MusicBrainzClient(MusicConfig config) {
         this.config = config;
@@ -57,7 +60,12 @@ public class MusicBrainzClient {
             .setResponseTimeout(Timeout.ofSeconds(30))
             .build();
         builder.setDefaultRequestConfig(requestConfig);
-        
+
+        // 关闭 HttpClient 自带的自动重试。它默认会对 429/503 各自动重试一次,
+        // 叠加本类的重试后,被限流时实际请求数会翻倍(实测 4 次尝试打出 8 个请求)。
+        // 重试统一交给本类处理,以便配合 Retry-After 和指数退避。
+        builder.disableAutomaticRetries();
+
         // 配置代理
         if (config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isEmpty()) {
             HttpHost proxy = new HttpHost(config.getProxyHost(), config.getProxyPort());
@@ -471,7 +479,9 @@ public class MusicBrainzClient {
                 httpGet.setHeader("Accept", "application/json");
                 
                 try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
-                    if (response.getCode() == 200) {
+                    int statusCode = response.getCode();
+
+                    if (statusCode == 200) {
                         String json = EntityUtils.toString(response.getEntity());
                         JsonNode root = objectMapper.readTree(json);
                         JsonNode images = root.path("images");
@@ -483,27 +493,48 @@ public class MusicBrainzClient {
                                 }
                             }
                         }
+                        // 查询成功,该专辑确实没有正面封面
+                        return null;
                     }
+
+                    if (statusCode == 404) {
+                        // Cover Art Archive 没有这张专辑的记录,重试也不会有
+                        log.debug("Cover Art Archive 无此专辑封面: {}", releaseGroupId);
+                        return null;
+                    }
+
+                    if (isRetryableStatus(statusCode)) {
+                        // 429/503 是限流响应,批量导入时非常常见。
+                        // 这里必须重试: 若当成"没有封面"返回,文件会被正常归档并写入已处理日志,
+                        // 之后重跑也不会再补封面
+                        EntityUtils.consumeQuietly(response.getEntity());
+                        throw new RetryableHttpException(statusCode, retryAfterMillis(response));
+                    }
+
+                    log.warn("获取封面失败,状态码 {}: {}", statusCode, releaseGroupId);
+                    EntityUtils.consumeQuietly(response.getEntity());
+                    return null;
                 }
-                // 请求成功但未找到封面,不需要重试
-                return null;
                 
             } catch (Exception e) {
                 retryCount++;
                 
-                if (retryCount <= MAX_RETRIES) {
-                    log.warn("获取封面失败(第{}/{}次尝试): {} - {}秒后重试",
-                        retryCount, MAX_RETRIES, e.getMessage(), RETRY_DELAY_MS / 1000);
-                    
-                    try {
-                        Thread.sleep(RETRY_DELAY_MS);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        log.error("重试等待被中断");
-                        return null;
-                    }
-                } else {
-                    log.error("获取封面失败,已达最大重试次数({}/{}): {}", retryCount, MAX_RETRIES, releaseGroupId);
+                if (retryCount > MAX_RETRIES) {
+                    log.error("获取封面失败,已达最大重试次数({}/{}): {} - {}",
+                        MAX_RETRIES, MAX_RETRIES, releaseGroupId, e.getMessage());
+                    break;
+                }
+
+                long delayMs = retryDelayMs(e, retryCount);
+                log.warn("获取封面失败(第{}/{}次尝试): {} - {}秒后重试",
+                    retryCount, MAX_RETRIES, e.getMessage(), delayMs / 1000);
+
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    log.error("重试等待被中断");
+                    return null;
                 }
             }
         }
@@ -526,29 +557,47 @@ public class MusicBrainzClient {
                 httpGet.setHeader("User-Agent", config.getUserAgent());
                 
                 try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
-                    if (response.getCode() == 200) {
+                    int statusCode = response.getCode();
+
+                    if (statusCode == 200) {
                         return EntityUtils.toByteArray(response.getEntity());
                     }
+
+                    if (statusCode == 404) {
+                        log.debug("封面图片不存在: {}", url);
+                        return null;
+                    }
+
+                    if (isRetryableStatus(statusCode)) {
+                        // 同上: 限流不能被当成"图片不存在"
+                        EntityUtils.consumeQuietly(response.getEntity());
+                        throw new RetryableHttpException(statusCode, retryAfterMillis(response));
+                    }
+
+                    log.warn("下载封面图片失败,状态码 {}: {}", statusCode, url);
+                    EntityUtils.consumeQuietly(response.getEntity());
+                    return null;
                 }
-                // 请求成功但状态码不是200,不需要重试
-                return null;
                 
             } catch (Exception e) {
                 retryCount++;
                 
-                if (retryCount <= MAX_RETRIES) {
-                    log.warn("下载封面图片失败(第{}/{}次尝试): {} - {}秒后重试",
-                        retryCount, MAX_RETRIES, e.getMessage(), RETRY_DELAY_MS / 1000);
-                    
-                    try {
-                        Thread.sleep(RETRY_DELAY_MS);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        log.error("重试等待被中断");
-                        return null;
-                    }
-                } else {
-                    log.error("下载封面图片失败,已达最大重试次数({}/{}): {}", retryCount, MAX_RETRIES, url);
+                if (retryCount > MAX_RETRIES) {
+                    log.error("下载封面图片失败,已达最大重试次数({}/{}): {} - {}",
+                        MAX_RETRIES, MAX_RETRIES, url, e.getMessage());
+                    break;
+                }
+
+                long delayMs = retryDelayMs(e, retryCount);
+                log.warn("下载封面图片失败(第{}/{}次尝试): {} - {}秒后重试",
+                    retryCount, MAX_RETRIES, e.getMessage(), delayMs / 1000);
+
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    log.error("重试等待被中断");
+                    return null;
                 }
             }
         }
@@ -711,25 +760,35 @@ public class MusicBrainzClient {
                     int statusCode = response.getCode();
                     String responseBody = EntityUtils.toString(response.getEntity());
                     
-                    if (statusCode != 200) {
-                        log.error("MusicBrainz API 请求失败: {} - {}", statusCode, responseBody);
-                        throw new IOException("API 请求失败: " + statusCode);
+                    if (statusCode == 200) {
+                        log.debug("MusicBrainz API 响应: {}", responseBody);
+                        return responseBody;
                     }
-                    
-                    log.debug("MusicBrainz API 响应: {}", responseBody);
-                    return responseBody;
+
+                    if (isRetryableStatus(statusCode)) {
+                        log.warn("MusicBrainz API 限流或暂时不可用: {} - {}", statusCode, responseBody);
+                        throw new RetryableHttpException(statusCode, retryAfterMillis(response));
+                    }
+
+                    // 4xx(如 404 查无此记录)重试也不会改变结果,直接失败,
+                    // 免得为一个合法的"没查到"白等 3 次重试
+                    log.error("MusicBrainz API 请求失败: {} - {}", statusCode, responseBody);
+                    throw new NonRetryableHttpException(statusCode);
                 }
                 
+            } catch (NonRetryableHttpException e) {
+                throw e;
             } catch (IOException e) {
                 lastException = e;
                 retryCount++;
                 
                 if (retryCount <= MAX_RETRIES) {
+                    long delayMs = retryDelayMs(e, retryCount);
                     log.warn("网络请求失败(第{}/{}次尝试): {} - {}秒后重试",
-                        retryCount, MAX_RETRIES, e.getMessage(), RETRY_DELAY_MS / 1000);
+                        retryCount, MAX_RETRIES, e.getMessage(), delayMs / 1000);
                     
                     try {
-                        Thread.sleep(RETRY_DELAY_MS);
+                        Thread.sleep(delayMs);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         throw new IOException("重试等待被中断", ie);
@@ -1388,6 +1447,73 @@ public class MusicBrainzClient {
         return results;
     }
     
+    /**
+     * 判断状态码是否值得重试
+     * 429 = 限流, 503 = MusicBrainz/CAA 过载时的标准响应, 5xx = 服务端临时故障
+     */
+    private static boolean isRetryableStatus(int statusCode) {
+        return statusCode == 429 || (statusCode >= 500 && statusCode < 600);
+    }
+
+    /**
+     * 解析 Retry-After 响应头(仅支持秒数形式,MusicBrainz 与 CAA 用的就是这种)
+     * @return 毫秒数,无法解析时返回 -1
+     */
+    private static long retryAfterMillis(HttpResponse response) {
+        Header header = response.getFirstHeader("Retry-After");
+        if (header == null || header.getValue() == null) {
+            return -1;
+        }
+        try {
+            long seconds = Long.parseLong(header.getValue().trim());
+            return seconds > 0 ? seconds * 1000 : -1;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * 计算本次重试的等待时间
+     * 服务端明确给了 Retry-After 就听它的,否则指数退避(10s/20s/40s),
+     * 避免被限流时还以固定频率继续打
+     */
+    private static long retryDelayMs(Exception e, int attempt) {
+        if (e instanceof RetryableHttpException) {
+            long retryAfter = ((RetryableHttpException) e).getRetryAfterMillis();
+            if (retryAfter > 0) {
+                return Math.min(retryAfter, MAX_RETRY_DELAY_MS);
+            }
+        }
+        long delay = RETRY_DELAY_MS << Math.min(attempt - 1, 8);
+        return Math.min(delay, MAX_RETRY_DELAY_MS);
+    }
+
+    /**
+     * 服务端返回了可重试的状态码(限流或临时故障)
+     */
+    private static class RetryableHttpException extends IOException {
+        private final long retryAfterMillis;
+
+        RetryableHttpException(int statusCode, long retryAfterMillis) {
+            super("HTTP " + statusCode
+                + (retryAfterMillis > 0 ? " (Retry-After: " + retryAfterMillis / 1000 + "s)" : ""));
+            this.retryAfterMillis = retryAfterMillis;
+        }
+
+        long getRetryAfterMillis() {
+            return retryAfterMillis;
+        }
+    }
+
+    /**
+     * 服务端返回了重试也不会改变的错误(如 404 查无此记录)
+     */
+    private static class NonRetryableHttpException extends IOException {
+        NonRetryableHttpException(int statusCode) {
+            super("API 请求失败: " + statusCode);
+        }
+    }
+
     /**
      * 速率限制
      */
