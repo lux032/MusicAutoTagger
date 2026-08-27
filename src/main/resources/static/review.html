@@ -142,6 +142,23 @@
         return data;
     }
 
+    // 后端错误码 -> 人话。GET（展开）与 POST（处置）共用。
+    const ERROR_MESSAGES = {
+        'item.already.resolved': '该条目已被处置过（可能是重复提交）',
+        'files.missing': '有原始文件已不存在，为避免只归档一部分，已拒绝本次处理',
+        'candidate.not.found': '找不到所选候选',
+        'release.id.required': '请先展开版本明细，并选择一个具体的 Release',
+        'csrf.invalid': '会话已失效，请重新登录',
+        'candidates.expand.failed': '候选版本尚未成功展开（MusicBrainz 可能暂时不可用），请点「展开版本明细」重试后再操作',
+        'llm.judge.disabled': 'LLM 判定未启用（llm.album.judge.enabled=false）',
+        'llm.not.configured': '未配置可用的 LLM（llm.apiKey / llm.apiUrl / llm.model）',
+        'llm.call.failed': 'LLM 调用失败，请检查网络、API Key 与协议配置'
+    };
+
+    function humanError(message) {
+        return ERROR_MESSAGES[message] || message;
+    }
+
     function statusBadge(status) {
         const map = {
             PENDING_REVIEW: ['pending', '待确认'],
@@ -187,7 +204,7 @@
             renderDetail(data.item);
             loadList();
         } catch (e) {
-            detailEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(e.message)}</div>`;
+            detailEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(humanError(e.message))}</div>`;
         }
     }
 
@@ -218,6 +235,24 @@
             </tr>`;
         }).join('');
 
+        const llm = item.llmSuggestion;
+        const llmBlock = !llm ? '' : `
+            <div class="section">
+                <div class="section-title">LLM 判定建议</div>
+                <div>${llm.choiceIndex > 0
+                    ? '建议选择：<strong>' + escapeHtml(llm.suggestedTitle || '') + '</strong>'
+                    : '建议：<strong>候选里都不是</strong>'
+                    }${llm.unreleasedCompilation ? ' · 判定为 <strong>MusicBrainz 未收录的精选集/自制合辑</strong>' : ''}</div>
+                <div class="hint">置信度 ${(llm.confidence * 100).toFixed(0)}% ·
+                    模型 ${escapeHtml(llm.model || '')} (${escapeHtml(llm.provider || '')})
+                    ${llm.applied ? '· <strong>已自动落盘</strong>' : '· 仅为建议，仍需人工确认'}</div>
+                <div class="hint">理由：${escapeHtml(llm.reason || '')}</div>
+                <div class="hint">
+                    LLM 只被允许在上面的候选中选择或回答「都不是」，不会自行给出专辑名与年份，
+                    因此它不会编造一张不存在的专辑；但它仍可能选错，请对照时长序列复核。
+                </div>
+            </div>`;
+
         const fileRows = (item.files || []).map(f => `<tr>
             <td>${escapeHtml(f.fileName || '')}</td>
             <td>${escapeHtml(f.title || '')}</td>
@@ -240,7 +275,8 @@
                     候选专辑
                     ${item.candidatesExpanded ? '' :
                         `<button class="btn ghost" style="margin-left:8px;padding:4px 10px;font-size:.8em;"
-                            onclick="openItem('${item.id}', true)">从 MusicBrainz 展开版本明细</button>`}
+                            onclick="openItem('${item.id}', true)">从 MusicBrainz 展开版本明细</button>
+                         <span class="hint">（展开失败时可重复点击重试）</span>`}
                 </div>
                 ${candidateRows ? `<table>
                     <tr><th>专辑</th><th>格式</th><th>曲目数</th><th>时长相似度</th><th>样本支持</th><th></th></tr>
@@ -252,6 +288,8 @@
                 </div>
             </div>
 
+            ${llmBlock}
+
             <div class="section">
                 <div class="section-title">文件（${(item.files || []).length}）</div>
                 <table>
@@ -261,6 +299,9 @@
             </div>
 
             <div class="actions">
+                ${item.llmJudgeEnabled ? `<button class="btn ghost" ${pending ? '' : 'disabled'} onclick="llmJudge()">
+                    让 LLM 判定（封闭选择题）
+                </button>` : ''}
                 <button class="btn secondary" ${pending ? '' : 'disabled'} onclick="archiveItem()">
                     按「MusicBrainz 未收录」归档
                 </button>
@@ -283,6 +324,13 @@
         await runAction('/api/review/confirm', { id: currentId, releaseId, releaseGroupId });
     }
 
+    async function llmJudge() {
+        if (!currentId) return;
+        // 会先从 MusicBrainz 展开版本明细再调用模型，可能需要十几秒
+        toast('正在调用 LLM 判定，请稍候...');
+        await runAction('/api/review/llm', { id: currentId });
+    }
+
     async function archiveItem() {
         if (!currentId) return;
         if (!confirm('按「MusicBrainz 未收录」归档？将使用合成的专辑信息，年份留空。')) return;
@@ -301,21 +349,21 @@
             const data = await api(path, { method: 'POST', body: JSON.stringify(body) });
             // 部分失败时后端会把条目保留在 PENDING_REVIEW，不能报「成功」
             if (data.item && data.item.status === 'PENDING_REVIEW') {
-                toast('处理未全部成功，条目仍在待确认：' + (data.item.resolutionNote || ''));
+                if (data.item.llmSuggestion && !data.item.llmSuggestion.applied
+                    && path === '/api/review/llm') {
+                    toast('LLM 判定完成，结论仅供参考，请人工确认');
+                } else if (path === '/api/review/llm') {
+                    toast('LLM 判定完成');
+                } else {
+                    toast('处理未全部成功，条目仍在待确认：' + (data.item.resolutionNote || ''));
+                }
             } else {
                 toast('操作成功');
             }
             renderDetail(data.item);
             loadList();
         } catch (e) {
-            const msg = {
-                'item.already.resolved': '该条目已被处置过（可能是重复提交）',
-                'files.missing': '有原始文件已不存在，为避免只归档一部分，已拒绝本次处理',
-                'candidate.not.found': '找不到所选候选',
-                'release.id.required': '请先展开版本明细，并选择一个具体的 Release',
-                'csrf.invalid': '会话已失效，请重新登录'
-            }[e.message] || e.message;
-            toast('操作失败: ' + msg);
+            toast('操作失败: ' + humanError(e.message));
         }
     }
 

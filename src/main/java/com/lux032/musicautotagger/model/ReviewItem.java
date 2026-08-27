@@ -67,6 +67,14 @@ public class ReviewItem {
     private String resolutionNote;
 
     /**
+     * LLM 封闭式判定结果（阶段七 #22）
+     *
+     * 默认只是**建议**，条目仍保持 PENDING_REVIEW；
+     * 只有 llm.album.autoApply 打开且置信度达标时才会自动落盘。
+     */
+    private LlmSuggestion llmSuggestion;
+
+    /**
      * 人工选定的 release（CONFIRMED 时填充）
      *
      * 字段要足够完整：重启时需要靠它们重建内存里的 MANUAL_CONFIRMED 专辑锁定，
@@ -96,6 +104,30 @@ public class ReviewItem {
         private Integer duration;
         /** 指纹识别得到的曲目级元数据（准确，确认后直接复用） */
         private MusicMetadata metadata;
+    }
+
+    /**
+     * LLM 判定建议
+     *
+     * 只会出现两种结论：「选中某个已有候选」或「都不是」。
+     * **不允许**模型自由给出专辑名/年份，否则它会编造一个看上去非常合理的虚构答案。
+     */
+    @Data
+    public static class LlmSuggestion {
+        private long evaluatedAt;
+        private String model;
+        private String provider;
+        /** 1-based 候选序号，0 = 都不是 */
+        private int choiceIndex;
+        private String suggestedReleaseId;
+        private String suggestedReleaseGroupId;
+        private String suggestedTitle;
+        private double confidence;
+        /** 是否判定为「MusicBrainz 尚未收录的精选集/自制合辑」 */
+        private boolean unreleasedCompilation;
+        private String reason;
+        /** 是否已按该结论自动落盘 */
+        private boolean applied;
     }
 
     /**

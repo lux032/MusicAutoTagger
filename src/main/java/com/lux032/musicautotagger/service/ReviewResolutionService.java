@@ -3,6 +3,8 @@ package com.lux032.musicautotagger.service;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
+import com.lux032.musicautotagger.service.llm.LlmAlbumJudge;
+import com.lux032.musicautotagger.service.llm.LlmClient;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
@@ -31,6 +33,8 @@ public class ReviewResolutionService {
     private final MusicBrainzClient musicBrainzClient;
     private final DurationSequenceService durationSequenceService;
     private final ProcessedFileLogger processedLogger;
+    /** 阶段七 #22：封闭式 LLM 判定（默认关闭，由 llm.album.judge.enabled 控制） */
+    private final LlmAlbumJudge llmAlbumJudge;
 
     public ReviewResolutionService(MusicConfig config,
                                    ReviewQueueService reviewQueue,
@@ -46,6 +50,7 @@ public class ReviewResolutionService {
         this.musicBrainzClient = musicBrainzClient;
         this.durationSequenceService = durationSequenceService;
         this.processedLogger = processedLogger;
+        this.llmAlbumJudge = new LlmAlbumJudge(new LlmClient(config));
     }
 
     /** 处置失败时抛出，Web 层据此返回 4xx/5xx */
@@ -69,15 +74,42 @@ public class ReviewResolutionService {
      * 并给出每个 Release 与本文件夹时长序列的相似度，供人工逐条 diff。
      *
      * 这一步会打 MusicBrainz，因此**只在人工打开详情时**执行，且结果写回条目缓存。
+     *
+     * <p><b>审查修正 C2（P0）</b>：原实现无论展开是否成功都会无条件
+     * {@code setCandidatesExpanded(true)}，而入口处又有「已展开就直接返回」的短路：
+     * MusicBrainz 抱一下就会让该条目**永久**停在 RG 级，
+     * 面板只能显示「需先展开版本明细」，而后端又硬校验 {@code release.id.required}
+     * ——这个文件夹再也无法人工确认，只能手改队列 JSON。
+     * 现在只有**全部需要展开的 RG 都成功**才置位，否则下次还能重试。
      */
     public synchronized ReviewItem expandCandidates(String id) throws ResolutionException {
         ReviewItem item = requireItem(id);
-        if (item.isCandidatesExpanded()) {
+        if (item.isCandidatesExpanded() && !hasPendingReleaseGroupCandidates(item)) {
             return item;
+        }
+        if (item.isCandidatesExpanded()) {
+            // 兼容修复前已经落盘的坏状态：expanded=true，但候选仍只有 RG、没有 releaseId。
+            // 不能继续相信旧标志，否则升级后这些条目仍然永久卡死。
+            log.warn("检测到旧版遗留的错误展开状态，重置并重新展开: {}", item.getFolderName());
+            item.setCandidatesExpanded(false);
         }
 
         List<Integer> folderDurations = item.getDurationSequence();
         List<ReviewItem.CandidateSnapshot> expanded = new ArrayList<>();
+        // 任一 RG 展开失败（网络 / 5xx / 限流）就不能把条目钉死为「已展开」
+        boolean expansionFailed = false;
+
+        // 重试场景：上一轮已经成功展开过的 RG（条目里已有它的 Release 级快照）
+        // **不能再拉一次**，否则同一个 RG 的版本会被重复插入（N 个快照 × N 个版本）。
+        java.util.Set<String> alreadyExpandedGroups = new java.util.HashSet<>();
+        // 本轮已经请求过的 RG（成功或失败）都不再重复请求；同一 RG 只保留一条待重试快照
+        java.util.Set<String> attemptedGroups = new java.util.HashSet<>();
+        for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
+            if (candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty()
+                && candidate.getReleaseGroupId() != null && !candidate.getReleaseGroupId().isEmpty()) {
+                alreadyExpandedGroups.add(candidate.getReleaseGroupId());
+            }
+        }
 
         for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
             String rgId = candidate.getReleaseGroupId();
@@ -85,14 +117,33 @@ public class ReviewResolutionService {
                 expanded.add(candidate);
                 continue;
             }
+            if (candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty()) {
+                // 上一轮已成功展开得到的 Release 级快照，原样保留
+                expanded.add(candidate);
+                continue;
+            }
+            if (alreadyExpandedGroups.contains(rgId) || !attemptedGroups.add(rgId)) {
+                // 该 RG 已由旧快照展开过，或本轮已经请求过（包括失败），
+                // 丢弃重复的 RG 级快照，避免重复 API 调用与重复候选行。
+                continue;
+            }
             try {
                 List<MusicBrainzClient.AlbumDurationResult> releases =
                     musicBrainzClient.getAllReleaseDurationSequences(rgId);
                 if (releases.isEmpty()) {
+                    // 对一个已有 RG，展开结果为空时无法证明「它确实没有 Release」还是
+                    // MusicBrainz 临时返回了不完整数据。保守地视为未成功，保留 RG 快照供重试。
+                    log.warn("候选 RG {} 未返回任何 Release，保留为未展开状态", rgId);
+                    expansionFailed = true;
                     expanded.add(candidate);
                     continue;
                 }
+                int validReleaseCount = 0;
                 for (MusicBrainzClient.AlbumDurationResult release : releases) {
+                    if (release.getReleaseId() == null || release.getReleaseId().trim().isEmpty()) {
+                        log.warn("候选 RG {} 返回了缺少 releaseId 的版本，已忽略", rgId);
+                        continue;
+                    }
                     ReviewItem.CandidateSnapshot snapshot = new ReviewItem.CandidateSnapshot();
                     snapshot.setReleaseGroupId(rgId);
                     snapshot.setReleaseId(release.getReleaseId());
@@ -111,9 +162,19 @@ public class ReviewResolutionService {
                             durationSequenceService.calculateSimilarityDTW(folderDurations, release.getDurations()));
                     }
                     expanded.add(snapshot);
+                    validReleaseCount++;
+                }
+                if (validReleaseCount == 0) {
+                    // 非空响应不等于可确认：没有 releaseId 的版本不能用于人工确认或 LLM 选择。
+                    expansionFailed = true;
+                    expanded.add(candidate);
+                    log.warn("候选 RG {} 没有返回任何带 releaseId 的有效版本，保留供重试", rgId);
+                } else {
+                    alreadyExpandedGroups.add(rgId);
                 }
             } catch (Exception e) {
-                log.warn("展开候选 {} 失败: {}", rgId, e.getMessage());
+                log.warn("展开候选 {} 失败（保留 RG 级快照，下次可重试）: {}", rgId, e.getMessage());
+                expansionFailed = true;
                 expanded.add(candidate);
             }
         }
@@ -124,9 +185,55 @@ public class ReviewResolutionService {
             a.getDurationSimilarity() == null ? -1 : a.getDurationSimilarity()));
 
         item.setCandidates(expanded);
-        item.setCandidatesExpanded(true);
+        // 即使本次有失败，已成功展开的部分仍然写回（人工可以先用这些），
+        // 只是不置 expanded 标志，以便下次只重试剩下的 RG。
+        item.setCandidatesExpanded(!expansionFailed);
+        if (expansionFailed) {
+            log.warn("候选展开未全部成功，条目保持「未展开」以便重试: {}", item.getFolderName());
+            LogCollector.addLog("WARN", "候选版本展开未全部成功，可重试: " + item.getFolderName());
+        }
         reviewQueue.update(item);
         return item;
+    }
+
+    /** 是否仍有「只有 releaseGroupId、没有 releaseId」的待展开候选 */
+    private boolean hasPendingReleaseGroupCandidates(ReviewItem item) {
+        if (item.getCandidates() == null) {
+            return false;
+        }
+        for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
+            if (candidate.getReleaseGroupId() != null && !candidate.getReleaseGroupId().isEmpty()
+                && (candidate.getReleaseId() == null || candidate.getReleaseId().isEmpty())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * LLM 判定前的前置校验（审查修正 C2）。
+     *
+     * 「确实没有候选」与「候选展开失败」**绝不能共享 `choice=0` 的语义**：
+     * 后者会让模型在一个空选项列表上被迫回答「都不是」，
+     * 进而可能被当成「未收录精选集」，在 autoApply 打开时直接归档——
+     * 这是一个由网络抖动导致的错误归档。
+     */
+    private void requireExpandedForJudgement(ReviewItem item) throws ResolutionException {
+        boolean hadRgCandidates = false;
+        boolean hasReleaseCandidates = false;
+        for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
+            if (candidate.getReleaseGroupId() != null && !candidate.getReleaseGroupId().isEmpty()) {
+                hadRgCandidates = true;
+            }
+            if (candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty()) {
+                hasReleaseCandidates = true;
+            }
+        }
+        if (!item.isCandidatesExpanded() || (hadRgCandidates && !hasReleaseCandidates)) {
+            log.warn("候选尚未成功展开到 Release 级，拒绝进行 LLM 判定（避免被误读为「没有候选」）: {}",
+                item.getFolderName());
+            throw new ResolutionException(503, "candidates.expand.failed");
+        }
     }
 
     // ==================== 动作 A：从候选中确认 ====================
@@ -252,6 +359,125 @@ public class ReviewResolutionService {
             + (result == null ? 0 : result.getSuccessCount())
             + " 个，失败: " + failedList + "），请修复后重试");
         reviewQueue.update(item);
+    }
+
+    // ==================== 阶段七：LLM 辅助判定 ====================
+
+    /**
+     * 用 LLM 做一次**封闭选择题**判定（阶段七 #22）。
+     *
+     * 三个关键约束：
+     *   1. 先展开到 Release 级。仅 Release Group 级的候选即使被选中也无法完成确认，
+     *      放进选项里只会诱导出一个无法执行的答案。
+     *   2. 模型只能「选第几个 / 都不是」，不允许自由给出专辑名与年份。
+     *   3. 结论默认只写回条目作为**建议**，条目仍保持 PENDING_REVIEW；
+     *      只有 llm.album.autoApply 打开且置信度达标时才自动落盘。
+     */
+    public synchronized ReviewItem judgeWithLlm(String id) throws ResolutionException {
+        if (!config.isLlmAlbumJudgeEnabled()) {
+            throw new ResolutionException(501, "llm.judge.disabled");
+        }
+        if (!llmAlbumJudge.isAvailable()) {
+            throw new ResolutionException(503, "llm.not.configured");
+        }
+
+        requirePending(id);
+        // 封闭选择题需要 release 级候选（含官方时长序列，这是最强的判断依据）
+        ReviewItem item = expandCandidates(id);
+        // 展开失败时必须直接报错，不能拿一个空选项列表去问模型
+        requireExpandedForJudgement(item);
+
+        LlmAlbumJudge.Judgement judgement;
+        try {
+            judgement = llmAlbumJudge.judge(item);
+        } catch (LlmClient.LlmException e) {
+            log.warn("LLM 专辑判定调用失败: {} - {}", item.getFolderName(), e.getMessage());
+            throw new ResolutionException(502, "llm.call.failed");
+        }
+
+        ReviewItem.LlmSuggestion suggestion = new ReviewItem.LlmSuggestion();
+        suggestion.setEvaluatedAt(System.currentTimeMillis());
+        suggestion.setModel(judgement.getModel());
+        suggestion.setProvider(judgement.getProvider());
+        suggestion.setChoiceIndex(judgement.getChoiceIndex());
+        suggestion.setSuggestedReleaseId(judgement.getReleaseId());
+        suggestion.setSuggestedReleaseGroupId(judgement.getReleaseGroupId());
+        suggestion.setSuggestedTitle(judgement.getTitle());
+        suggestion.setConfidence(judgement.getConfidence());
+        suggestion.setUnreleasedCompilation(judgement.isUnreleasedCompilation());
+        suggestion.setReason(judgement.getReason());
+        item.setLlmSuggestion(suggestion);
+        reviewQueue.update(item);
+
+        LogCollector.addLog("INFO", "LLM 专辑判定: " + item.getFolderName() + " -> "
+            + (judgement.getChoiceIndex() > 0 ? judgement.getTitle() : "候选里都不是"));
+
+        if (!shouldAutoApply(judgement)) {
+            return item;
+        }
+
+        // 审查修正 C1：**不能提前置 applied=true**。
+        // 批处理部分失败时，finish() 走的是「保持 PENDING_REVIEW + update()」，
+        // **不抛异常**，因此原来的 catch 根本兑不到，面板会显示「已自动落盘」但实际只写了一半。
+        // 现在一律按**处置后的最终状态**回填。
+        ReviewItem resolved;
+        try {
+            if (judgement.getChoiceIndex() > 0) {
+                log.info("LLM 置信度 {} 达标，自动按选定版本归档: {}",
+                    String.format("%.2f", judgement.getConfidence()), judgement.getTitle());
+                resolved = confirmCandidate(id, judgement.getReleaseId(), judgement.getReleaseGroupId());
+            } else {
+                log.info("LLM 判定为「MusicBrainz 未收录的精选集」且置信度达标，自动按未收录归档: {}",
+                    item.getFolderName());
+                resolved = archiveAsUnverified(id);
+            }
+        } catch (ResolutionException e) {
+            markApplied(item, false);
+            throw e;
+        }
+
+        boolean completed = resolved.getStatus() == ReviewItem.Status.CONFIRMED
+            || resolved.getStatus() == ReviewItem.Status.ARCHIVED_UNVERIFIED;
+        if (!completed) {
+            log.warn("LLM 自动落盘未全部成功，条目仍为 {}，applied 保持 false: {}",
+                resolved.getStatus(), resolved.getFolderName());
+        }
+        markApplied(resolved, completed);
+        return resolved;
+    }
+
+    /**
+     * 回填 LLM 建议的 applied 标记。
+     * 用 {@code resolved} 自己的 suggestion 引用，避免处置过程中条目对象被替换后写错对象。
+     */
+    private void markApplied(ReviewItem item, boolean applied) {
+        if (item == null || item.getLlmSuggestion() == null) {
+            return;
+        }
+        item.getLlmSuggestion().setApplied(applied);
+        reviewQueue.update(item);
+    }
+
+    /**
+     * 自动落盘的门槛（默认全部关闭）。
+     *
+     * 「都不是」只有在模型同时认为它是未收录精选集时才能自动归档；
+     * 否则「都不是 + 不知道是什么」应该继续等人。
+     */
+    private boolean shouldAutoApply(LlmAlbumJudge.Judgement judgement) {
+        if (!config.isLlmAlbumAutoApply()) {
+            return false;
+        }
+        if (judgement.getConfidence() < config.getLlmAlbumAutoApplyMinConfidence()) {
+            log.info("LLM 置信度 {} 低于自动落盘阈值 {}，保持待人工确认",
+                String.format("%.2f", judgement.getConfidence()),
+                config.getLlmAlbumAutoApplyMinConfidence());
+            return false;
+        }
+        if (judgement.getChoiceIndex() > 0) {
+            return judgement.getReleaseId() != null && !judgement.getReleaseId().isEmpty();
+        }
+        return judgement.isUnreleasedCompilation();
     }
 
     // ==================== 动作 C：标记失败 / 忽略 ====================

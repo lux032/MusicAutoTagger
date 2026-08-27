@@ -100,6 +100,28 @@ public class MusicConfig {
     private List<String> llmApiUrls; // LLM API URLs（支持多个）
     private List<String> llmModels; // LLM 模型名称（支持多个）
 
+    // LLM 通用调用参数（阶段七 #21）
+    /** 协议：auto / anthropic / openai（auto 时按 URL 猜） */
+    private String llmProvider;
+    private int llmMaxTokens;        // 判定类任务要输出理由，100 不够
+    private double llmTemperature;   // 判定任务固定 0，保证可复现
+    private int llmTimeoutSeconds;
+    private int llmMaxRetries;       // 429/5xx/网络错误的指数退避重试次数
+
+    // LLM 专辑判定（阶段七 #22）
+    /** 是否允许在待确认面板上调用 LLM 做封闭式专辑判定 */
+    private boolean llmAlbumJudgeEnabled;
+    /** 是否允许直接按 LLM 结论落盘（默认 false：结论只是建议，仍需人工确认） */
+    private boolean llmAlbumAutoApply;
+    /** 自动落盘所需的最低置信度 */
+    private double llmAlbumAutoApplyMinConfidence;
+
+    // 部分识别（第 2 筐）准入配置（阶段八 #23/#24）
+    /** 除封面外，是否还要求标签达到 Plex 可读标准才放进 partialDirectory */
+    private boolean partialRequireReadableTags;
+    /** album / tracknumber 的最低覆盖率 */
+    private double partialMinTagCoverage;
+
     private static MusicConfig instance;
     
     private MusicConfig() {
@@ -156,6 +178,22 @@ public class MusicConfig {
         this.llmApiKeys = new ArrayList<>();
         this.llmApiUrls = new ArrayList<>();
         this.llmModels = new ArrayList<>();
+
+        // LLM 通用调用参数默认值
+        this.llmProvider = "auto";
+        this.llmMaxTokens = 600;
+        this.llmTemperature = 0.0;
+        this.llmTimeoutSeconds = 60;
+        this.llmMaxRetries = 2;
+
+        // LLM 专辑判定默认关闭（额外的 API 调用 + 需要人工复核）
+        this.llmAlbumJudgeEnabled = false;
+        this.llmAlbumAutoApply = false;
+        this.llmAlbumAutoApplyMinConfidence = 0.85;
+
+        // 部分识别准入默认值：封面 + 标签可读性双门槛
+        this.partialRequireReadableTags = true;
+        this.partialMinTagCoverage = 0.8;
 
     }
     
@@ -394,6 +432,55 @@ public class MusicConfig {
                 }
             }
 
+            // 加载 LLM 通用调用参数（阶段七 #21）
+            if (props.containsKey("llm.provider")) {
+                this.llmProvider = props.getProperty("llm.provider", "auto").trim();
+            }
+            if (props.containsKey("llm.maxTokens")) {
+                this.llmMaxTokens = parseIntInRange(
+                    props.getProperty("llm.maxTokens"), this.llmMaxTokens, 1, 32000, "llm.maxTokens");
+            }
+            if (props.containsKey("llm.temperature")) {
+                // 上限取 2.0（OpenAI 允许 0~2，Anthropic 是 0~1，超过的值会被端点 400）
+                this.llmTemperature = parseDoubleInRange(
+                    props.getProperty("llm.temperature"), this.llmTemperature, 0.0, 2.0, "llm.temperature");
+            }
+            if (props.containsKey("llm.timeoutSeconds")) {
+                this.llmTimeoutSeconds = parseIntInRange(
+                    props.getProperty("llm.timeoutSeconds"), this.llmTimeoutSeconds, 5, 600, "llm.timeoutSeconds");
+            }
+            if (props.containsKey("llm.maxRetries")) {
+                this.llmMaxRetries = parseIntInRange(
+                    props.getProperty("llm.maxRetries"), this.llmMaxRetries, 0, 10, "llm.maxRetries");
+            }
+
+            // 加载 LLM 专辑判定配置（阶段七 #22）
+            if (props.containsKey("llm.album.judge.enabled")) {
+                this.llmAlbumJudgeEnabled = Boolean.parseBoolean(props.getProperty("llm.album.judge.enabled"));
+            }
+            if (props.containsKey("llm.album.autoApply")) {
+                this.llmAlbumAutoApply = Boolean.parseBoolean(props.getProperty("llm.album.autoApply"));
+            }
+            if (props.containsKey("llm.album.autoApplyMinConfidence")) {
+                // 必须是 0~1 的有限值：NaN 会让 `confidence < 阈值` 永远为 false，
+                // 直接**绕过自动落盘的唯一安全门槛**
+                this.llmAlbumAutoApplyMinConfidence = parseDoubleInRange(
+                    props.getProperty("llm.album.autoApplyMinConfidence"),
+                    this.llmAlbumAutoApplyMinConfidence, 0.0, 1.0, "llm.album.autoApplyMinConfidence");
+            }
+
+            // 加载部分识别准入配置（阶段八 #23/#24）
+            if (props.containsKey("file.partial.requireReadableTags")) {
+                this.partialRequireReadableTags =
+                    Boolean.parseBoolean(props.getProperty("file.partial.requireReadableTags"));
+            }
+            if (props.containsKey("file.partial.minTagCoverage")) {
+                // 同上：NaN / 负数会让覆盖率比较全部失效，等于门槛不存在
+                this.partialMinTagCoverage = parseDoubleInRange(
+                    props.getProperty("file.partial.minTagCoverage"),
+                    this.partialMinTagCoverage, 0.0, 1.0, "file.partial.minTagCoverage");
+            }
+
             System.out.println("Configuration file loaded successfully");
             if (proxyEnabled) {
                 System.out.println("HTTP proxy enabled: " + proxyHost + ":" + proxyPort);
@@ -412,6 +499,51 @@ public class MusicConfig {
                 System.out.println("Configuration file not found, using default configuration");
             }
         }
+    }
+
+    private static int parseIntSafe(String value, int defaultValue) {
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (Exception e) {
+            return defaultValue;
+        }
+    }
+
+    private static double parseDoubleSafe(String value, double defaultValue) {
+        try {
+            return Double.parseDouble(value.trim());
+        } catch (Exception e) {
+            return defaultValue;
+        }
+    }
+
+    /**
+     * 解析并**校验范围**的浮点配置。
+     *
+     * {@code Double.parseDouble("NaN")} 是合法的，而 NaN 参与的任何比较都返回 false，
+     * 这会让「低于阈值就拒绝」这类**安全门槛静默失效**（而不是报错）。
+     * 同理，负数 / 大于 1 的比例也会让门槛要么形同虚设、要么永远不可能通过。
+     * 因此非法值一律回退到默认值并告警，而不是默默接受。
+     */
+    private static double parseDoubleInRange(String value, double defaultValue,
+                                             double min, double max, String key) {
+        double parsed = parseDoubleSafe(value, Double.NaN);
+        if (Double.isFinite(parsed) && parsed >= min && parsed <= max) {
+            return parsed;
+        }
+        System.err.println("Invalid value for " + key + ": '" + value
+            + "' (expected a finite number in [" + min + ", " + max + "]), using default " + defaultValue);
+        return defaultValue;
+    }
+
+    private static int parseIntInRange(String value, int defaultValue, int min, int max, String key) {
+        int parsed = parseIntSafe(value, Integer.MIN_VALUE);
+        if (parsed >= min && parsed <= max) {
+            return parsed;
+        }
+        System.err.println("Invalid value for " + key + ": '" + value
+            + "' (expected an integer in [" + min + ", " + max + "]), using default " + defaultValue);
+        return defaultValue;
     }
 
     private void saveToFile(Path configPath) throws IOException {
@@ -493,6 +625,16 @@ public class MusicConfig {
         if (llmModels != null && !llmModels.isEmpty()) {
             props.setProperty("llm.model", String.join(",", llmModels));
         }
+        props.setProperty("llm.provider", llmProvider == null ? "auto" : llmProvider);
+        props.setProperty("llm.maxTokens", String.valueOf(llmMaxTokens));
+        props.setProperty("llm.temperature", String.valueOf(llmTemperature));
+        props.setProperty("llm.timeoutSeconds", String.valueOf(llmTimeoutSeconds));
+        props.setProperty("llm.maxRetries", String.valueOf(llmMaxRetries));
+        props.setProperty("llm.album.judge.enabled", String.valueOf(llmAlbumJudgeEnabled));
+        props.setProperty("llm.album.autoApply", String.valueOf(llmAlbumAutoApply));
+        props.setProperty("llm.album.autoApplyMinConfidence", String.valueOf(llmAlbumAutoApplyMinConfidence));
+        props.setProperty("file.partial.requireReadableTags", String.valueOf(partialRequireReadableTags));
+        props.setProperty("file.partial.minTagCoverage", String.valueOf(partialMinTagCoverage));
 
         try (FileOutputStream fos = new FileOutputStream(configPath.toFile())) {
             props.store(fos, "Auto-generated by MusicAutoTagger");

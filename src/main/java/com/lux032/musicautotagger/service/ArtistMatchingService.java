@@ -2,37 +2,43 @@ package com.lux032.musicautotagger.service;
 
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonArray;
+import com.lux032.musicautotagger.service.llm.LlmClient;
 
 import java.io.File;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * LLM 艺术家匹配服务
  * 使用 LLM 进行模糊匹配，处理罗马音、非标准命名等情况
+ *
+ * 阶段七 #21 重构要点：
+ *   - 协议不再硬编码 Anthropic，改由 {@link LlmClient} + provider 适配层处理
+ *     （配置项名字是通用的 llm.apiUrl，原实现接 OpenAI 兼容端点会直接失败）
+ *   - 删除实例字段 {@code lastCandidates}：它在并发调用时会串数据，
+ *     现在候选列表只在方法栈内传递
+ *   - temperature=0 + 指数退避重试由 LlmClient 统一保证
+ *   - 输出改为「序号 + 理由」，max_tokens 由配置控制（原来固定 100 写不下理由）
  */
 @Slf4j
 public class ArtistMatchingService {
 
+    private static final String SYSTEM_PROMPT =
+        "You match artist names across languages and transliterations. "
+      + "Answer with a single line in the form 'INDEX|REASON' where INDEX is one of the given numbers, "
+      + "or 'NONE|REASON' if no candidate is the same artist. Never invent a new artist name.";
+
     private final MusicConfig config;
-    private final HttpClient httpClient;
-    private final Gson gson;
-    private List<String> lastCandidates;
+    private final LlmClient llmClient;
 
     public ArtistMatchingService(MusicConfig config) {
+        this(config, new LlmClient(config));
+    }
+
+    public ArtistMatchingService(MusicConfig config, LlmClient llmClient) {
         this.config = config;
-        this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
-            .build();
-        this.gson = new Gson();
+        this.llmClient = llmClient;
     }
 
     /**
@@ -41,10 +47,16 @@ public class ArtistMatchingService {
     public static class MatchResult {
         private final String matchedArtist;
         private final double confidence;
+        private final String reason;
 
         public MatchResult(String matchedArtist, double confidence) {
+            this(matchedArtist, confidence, null);
+        }
+
+        public MatchResult(String matchedArtist, double confidence, String reason) {
             this.matchedArtist = matchedArtist;
             this.confidence = confidence;
+            this.reason = reason;
         }
 
         public String getMatchedArtist() {
@@ -53,6 +65,10 @@ public class ArtistMatchingService {
 
         public double getConfidence() {
             return confidence;
+        }
+
+        public String getReason() {
+            return reason;
         }
     }
 
@@ -73,42 +89,22 @@ public class ArtistMatchingService {
             return null;
         }
 
-        log.info("开始 LLM 匹配: 源艺术家 = {}, 候选数量 = {}", sourceArtist, artistFolders.size());
-
-        // 获取配置的 LLM 数量
-        int llmCount = Math.min(
-            Math.min(config.getLlmApiKeys().size(), config.getLlmApiUrls().size()),
-            config.getLlmModels().size()
-        );
-
-        if (llmCount == 0) {
-            log.warn("未配置有效的 LLM");
+        if (!llmClient.isConfigured()) {
+            log.warn("未配置有效的 LLM（需要 llm.apiKey / llm.apiUrl / llm.model 数量一致）");
             return null;
         }
 
-        // 依次尝试每个 LLM 配置
-        for (int i = 0; i < llmCount; i++) {
-            String apiKey = config.getLlmApiKeys().get(i);
-            String apiUrl = config.getLlmApiUrls().get(i);
-            String model = config.getLlmModels().get(i);
+        log.info("开始 LLM 匹配: 源艺术家 = {}, 候选数量 = {}, 端点数 = {}",
+            sourceArtist, artistFolders.size(), llmClient.endpointCount());
 
-            log.info("尝试 LLM #{}: model={}", i + 1, model);
-
-            try {
-                String matchedArtist = callLLMForMatching(sourceArtist, artistFolders, apiKey, apiUrl, model);
-                if (matchedArtist != null && !matchedArtist.isEmpty()) {
-                    log.info("LLM #{} 匹配成功: {} -> {}", i + 1, sourceArtist, matchedArtist);
-                    return new MatchResult(matchedArtist, 0.9);
-                }
-            } catch (Exception e) {
-                log.warn("LLM #{} 调用失败: {}", i + 1, e.getMessage());
-                if (i == llmCount - 1) {
-                    log.error("所有 LLM 配置均失败");
-                }
-            }
+        try {
+            LlmClient.LlmResponse response = llmClient.complete(
+                SYSTEM_PROMPT, buildMatchingPrompt(sourceArtist, artistFolders), 0);
+            return parseMatchResult(response.getText(), artistFolders);
+        } catch (LlmClient.LlmException e) {
+            log.warn("LLM 艺术家匹配失败: {}", e.getMessage());
+            return null;
         }
-
-        return null;
     }
 
     /**
@@ -134,77 +130,65 @@ public class ArtistMatchingService {
         return folders;
     }
 
-    /**
-     * 调用 LLM API 进行艺术家匹配
-     */
-    private String callLLMForMatching(String sourceArtist, List<String> candidateArtists,
-                                      String apiKey, String apiUrl, String model) throws Exception {
-        this.lastCandidates = candidateArtists;
-        String prompt = buildMatchingPrompt(sourceArtist, candidateArtists);
-
-        JsonObject message = new JsonObject();
-        message.addProperty("role", "user");
-        message.addProperty("content", prompt);
-
-        JsonArray messages = new JsonArray();
-        messages.add(message);
-
-        JsonObject requestBody = new JsonObject();
-        requestBody.addProperty("model", model);
-        requestBody.addProperty("max_tokens", 100);
-        requestBody.add("messages", messages);
-
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(apiUrl))
-            .header("Content-Type", "application/json")
-            .header("x-api-key", apiKey)
-            .header("anthropic-version", "2023-06-01")
-            .timeout(Duration.ofSeconds(30))
-            .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(requestBody)))
-            .build();
-
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-        if (response.statusCode() != 200) {
-            throw new Exception("LLM API 返回错误: " + response.statusCode() + " - " + response.body());
-        }
-
-        return parseMatchResult(response.body());
-    }
-
     private String buildMatchingPrompt(String sourceArtist, List<String> candidates) {
         StringBuilder sb = new StringBuilder();
-        sb.append("请判断艺术家名称 \"").append(sourceArtist).append("\" 是否与以下任一艺术家匹配（考虑罗马音、别名、翻译等）：\n\n");
+        sb.append("Source artist tag: \"").append(sourceArtist).append("\"\n\n");
+        sb.append("Existing artist folders:\n");
         for (int i = 0; i < candidates.size(); i++) {
-            sb.append(i + 1).append(". ").append(candidates.get(i)).append("\n");
+            sb.append(i + 1).append(". ").append(candidates.get(i)).append('\n');
         }
-        sb.append("\n如果匹配，只返回对应的序号（如 1、2、3）。如果不匹配，返回 \"NONE\"。");
+        sb.append("\nWhich folder refers to the SAME artist as the source tag? ");
+        sb.append("Consider romanization, aliases, translations and different scripts. ");
+        sb.append("Different artists with similar names must NOT be matched.\n");
+        sb.append("Answer exactly one line: 'INDEX|REASON' or 'NONE|REASON'.\n");
         return sb.toString();
     }
 
-    private String parseMatchResult(String responseBody) {
-        try {
-            JsonObject json = gson.fromJson(responseBody, JsonObject.class);
-            JsonArray content = json.getAsJsonArray("content");
-            if (content != null && content.size() > 0) {
-                String text = content.get(0).getAsJsonObject().get("text").getAsString().trim();
-                if (text.equals("NONE") || text.isEmpty()) {
-                    return null;
-                }
-                // 解析序号
-                try {
-                    int index = Integer.parseInt(text) - 1;
-                    if (index >= 0 && index < lastCandidates.size()) {
-                        return lastCandidates.get(index);
-                    }
-                } catch (NumberFormatException e) {
-                    log.warn("LLM 返回的不是有效序号: {}", text);
-                }
-                return null;
-            }
-        } catch (Exception e) {
-            log.error("解析 LLM 响应失败: {}", e.getMessage());
+    /**
+     * 解析「序号|理由」。
+     * 兼容模型只回一个数字、或包了引号/句号的情况；
+     * 越界或非数字一律按「没有匹配」处理，绝不越权映射到某个候选。
+     */
+    private MatchResult parseMatchResult(String text, List<String> candidates) {
+        if (text == null) {
+            return null;
         }
-        return null;
+        String line = text.trim();
+        int newline = line.indexOf('\n');
+        if (newline > 0) {
+            line = line.substring(0, newline).trim();
+        }
+
+        String indexPart = line;
+        String reason = null;
+        int separator = line.indexOf('|');
+        if (separator >= 0) {
+            indexPart = line.substring(0, separator).trim();
+            reason = line.substring(separator + 1).trim();
+        }
+
+        // 去掉常见修饰：引号 / 句号 / "答案:" 之类
+        indexPart = indexPart.replaceAll("[\"'`。.：:]", "").trim();
+
+        if (indexPart.toUpperCase(Locale.ROOT).contains("NONE")) {
+            log.info("LLM 未找到匹配的艺术家: {}", reason);
+            return null;
+        }
+
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\d+").matcher(indexPart);
+        if (!matcher.find()) {
+            log.warn("LLM 返回的不是有效序号: {}", line);
+            return null;
+        }
+
+        int index = Integer.parseInt(matcher.group()) - 1;
+        if (index < 0 || index >= candidates.size()) {
+            log.warn("LLM 返回的序号越界（{}），按「没有匹配」处理", index + 1);
+            return null;
+        }
+
+        String matched = candidates.get(index);
+        log.info("LLM 匹配成功: {} (理由: {})", matched, reason);
+        return new MatchResult(matched, 0.9, reason);
     }
 }

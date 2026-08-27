@@ -34,7 +34,7 @@ import java.util.Map;
  *   POST /api/review/confirm    {"id":"...","releaseId":"...","releaseGroupId":"..."}
  *   POST /api/review/archive    {"id":"..."}
  *   POST /api/review/reject     {"id":"...","note":"..."}
- *   POST /api/review/llm        {"id":"..."}   -> 501（阶段七）
+ *   POST /api/review/llm        {"id":"..."}   -> LLM 封闭式判定（阶段七 #22）
  */
 @Slf4j
 public class ReviewServlet extends HttpServlet {
@@ -65,7 +65,8 @@ public class ReviewServlet extends HttpServlet {
                 case "stats":
                     respond(resp, 200, Map.of(
                         "pending", reviewQueue.countPending(),
-                        "total", reviewQueue.list(null).size()));
+                        "total", reviewQueue.list(null).size(),
+                        "llmEnabled", resolutionService.getConfig().isLlmAlbumJudgeEnabled()));
                     return;
                 default:
                     respond(resp, 404, Map.of("error", "unknown.action"));
@@ -117,11 +118,13 @@ public class ReviewServlet extends HttpServlet {
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
                     return;
                 }
-                case "llm":
-                    // 阶段七：LLM 辅助判定。必须是封闭选择题（从候选中选 / 都不是），
-                    // 且结论默认仍是「待人工确认」，不自动落盘。
-                    respond(resp, 501, Map.of("error", "llm.not.implemented"));
+                case "llm": {
+                    // 阶段七 #22：LLM 辅助判定。封闭选择题（从候选中选 / 都不是），
+                    // 结论默认仍是「待人工确认」，除非 llm.album.autoApply 显式打开。
+                    ReviewItem item = resolutionService.judgeWithLlm(id);
+                    respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
                     return;
+                }
                 default:
                     respond(resp, 404, Map.of("error", "unknown.action"));
             }
@@ -191,6 +194,26 @@ public class ReviewServlet extends HttpServlet {
         map.put("createdAt", item.getCreatedAt());
         map.put("updatedAt", item.getUpdatedAt());
         map.put("resolutionNote", item.getResolutionNote());
+        map.put("llmSuggestion", toLlmView(item.getLlmSuggestion()));
+        return map;
+    }
+
+    private Map<String, Object> toLlmView(ReviewItem.LlmSuggestion suggestion) {
+        if (suggestion == null) {
+            return null;
+        }
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("evaluatedAt", suggestion.getEvaluatedAt());
+        map.put("model", suggestion.getModel());
+        map.put("provider", suggestion.getProvider());
+        map.put("choiceIndex", suggestion.getChoiceIndex());
+        map.put("suggestedReleaseId", suggestion.getSuggestedReleaseId());
+        map.put("suggestedReleaseGroupId", suggestion.getSuggestedReleaseGroupId());
+        map.put("suggestedTitle", suggestion.getSuggestedTitle());
+        map.put("confidence", suggestion.getConfidence());
+        map.put("unreleasedCompilation", suggestion.isUnreleasedCompilation());
+        map.put("reason", suggestion.getReason());
+        map.put("applied", suggestion.isApplied());
         return map;
     }
 
@@ -198,6 +221,7 @@ public class ReviewServlet extends HttpServlet {
         Map<String, Object> map = toSummary(item);
         map.put("durationSequence", item.getDurationSequence());
         map.put("candidatesExpanded", item.isCandidatesExpanded());
+        map.put("llmJudgeEnabled", resolutionService.getConfig().isLlmAlbumJudgeEnabled());
 
         List<Map<String, Object>> candidates = new ArrayList<>();
         if (item.getCandidates() != null) {

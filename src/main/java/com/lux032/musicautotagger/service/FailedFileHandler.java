@@ -5,6 +5,7 @@ import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FileSystemUtils;
 import com.lux032.musicautotagger.util.I18nUtil;
+import com.lux032.musicautotagger.util.TagQualityEvaluator;
 
 import java.io.File;
 import java.io.IOException;
@@ -12,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
@@ -76,7 +78,14 @@ public class FailedFileHandler {
             
             // 检查是否有部分标签信息
             boolean hasPartialTags = tagWriter.hasPartialTags(audioFile);
-            
+
+            // 阶段八 #23/#24：封面不能单独决定准入。
+            // cover.jpg + 「Track 01 / Unknown Artist」的种子非常常见，
+            // 放进 partialDirectory 后 Plex 会读出一堆 Unknown Artist，反而污染音乐库。
+            if (!isTagsUsableForPartial(Collections.singletonList(audioFile), hasPartialTags, audioFile.getName())) {
+                return;
+            }
+
             log.info("========================================");
             log.info(I18nUtil.getMessage("main.partial.recognition.detected"));
             LogCollector.addLog("INFO", I18nUtil.getMessage("main.partial.recognition.detected") + ": " + audioFile.getName());
@@ -198,9 +207,21 @@ public class FailedFileHandler {
                 return;
             }
             
-            // 检查是否有部分标签信息（检查第一个文件即可）
-            boolean hasPartialTags = tagWriter.hasPartialTags(audioFiles.get(0));
-            
+            // 是否有可用标签：不能只看第一个文件（它可能恰好是唯一带标签的那个），
+            // 改为「任意一个文件有核心标签」+ 下面的覆盖率判定双重把关
+            boolean hasPartialTags = false;
+            for (File audioFile : audioFiles) {
+                if (tagWriter.hasPartialTags(audioFile)) {
+                    hasPartialTags = true;
+                    break;
+                }
+            }
+
+            // 阶段八 #23/#24：封面 + 标签可读性双门槛
+            if (!isTagsUsableForPartial(audioFiles, hasPartialTags, albumRootDir.getName())) {
+                return;
+            }
+
             log.info("========================================");
             log.info(I18nUtil.getMessage("main.partial.recognition.album.detected", albumRootDir.getName()));
             LogCollector.addLog("INFO", I18nUtil.getMessage("main.partial.recognition.album.detected", albumRootDir.getName()));
@@ -305,6 +326,42 @@ public class FailedFileHandler {
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.partial.recognition.album.failed") + ": {}", albumRootDir.getName(), e);
         }
+    }
+
+    /**
+     * 第 2 筐的标签门槛（阶段八 #23/#24）。
+     *
+     * #23：{@code hasPartialTags} 原本「算了但没用」（只打了一行日志），现在真正参与决策。
+     * #24：在此基础上还要求 Plex 可读（album / 曲目号 / artist 覆盖率）。
+     *
+     * 可用 {@code file.partial.requireReadableTags=false} 关掉，回到「只看封面」的旧行为。
+     *
+     * @return true 表示允许进入 partialDirectory
+     */
+    private boolean isTagsUsableForPartial(List<File> audioFiles, boolean hasPartialTags, String label) {
+        if (!config.isPartialRequireReadableTags()) {
+            return true;
+        }
+
+        if (!hasPartialTags) {
+            log.info("部分识别跳过（{}）：有封面但没有任何可用的核心标签（artist / albumArtist / album 均为空或占位值）", label);
+            LogCollector.addLog("INFO", "  部分识别跳过：标签均为空或占位值 - " + label);
+            return false;
+        }
+
+        TagQualityEvaluator.Readiness readiness = TagQualityEvaluator.evaluate(
+            audioFiles, tagWriter::readTags, config.getPartialMinTagCoverage());
+
+        if (!readiness.isReadable()) {
+            log.info("部分识别跳过（{}）：有封面但标签达不到 Plex 可读标准 -> {}",
+                label, readiness.describe());
+            LogCollector.addLog("INFO", "  部分识别跳过（标签不足以供 Plex 使用）: " + label
+                + " - " + String.join("; ", readiness.getReasons()));
+            return false;
+        }
+
+        log.info("部分识别标签检查通过（{}）: {}", label, readiness.describe());
+        return true;
     }
 
     private static boolean isFlacFile(File file) {

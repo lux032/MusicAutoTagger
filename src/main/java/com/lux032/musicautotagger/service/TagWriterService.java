@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
+import com.lux032.musicautotagger.util.TagQualityEvaluator;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.tag.FieldKey;
@@ -568,63 +569,37 @@ public class TagWriterService {
     }
     
     /**
-     * 检查音频文件是否有部分有用的标签信息
-     * 检查项目：艺术家、专辑、作曲家、作词家、歌词、风格等
-     * @return true表示至少有一项有用信息
+     * 检查音频文件是否有**可用的**标签信息（阶段八 #23 加固）。
+     *
+     * 原实现的问题：
+     *   - artist / album / albumArtist / composer / lyricist / lyrics / genre
+     *     任意一个非空就返回 true，**只有 composer 一个字段也算「有标签」**；
+     *   - 不看占位值，{@code Unknown Artist} / {@code Track 01} 也算有。
+     *
+     * 现在的语义是「至少有一个**核心身份字段**是真实可用的」：
+     * artist / albumArtist / album 三者之一非占位值。
+     * composer / lyricist / lyrics / genre 单独存在不再算数——
+     * 它们既不能让 Plex 归类，也不能证明上传者整理过。
+     *
+     * @return true 表示标签至少能用于归类
      */
     public boolean hasPartialTags(File audioFile) {
         try {
             AudioFile audioFileObj = AudioFileIO.read(audioFile);
             Tag tag = audioFileObj.getTag();
-            
+
             if (tag == null) {
                 return false;
             }
-            
-            // 检查是否有艺术家
+
             String artist = tag.getFirst(FieldKey.ARTIST);
-            if (artist != null && !artist.trim().isEmpty()) {
-                return true;
-            }
-            
-            // 检查是否有专辑
-            String album = tag.getFirst(FieldKey.ALBUM);
-            if (album != null && !album.trim().isEmpty()) {
-                return true;
-            }
-            
-            // 检查是否有专辑艺术家
             String albumArtist = tag.getFirst(FieldKey.ALBUM_ARTIST);
-            if (albumArtist != null && !albumArtist.trim().isEmpty()) {
-                return true;
-            }
-            
-            // 检查是否有作曲家
-            String composer = tag.getFirst(FieldKey.COMPOSER);
-            if (composer != null && !composer.trim().isEmpty()) {
-                return true;
-            }
-            
-            // 检查是否有作词家
-            String lyricist = tag.getFirst(FieldKey.LYRICIST);
-            if (lyricist != null && !lyricist.trim().isEmpty()) {
-                return true;
-            }
-            
-            // 检查是否有歌词
-            String lyrics = tag.getFirst(FieldKey.LYRICS);
-            if (lyrics != null && !lyrics.trim().isEmpty()) {
-                return true;
-            }
-            
-            // 检查是否有风格
-            String genre = tag.getFirst(FieldKey.GENRE);
-            if (genre != null && !genre.trim().isEmpty()) {
-                return true;
-            }
-            
-            return false;
-            
+            String album = tag.getFirst(FieldKey.ALBUM);
+
+            return TagQualityEvaluator.isMeaningful(artist)
+                || TagQualityEvaluator.isMeaningful(albumArtist)
+                || TagQualityEvaluator.isMeaningful(album);
+
         } catch (Exception e) {
             log.error("检查标签信息失败: {}", audioFile.getName(), e);
             return false;
