@@ -20,8 +20,12 @@ services:
       - /share/Download/Music:/music
       # output directory for processed files
       - /share/Music:/app/tagged_music
-      # admin credentials data (persisted)
+      # admin credentials, review queue and recovery trash (persisted)
       - ./data:/app/data
+      # partial / failed quarantine dirs.
+      # The recovery page operates on these; without volumes they are lost on container recreation.
+      - ./partial_files:/app/partial_files
+      - ./failed_files:/app/failed_files
       # config file (optional, auto-generated)
       - ./config.properties:/app/config.properties
       # logs (optional)

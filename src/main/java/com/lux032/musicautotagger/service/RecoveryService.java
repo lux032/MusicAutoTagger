@@ -221,7 +221,7 @@ public class RecoveryService implements AutoCloseable {
         File target = resolveItem(SourceType.valueOf(sourceType), relativePath);
         if (target.exists()) throw new IOException("trash.restore.target.exists");
         Files.createDirectories(target.toPath().getParent());
-        Files.move(entry, target.toPath());
+        moveAcrossDevices(entry, target.toPath());
         Files.deleteIfExists(manifest);
         LogCollector.addLog("SUCCESS", "已从回收站恢复: " + relativePath + " → " + sourceType);
     }
@@ -725,6 +725,37 @@ public class RecoveryService implements AutoCloseable {
         return files;
     }
 
+    /**
+     * 跨挂载点的移动兜底。
+     *
+     * 典型 Docker 部署里隔离目录（容器 overlay 层或独立 bind mount）与
+     * 回收站（./data 卷）分属不同文件系统，Files.move 会直接抛
+     * "Invalid cross-device link"。复制后校验再删源，避免半途失败丢数据。
+     */
+    private void moveAcrossDevices(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target);
+            return;
+        } catch (IOException crossDevice) {
+            log.debug("跨设备移动，改为复制后删除: {} -> {}", source, target);
+        }
+        if (Files.isDirectory(source)) {
+            fileSystemUtils.copyDirectoryRecursively(source, target);
+            if (listFiles(target).size() != listFiles(source).size()) {
+                deleteRecursively(target);
+                throw new IOException("recovery.move.copy.incomplete");
+            }
+        } else {
+            Files.createDirectories(target.getParent());
+            Files.copy(source, target);
+            if (Files.size(target) != Files.size(source)) {
+                Files.deleteIfExists(target);
+                throw new IOException("recovery.move.copy.incomplete");
+            }
+        }
+        deleteRecursively(source);
+    }
+
     private Path trashRoot() {
         String configured = config.getRecoveryTrashDirectory();
         return Path.of(configured == null || configured.isBlank() ? "data/recovery-trash" : configured);
@@ -741,7 +772,7 @@ public class RecoveryService implements AutoCloseable {
         String safeName = source.getName().replaceAll("[^\\p{L}\\p{N}._ -]", "_");
         long trashedAt = System.currentTimeMillis();
         Path target = root.resolve(trashedAt + "_" + job.id + "_" + safeName);
-        Files.move(source.toPath(), target);
+        moveAcrossDevices(source.toPath(), target);
 
         JsonObject manifest = new JsonObject();
         manifest.addProperty("sourceType", String.valueOf(job.sourceType));
