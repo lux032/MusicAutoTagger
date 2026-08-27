@@ -6,6 +6,8 @@ import org.jaudiotagger.tag.Tag;
 
 import java.io.File;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -22,12 +24,34 @@ public final class AudioFileOrdering {
     private AudioFileOrdering() {
     }
 
+    /**
+     * 按曲序排序。
+     *
+     * <p><b>必须预先算好排序键</b>：{@code key()} 会读取音频标签（磁盘 I/O），
+     * 而 {@code Comparator.comparing(...)} 每次比较都会重新调用提取函数，
+     * 直接用作 Comparator 会造成 O(n log n) 次标签读取。
+     * 这里采用 decorate-sort-undecorate，每个文件只读一次。</p>
+     */
     public static void sort(java.util.List<File> files) {
-        files.sort(comparator());
+        if (files == null || files.size() < 2) {
+            return;
+        }
+        Map<File, SortKey> keys = new IdentityHashMap<>(files.size());
+        for (File file : files) {
+            keys.put(file, key(file));
+        }
+        files.sort(Comparator.comparing(keys::get));
     }
 
+    /**
+     * 返回一个会缓存排序键的 Comparator。
+     *
+     * <p>返回的实例持有内部缓存，<b>不是无状态的</b>，不应长期持有或跨线程共享；
+     * 一次排序用完即弃。一般情况请直接用 {@link #sort(java.util.List)}。</p>
+     */
     public static Comparator<File> comparator() {
-        return Comparator.comparing(AudioFileOrdering::key);
+        Map<File, SortKey> cache = new IdentityHashMap<>();
+        return Comparator.comparing(file -> cache.computeIfAbsent(file, AudioFileOrdering::key));
     }
 
     private static SortKey key(File file) {

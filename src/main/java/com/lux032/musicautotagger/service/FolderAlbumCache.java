@@ -35,6 +35,11 @@ public class FolderAlbumCache {
 
     // 新增：被判定为「专辑无法确定」的文件夹（大概率是 MusicBrainz 尚未收录的专辑 / 自制精选集）
     private final Set<String> unresolvedFolders = ConcurrentHashMap.newKeySet();
+
+    /** 文件夹 -> 缓存专辑曲目数与实际文件数连续不一致的次数 */
+    private final Map<String, Integer> cacheTrackCountMismatches = new ConcurrentHashMap<>();
+    /** 连续不一致达到该次数才丢弃专辑缓存，避免边下载边处理时反复重新匹配 */
+    private static final int MAX_CACHE_TRACK_COUNT_MISMATCHES = 3;
     
     // 依赖服务
     private final DurationSequenceService durationSequenceService;
@@ -107,10 +112,20 @@ public class FolderAlbumCache {
                 int difference = Math.abs(cached.getTrackCount() - musicFilesCount);
                 int allowed = Math.max(2, (int) Math.ceil(musicFilesCount * TRACK_COUNT_TOLERANCE));
                 if (difference > allowed) {
-                    log.warn("缓存专辑曲目数与当前可靠文件数不一致，拒绝复用缓存: {} (缓存{}首/当前{}首)",
-                        cached.getAlbumTitle(), cached.getTrackCount(), musicFilesCount);
-                    folderAlbumCache.remove(folderPath, cached);
-                    cached = null;
+                    // 只在连续多次不一致后才丢弃缓存。
+                    // 边下载边处理时文件数会持续变化，单次不一致就删缓存会导致
+                    // 同一文件夹反复重新匹配，每次都是一整轮 MusicBrainz 查询。
+                    int mismatches = cacheTrackCountMismatches.merge(folderPath, 1, Integer::sum);
+                    log.warn("缓存专辑曲目数与当前可靠文件数不一致（第{}次）: {} (缓存{}首/当前{}首)",
+                        mismatches, cached.getAlbumTitle(), cached.getTrackCount(), musicFilesCount);
+                    if (mismatches >= MAX_CACHE_TRACK_COUNT_MISMATCHES) {
+                        log.warn("连续 {} 次不一致，丢弃该文件夹的专辑缓存并重新匹配", mismatches);
+                        folderAlbumCache.remove(folderPath, cached);
+                        cacheTrackCountMismatches.remove(folderPath);
+                        cached = null;
+                    }
+                } else {
+                    cacheTrackCountMismatches.remove(folderPath);
                 }
             }
             if (cached != null) {
@@ -673,11 +688,16 @@ public class FolderAlbumCache {
         return determineAlbumWithDurationSequence(folderPath, candidateReleaseGroups, musicFilesCount, true);
     }
 
+    /**
+     * @param safeForFastLock 文件数输入是否干净到能允许「只看第一首歌就锁定整个文件夹」。
+     *                        只要有任何存疑信号（包括 soft 级别）就应为 false，
+     *                        回到多样本流程——只是慢一点，不会失去专辑信息。
+     */
     public CachedAlbumInfo determineAlbumWithDurationSequence(
             String folderPath,
             List<CandidateReleaseGroup> candidateReleaseGroups,
             int musicFilesCount,
-            boolean musicFilesCountReliable) {
+            boolean safeForFastLock) {
 
         if (!useDurationSequenceMatching) {
             log.debug("时长序列匹配已禁用");
@@ -809,7 +829,7 @@ public class FolderAlbumCache {
                 }
 
                 // 第一文件快速锁定依赖完整专辑曲目数；输入不可靠时必须降级到多样本流程。
-                if (!musicFilesCountReliable) {
+                if (!safeForFastLock) {
                     log.info("文件夹曲目数输入不可靠，禁用第一文件立即锁定，改走多样本分析");
                     return null;
                 }
@@ -1062,6 +1082,7 @@ public class FolderAlbumCache {
         folderSampleCollectors.remove(folderPath);
         folderDurationSequences.remove(folderPath);
         unresolvedFolders.remove(folderPath);
+        cacheTrackCountMismatches.remove(folderPath);
         log.info("已清除文件夹专辑缓存: {}", folderPath);
     }
     

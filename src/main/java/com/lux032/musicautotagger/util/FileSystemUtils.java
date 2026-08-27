@@ -22,9 +22,46 @@ import org.jaudiotagger.tag.Tag;
 public class FileSystemUtils {
     
     private final MusicConfig config;
-    
+
+    private static final Pattern LEADING_NUMBER = Pattern.compile("^\\s*(\\d+)");
+    private static final Pattern DECLARED_TOTAL = Pattern.compile("/\\s*(\\d+)");
+    /**
+     * 附加音频（bonus / 试听 / DJ mix 等）的命名特征。
+     * 只作为 soft 信号：它也会命中合法曲名（如一首叫 Sample 的歌）
+     * 和 MB 确实收录的 Bonus Disc。
+     */
+    private static final Pattern AUXILIARY_AUDIO = Pattern.compile(
+        "(?i)(^|[\\s._\\-\\[\\]()])(bonus|sample|preview|snippet|试听|花絮|dj[\\s._-]*mix)([\\s._\\-\\[\\]()]|$)");
+
+    /**
+     * 专辑根目录 -> 最近一次的统计结果。
+     * {@link #inspectMusicFilesInFolder(File)} 会递归扫目录并读取**每个**文件的标签，
+     * 而它是逐文件调用的——不缓存的话一张 n 轨专辑会产生 n² 次标签读取。
+     */
+    private final Map<String, CachedInspection> inspectionCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final class CachedInspection {
+        private final MusicFileCountResult result;
+        private final long computedAt;
+
+        CachedInspection(MusicFileCountResult result) {
+            this.result = result;
+            this.computedAt = System.currentTimeMillis();
+        }
+    }
+
+    /** 目录内容可能边下载边处理，缓存只保持短时间，避免锁死早期的不完整快照。 */
+    private static final long INSPECTION_CACHE_TTL_MS = 30_000;
+
     public FileSystemUtils(MusicConfig config) {
         this.config = config;
+    }
+
+    /** 专辑处理完成 / 失败收尾时调用，丢弃该目录的统计缓存。 */
+    public void invalidateInspection(String folderPath) {
+        if (folderPath != null) {
+            inspectionCache.remove(folderPath);
+        }
     }
     
     /**
@@ -85,11 +122,25 @@ public class FileSystemUtils {
     public MusicFileCountResult inspectMusicFilesInFolder(File audioFile) {
         File parentDir = audioFile.getParentFile();
         if (parentDir == null || !parentDir.exists() || !parentDir.isDirectory()) {
-            return new MusicFileCountResult(1, false, Collections.singletonList("无法确定文件所在目录"));
+            return new MusicFileCountResult(1, false,
+                Collections.singletonList("无法确定文件所在目录"), Collections.emptyList());
         }
 
         boolean looseFile = isLooseFileInMonitorRoot(audioFile);
         File scanRoot = looseFile ? parentDir : getAlbumRootDirectory(audioFile);
+
+        String cacheKey = scanRoot.getAbsolutePath();
+        CachedInspection cached = inspectionCache.get(cacheKey);
+        if (cached != null && System.currentTimeMillis() - cached.computedAt < INSPECTION_CACHE_TTL_MS) {
+            return cached.result;
+        }
+
+        MusicFileCountResult result = doInspect(scanRoot, looseFile);
+        inspectionCache.put(cacheKey, new CachedInspection(result));
+        return result;
+    }
+
+    private MusicFileCountResult doInspect(File scanRoot, boolean looseFile) {
         List<File> musicFiles = new ArrayList<>();
         if (looseFile) {
             File[] files = scanRoot.listFiles();
@@ -103,18 +154,24 @@ public class FileSystemUtils {
         }
 
         int count = Math.max(1, musicFiles.size());
-        List<String> reasons = new ArrayList<>();
-        if (musicFiles.isEmpty()) reasons.add("目录扫描未找到音乐文件");
-        if (looseFile && musicFiles.size() > 1) reasons.add("监控目录根部混有多个散落音乐文件");
-        if (containsTempFileRecursively(scanRoot)) reasons.add("目录中存在下载临时文件");
-        if (containsCueFile(scanRoot) && musicFiles.size() > 1) reasons.add("CUE 与多个音频文件并存，可能重复统计源大文件");
 
-        Pattern auxiliaryPattern = Pattern.compile(
-            "(?i)(^|[\\s._\\-\\[\\]()])(bonus|sample|preview|snippet|试听|花絮|dj[\\s._-]*mix)([\\s._\\-\\[\\]()]|$)");
+        // hard：这个数字肯定不代表一张专辑的曲目数，完全不能参与专辑匹配。
+        List<String> hardReasons = new ArrayList<>();
+        // soft：可能不准，但误判率也高。只用于禁用「第一文件立即锁定」等激进优化，
+        // 不应导致整张专辑拿不到任何专辑信息。
+        List<String> softReasons = new ArrayList<>();
+
+        if (musicFiles.isEmpty()) hardReasons.add("目录扫描未找到音乐文件");
+        if (looseFile && musicFiles.size() > 1) hardReasons.add("监控目录根部混有多个散落音乐文件");
+        if (containsTempFileRecursively(scanRoot)) hardReasons.add("目录中存在下载临时文件（目录尚未完整）");
+        if (containsCueFile(scanRoot) && musicFiles.size() > 1) {
+            hardReasons.add("CUE 与多个音频文件并存，可能重复统计源大文件");
+        }
+
         for (File file : musicFiles) {
             String relative = scanRoot.toPath().relativize(file.toPath()).toString();
-            if (auxiliaryPattern.matcher(relative).find()) {
-                reasons.add("存在 bonus/试听/DJ mix 等附加音频");
+            if (AUXILIARY_AUDIO.matcher(relative).find()) {
+                softReasons.add("存在疑似 bonus/试听/DJ mix 的命名（也可能只是歌名包含该词）");
                 break;
             }
         }
@@ -122,15 +179,20 @@ public class FileSystemUtils {
         Set<String> albumNames = new HashSet<>();
         Map<Integer, Set<Integer>> tracksByDisc = new HashMap<>();
         Map<Integer, Integer> declaredTotalsByDisc = new HashMap<>();
+        int filesWithReadableTags = 0;
+        boolean anyDiscTagPresent = false;
         for (File file : musicFiles) {
             try {
                 Tag tag = AudioFileIO.read(file).getTag();
                 if (tag == null) continue;
+                filesWithReadableTags++;
                 String album = tag.getFirst(FieldKey.ALBUM);
                 if (album != null && !album.trim().isEmpty() && !"unknown album".equalsIgnoreCase(album.trim())) {
                     albumNames.add(album.trim().toLowerCase(Locale.ROOT));
                 }
-                int disc = parseLeadingNumber(tag.getFirst(FieldKey.DISC_NO), 1);
+                String discValue = tag.getFirst(FieldKey.DISC_NO);
+                if (discValue != null && !discValue.isBlank()) anyDiscTagPresent = true;
+                int disc = parseLeadingNumber(discValue, 1);
                 String trackValue = tag.getFirst(FieldKey.TRACK);
                 int track = parseLeadingNumber(trackValue, 0);
                 if (track > 0) tracksByDisc.computeIfAbsent(disc, k -> new HashSet<>()).add(track);
@@ -140,28 +202,43 @@ public class FileSystemUtils {
                 log.debug("检查曲目数可靠性时无法读取标签: {} - {}", file.getName(), e.getMessage());
             }
         }
-        if (albumNames.size() > 1) reasons.add("音频标签包含多个不同专辑名");
-        for (Map.Entry<Integer, Set<Integer>> entry : tracksByDisc.entrySet()) {
-            Set<Integer> tracks = entry.getValue();
-            int maxTrack = tracks.stream().mapToInt(Integer::intValue).max().orElse(0);
-            if (maxTrack > tracks.size()) {
-                reasons.add("碟 " + entry.getKey() + " 的曲号存在缺口，可能只下载了专辑子集");
-                break;
+
+        if (albumNames.size() > 1) hardReasons.add("音频标签包含多个不同专辑名");
+
+        // 曲号缺口检测只在「所有文件都能读出标签」时才成立。
+        // 否则一个读失败的文件就会制造出一个假缺口。
+        // 同理，多碟专辑若普遍缺 DISC_NO，所有曲号会被挤到 disc=1 并互相覆盖，统计无意义。
+        boolean trackNumbersTrustworthy = filesWithReadableTags == musicFiles.size()
+            && (anyDiscTagPresent || tracksByDisc.size() <= 1);
+        if (trackNumbersTrustworthy) {
+            for (Map.Entry<Integer, Set<Integer>> entry : tracksByDisc.entrySet()) {
+                Set<Integer> tracks = entry.getValue();
+                int maxTrack = tracks.stream().mapToInt(Integer::intValue).max().orElse(0);
+                if (maxTrack > tracks.size()) {
+                    hardReasons.add("碟 " + entry.getKey() + " 的曲号存在缺口，可能只下载了专辑子集");
+                    break;
+                }
+                Integer declaredTotal = declaredTotalsByDisc.get(entry.getKey());
+                if (declaredTotal != null && declaredTotal != tracks.size()) {
+                    hardReasons.add("碟 " + entry.getKey() + " 的标签总曲目数与实际文件数不一致");
+                    break;
+                }
             }
-            Integer declaredTotal = declaredTotalsByDisc.get(entry.getKey());
-            if (declaredTotal != null && declaredTotal != tracks.size()) {
-                reasons.add("碟 " + entry.getKey() + " 的标签总曲目数与实际文件数不一致");
-                break;
-            }
+        } else if (!tracksByDisc.isEmpty()) {
+            softReasons.add("部分文件标签不可读或缺少碟号，无法校验曲号完整性");
         }
 
-        boolean reliable = reasons.isEmpty();
-        if (reliable) {
+        boolean reliable = hardReasons.isEmpty();
+        if (reliable && softReasons.isEmpty()) {
             log.info("{} 中共有 {} 个音乐文件，曲目数输入判定为可靠", scanRoot.getName(), count);
+        } else if (reliable) {
+            log.info("{} 中共有 {} 个音乐文件，曲目数可用但存在存疑信号（仅禁用快速锁定）: {}",
+                scanRoot.getName(), count, String.join("；", softReasons));
         } else {
-            log.warn("{} 中共有 {} 个音乐文件，但曲目数输入不可靠: {}", scanRoot.getName(), count, String.join("；", reasons));
+            log.warn("{} 中共有 {} 个音乐文件，但曲目数输入不可靠: {}",
+                scanRoot.getName(), count, String.join("；", hardReasons));
         }
-        return new MusicFileCountResult(count, reliable, reasons);
+        return new MusicFileCountResult(count, reliable, hardReasons, softReasons);
     }
 
     private boolean containsTempFileRecursively(File directory) {
@@ -188,30 +265,57 @@ public class FileSystemUtils {
 
     private int parseLeadingNumber(String value, int fallback) {
         if (value == null) return fallback;
-        Matcher matcher = Pattern.compile("^\\s*(\\d+)").matcher(value);
-        return matcher.find() ? Integer.parseInt(matcher.group(1)) : fallback;
+        Matcher matcher = LEADING_NUMBER.matcher(value);
+        if (!matcher.find()) return fallback;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (NumberFormatException e) {
+            return fallback;   // 超长数字串
+        }
     }
 
     private int parseDeclaredTotal(String value) {
         if (value == null) return 0;
-        Matcher matcher = Pattern.compile("/\\s*(\\d+)").matcher(value);
-        return matcher.find() ? Integer.parseInt(matcher.group(1)) : 0;
+        Matcher matcher = DECLARED_TOTAL.matcher(value);
+        if (!matcher.find()) return 0;
+        try {
+            return Integer.parseInt(matcher.group(1));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
+    /**
+     * 目录音乐文件统计结果及其可信度。
+     *
+     * <ul>
+     *   <li>{@link #isReliable()} == false（存在 hard reason）：这个数字肯定不是一张专辑的曲目数，
+     *       不得参与候选发行版评分或硬门槛。</li>
+     *   <li>{@link #hasSoftConcerns()} == true：数字可能不准但误判率也高，
+     *       仅用于禁用「第一文件立即锁定整个文件夹」这类激进优化。</li>
+     * </ul>
+     */
     public static final class MusicFileCountResult {
         private final int count;
         private final boolean reliable;
         private final List<String> reasons;
+        private final List<String> softReasons;
 
-        public MusicFileCountResult(int count, boolean reliable, List<String> reasons) {
+        public MusicFileCountResult(int count, boolean reliable, List<String> reasons, List<String> softReasons) {
             this.count = count;
             this.reliable = reliable;
             this.reasons = Collections.unmodifiableList(new ArrayList<>(reasons));
+            this.softReasons = Collections.unmodifiableList(new ArrayList<>(softReasons));
         }
 
         public int getCount() { return count; }
+        /** 不存在 hard reason，曲目数可用于专辑匹配 */
         public boolean isReliable() { return reliable; }
         public List<String> getReasons() { return reasons; }
+        public List<String> getSoftReasons() { return softReasons; }
+        public boolean hasSoftConcerns() { return !softReasons.isEmpty(); }
+        /** 是否允许用第一首文件就锁定整个文件夹（需要最强的输入保证） */
+        public boolean isSafeForFastLock() { return reliable && softReasons.isEmpty(); }
     }
     
     /**

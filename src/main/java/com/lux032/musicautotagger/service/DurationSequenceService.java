@@ -5,6 +5,8 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * 时长序列匹配服务
@@ -24,7 +26,8 @@ public class DurationSequenceService {
 
     // 原始 DTW 是自动匹配的硬门槛；名称和格式仅参与候选排序。
     private static final double MIN_DURATION_SIMILARITY = 0.75;
-    // 最佳与次佳候选差距过小时视为歧义，不自动决定。
+    // 最佳与「异专辑次佳」差距过小时视为歧义，不自动决定。
+    // 注意：只跨 Release Group 比较，同一张专辑的不同发行版本不算歧义。
     private static final double MIN_BEST_MATCH_MARGIN = 0.05;
     
     /**
@@ -224,15 +227,7 @@ public class DurationSequenceService {
      * @return 匹配质量等级
      */
     public MatchQuality evaluateMatchQuality(double similarity) {
-        if (similarity >= 0.95) {
-            return MatchQuality.EXCELLENT;
-        } else if (similarity >= 0.85) {
-            return MatchQuality.GOOD;
-        } else if (similarity >= MIN_DURATION_SIMILARITY) {
-            return MatchQuality.ACCEPTABLE;
-        } else {
-            return MatchQuality.POOR;
-        }
+        return MatchQuality.of(similarity);
     }
     
     /**
@@ -250,46 +245,90 @@ public class DurationSequenceService {
         }
         
         AlbumMatchResult bestMatch = null;
+        AlbumDurationInfo bestCandidate = null;
         double bestSimilarity = 0.0;
-        double secondBestSimilarity = 0.0;
-        
+
         log.info("开始时长序列匹配 - 文件夹时长序列: {}", formatDurationSequence(folderDurations));
-        
+
+        List<ScoredCandidate> scores = new ArrayList<>();
         for (AlbumDurationInfo candidate : candidates) {
             // 使用DTW算法计算相似度(对额外曲目更宽容)
             double similarity = calculateSimilarityDTW(folderDurations, candidate.getDurations());
-            
+            scores.add(new ScoredCandidate(candidate, similarity));
+
             log.info("候选专辑: {} - {} ({}首曲目)", 
                 candidate.getAlbumTitle(), 
                 candidate.getAlbumArtist(),
                 candidate.getDurations().size());
             log.info("  时长序列: {}", formatDurationSequence(candidate.getDurations()));
             log.info("  相似度: {} ({})", String.format("%.2f", similarity), evaluateMatchQuality(similarity));
-            
+
             if (similarity > bestSimilarity) {
-                secondBestSimilarity = bestSimilarity;
                 bestSimilarity = similarity;
+                bestCandidate = candidate;
                 bestMatch = new AlbumMatchResult(candidate, similarity);
-            } else if (similarity > secondBestSimilarity) {
-                secondBestSimilarity = similarity;
             }
         }
 
-        double margin = bestSimilarity - secondBestSimilarity;
+        double rivalSimilarity = bestRivalScore(scores, bestCandidate);
+        double margin = Double.isInfinite(rivalSimilarity) ? Double.POSITIVE_INFINITY
+            : bestSimilarity - rivalSimilarity;
         // 检查原始 DTW 硬门槛和候选区分度
         if (bestMatch != null && bestSimilarity >= MIN_DURATION_SIMILARITY &&
-            (candidates.size() == 1 || margin >= MIN_BEST_MATCH_MARGIN)) {
+            margin >= MIN_BEST_MATCH_MARGIN) {
             log.info("✓ 选择最佳匹配: {} - {} (相似度: {})",
                 bestMatch.getAlbumInfo().getAlbumTitle(),
                 bestMatch.getAlbumInfo().getAlbumArtist(),
                 String.format("%.2f", bestSimilarity));
             return bestMatch;
         } else {
-            log.warn("未找到可信的匹配专辑 (最佳DTW: {}, 次佳DTW: {}, margin: {}, 硬门槛: {}, 最小margin: {})",
-                String.format("%.2f", bestSimilarity), String.format("%.2f", secondBestSimilarity),
-                String.format("%.2f", margin), String.format("%.2f", MIN_DURATION_SIMILARITY),
+            log.warn("未找到可信的匹配专辑 (最佳DTW: {}, 异专辑次佳DTW: {}, margin: {}, 硬门槛: {}, 最小margin: {})",
+                String.format("%.2f", bestSimilarity),
+                Double.isInfinite(rivalSimilarity) ? "N/A" : String.format("%.2f", rivalSimilarity),
+                Double.isInfinite(margin) ? "N/A" : String.format("%.2f", margin),
+                String.format("%.2f", MIN_DURATION_SIMILARITY),
                 String.format("%.2f", MIN_BEST_MATCH_MARGIN));
             return null;
+        }
+    }
+
+    /**
+     * 找出「与最佳候选属于**不同** Release Group」的最高得分。
+     *
+     * <p>候选列表是按 <b>Release</b> 而非 Release Group 展开的，同一张专辑的日版/美版/再版
+     * 时长序列完全一致、得分也完全一致。若直接拿全局次佳做 margin，热门专辑必然
+     * margin=0 而被误判为「歧义」。真正的歧义只发生在**不同专辑**之间。</p>
+     *
+     * @return 异专辑候选的最高得分；不存在异专辑候选时返回 {@link Double#NEGATIVE_INFINITY}
+     */
+    private double bestRivalScore(List<ScoredCandidate> scores, AlbumDurationInfo best) {
+        if (best == null) {
+            return Double.NEGATIVE_INFINITY;
+        }
+        String bestGroupId = best.getReleaseGroupId();
+        double rival = Double.NEGATIVE_INFINITY;
+        for (ScoredCandidate scored : scores) {
+            if (scored.candidate == best) {
+                continue;
+            }
+            // releaseGroupId 为空时无法证明同属一张专辑，保守地当作竞争对手。
+            boolean sameAlbum = bestGroupId != null
+                && bestGroupId.equals(scored.candidate.getReleaseGroupId());
+            if (!sameAlbum) {
+                rival = Math.max(rival, scored.score);
+            }
+        }
+        return rival;
+    }
+
+    /** 候选与其得分的配对。故意不用 Map：AlbumDurationInfo 是 @Data，值相等会误合并候选。 */
+    private static final class ScoredCandidate {
+        private final AlbumDurationInfo candidate;
+        private final double score;
+
+        ScoredCandidate(AlbumDurationInfo candidate, double score) {
+            this.candidate = candidate;
+            this.score = score;
         }
     }
     
@@ -313,8 +352,9 @@ public class DurationSequenceService {
         }
 
         AlbumMatchResult bestMatch = null;
+        AlbumDurationInfo bestCandidate = null;
         double bestCombinedScore = Double.NEGATIVE_INFINITY;
-        double secondBestCombinedScore = Double.NEGATIVE_INFINITY;
+        List<ScoredCandidate> scores = new ArrayList<>();
 
         log.info("开始时长序列匹配（含文件夹名称匹配和媒体格式匹配）");
         log.info("文件夹名称: {}", folderName);
@@ -373,19 +413,22 @@ public class DurationSequenceService {
                 String.format("%.2f", nameSimilarity),
                 String.format("%.2f", combinedScore));
 
+            scores.add(new ScoredCandidate(candidate, combinedScore));
+
             if (combinedScore > bestCombinedScore) {
-                secondBestCombinedScore = bestCombinedScore;
                 bestCombinedScore = combinedScore;
+                bestCandidate = candidate;
                 // 同时保留原始 DTW 分，供本层和上层做音频硬门槛判断
                 bestMatch = new AlbumMatchResult(candidate, combinedScore, durationSimilarity);
-            } else if (combinedScore > secondBestCombinedScore) {
-                secondBestCombinedScore = combinedScore;
             }
         }
 
-        double margin = candidates.size() == 1 ? Double.POSITIVE_INFINITY
-            : bestCombinedScore - secondBestCombinedScore;
-        // 名称/格式只负责排序；是否可自动决定只看原始 DTW 与 best-vs-second margin。
+        // margin 只在**不同 Release Group** 之间计算：同一张专辑的多个发行版本得分必然接近，
+        // 不应被当成「到底是哪张专辑」的歧义。
+        double rivalScore = bestRivalScore(scores, bestCandidate);
+        double margin = Double.isInfinite(rivalScore) ? Double.POSITIVE_INFINITY
+            : bestCombinedScore - rivalScore;
+        // 名称/格式只负责排序；是否可自动决定只看原始 DTW 与异专辑 margin。
         if (bestMatch != null && bestMatch.getDurationSimilarity() >= MIN_DURATION_SIMILARITY &&
             margin >= MIN_BEST_MATCH_MARGIN) {
             log.info("✓ 选择最佳匹配: {} - {} (综合得分: {}, 原始时长相似度: {}, 格式: {})",
@@ -396,7 +439,7 @@ public class DurationSequenceService {
                 bestMatch.getAlbumInfo().getMediaFormat());
             return bestMatch;
         } else {
-            log.warn("未找到可信的匹配专辑 (最佳综合分: {}, 原始DTW: {}, margin: {}, DTW硬门槛: {}, 最小margin: {})",
+            log.warn("未找到可信的匹配专辑 (最佳综合分: {}, 原始DTW: {}, 异专辑margin: {}, DTW硬门槛: {}, 最小margin: {})",
                 String.format("%.2f", bestCombinedScore),
                 bestMatch != null ? String.format("%.2f", bestMatch.getDurationSimilarity()) : "N/A",
                 Double.isInfinite(margin) ? "N/A" : String.format("%.2f", margin),
@@ -443,7 +486,7 @@ public class DurationSequenceService {
             return MediaFormat.DIGITAL;
         }
         if (hasFormatToken(upper, "VINYL") || hasFormatToken(upper, "LP") ||
-            upper.matches(".*(?:^|[\\s\\[\\(])12(?:\\\"|'')(?:$|[\\s\\]\\)]).*")) {
+            TWELVE_INCH.matcher(upper).find()) {
             return MediaFormat.VINYL;
         }
         if (hasFormatToken(upper, "CASSETTE") || hasFormatToken(upper, "TAPE")) {
@@ -453,11 +496,27 @@ public class DurationSequenceService {
         return MediaFormat.UNKNOWN;
     }
 
+    /**
+     * 判断名称里是否含有独立的格式 token，避免普通单词子串（如 "CLIP" 里的 LP）误触发。
+     *
+     * <p>token 后允许紧跟磟号/序号（{@code CD1}、{@code CD01}、{@code [CD2]}），token 前允许
+     * 紧跟数量前缀（{@code 2CD}、{@code 3LP}）——这些都是多碟发行最常见的写法，
+     * 不能因为“严格 token 边界”而漏认。</p>
+     */
     private boolean hasFormatToken(String value, String token) {
-        return java.util.regex.Pattern.compile(
-            "(?:^|[\\s\\[\\(\\{_\\-])" + java.util.regex.Pattern.quote(token) +
-            "(?:$|[\\s\\]\\)\\}_\\-])"
-        ).matcher(value).find();
+        return formatTokenPattern(token).matcher(value).find();
+    }
+
+    private static final java.util.Map<String, Pattern> FORMAT_TOKEN_PATTERNS = new ConcurrentHashMap<>();
+
+    private static final Pattern TWELVE_INCH =
+        Pattern.compile("(?:^|[\\s\\[\\(])12(?:\"|'')(?:$|[\\s\\]\\)])");
+
+    private static Pattern formatTokenPattern(String token) {
+        return FORMAT_TOKEN_PATTERNS.computeIfAbsent(token, t -> Pattern.compile(
+            "(?:^|[\\s\\[\\(\\{_\\-])\\d{0,2}" + Pattern.quote(t) +
+            "\\d{0,2}(?:$|[\\s\\]\\)\\}_\\-])"
+        ));
     }
     
     /**
@@ -679,14 +738,7 @@ public class DurationSequenceService {
             this.similarity = similarity;
             this.durationSimilarity = durationSimilarity;
             // 匹配质量必须反映音频证据，不能被名称/格式加分污染。
-            this.quality = evaluateQuality(durationSimilarity);
-        }
-        
-        private MatchQuality evaluateQuality(double similarity) {
-            if (similarity >= 0.95) return MatchQuality.EXCELLENT;
-            if (similarity >= 0.85) return MatchQuality.GOOD;
-            if (similarity >= 0.70) return MatchQuality.ACCEPTABLE;
-            return MatchQuality.POOR;
+            this.quality = MatchQuality.of(durationSimilarity);
         }
     }
     
@@ -698,7 +750,15 @@ public class DurationSequenceService {
         GOOD("良好"),
         ACCEPTABLE("可接受"),
         POOR("较差");
-        
+
+        /** 单一真相：质量分级只在这里定义，避免多处硬编码阀值不一致。 */
+        public static MatchQuality of(double durationSimilarity) {
+            if (durationSimilarity >= 0.95) return EXCELLENT;
+            if (durationSimilarity >= 0.85) return GOOD;
+            if (durationSimilarity >= MIN_DURATION_SIMILARITY) return ACCEPTABLE;
+            return POOR;
+        }
+
         private final String description;
         
         MatchQuality(String description) {

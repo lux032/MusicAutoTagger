@@ -146,11 +146,14 @@ public class AudioFileProcessorService {
             String folderPath = albumRootDir.getAbsolutePath();
             
             // 0.5.1 统计专辑根目录内音乐文件数量，并评估这个数字是否适合参与专辑匹配。
-            // count 始终可用于队列/样本规模控制；reliable=false 时禁止曲目数评分和快速锁定。
+            // count 始终可用于队列/样本规模控制；
+            //   reliable=false（hard）  -> 禁止曲目数参与评分与门槛
+            //   safeForFastLock=false     -> 仅禁用「第一文件立即锁定」这类激进优化
             FileSystemUtils.MusicFileCountResult musicFileCount =
                 fileSystemUtils.inspectMusicFilesInFolder(originalAudioFile);
             int musicFilesInFolder = musicFileCount.getCount();
             boolean musicFilesCountReliable = musicFileCount.isReliable();
+            boolean safeForFastLock = musicFileCount.isSafeForFastLock();
             
             // 0.6. 检测是否为散落在监控目录根目录的单个文件（保底处理）
             boolean isLooseFileInMonitorRoot = fileSystemUtils.isLooseFileInMonitorRoot(originalAudioFile);
@@ -284,7 +287,7 @@ public class AudioFileProcessorService {
                     // 立即执行时长序列匹配
                     FolderAlbumCache.CachedAlbumInfo determinedAlbum =
                         folderAlbumCache.determineAlbumWithDurationSequence(
-                            folderPath, allCandidates, musicFilesInFolder, musicFilesCountReliable);
+                            folderPath, allCandidates, musicFilesInFolder, safeForFastLock);
                     
                     if (determinedAlbum != null) {
                         // 时长序列匹配成功，设置到缓存中（尊重优先级）
@@ -334,6 +337,7 @@ public class AudioFileProcessorService {
                         // 必须失效重算，否则 pendingCount 永远追不上 remainingUnprocessed，
                         // 剩余待处理文件会一直挂到关机才被 flush。
                         folderUnprocessedCounts.remove(folderPath);
+                        fileSystemUtils.invalidateInspection(folderPath);
                     }
 
                     return ProcessResult.PERMANENT_FAIL; // 识别失败，不重试但记录
@@ -650,6 +654,7 @@ public class AudioFileProcessorService {
 
                     albumBatchProcessor.processPendingFilesWithAlbum(folderPath, determinedAlbum);
                     folderUnprocessedCounts.remove(folderPath);
+                    fileSystemUtils.invalidateInspection(folderPath);
                 } else {
                     log.info("专辑收集中，待处理文件已加入队列: {}", originalAudioFile.getName());
 
@@ -663,6 +668,7 @@ public class AudioFileProcessorService {
                             pendingCount, remainingUnprocessed, musicFilesInFolder);
                         albumBatchProcessor.forceProcessPendingFiles(folderPath, albumInfo);
                         folderUnprocessedCounts.remove(folderPath);
+                        fileSystemUtils.invalidateInspection(folderPath);
                     }
                 }
             }
@@ -788,6 +794,8 @@ public class AudioFileProcessorService {
         private final Map<String, AudioFormatNormalizer.NormalizationResult> results;
         private final List<File> orderedOriginalFiles;
         private List<Integer> durationSequence;
+        /** 有新文件加入、尚未重新排序。排序需读标签，延迟到真正需要有序列表时再做。 */
+        private boolean orderDirty;
 
         private FolderNormalizationPlan(Map<String, AudioFormatNormalizer.NormalizationResult> results,
                                         List<File> orderedOriginalFiles) {
@@ -811,13 +819,18 @@ public class AudioFileProcessorService {
             AudioFormatNormalizer.NormalizationResult result = normalizer.normalizeIfNeeded(originalFile);
             results.put(key, result);
             orderedOriginalFiles.add(originalFile);
-            AudioFileOrdering.sort(orderedOriginalFiles);
+            // 不在此处排序：本方法会被逐文件调用，每次都排序会退化为 O(n²) 级的标签读取。
+            orderDirty = true;
             durationSequence = null;
         }
 
         private List<Integer> getOrComputeDurationSequence(AudioFingerprintService fingerprintService) {
             if (durationSequence != null && !durationSequence.isEmpty()) {
                 return durationSequence;
+            }
+            if (orderDirty) {
+                AudioFileOrdering.sort(orderedOriginalFiles);
+                orderDirty = false;
             }
             List<File> processingFiles = new ArrayList<>(orderedOriginalFiles.size());
             for (File originalFile : orderedOriginalFiles) {

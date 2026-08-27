@@ -41,6 +41,16 @@ public class MusicBrainzClient {
     private static final int MAX_RETRIES = 3; // 最大重试次数
     private static final long RETRY_DELAY_MS = 10000; // 首次重试间隔10秒,之后指数退避
     private static final long MAX_RETRY_DELAY_MS = 60000; // 单次重试等待上限60秒
+
+    /** 候选发行版曲目数相对文件夹文件数的允许偏差比例 */
+    private static final double TRACK_COUNT_TOLERANCE_RATIO = 0.20;
+    /**
+     * 只有目录里至少有这么多音乐文件时，「文件数」才可能代表一张专辑的曲目数。
+     * 低于该值（典型为监控目录根部的散落单曲）时用它做门槛会把所有候选全部否掉。
+     */
+    private static final int MIN_FILES_FOR_TRACK_COUNT_GATE = 3;
+    /** 浮点评分比较容差，避免用 == 判断「同分」导致 tie-break 规则形同虚设 */
+    private static final double SCORE_EPSILON = 1e-9;
     
     public MusicBrainzClient(MusicConfig config) {
         this.config = config;
@@ -1231,36 +1241,55 @@ public class MusicBrainzClient {
         JsonNode bestRelease = null;
         double bestScore = Double.NEGATIVE_INFINITY;
 
-        if (!musicFilesCountReliable) {
-            log.warn("文件夹曲目数不可靠，禁用基于曲目数的专辑猜测");
-            return null;
-        }
+        // 曲目数只有在「输入可靠」且「确实是一个专辑规模的目录」时才能约束候选。
+        // 监控目录根部的散落单文件（本分支唯一的调用场景）里，musicFilesInFolder 表示的是
+        // 根目录下有多少个互不相关的文件，用它做门槛会把所有候选全部否掉，等于关闭随缘模式。
+        boolean trackCountUsable = musicFilesCountReliable
+            && musicFilesInFolder >= MIN_FILES_FOR_TRACK_COUNT_GATE;
 
-        log.info("开始选择最佳专辑版本（文件夹内{}个文件），曲目数仅作为加权评分而非硬主键", musicFilesInFolder);
+        if (trackCountUsable) {
+            log.info("开始选择最佳专辑版本（文件夹内{}个文件），曲目数作为加权评分与可信度门槛", musicFilesInFolder);
+        } else {
+            log.info("开始选择最佳专辑版本（文件夹内{}个文件，曲目数不可用于约束），仅按发行类型/媒体格式评分",
+                musicFilesInFolder);
+        }
 
         for (JsonNode release : releases) {
             int trackCount = calculateTrackCount(release);
-            if (!isTrackCountPlausible(trackCount, musicFilesInFolder)) {
-                int trackCountDiff = trackCount > 0 && musicFilesInFolder > 0
-                    ? Math.abs(trackCount - musicFilesInFolder) : -1;
+            if (trackCountUsable && !isTrackCountPlausible(trackCount, musicFilesInFolder)) {
+                int trackCountDiff = trackCount > 0 ? Math.abs(trackCount - musicFilesInFolder) : -1;
                 log.debug("跳过曲目数不可信的候选: {} (候选{}首, 文件夹{}首, 差异{})",
                     release.path("title").asText(), trackCount, musicFilesInFolder, trackCountDiff);
                 continue;
             }
 
-            double currentScore = calculateReleaseScore(release, musicFilesInFolder);
-            if (currentScore > bestScore) {
+            double currentScore = calculateReleaseScore(release, musicFilesInFolder, trackCountUsable);
+            if (currentScore > bestScore + SCORE_EPSILON) {
                 bestRelease = release;
                 bestScore = currentScore;
                 log.debug("选择综合评分更高的专辑: {} (评分: {}, {}首 vs 文件夹{}首)",
                     release.path("title").asText(), String.format("%.2f", currentScore),
                     trackCount, musicFilesInFolder);
-            } else if (Double.compare(currentScore, bestScore) == 0 && bestRelease != null) {
-                // 综合评分相同，优先选择发行时间早的版本，保证选择稳定。
+            } else if (bestRelease != null && Math.abs(currentScore - bestScore) <= SCORE_EPSILON) {
+                // 综合评分基本相同，优先选择发行时间早的版本，保证选择稳定。
                 String date1 = bestRelease.path("date").asText("");
                 String date2 = release.path("date").asText("");
                 if (!date2.isEmpty() && (date1.isEmpty() || date2.compareTo(date1) < 0)) {
                     bestRelease = release;
+                    bestScore = Math.max(bestScore, currentScore);
+                }
+            }
+        }
+
+        // 曲目数门槛把所有候选都筛掉时，不能直接放弃：这是「允许猜测」的场景，
+        // 退化为不看曲目数重新挑一次，仍然优于返回 null 让上层完全失去专辑信息。
+        if (bestRelease == null && trackCountUsable) {
+            log.warn("没有候选通过曲目数可信度门槛，降级为仅按发行类型/媒体格式重新选择");
+            for (JsonNode release : releases) {
+                double currentScore = calculateReleaseScore(release, musicFilesInFolder, false);
+                if (currentScore > bestScore + SCORE_EPSILON) {
+                    bestRelease = release;
+                    bestScore = currentScore;
                 }
             }
         }
@@ -1320,7 +1349,7 @@ public class MusicBrainzClient {
         }
         
         if (bestRelease == null) {
-            log.warn("允许猜测专辑，但没有候选通过曲目数可信度门槛");
+            log.warn("允许猜测专辑，但候选列表为空或全部不可用");
         }
         return bestRelease;
     }
@@ -1329,49 +1358,82 @@ public class MusicBrainzClient {
         if (trackCount <= 0 || musicFilesInFolder <= 0) {
             return false;
         }
-        int maxDifference = Math.max(2, (int) Math.ceil(musicFilesInFolder * 0.20));
-        return Math.abs(trackCount - musicFilesInFolder) <= maxDifference;
+        return Math.abs(trackCount - musicFilesInFolder) <= allowedTrackCountDiff(musicFilesInFolder);
+    }
+
+    private int allowedTrackCountDiff(int musicFilesInFolder) {
+        return Math.max(2, (int) Math.ceil(musicFilesInFolder * TRACK_COUNT_TOLERANCE_RATIO));
     }
 
     /**
-     * 从 release 的 media 中计算音频曲目数。视频 medium/track 与时长序列使用相同口径排除。
+     * 计算 release 的音频曲目数，口径与 {@code getReleaseDurationSequence()} 保持一致：
+     * 排除 DVD/Blu-ray/VHS 等视频 medium，以及 {@code recording.video=true} 的曲目。
+     *
+     * <p><b>重要</b>：recording lookup（{@code /recording/{id}?inc=releases+media}）返回的
+     * {@code media} 数组**只包含含有该 recording 的那张碟**，而顶层 {@code track-count}
+     * 才是整个 release 的总曲目数。若此时按 media 求和，一张 2CD/24 轨的专辑会被算成
+     * 单碟的 12 轨，进而被曲目数门槛整体否掉。因此这里通过
+     * 「顶层声明数 &gt; media 原始求和」来识别 media 被裁剪的情况并回落到顶层数值。</p>
      */
     private int calculateTrackCount(JsonNode release) {
         JsonNode media = release.path("media");
+        int declaredTotal = release.path("track-count").asInt(0);
+
         if (!media.isArray() || media.isEmpty()) {
-            return release.path("track-count").asInt(0);
+            return declaredTotal;
         }
 
-        int totalTracks = 0;
+        int rawMediaTotal = 0;  // 含视频，仅用于判断 media 是否被裁剪
+        int audioTotal = 0;     // 已排除视频 medium / video track
         for (JsonNode medium : media) {
-            String format = medium.path("format").asText("").toLowerCase();
-            if (isVideoFormat(format)) {
+            rawMediaTotal += countTracksInMedium(medium, false);
+            if (isVideoFormat(medium.path("format").asText("").toLowerCase())) {
                 continue;
             }
-
-            JsonNode tracks = medium.path("tracks");
-            if (tracks.isArray() && !tracks.isEmpty()) {
-                for (JsonNode track : tracks) {
-                    if (!track.path("recording").path("video").asBoolean(false)) {
-                        totalTracks++;
-                    }
-                }
-            } else {
-                totalTracks += medium.path("track-count").asInt(0);
-            }
+            audioTotal += countTracksInMedium(medium, true);
         }
-        return totalTracks;
+
+        if (declaredTotal > rawMediaTotal) {
+            log.debug("release {} 的 media 被裁剪（media 求和 {} < 顶层 track-count {}），改用顶层曲目数",
+                release.path("id").asText(""), rawMediaTotal, declaredTotal);
+            return declaredTotal;
+        }
+        return audioTotal;
+    }
+
+    /**
+     * @param excludeVideoTracks 为 true 时跳过 {@code recording.video=true} 的曲目
+     *                           （仅在 medium 展开了 tracks 数组时才可能生效）
+     */
+    private int countTracksInMedium(JsonNode medium, boolean excludeVideoTracks) {
+        JsonNode tracks = medium.path("tracks");
+        if (tracks.isArray() && !tracks.isEmpty()) {
+            int count = 0;
+            for (JsonNode track : tracks) {
+                if (excludeVideoTracks && track.path("recording").path("video").asBoolean(false)) {
+                    continue;
+                }
+                count++;
+            }
+            return count;
+        }
+        return medium.path("track-count").asInt(0);
     }
 
     /**
      * 计算统一量纲的发行评分（0-100 左右）。曲目数、类型、媒体格式分别占 60/30/10，
      * 避免曲目数既做硬主键又重复以魔数档位计分。
      */
-    private double calculateReleaseScore(JsonNode release, int musicFilesInFolder) {
-        int trackCount = calculateTrackCount(release);
-        int trackDiff = Math.abs(trackCount - musicFilesInFolder);
-        int allowedDiff = Math.max(2, (int) Math.ceil(musicFilesInFolder * 0.20));
-        double trackScore = 60.0 * Math.max(0.0, 1.0 - (double) trackDiff / (allowedDiff + 1));
+    private double calculateReleaseScore(JsonNode release, int musicFilesInFolder, boolean trackCountUsable) {
+        // 曲目数不可用时该维度整体缺席，而不是给 0 分——否则所有候选被同等压低，
+        // 排序完全由 type/media 决定的同时还平白丢掉了区分度。
+        double trackScore = 0.0;
+        if (trackCountUsable) {
+            int trackCount = calculateTrackCount(release);
+            int trackDiff = Math.abs(trackCount - musicFilesInFolder);
+            int allowedDiff = allowedTrackCountDiff(musicFilesInFolder);
+            trackScore = 60.0 * Math.max(0.0, 1.0 - (double) trackDiff / (allowedDiff + 1));
+        }
 
         JsonNode releaseGroup = release.path("release-group");
         String type = releaseGroup.path("primary-type").asText("").toLowerCase();
@@ -1738,9 +1800,12 @@ public class MusicBrainzClient {
         log.info("锁定专辑: {} (Release Group ID: {})", lockedAlbumTitle, releaseGroupId);
         log.info("文件时长: {}秒，文件夹内 {} 个音乐文件", fileDurationSeconds, musicFilesInFolder);
 
-        if (!musicFilesCountReliable) {
-            log.warn("文件夹曲目数不可靠，无法仅凭 Release Group 安全选择具体 Release");
-            return null;
+        // 专辑（Release Group）已由其他证据锁定，这里只是选具体版本。
+        // 曲目数不可靠时应降级为「只看媒体格式评分」，而不是直接放弃整首曲目的元数据。
+        boolean trackCountUsable = musicFilesCountReliable
+            && musicFilesInFolder >= MIN_FILES_FOR_TRACK_COUNT_GATE;
+        if (!trackCountUsable) {
+            log.info("文件夹曲目数不可用于选版，降级为仅按媒体格式（CD/Digital 优先）选择 Release");
         }
 
         // 1. 获取 Release Group 的所有 Releases
@@ -1758,24 +1823,34 @@ public class MusicBrainzClient {
                 return null;
             }
             
-            log.info("Release Group {} 共有 {} 个 releases，选择曲目数最接近 {} 的版本",
-                releaseGroupId, releases.size(), musicFilesInFolder);
-            
-            // 2. 选择最佳的 Release（曲目数最接近文件夹内文件数量）
+            log.info("Release Group {} 共有 {} 个 releases（{}）",
+                releaseGroupId, releases.size(),
+                trackCountUsable ? "选择曲目数最接近 " + musicFilesInFolder + " 的版本" : "仅按媒体格式选版");
+
+            // 2. 选择最佳的 Release
             JsonNode bestRelease = null;
             int bestTrackCountDiff = Integer.MAX_VALUE;
             int bestScore = -1;
-            
+
             for (JsonNode release : releases) {
-                int trackCount = calculateTrackCount(release);
-                int trackCountDiff = Math.abs(trackCount - musicFilesInFolder);
                 int score = scoreReleaseForDuration(release);
-                
+
                 // 跳过视频格式
                 if (score < 0) {
                     continue;
                 }
-                
+
+                if (!trackCountUsable) {
+                    if (score > bestScore) {
+                        bestRelease = release;
+                        bestScore = score;
+                    }
+                    continue;
+                }
+
+                int trackCount = calculateTrackCount(release);
+                int trackCountDiff = Math.abs(trackCount - musicFilesInFolder);
+
                 // 优先选择曲目数最接近的
                 if (trackCountDiff < bestTrackCountDiff) {
                     bestRelease = release;

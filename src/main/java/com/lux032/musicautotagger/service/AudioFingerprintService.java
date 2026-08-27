@@ -158,18 +158,21 @@ public class AudioFingerprintService {
             try {
                 int duration = extractDuration(audioFile);
                 if (duration <= 0) {
-                    log.warn("提取到无效时长，整段序列作废以避免曲序错位: {}", audioFile.getName());
+                    log.warn("提取到无效时长，整段序列作废以避免曲序错位 ({}/{}): {}",
+                        durations.size() + 1, audioFiles.size(), audioFile.getName());
                     return new ArrayList<>();
                 }
                 durations.add(duration);
             } catch (Exception e) {
                 // 不能 continue：静默少一个元素会让后续所有时长与官方曲序错位，产生高风险误匹配。
-                log.warn("提取时长失败，整段序列作废: {} - {}", audioFile.getName(), e.getMessage());
+                log.warn("提取时长失败，整段序列作废 ({}/{}): {} - {}",
+                    durations.size() + 1, audioFiles.size(), audioFile.getName(), e.getMessage());
                 return new ArrayList<>();
             }
         }
 
-        log.info("完成时长序列提取 - 成功: {}/{}", durations.size(), audioFiles.size());
+        // 走到这里说明全部成功（任何失败都已提前 return）
+        log.info("完成时长序列提取 - {} 个文件全部成功", durations.size());
 
         return durations;
     }
