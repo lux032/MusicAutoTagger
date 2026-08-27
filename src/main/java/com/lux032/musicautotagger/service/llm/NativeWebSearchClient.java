@@ -92,7 +92,7 @@ public class NativeWebSearchClient {
         JsonArray tools = new JsonArray();
         JsonObject tool = new JsonObject(); tool.addProperty("type", "web_search_preview"); tools.add(tool);
         body.add("tools", tools);
-        body.addProperty("max_output_tokens", config.getLlmMaxTokens());
+        body.addProperty("max_output_tokens", config.getLlmWebSearchMaxTokens());
 
         JsonObject json = send(url, key, null, body);
         SearchResponse result = base(index, "openai", model);
@@ -125,7 +125,7 @@ public class NativeWebSearchClient {
                                          String systemPrompt, String userPrompt) throws Exception {
         JsonObject body = new JsonObject();
         body.addProperty("model", model);
-        body.addProperty("max_tokens", config.getLlmMaxTokens());
+        body.addProperty("max_tokens", config.getLlmWebSearchMaxTokens());
         body.addProperty("system", systemPrompt);
         JsonArray tools = new JsonArray();
         JsonObject tool = new JsonObject();
@@ -165,7 +165,7 @@ public class NativeWebSearchClient {
 
     private JsonObject send(String url, String key, String provider, JsonObject body) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
-            .timeout(Duration.ofSeconds(Math.max(30, config.getLlmTimeoutSeconds())))
+            .timeout(Duration.ofSeconds(config.getLlmWebSearchTimeoutSeconds()))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)));
         if ("anthropic".equals(provider)) {

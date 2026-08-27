@@ -30,6 +30,8 @@ public class RecoveryServlet extends HttpServlet {
                 "onlineSearchAvailable", recoveryService.isOnlineSearchAvailable()));
         } else if ("jobs".equals(action)) {
             respond(resp, 200, Map.of("jobs", recoveryService.listJobs()));
+        } else if ("trash".equals(action)) {
+            respond(resp, 200, Map.of("items", recoveryService.listTrash()));
         } else {
             respond(resp, 404, Map.of("error", "unknown.action"));
         }
@@ -41,7 +43,23 @@ public class RecoveryServlet extends HttpServlet {
             respond(resp, 403, Map.of("error", "csrf.invalid"));
             return;
         }
-        if (!"retry".equals(action(req))) {
+        String action = action(req);
+        if ("trash-restore".equals(action) || "trash-delete".equals(action)) {
+            String id = str(readBody(req).get("id"));
+            try {
+                if ("trash-restore".equals(action)) {
+                    recoveryService.restoreFromTrash(id);
+                } else {
+                    recoveryService.deleteFromTrash(id);
+                }
+                respond(resp, 200, Map.of("success", true));
+            } catch (IOException e) {
+                String message = e.getMessage() == null ? "trash.operation.failed" : e.getMessage();
+                respond(resp, "trash.entry.not.found".equals(message) ? 404 : 400, Map.of("error", message));
+            }
+            return;
+        }
+        if (!"retry".equals(action)) {
             respond(resp, 404, Map.of("error", "unknown.action"));
             return;
         }

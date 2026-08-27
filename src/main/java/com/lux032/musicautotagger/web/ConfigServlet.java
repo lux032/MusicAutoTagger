@@ -103,6 +103,20 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("llmApiUrl", "llm.apiUrl"),
             Map.entry("llmModel", "llm.model"),
             Map.entry("llmWebSearchEnabled", "llm.webSearchEnabled"),
+            Map.entry("llmProvider", "llm.provider"),
+            Map.entry("llmMaxTokens", "llm.maxTokens"),
+            Map.entry("llmTemperature", "llm.temperature"),
+            Map.entry("llmTimeoutSeconds", "llm.timeoutSeconds"),
+            Map.entry("llmMaxRetries", "llm.maxRetries"),
+            Map.entry("llmWebSearchMaxTokens", "llm.webSearch.maxTokens"),
+            Map.entry("llmWebSearchTimeoutSeconds", "llm.webSearch.timeoutSeconds"),
+            Map.entry("llmAlbumJudgeEnabled", "llm.album.judge.enabled"),
+            Map.entry("llmAlbumAutoApply", "llm.album.autoApply"),
+            Map.entry("llmAlbumAutoApplyMinConfidence", "llm.album.autoApplyMinConfidence"),
+            Map.entry("partialRequireReadableTags", "file.partial.requireReadableTags"),
+            Map.entry("partialMinTagCoverage", "file.partial.minTagCoverage"),
+            Map.entry("reviewQueuePath", "review.queuePath"),
+            Map.entry("reviewStagingDirectory", "review.stagingDirectory"),
             Map.entry("recoveryWorkDirectory", "recovery.workDirectory"),
             Map.entry("recoveryTrashDirectory", "recovery.trashDirectory"),
             Map.entry("recoveryTrashRetentionDays", "recovery.trash.retentionDays")
@@ -200,6 +214,20 @@ public class ConfigServlet extends HttpServlet {
         handleString(body, updates, propertyUpdates, "llmApiUrl", false);
         handleString(body, updates, propertyUpdates, "llmModel", false);
         handleString(body, updates, propertyUpdates, "llmWebSearchEnabled", false);
+        handleString(body, updates, propertyUpdates, "llmProvider", false);
+        handleInteger(body, updates, propertyUpdates, "llmMaxTokens");
+        handleDouble(body, updates, propertyUpdates, "llmTemperature");
+        handleInteger(body, updates, propertyUpdates, "llmTimeoutSeconds");
+        handleInteger(body, updates, propertyUpdates, "llmMaxRetries");
+        handleInteger(body, updates, propertyUpdates, "llmWebSearchMaxTokens");
+        handleInteger(body, updates, propertyUpdates, "llmWebSearchTimeoutSeconds");
+        handleBoolean(body, updates, propertyUpdates, "llmAlbumJudgeEnabled");
+        handleBoolean(body, updates, propertyUpdates, "llmAlbumAutoApply");
+        handleDouble(body, updates, propertyUpdates, "llmAlbumAutoApplyMinConfidence");
+        handleBoolean(body, updates, propertyUpdates, "partialRequireReadableTags");
+        handleDouble(body, updates, propertyUpdates, "partialMinTagCoverage");
+        handleString(body, updates, propertyUpdates, "reviewQueuePath", false);
+        handleString(body, updates, propertyUpdates, "reviewStagingDirectory", false);
         handleString(body, updates, propertyUpdates, "recoveryWorkDirectory", false);
         handleString(body, updates, propertyUpdates, "recoveryTrashDirectory", false);
         handleInteger(body, updates, propertyUpdates, "recoveryTrashRetentionDays");
@@ -287,6 +315,20 @@ public class ConfigServlet extends HttpServlet {
         data.put("llmWebSearchEnabled", config.getLlmWebSearchEnabled() == null ? null
             : config.getLlmWebSearchEnabled().stream().map(String::valueOf)
                 .collect(java.util.stream.Collectors.joining(",")));
+        data.put("llmProvider", config.getLlmProvider());
+        data.put("llmMaxTokens", config.getLlmMaxTokens());
+        data.put("llmTemperature", config.getLlmTemperature());
+        data.put("llmTimeoutSeconds", config.getLlmTimeoutSeconds());
+        data.put("llmMaxRetries", config.getLlmMaxRetries());
+        data.put("llmWebSearchMaxTokens", config.getLlmWebSearchMaxTokens());
+        data.put("llmWebSearchTimeoutSeconds", config.getLlmWebSearchTimeoutSeconds());
+        data.put("llmAlbumJudgeEnabled", config.isLlmAlbumJudgeEnabled());
+        data.put("llmAlbumAutoApply", config.isLlmAlbumAutoApply());
+        data.put("llmAlbumAutoApplyMinConfidence", config.getLlmAlbumAutoApplyMinConfidence());
+        data.put("partialRequireReadableTags", config.isPartialRequireReadableTags());
+        data.put("partialMinTagCoverage", config.getPartialMinTagCoverage());
+        data.put("reviewQueuePath", config.getReviewQueuePath());
+        data.put("reviewStagingDirectory", config.getReviewStagingDirectory());
         data.put("recoveryWorkDirectory", config.getRecoveryWorkDirectory());
         data.put("recoveryTrashDirectory", config.getRecoveryTrashDirectory());
         data.put("recoveryTrashRetentionDays", config.getRecoveryTrashRetentionDays());
@@ -502,6 +544,51 @@ public class ConfigServlet extends HttpServlet {
             List<Boolean> flags = (List<Boolean>) updates.get("llmWebSearchEnabled");
             config.setLlmWebSearchEnabled(flags);
         }
+        // 这些字段走直接 setter，不经过配置文件加载时的 parseIntInRange，因此在这里钳制
+        if (updates.containsKey("llmProvider")) {
+            String provider = (String) updates.get("llmProvider");
+            config.setLlmProvider(provider == null || provider.isBlank() ? "auto" : provider.trim());
+        }
+        if (updates.containsKey("llmMaxTokens")) {
+            config.setLlmMaxTokens(clamp((Integer) updates.get("llmMaxTokens"), 1, 32000));
+        }
+        if (updates.containsKey("llmTemperature")) {
+            config.setLlmTemperature(clamp((Double) updates.get("llmTemperature"), 0.0, 2.0));
+        }
+        if (updates.containsKey("llmTimeoutSeconds")) {
+            config.setLlmTimeoutSeconds(clamp((Integer) updates.get("llmTimeoutSeconds"), 5, 600));
+        }
+        if (updates.containsKey("llmMaxRetries")) {
+            config.setLlmMaxRetries(clamp((Integer) updates.get("llmMaxRetries"), 0, 10));
+        }
+        if (updates.containsKey("llmWebSearchMaxTokens")) {
+            config.setLlmWebSearchMaxTokens(clamp((Integer) updates.get("llmWebSearchMaxTokens"), 256, 32000));
+        }
+        if (updates.containsKey("llmWebSearchTimeoutSeconds")) {
+            config.setLlmWebSearchTimeoutSeconds(clamp((Integer) updates.get("llmWebSearchTimeoutSeconds"), 30, 900));
+        }
+        if (updates.containsKey("llmAlbumJudgeEnabled")) {
+            config.setLlmAlbumJudgeEnabled((Boolean) updates.get("llmAlbumJudgeEnabled"));
+        }
+        if (updates.containsKey("llmAlbumAutoApply")) {
+            config.setLlmAlbumAutoApply((Boolean) updates.get("llmAlbumAutoApply"));
+        }
+        if (updates.containsKey("llmAlbumAutoApplyMinConfidence")) {
+            config.setLlmAlbumAutoApplyMinConfidence(
+                clamp((Double) updates.get("llmAlbumAutoApplyMinConfidence"), 0.0, 1.0));
+        }
+        if (updates.containsKey("partialRequireReadableTags")) {
+            config.setPartialRequireReadableTags((Boolean) updates.get("partialRequireReadableTags"));
+        }
+        if (updates.containsKey("partialMinTagCoverage")) {
+            config.setPartialMinTagCoverage(clamp((Double) updates.get("partialMinTagCoverage"), 0.0, 1.0));
+        }
+        if (updates.containsKey("reviewQueuePath")) {
+            config.setReviewQueuePath((String) updates.get("reviewQueuePath"));
+        }
+        if (updates.containsKey("reviewStagingDirectory")) {
+            config.setReviewStagingDirectory((String) updates.get("reviewStagingDirectory"));
+        }
         if (updates.containsKey("recoveryWorkDirectory")) {
             config.setRecoveryWorkDirectory((String) updates.get("recoveryWorkDirectory"));
         }
@@ -631,6 +718,42 @@ public class ConfigServlet extends HttpServlet {
         }
         updates.put(field, value);
         setPropertyUpdate(propertyUpdates, field, String.valueOf(value));
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private void handleDouble(Map<String, Object> body, Map<String, Object> updates,
+                              Map<String, String> propertyUpdates, String field) throws IOException {
+        if (!body.containsKey(field)) {
+            return;
+        }
+        Double value = asDouble(body.get(field));
+        if (value == null) {
+            return;
+        }
+        updates.put(field, value);
+        setPropertyUpdate(propertyUpdates, field, String.valueOf(value));
+    }
+
+    private Double asDouble(Object value) throws IOException {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        try {
+            return Double.parseDouble(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            throwValidation("number.invalid", null);
+            return null;
+        }
     }
 
     private void handleInteger(Map<String, Object> body, Map<String, Object> updates,

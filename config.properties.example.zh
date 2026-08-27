@@ -332,6 +332,12 @@ llm.album.autoApplyMinConfidence=0.85
 # 只有明确设置为 true 的端点才参与联网辅助识别。
 llm.webSearchEnabled=false
 
+# 联网搜索的输出上限，特意与 llm.maxTokens 分开：搜索要返回最多 5 个候选，
+# 每个带完整曲目表与来源 URL，600 token 会把 JSON 截断导致解析失败。范围 256..32000
+llm.webSearch.maxTokens=4000
+# 联网搜索超时（秒）。搜索本身就要几十秒，且可能执行两轮。范围 30..900
+llm.webSearch.timeoutSeconds=180
+
 # 恢复任务原子工作目录；留空时默认使用 {outputDirectory}/.recovery-work
 recovery.workDirectory=
 # 恢复回收站：0=立即删除，-1=永久保留，1..365=保留天数

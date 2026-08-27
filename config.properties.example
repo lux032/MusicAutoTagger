@@ -378,6 +378,14 @@ llm.album.autoApplyMinConfidence=0.85
 # OpenAI endpoints must support Responses API web_search; Anthropic endpoints must support Web Search Tool.
 llm.webSearchEnabled=false
 
+# Web search output budget. Deliberately separate from llm.maxTokens: search returns up to
+# 5 candidates each with a full tracklist and source URLs, and 600 tokens truncates the JSON.
+# Range 256..32000
+llm.webSearch.maxTokens=4000
+# Web search timeout in seconds. Search itself takes tens of seconds and may run two rounds.
+# Range 30..900
+llm.webSearch.timeoutSeconds=180
+
 # Recovery atomic workspace. Empty defaults to {outputDirectory}/.recovery-work
 recovery.workDirectory=
 # Recovery trash directory and retention: 0=delete immediately, -1=keep forever, 1..365 days

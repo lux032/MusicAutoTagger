@@ -158,6 +158,93 @@ public class RecoveryService implements AutoCloseable {
         return onlineIdentificationService.isAvailable();
     }
 
+    /** 回收站条目列表，按入站时间倒序。 */
+    public List<Map<String, Object>> listTrash() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        Path root = trashRoot();
+        if (!Files.isDirectory(root)) return result;
+        try (var stream = Files.list(root)) {
+            for (Path path : stream.toList()) {
+                if (path.getFileName().toString().endsWith(".json")) continue;
+                Map<String, Object> entry = new LinkedHashMap<>();
+                String sourceType = null;
+                String relativePath = null;
+                Path manifest = path.resolveSibling(path.getFileName() + ".json");
+                if (Files.isRegularFile(manifest)) {
+                    try {
+                        JsonObject json = gson.fromJson(Files.readString(manifest), JsonObject.class);
+                        if (json != null) {
+                            if (json.has("sourceType")) sourceType = json.get("sourceType").getAsString();
+                            if (json.has("relativePath")) relativePath = json.get("relativePath").getAsString();
+                        }
+                    } catch (Exception ignored) {
+                        // manifest 损坏时仍然列出条目，只是无法自动恢复
+                    }
+                }
+                List<File> audioFiles = collectAudioFiles(path.toFile());
+                entry.put("id", path.getFileName().toString());
+                entry.put("sourceType", sourceType);
+                entry.put("relativePath", relativePath);
+                entry.put("restorable", sourceType != null && relativePath != null);
+                entry.put("trashedAt", trashedAt(path));
+                entry.put("fileCount", audioFiles.size());
+                entry.put("path", path.toAbsolutePath().toString());
+                result.add(entry);
+            }
+        } catch (Exception e) {
+            log.warn("列出回收站失败: {}", e.getMessage());
+        }
+        result.sort(Comparator.comparingLong(m -> -((Number) m.get("trashedAt")).longValue()));
+        return result;
+    }
+
+    /**
+     * 把回收站条目恢复回原隔离目录。
+     * 只搬回隔离副本，<b>不会删除已经生成的输出目录</b>；
+     * 原路径已存在时直接拒绝，避免覆盖用户后来放回去的文件。
+     */
+    public synchronized void restoreFromTrash(String id) throws IOException {
+        Path entry = resolveTrashEntry(id);
+        Path manifest = entry.resolveSibling(entry.getFileName() + ".json");
+        if (!Files.isRegularFile(manifest)) throw new IOException("trash.manifest.missing");
+
+        String sourceType;
+        String relativePath;
+        try {
+            JsonObject json = gson.fromJson(Files.readString(manifest), JsonObject.class);
+            sourceType = json.get("sourceType").getAsString();
+            relativePath = json.get("relativePath").getAsString();
+        } catch (Exception e) {
+            throw new IOException("trash.manifest.invalid", e);
+        }
+
+        File target = resolveItem(SourceType.valueOf(sourceType), relativePath);
+        if (target.exists()) throw new IOException("trash.restore.target.exists");
+        Files.createDirectories(target.toPath().getParent());
+        Files.move(entry, target.toPath());
+        Files.deleteIfExists(manifest);
+        LogCollector.addLog("SUCCESS", "已从回收站恢复: " + relativePath + " → " + sourceType);
+    }
+
+    /** 立即彻底删除回收站条目。 */
+    public synchronized void deleteFromTrash(String id) throws IOException {
+        Path entry = resolveTrashEntry(id);
+        deleteRecursively(entry);
+        Files.deleteIfExists(entry.resolveSibling(entry.getFileName() + ".json"));
+        LogCollector.addLog("WARN", "已删除回收站条目: " + id);
+    }
+
+    /** 挡住 id 里的路径穿越，只允许操作回收站根下的直接子项。 */
+    private Path resolveTrashEntry(String id) throws IOException {
+        if (id == null || id.isBlank()) throw new IOException("trash.id.required");
+        if (id.endsWith(".json")) throw new IOException("trash.id.invalid");
+        Path root = trashRoot().toAbsolutePath().normalize();
+        Path entry = root.resolve(id).toAbsolutePath().normalize();
+        if (!entry.getParent().equals(root)) throw new IOException("trash.id.invalid");
+        if (!Files.exists(entry)) throw new IOException("trash.entry.not.found");
+        return entry;
+    }
+
     /** 用户确认联网候选后，在工作目录完成整张处理，再整体提交。 */
     public synchronized ReviewItem confirmOnlineCandidate(String itemId, String candidateId,
                                                            String albumTitle, String albumArtist,

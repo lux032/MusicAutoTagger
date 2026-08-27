@@ -124,6 +124,17 @@ public class MusicConfig {
     /** album / tracknumber 的最低覆盖率 */
     private double partialMinTagCoverage;
 
+    // 联网搜索专用调用参数
+    /**
+     * 联网搜索的输出上限，不复用 llm.maxTokens。
+     * 后者默认 600 是为「艺术家名匹配」这类短回答定的，
+     * 而搜索要返回最多 5 个候选、每个带完整曲目表与来源 URL，
+     * 600 token 会直接截断 JSON 导致解析失败。
+     */
+    private int llmWebSearchMaxTokens;
+    /** 联网搜索超时；搜索本身就要几十秒，比普通调用需要更宽的窗口 */
+    private int llmWebSearchTimeoutSeconds;
+
     // 恢复与联网辅助识别
     /** 原子归档工作目录；空值时使用 outputDirectory/.recovery-work */
     private String recoveryWorkDirectory;
@@ -204,6 +215,9 @@ public class MusicConfig {
         // 部分识别准入默认值：封面 + 标签可读性双门槛
         this.partialRequireReadableTags = true;
         this.partialMinTagCoverage = 0.8;
+
+        this.llmWebSearchMaxTokens = 4000;
+        this.llmWebSearchTimeoutSeconds = 180;
 
         this.recoveryWorkDirectory = null;
         this.recoveryTrashRetentionDays = 7;
@@ -476,6 +490,16 @@ public class MusicConfig {
                 this.llmMaxRetries = parseIntInRange(
                     props.getProperty("llm.maxRetries"), this.llmMaxRetries, 0, 10, "llm.maxRetries");
             }
+            if (props.containsKey("llm.webSearch.maxTokens")) {
+                this.llmWebSearchMaxTokens = parseIntInRange(
+                    props.getProperty("llm.webSearch.maxTokens"),
+                    this.llmWebSearchMaxTokens, 256, 32000, "llm.webSearch.maxTokens");
+            }
+            if (props.containsKey("llm.webSearch.timeoutSeconds")) {
+                this.llmWebSearchTimeoutSeconds = parseIntInRange(
+                    props.getProperty("llm.webSearch.timeoutSeconds"),
+                    this.llmWebSearchTimeoutSeconds, 30, 900, "llm.webSearch.timeoutSeconds");
+            }
 
             // 加载 LLM 专辑判定配置（阶段七 #22）
             if (props.containsKey("llm.album.judge.enabled")) {
@@ -675,6 +699,8 @@ public class MusicConfig {
         props.setProperty("llm.album.autoApplyMinConfidence", String.valueOf(llmAlbumAutoApplyMinConfidence));
         props.setProperty("file.partial.requireReadableTags", String.valueOf(partialRequireReadableTags));
         props.setProperty("file.partial.minTagCoverage", String.valueOf(partialMinTagCoverage));
+        props.setProperty("llm.webSearch.maxTokens", String.valueOf(llmWebSearchMaxTokens));
+        props.setProperty("llm.webSearch.timeoutSeconds", String.valueOf(llmWebSearchTimeoutSeconds));
         if (recoveryWorkDirectory != null && !recoveryWorkDirectory.isEmpty()) {
             props.setProperty("recovery.workDirectory", recoveryWorkDirectory);
         }

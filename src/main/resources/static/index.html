@@ -831,6 +831,132 @@
                         </div>
                     </div>
 
+                    <div class="form-section-title" style="margin-top: 20px;">LLM 调用参数</div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="cfgLlmProvider" class="label-with-tip">
+                                <span>协议</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">auto = 根据 API URL 自动判断。只有第三方中转端点的 URL 看不出厂商时才需要手动指定。</span>
+                                </span>
+                            </label>
+                            <select id="cfgLlmProvider">
+                                <option value="auto">auto</option>
+                                <option value="openai">openai</option>
+                                <option value="anthropic">anthropic</option>
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgLlmMaxTokens" class="label-with-tip">
+                                <span>最大输出 Token</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">用于艺术家匹配、专辑判定这类短回答，默认 600 已够。联网搜索不用这个值，见下方单独设置。范围 1—32000。</span>
+                                </span>
+                            </label>
+                            <input id="cfgLlmMaxTokens" type="number" min="1" max="32000" placeholder="600">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgLlmTemperature" class="label-with-tip">
+                                <span>Temperature</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">识别类任务建议保持 0，避免模型发挥。范围 0—2（Anthropic 上限为 1）。</span>
+                                </span>
+                            </label>
+                            <input id="cfgLlmTemperature" type="number" min="0" max="2" step="0.1" placeholder="0.0">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgLlmTimeoutSeconds">请求超时（秒）</label>
+                            <input id="cfgLlmTimeoutSeconds" type="number" min="5" max="600" placeholder="60">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgLlmMaxRetries">最大重试次数</label>
+                            <input id="cfgLlmMaxRetries" type="number" min="0" max="10" placeholder="2">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgLlmWebSearchMaxTokens" class="label-with-tip">
+                                <span>联网搜索最大输出 Token</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">联网搜索要返回最多 5 个候选、每个带完整曲目表与来源 URL，需要比普通调用大得多的预算。设得太小会导致 JSON 被截断、解析失败。范围 256—32000。</span>
+                                </span>
+                            </label>
+                            <input id="cfgLlmWebSearchMaxTokens" type="number" min="256" max="32000" placeholder="4000">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgLlmWebSearchTimeoutSeconds" class="label-with-tip">
+                                <span>联网搜索超时（秒）</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">搜索本身就要几十秒，且可能执行两轮。范围 30—900。</span>
+                                </span>
+                            </label>
+                            <input id="cfgLlmWebSearchTimeoutSeconds" type="number" min="30" max="900" placeholder="180">
+                        </div>
+                    </div>
+
+                    <div class="form-section-title" style="margin-top: 20px;">LLM 专辑判定</div>
+                    <div class="form-grid">
+                        <div class="form-row checkbox-row">
+                            <input id="cfgLlmAlbumJudgeEnabled" type="checkbox">
+                            <label for="cfgLlmAlbumJudgeEnabled" class="label-with-tip">
+                                <span>启用 LLM 专辑判定</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">在待确认页面启用「LLM 判定」按钮。封闭式选择题：只能从已有候选中选一个或回答「都不是」，不允许模型自由编造专辑名。</span>
+                                </span>
+                            </label>
+                        </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgLlmAlbumAutoApply" type="checkbox">
+                            <label for="cfgLlmAlbumAutoApply" class="label-with-tip">
+                                <span>高置信度时自动应用判定结果</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">关闭时判定结果仅作为建议，仍需人工确认。开启后达到下方阈值的判定会直接写入并归档，请谨慎。</span>
+                                </span>
+                            </label>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgLlmAlbumAutoApplyMinConfidence">自动应用最低置信度（0—1）</label>
+                            <input id="cfgLlmAlbumAutoApplyMinConfidence" type="number" min="0" max="1" step="0.05" placeholder="0.9">
+                        </div>
+                    </div>
+
+                    <div class="form-section-title" style="margin-top: 20px;">部分识别准入</div>
+                    <div class="form-grid">
+                        <div class="form-row checkbox-row">
+                            <input id="cfgPartialRequireReadableTags" type="checkbox">
+                            <label for="cfgPartialRequireReadableTags" class="label-with-tip">
+                                <span>要求标签可读</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">开启后，只有标签能正常读取的文件才能进入部分识别流程，避免拿乱码标签去匹配。</span>
+                                </span>
+                            </label>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgPartialMinTagCoverage" class="label-with-tip">
+                                <span>标签最低覆盖率（0—1）</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">文件夹内 album / tracknumber 标签的最低完整度。低于该比例不进入部分识别。</span>
+                                </span>
+                            </label>
+                            <input id="cfgPartialMinTagCoverage" type="number" min="0" max="1" step="0.05" placeholder="0.8">
+                        </div>
+                    </div>
+
+                    <div class="form-section-title" style="margin-top: 20px;">待确认队列存储</div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="cfgReviewQueuePath">队列文件路径</label>
+                            <input id="cfgReviewQueuePath" type="text" placeholder="留空使用默认">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgReviewStagingDirectory" class="label-with-tip">
+                                <span>暂存目录</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">发生格式规范化转码时，转码后的文件存放在这里等待确认。</span>
+                                </span>
+                            </label>
+                            <input id="cfgReviewStagingDirectory" type="text" placeholder="留空使用默认">
+                        </div>
+                    </div>
+
                     <div class="form-section-title" style="margin-top: 20px;">重新识别与恢复</div>
                     <div class="form-grid">
                         <div class="form-row">
@@ -1789,6 +1915,20 @@
                     llmConfigs.push({ apiKey: '', apiUrl: '', model: '', webSearch: false });
                 }
                 renderLLMConfigs();
+                document.getElementById('cfgLlmProvider').value = cfg.llmProvider || 'auto';
+                document.getElementById('cfgLlmMaxTokens').value = cfg.llmMaxTokens ?? '';
+                document.getElementById('cfgLlmTemperature').value = cfg.llmTemperature ?? '';
+                document.getElementById('cfgLlmTimeoutSeconds').value = cfg.llmTimeoutSeconds ?? '';
+                document.getElementById('cfgLlmMaxRetries').value = cfg.llmMaxRetries ?? '';
+                document.getElementById('cfgLlmWebSearchMaxTokens').value = cfg.llmWebSearchMaxTokens ?? '';
+                document.getElementById('cfgLlmWebSearchTimeoutSeconds').value = cfg.llmWebSearchTimeoutSeconds ?? '';
+                document.getElementById('cfgLlmAlbumJudgeEnabled').checked = !!cfg.llmAlbumJudgeEnabled;
+                document.getElementById('cfgLlmAlbumAutoApply').checked = !!cfg.llmAlbumAutoApply;
+                document.getElementById('cfgLlmAlbumAutoApplyMinConfidence').value = cfg.llmAlbumAutoApplyMinConfidence ?? '';
+                document.getElementById('cfgPartialRequireReadableTags').checked = !!cfg.partialRequireReadableTags;
+                document.getElementById('cfgPartialMinTagCoverage').value = cfg.partialMinTagCoverage ?? '';
+                document.getElementById('cfgReviewQueuePath').value = cfg.reviewQueuePath || '';
+                document.getElementById('cfgReviewStagingDirectory').value = cfg.reviewStagingDirectory || '';
                 document.getElementById('cfgRecoveryWorkDirectory').value = cfg.recoveryWorkDirectory || '';
                 document.getElementById('cfgRecoveryTrashDirectory').value = cfg.recoveryTrashDirectory || '';
                 document.getElementById('cfgRecoveryTrashRetentionDays').value = cfg.recoveryTrashRetentionDays ?? '';
@@ -1847,6 +1987,20 @@
                 llmApiUrl: validLlmConfigs().map(c => c.apiUrl.trim()).join(','),
                 llmModel: validLlmConfigs().map(c => c.model.trim()).join(','),
                 llmWebSearchEnabled: validLlmConfigs().map(c => c.webSearch === true).join(','),
+                llmProvider: getValue('cfgLlmProvider'),
+                llmMaxTokens: getNumberValue('cfgLlmMaxTokens'),
+                llmTemperature: getNumberValue('cfgLlmTemperature'),
+                llmTimeoutSeconds: getNumberValue('cfgLlmTimeoutSeconds'),
+                llmMaxRetries: getNumberValue('cfgLlmMaxRetries'),
+                llmWebSearchMaxTokens: getNumberValue('cfgLlmWebSearchMaxTokens'),
+                llmWebSearchTimeoutSeconds: getNumberValue('cfgLlmWebSearchTimeoutSeconds'),
+                llmAlbumJudgeEnabled: document.getElementById('cfgLlmAlbumJudgeEnabled').checked,
+                llmAlbumAutoApply: document.getElementById('cfgLlmAlbumAutoApply').checked,
+                llmAlbumAutoApplyMinConfidence: getNumberValue('cfgLlmAlbumAutoApplyMinConfidence'),
+                partialRequireReadableTags: document.getElementById('cfgPartialRequireReadableTags').checked,
+                partialMinTagCoverage: getNumberValue('cfgPartialMinTagCoverage'),
+                reviewQueuePath: getValue('cfgReviewQueuePath'),
+                reviewStagingDirectory: getValue('cfgReviewStagingDirectory'),
                 recoveryWorkDirectory: getValue('cfgRecoveryWorkDirectory'),
                 recoveryTrashDirectory: getValue('cfgRecoveryTrashDirectory'),
                 recoveryTrashRetentionDays: getNumberValue('cfgRecoveryTrashRetentionDays'),
