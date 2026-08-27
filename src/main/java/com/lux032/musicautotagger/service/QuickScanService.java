@@ -123,7 +123,8 @@ public class QuickScanService {
             
             if (bestMatch != null && bestMatch.getSimilarity() >= QUICK_MATCH_THRESHOLD) {
                 log.info("========================================");
-                log.info("✓ 快速扫描成功! 相似度: {:.2f}%", bestMatch.getSimilarity() * 100);
+                log.info("✓ 快速扫描成功! 相似度: {}%",
+                    String.format("%.2f", bestMatch.getSimilarity() * 100));
                 log.info("专辑: {} - {}", 
                     bestMatch.getMetadata().getAlbumArtist(), 
                     bestMatch.getMetadata().getAlbum());
@@ -433,8 +434,9 @@ public class QuickScanService {
                     folderDurations, albumDurations
                 );
                 
-                log.info("候选专辑: {} - {} (相似度: {:.2f}%)",
-                    candidate.getAlbumArtist(), candidate.getAlbum(), similarity * 100);
+                log.info("候选专辑: {} - {} (相似度: {}%)",
+                    candidate.getAlbumArtist(), candidate.getAlbum(),
+                    String.format("%.2f", similarity * 100));
                 
                 if (similarity > bestSimilarity) {
                     bestSimilarity = similarity;
@@ -442,8 +444,8 @@ public class QuickScanService {
                     
                     // 优化：如果相似度已经超过阈值，立即返回，不再检查剩余候选
                     if (similarity >= QUICK_MATCH_THRESHOLD) {
-                        log.info("找到高置信度匹配 ({:.2f}%)，停止检查剩余 {} 个候选专辑",
-                            similarity * 100, candidates.size() - i - 1);
+                        log.info("找到高置信度匹配 ({}%)，停止检查剩余 {} 个候选专辑",
+                            String.format("%.2f", similarity * 100), candidates.size() - i - 1);
                         return bestResult;
                     }
                 }

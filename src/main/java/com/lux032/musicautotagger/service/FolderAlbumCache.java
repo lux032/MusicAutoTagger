@@ -266,9 +266,9 @@ public class FolderAlbumCache {
                 // 移除样本收集器（节省内存）
                 folderSampleCollectors.remove(folderPath);
 
-                log.info("✓ 确定文件夹专辑: {} - {} ({}首曲目，置信度: {:.1f}%)",
+                log.info("✓ 确定文件夹专辑: {} - {} ({}首曲目，置信度: {}%)",
                     bestAlbum.getAlbumArtist(), bestAlbum.getAlbumTitle(),
-                    bestAlbum.getTrackCount(), bestAlbum.getConfidence() * 100);
+                    bestAlbum.getTrackCount(), String.format("%.1f", bestAlbum.getConfidence() * 100));
                 log.info("✓ 文件夹专辑已锁定，后续文件将统一使用此专辑信息");
 
                 return bestAlbum;
@@ -607,7 +607,7 @@ public class FolderAlbumCache {
 
                 log.info("=== 时长序列匹配成功 ===");
                 log.info("最佳专辑: {} - {}", bestAlbum.getAlbumArtist(), bestAlbum.getAlbumTitle());
-                log.info("相似度: {:.2f}, 质量: {}", similarity, matchResult.getQuality());
+                log.info("相似度: {}, 质量: {}", String.format("%.2f", similarity), matchResult.getQuality());
 
                 return new CachedAlbumInfo(
                     bestAlbum.getReleaseGroupId(),
@@ -930,7 +930,7 @@ public class FolderAlbumCache {
                 if (matchRate >= (1.0 - TRACK_COUNT_TOLERANCE) && votes > maxVotes) {
                     bestVote = voteInfo;
                     maxVotes = votes;
-                    log.info("  -> 曲目数匹配良好 (匹配率: {:.1f}%)", matchRate * 100);
+                    log.info("  -> 曲目数匹配良好 (匹配率: {}%)", String.format("%.1f", matchRate * 100));
                 }
             } else {
                 // 非大型专辑，主要看投票数
@@ -944,7 +944,8 @@ public class FolderAlbumCache {
         // 3. 验证置信度
         if (bestVote != null) {
             double confidence = (double) maxVotes / samples.size();
-            log.info("最佳专辑置信度: {:.1f}% ({}票/{}样本)", confidence * 100, maxVotes, samples.size());
+            log.info("最佳专辑置信度: {}% ({}票/{}样本)",
+                String.format("%.1f", confidence * 100), maxVotes, samples.size());
             
             if (confidence >= CONFIDENCE_THRESHOLD) {
                 AlbumIdentificationInfo bestAlbum = bestVote.getAlbumInfo();
@@ -959,7 +960,8 @@ public class FolderAlbumCache {
                     CacheSource.VOTING  // 标记来源为投票方法
                 );
             } else {
-                log.warn("置信度不足，不缓存专辑信息 (需要 >= {:.1f}%)", CONFIDENCE_THRESHOLD * 100);
+                log.warn("置信度不足，不缓存专辑信息 (需要 >= {}%)",
+                    String.format("%.1f", CONFIDENCE_THRESHOLD * 100));
             }
         }
         

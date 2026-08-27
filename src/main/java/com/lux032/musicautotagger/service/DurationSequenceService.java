@@ -78,8 +78,8 @@ public class DurationSequenceService {
         // 转换为相似度分数 (0.0-1.0)
         double similarity = 1.0 - (double) editDistance / maxLength;
         
-        log.debug("时长序列匹配 - 文件夹:{}首, 专辑:{}首, 编辑距离:{}, 相似度:{:.2f}", 
-            m, n, editDistance, similarity);
+        log.debug("时长序列匹配 - 文件夹:{}首, 专辑:{}首, 编辑距离:{}, 相似度:{}",
+            m, n, editDistance, String.format("%.2f", similarity));
         
         return Math.max(0.0, similarity);
     }
@@ -180,7 +180,7 @@ public class DurationSequenceService {
         int firstAlbumDuration = albumDurations.get(0);
         if (Math.abs(firstFolderDuration - firstAlbumDuration) <= DURATION_TOLERANCE) {
             bonusScore += FIRST_TRACK_MATCH_BONUS;
-            log.debug("  ★ 首曲精确匹配 (+{:.0f}%加分)", FIRST_TRACK_MATCH_BONUS * 100);
+            log.debug("  ★ 首曲精确匹配 (+{}%加分)", String.format("%.0f", FIRST_TRACK_MATCH_BONUS * 100));
         }
         
         // 检查最后一首曲目是否精确匹配
@@ -188,14 +188,18 @@ public class DurationSequenceService {
         int lastAlbumDuration = albumDurations.get(n - 1);
         if (Math.abs(lastFolderDuration - lastAlbumDuration) <= DURATION_TOLERANCE) {
             bonusScore += LAST_TRACK_MATCH_BONUS;
-            log.debug("  ★ 尾曲精确匹配 (+{:.0f}%加分)", LAST_TRACK_MATCH_BONUS * 100);
+            log.debug("  ★ 尾曲精确匹配 (+{}%加分)", String.format("%.0f", LAST_TRACK_MATCH_BONUS * 100));
         }
         
         // 应用加分，但确保不超过1.0
         double finalSimilarity = Math.min(1.0, similarity + bonusScore);
         
-        log.debug("加权DTW时长序列匹配 - DTW距离:{:.2f}, 归一化距离:{:.4f}, 基础相似度:{:.2f}, 加分:{:.2f}, 最终相似度:{:.2f}",
-            dtwDistance, normalizedDistance, similarity, bonusScore, finalSimilarity);
+        log.debug("加权DTW时长序列匹配 - DTW距离:{}, 归一化距离:{}, 基础相似度:{}, 加分:{}, 最终相似度:{}",
+            String.format("%.2f", dtwDistance),
+            String.format("%.4f", normalizedDistance),
+            String.format("%.2f", similarity),
+            String.format("%.2f", bonusScore),
+            String.format("%.2f", finalSimilarity));
         
         return Math.max(0.0, finalSimilarity);
     }
@@ -316,7 +320,7 @@ public class DurationSequenceService {
                 candidate.getAlbumArtist(),
                 candidate.getDurations().size());
             log.info("  时长序列: {}", formatDurationSequence(candidate.getDurations()));
-            log.info("  相似度: {:.2f} ({})", similarity, evaluateMatchQuality(similarity));
+            log.info("  相似度: {} ({})", String.format("%.2f", similarity), evaluateMatchQuality(similarity));
             
             if (similarity > bestSimilarity) {
                 bestSimilarity = similarity;
@@ -326,14 +330,14 @@ public class DurationSequenceService {
         
         // 检查是否达到最小匹配阈值
         if (bestMatch != null && bestSimilarity >= MIN_MATCH_THRESHOLD) {
-            log.info("✓ 选择最佳匹配: {} - {} (相似度: {:.2f})", 
+            log.info("✓ 选择最佳匹配: {} - {} (相似度: {})",
                 bestMatch.getAlbumInfo().getAlbumTitle(),
                 bestMatch.getAlbumInfo().getAlbumArtist(),
-                bestSimilarity);
+                String.format("%.2f", bestSimilarity));
             return bestMatch;
         } else {
-            log.warn("未找到符合阈值的匹配专辑 (最佳相似度: {:.2f}, 阈值: {:.2f})", 
-                bestSimilarity, MIN_MATCH_THRESHOLD);
+            log.warn("未找到符合阈值的匹配专辑 (最佳相似度: {}, 阈值: {})",
+                String.format("%.2f", bestSimilarity), String.format("%.2f", MIN_MATCH_THRESHOLD));
             return null;
         }
     }
@@ -412,8 +416,10 @@ public class DurationSequenceService {
                 candidate.getDurations().size(),
                 candidate.getMediaFormat() != null ? candidate.getMediaFormat() : "未知");
             log.info("  时长序列: {}", formatDurationSequence(candidate.getDurations()));
-            log.info("  时长相似度: {:.2f}, 名称相似度: {:.2f}, 综合得分: {:.2f}",
-                durationSimilarity, nameSimilarity, combinedScore);
+            log.info("  时长相似度: {}, 名称相似度: {}, 综合得分: {}",
+                String.format("%.2f", durationSimilarity),
+                String.format("%.2f", nameSimilarity),
+                String.format("%.2f", combinedScore));
 
             if (combinedScore > bestCombinedScore) {
                 bestCombinedScore = combinedScore;
@@ -432,8 +438,8 @@ public class DurationSequenceService {
                 bestMatch.getAlbumInfo().getMediaFormat());
             return bestMatch;
         } else {
-            log.warn("未找到符合阈值的匹配专辑 (最佳综合得分: {:.2f}, 阈值: {:.2f})",
-                bestCombinedScore, MIN_MATCH_THRESHOLD);
+            log.warn("未找到符合阈值的匹配专辑 (最佳综合得分: {}, 阈值: {})",
+                String.format("%.2f", bestCombinedScore), String.format("%.2f", MIN_MATCH_THRESHOLD));
             return null;
         }
     }

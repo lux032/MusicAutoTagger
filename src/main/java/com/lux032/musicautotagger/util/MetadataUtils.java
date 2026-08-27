@@ -169,11 +169,13 @@ public class MetadataUtils {
             if (titleSimilarity >= 0.8) {
                 // 高度匹配（80%以上相似度）
                 score += 500;
-                log.info("录音 '{}' 与文件名高度匹配 (相似度: {:.1f}%) (+500)", title, titleSimilarity * 100);
+                log.info("录音 '{}' 与文件名高度匹配 (相似度: {}%) (+500)",
+                    title, String.format("%.1f", titleSimilarity * 100));
             } else if (titleSimilarity >= 0.5) {
                 // 中度匹配（50%-80%相似度）
                 score += 200;
-                log.info("录音 '{}' 与文件名中度匹配 (相似度: {:.1f}%) (+200)", title, titleSimilarity * 100);
+                log.info("录音 '{}' 与文件名中度匹配 (相似度: {}%) (+200)",
+                    title, String.format("%.1f", titleSimilarity * 100));
             } else if (fileNameCoreLower.contains(titleLower) || titleLower.contains(fileNameCoreLower)) {
                 // 包含关系
                 score += 300;
