@@ -350,6 +350,23 @@ public class MetadataUtils {
         // 创建结果对象，基于新识别的元数据
         MusicMetadata merged = newMetadata;
 
+        // AcoustID/Chromaprint 很容易把伴奏、off-vocal、karaoke 等版本识别成
+        // 时长几乎相同的原唱 Recording。此时不能让识别结果抹掉源文件中明确的版本后缀，
+        // 也不能把第 5/6 首伴奏强制改成同长度的第 1/2 首原唱。
+        boolean sourceHasVersionQualifier = hasVersionQualifier(sourceMetadata.getTitle());
+        boolean identifiedHasVersionQualifier = hasVersionQualifier(merged.getTitle());
+        if (sourceHasVersionQualifier && !identifiedHasVersionQualifier) {
+            log.warn("指纹结果缺少源文件中的版本标识，保留源标题和曲序: {} (识别为: {})",
+                sourceMetadata.getTitle(), merged.getTitle());
+            merged.setTitle(sourceMetadata.getTitle());
+            if (sourceMetadata.getTrackNo() != null && !sourceMetadata.getTrackNo().isEmpty()) {
+                merged.setTrackNo(sourceMetadata.getTrackNo());
+            }
+            if (sourceMetadata.getDiscNo() != null && !sourceMetadata.getDiscNo().isEmpty()) {
+                merged.setDiscNo(sourceMetadata.getDiscNo());
+            }
+        }
+
         // 保留源文件中的作曲家信息（如果新数据没有）
         if ((merged.getComposer() == null || merged.getComposer().isEmpty()) &&
             (sourceMetadata.getComposer() != null && !sourceMetadata.getComposer().isEmpty())) {
@@ -379,6 +396,29 @@ public class MetadataUtils {
         }
 
         return merged;
+    }
+
+    /**
+     * 判断标题/文件名是否明确表示特殊版本。
+     * 这些版本经常与原唱共享近似指纹，必须作为高优先级的本地证据保留。
+     */
+    public static boolean hasVersionQualifier(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return false;
+        }
+        String normalized = Normalizer.normalize(value, Normalizer.Form.NFKC).toLowerCase();
+        String[] indicators = {
+            "instrumental", "off vocal", "off-vocal", "offvocal", "karaoke",
+            "伴奏", "純音楽", "纯音乐", "inst.", " inst ",
+            "anime size", "tv size", "tv ver", "short ver", "movie ver",
+            "remix", "acoustic", "live", "demo", "radio edit", "extended"
+        };
+        for (String indicator : indicators) {
+            if (normalized.contains(indicator)) {
+                return true;
+            }
+        }
+        return false;
     }
     
     /**

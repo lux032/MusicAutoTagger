@@ -431,6 +431,15 @@ public class QuickScanService {
                     musicBrainzClient.getAlbumDurationSequence(releaseGroupId);
                 List<Integer> albumDurations = durationResult.getDurations();
 
+                // 快速扫描实际已经选中了一个具体 Release；把它带回上层，避免后续仅凭
+                // Release Group + 单曲时长再次选版/选曲。伴奏与原唱等长时，这一点尤其重要。
+                if (durationResult.getReleaseId() != null && !durationResult.getReleaseId().isEmpty()) {
+                    candidate.setReleaseId(durationResult.getReleaseId());
+                }
+                if (candidate.getTrackCount() <= 0 && albumDurations != null) {
+                    candidate.setTrackCount(albumDurations.size());
+                }
+
                 if (albumDurations.isEmpty()) {
                     log.debug("候选专辑 {} 没有时长数据，跳过", candidate.getAlbum());
                     continue;

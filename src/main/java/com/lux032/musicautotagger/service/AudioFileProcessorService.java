@@ -245,20 +245,23 @@ public class AudioFileProcessorService {
                     lockedReleaseGroupId = quickMetadata.getReleaseGroupId();
                     lockedReleaseDate = quickMetadata.getReleaseDate();
                     
-                    // 立即将专辑信息写入文件夹缓存
-                    // 关键修复：标记来源为 QUICK_SCAN（最高优先级），防止被时长序列匹配结果覆盖
+                    // 立即将专辑信息写入文件夹缓存。
+                    // 虽然入口叫 QuickScan，但成功条件已经是「整文件夹官方时长序列 DTW >= 90%」，
+                    // 证据本质上是 DURATION_SEQUENCE，而不是仅凭标签/文件夹名的弱证据。
+                    // 若仍标成 QUICK_SCAN，AcoustID 返回旧单曲 RG 时一次冲突就会清缓存，
+                    // 样本收集器随之反复重置，最终既破坏正确锁定，也进不了人工确认队列。
                     FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
                         lockedReleaseGroupId,
-                        null,  // releaseId - 快速扫描时没有具体的 Release ID
+                        quickMetadata.getReleaseId(),
                         lockedAlbumTitle,
                         lockedAlbumArtist,
                         quickMetadata.getTrackCount(),
                         lockedReleaseDate,
                         quickResult.getSimilarity(),
-                        FolderAlbumCache.CacheSource.QUICK_SCAN  // 标记来源为快速扫描（最高优先级）
+                        FolderAlbumCache.CacheSource.DURATION_SEQUENCE
                     );
                     albumBatchProcessor.setFolderAlbum(folderPath, albumInfo);
-                    log.info("已将快速扫描结果缓存到文件夹级别（优先级: QUICK_SCAN）");
+                    log.info("已将快速扫描的整专时长匹配结果缓存到文件夹级别（证据: DURATION_SEQUENCE）");
                 }
             } else {
                 // 散落文件，跳过快速扫描
@@ -287,8 +290,20 @@ public class AudioFileProcessorService {
             if (cachedAlbum != null && !isLooseFileInMonitorRoot) {
                 List<FolderAlbumCache.CandidateReleaseGroup> candidatesForValidation =
                     collectCandidateReleaseGroups(acoustIdResult);
-                FolderAlbumCache.CacheValidationResult validation = folderAlbumCache.validateAgainstCandidates(
-                    folderPath, originalAudioFile.getName(), candidatesForValidation);
+
+                // AcoustID 经常把伴奏/off-vocal 识别成同长度的原唱单曲，且返回的候选
+                // Release Group 不包含实际所属的实体发行。这不是否定文件夹级整专时长匹配的可靠反证。
+                // 否则 QUICK_SCAN 会被第 2/5/6 首反复清除，样本收集器也随之重置，永远到不了人工确认。
+                boolean versionedTrack = MetadataUtils.hasVersionQualifier(originalAudioFile.getName());
+                FolderAlbumCache.CacheValidationResult validation;
+                if (versionedTrack) {
+                    validation = FolderAlbumCache.CacheValidationResult.VALID;
+                    log.info("特殊版本曲目跳过 AcoustID 候选对文件夹专辑的反悔检查: {}",
+                        originalAudioFile.getName());
+                } else {
+                    validation = folderAlbumCache.validateAgainstCandidates(
+                        folderPath, originalAudioFile.getName(), candidatesForValidation);
+                }
 
                 // 只有 INVALIDATED 才代表缓存真的被丢弃；
                 // CONFLICT_RETAINED 表示冲突已登记但尚未达阈值，缓存仍需继续使用。
@@ -572,6 +587,16 @@ public class AudioFileProcessorService {
 
                 // 如果有锁定的专辑信息，用锁定的信息覆盖（确保专辑信息不被改变）
                 MetadataUtils.applyLockedAlbumInfo(detailedMetadata, lockedAlbumTitle, lockedAlbumArtist, lockedReleaseGroupId, lockedReleaseDate);
+            }
+
+            // 对明确的伴奏/特殊版本，强制按源标签保留标题与曲序。
+            // 必须在 MusicBrainz 的「按时长强制匹配」之后执行，因为同一张专辑中
+            // 原唱和伴奏通常等长，仅按时长必然会优先命中前面的原唱曲目。
+            if (MetadataUtils.hasVersionQualifier(originalAudioFile.getName())) {
+                MusicMetadata versionSource = tagWriter.readTags(originalAudioFile);
+                if (versionSource != null) {
+                    detailedMetadata = MetadataUtils.mergeMetadata(versionSource, detailedMetadata);
+                }
             }
 
             // ===== 读取源文件已有标签并合并 =====
