@@ -210,7 +210,8 @@ public class LlmClient {
         return text;
     }
 
-    private static HttpClient buildHttpClient(MusicConfig config) {
+    /** 供 {@link TavilyWebSearchClient} 等外部 HTTP 调用复用同一套代理设置 */
+    public static HttpClient buildHttpClient(MusicConfig config) {
         HttpClient.Builder builder = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30));
 

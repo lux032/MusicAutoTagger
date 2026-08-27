@@ -338,6 +338,30 @@ llm.webSearch.maxTokens=4000
 # 联网搜索超时（秒）。搜索本身就要几十秒，且可能执行两轮。范围 30..900
 llm.webSearch.timeoutSeconds=180
 
+# ----------------------------------------
+# 联网搜索的实现来源：native | tavily
+# ----------------------------------------
+# native = 模型厂商自带的搜索工具（OpenAI Responses web_search / Anthropic Web Search Tool）。
+#          多数第三方 OpenAI 兼容端点并不实现它；即使调用成功，也无法确认模型是否真的检索过，
+#          citation 全靠模型自述。
+# tavily = 由 Tavily 取回真实网页，再让任意普通 chat 端点归纳。
+#          任何 OpenAI 兼容端点都能用，且每个来源 URL 都真实存在，
+#          HIGH/MEDIUM 来源门槛才真正起作用。
+llm.webSearch.provider=native
+
+# Tavily API Key，在 https://app.tavily.com 申请。provider=tavily 时必填。
+tavily.apiKey=
+tavily.apiUrl=https://api.tavily.com/search
+# basic 更便宜但摘要短；advanced 挖得更深，适合小众 / 非英语发行。
+tavily.searchDepth=advanced
+# 每条查询返回的结果数，范围 1..20。每张专辑最多生成 4 条查询。
+tavily.maxResults=8
+# 范围 5..300
+tavily.timeoutSeconds=60
+# 限定检索域名。留空表示全网检索
+# （低可信来源会明显变多，而低可信来源单独无法构成正式候选）。
+tavily.includeDomains=musicbrainz.org,discogs.com,vgmdb.net,spotify.com,music.apple.com,bandcamp.com,wikipedia.org,amazon.com,amazon.co.jp,last.fm,allmusic.com,rateyourmusic.com
+
 # 恢复任务原子工作目录；留空时默认使用 {outputDirectory}/.recovery-work
 recovery.workDirectory=
 # 恢复回收站：0=立即删除，-1=永久保留，1..365=保留天数

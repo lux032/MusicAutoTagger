@@ -10,6 +10,8 @@ import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.LlmAlbumJudge;
 import com.lux032.musicautotagger.service.llm.LlmClient;
 import com.lux032.musicautotagger.service.llm.NativeWebSearchClient;
+import com.lux032.musicautotagger.service.llm.TavilyWebSearchClient;
+import com.lux032.musicautotagger.service.llm.WebSearchClient;
 import com.lux032.musicautotagger.util.TagQualityEvaluator;
 import lombok.extern.slf4j.Slf4j;
 
@@ -34,7 +36,7 @@ public class OnlineIdentificationService {
         + "Include at most five candidates. Preserve source URLs.";
 
     private final MusicConfig config;
-    private final NativeWebSearchClient searchClient;
+    private final WebSearchClient searchClient;
     private final ReviewQueueService reviewQueue;
     private final TagWriterService tagWriter;
     private final AudioFingerprintService fingerprintService;
@@ -44,11 +46,24 @@ public class OnlineIdentificationService {
     public OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
                                        TagWriterService tagWriter, AudioFingerprintService fingerprintService) {
         this.config = config;
-        this.searchClient = new NativeWebSearchClient(config);
+        this.searchClient = createSearchClient(config);
         this.reviewQueue = reviewQueue;
         this.tagWriter = tagWriter;
         this.fingerprintService = fingerprintService;
         this.trackMatcher = new OnlineTrackMatcher(tagWriter);
+    }
+
+    /**
+     * 按 llm.webSearch.provider 选择联网搜索实现。
+     *
+     * 模型原生 web search 在第三方端点上普遍不可用（不实现 /responses、不支持 tools、
+     * 或声称支持但从不真正检索），因此提供 tavily 这条「外部检索器 + 普通 chat 归纳」的路径。
+     */
+    private static WebSearchClient createSearchClient(MusicConfig config) {
+        if ("tavily".equalsIgnoreCase(config.getWebSearchProvider())) {
+            return new TavilyWebSearchClient(config, new LlmClient(config));
+        }
+        return new NativeWebSearchClient(config);
     }
 
     public boolean isAvailable() { return searchClient.hasEnabledEndpoint(); }
@@ -69,7 +84,7 @@ public class OnlineIdentificationService {
         String prompt = buildPrompt(albumRoot, files, durations, analyzeCover);
 
         // 第一轮结果立即持久化；只有证据不足才执行第二轮。
-        NativeWebSearchClient.SearchResponse first = searchClient.search(SYSTEM, prompt);
+        WebSearchClient.SearchResponse first = searchClient.search(SYSTEM, prompt);
         Parsed parsed = parse(first);
         matchAll(parsed, files, durations);
         save(item, first, parsed, evidenceHash);
@@ -79,7 +94,7 @@ public class OnlineIdentificationService {
                 + "\nRun a second, narrower search using aliases, original-language names, catalog numbers, official pages, Discogs or VGMdb."
                 + " Return the same JSON schema.";
             try {
-                NativeWebSearchClient.SearchResponse second = searchClient.search(SYSTEM, secondPrompt);
+                WebSearchClient.SearchResponse second = searchClient.search(SYSTEM, secondPrompt);
                 Parsed secondParsed = parse(second);
                 merge(parsed, secondParsed);
                 mergeEvidence(parsed.clues, second.getCitations());
@@ -119,7 +134,7 @@ public class OnlineIdentificationService {
         return sb.toString();
     }
 
-    private Parsed parse(NativeWebSearchClient.SearchResponse response) throws LlmClient.LlmException {
+    private Parsed parse(WebSearchClient.SearchResponse response) throws LlmClient.LlmException {
         JsonObject json = LlmAlbumJudge.parseJsonObject(response.getText());
         if (json == null) throw new LlmClient.LlmException("llm.web.search.response.not.json");
         Parsed result=new Parsed();
@@ -164,15 +179,15 @@ public class OnlineIdentificationService {
         }
     }
 
-    private void save(ReviewItem item,NativeWebSearchClient.SearchResponse response,Parsed parsed,String hash){
+    private void save(ReviewItem item,WebSearchClient.SearchResponse response,Parsed parsed,String hash){
         item.setOnlineCandidates(parsed.candidates);item.setOnlineClues(parsed.clues);item.setOnlineSearchedAt(System.currentTimeMillis());
         item.setOnlineSearchProvider(response.getProvider());item.setOnlineSearchModel(response.getModel());item.setEvidenceHash(hash);item.setOnlineEvidenceStale(false);
         item.setResolutionNote(parsed.candidates.isEmpty()?"联网搜索未找到满足来源门槛的正式候选，已保存线索":"联网搜索完成，等待人工确认");reviewQueue.update(item);
     }
     private void merge(Parsed a,Parsed b){Set<String> keys=new HashSet<>();for(ReviewItem.OnlineCandidate c:a.candidates)keys.add(key(c));for(ReviewItem.OnlineCandidate c:b.candidates)if(keys.add(key(c))&&a.candidates.size()<5)a.candidates.add(c);}
     private String key(ReviewItem.OnlineCandidate c){return (nz(c.getArtist())+"|"+nz(c.getTitle())+"|"+nz(c.getReleaseDate())+"|"+nz(c.getEdition())).toLowerCase(Locale.ROOT);}
-    private void mergeEvidence(List<ReviewItem.OnlineEvidence> target,List<NativeWebSearchClient.Citation> citations){Set<String> urls=new HashSet<>();for(ReviewItem.OnlineEvidence e:target)urls.add(e.getUrl());for(ReviewItem.OnlineEvidence e:toEvidence(citations))if(urls.add(e.getUrl()))target.add(e);}
-    private List<ReviewItem.OnlineEvidence> toEvidence(List<NativeWebSearchClient.Citation> citations){List<ReviewItem.OnlineEvidence> out=new ArrayList<>();for(NativeWebSearchClient.Citation c:citations){ReviewItem.OnlineEvidence e=new ReviewItem.OnlineEvidence();e.setUrl(c.getUrl());e.setDomain(c.getDomain());e.setTitle(c.getTitle());e.setSnippet(c.getSnippet());e.setRetrievedAt(c.getRetrievedAt());e.setReliability(c.getReliability());out.add(e);}return out;}
+    private void mergeEvidence(List<ReviewItem.OnlineEvidence> target,List<WebSearchClient.Citation> citations){Set<String> urls=new HashSet<>();for(ReviewItem.OnlineEvidence e:target)urls.add(e.getUrl());for(ReviewItem.OnlineEvidence e:toEvidence(citations))if(urls.add(e.getUrl()))target.add(e);}
+    private List<ReviewItem.OnlineEvidence> toEvidence(List<WebSearchClient.Citation> citations){List<ReviewItem.OnlineEvidence> out=new ArrayList<>();for(WebSearchClient.Citation c:citations){ReviewItem.OnlineEvidence e=new ReviewItem.OnlineEvidence();e.setUrl(c.getUrl());e.setDomain(c.getDomain());e.setTitle(c.getTitle());e.setSnippet(c.getSnippet());e.setRetrievedAt(c.getRetrievedAt());e.setReliability(c.getReliability());out.add(e);}return out;}
     private List<File> collect(File root)throws Exception{List<File> files=new ArrayList<>();if(root.isFile())files.add(root);else try(var s=Files.walk(root.toPath())){s.filter(Files::isRegularFile).map(java.nio.file.Path::toFile).filter(f->isAudio(f)).forEach(files::add);}files.sort(Comparator.comparing(File::getAbsolutePath));return files;}
     private boolean isAudio(File f){String n=f.getName().toLowerCase();for(String ext:config.getSupportedFormats())if(n.endsWith("."+ext.toLowerCase()))return true;return false;}
     /** 供人工确认阶段重算并比对，确保搜索后文件未被改动。必须与搜索时采用同一套收集语义。 */

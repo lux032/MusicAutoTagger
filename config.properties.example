@@ -386,6 +386,30 @@ llm.webSearch.maxTokens=4000
 # Range 30..900
 llm.webSearch.timeoutSeconds=180
 
+# ----------------------------------------
+# Web search backend: native | tavily
+# ----------------------------------------
+# native  = the model's own web search tool (OpenAI Responses web_search / Anthropic Web Search Tool).
+#           Most third-party OpenAI-compatible endpoints do NOT implement it, and even when the call
+#           succeeds you cannot tell whether the model really searched. Citations are self-reported.
+# tavily  = Tavily retrieves real pages, then any plain chat endpoint summarizes them.
+#           Works with every OpenAI-compatible endpoint and every source URL provably exists,
+#           so the HIGH/MEDIUM source threshold actually means something.
+llm.webSearch.provider=native
+
+# Tavily API key, get one at https://app.tavily.com. Required when provider=tavily.
+tavily.apiKey=
+tavily.apiUrl=https://api.tavily.com/search
+# basic is cheaper with short excerpts; advanced digs deeper and suits niche / non-English releases.
+tavily.searchDepth=advanced
+# Results per query, range 1..20. Up to 4 queries are generated per album.
+tavily.maxResults=8
+# Range 5..300
+tavily.timeoutSeconds=60
+# Restrict retrieval to these domains. Leave EMPTY for whole-web search
+# (expect far more LOW reliability sources, which cannot form a formal candidate on their own).
+tavily.includeDomains=musicbrainz.org,discogs.com,vgmdb.net,spotify.com,music.apple.com,bandcamp.com,wikipedia.org,amazon.com,amazon.co.jp,last.fm,allmusic.com,rateyourmusic.com
+
 # Recovery atomic workspace. Empty defaults to {outputDirectory}/.recovery-work
 recovery.workDirectory=
 # Recovery trash directory and retention: 0=delete immediately, -1=keep forever, 1..365 days

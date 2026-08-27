@@ -5,7 +5,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.lux032.musicautotagger.config.MusicConfig;
-import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 
 import java.net.URI;
@@ -13,42 +12,27 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 
 /** OpenAI Responses / Anthropic Messages 原生 Web Search 适配器。 */
 @Slf4j
-public class NativeWebSearchClient {
+public class NativeWebSearchClient implements WebSearchClient {
     private final MusicConfig config;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build();
     private final Gson gson = new Gson();
 
     public NativeWebSearchClient(MusicConfig config) { this.config = config; }
 
-    @Data
-    public static class Citation {
-        private String url;
-        private String title;
-        private String snippet;
-        private String domain;
-        private long retrievedAt;
-        private String reliability;
-    }
+    @Override
+    public String name() { return "native"; }
 
-    @Data
-    public static class SearchResponse {
-        private String text;
-        private String provider;
-        private String model;
-        private int endpointIndex;
-        private List<Citation> citations = new ArrayList<>();
-    }
-
+    @Override
     public boolean hasEnabledEndpoint() {
         for (int i = 0; i < endpointCount(); i++) if (enabled(i)) return true;
         return false;
     }
 
+    @Override
     public SearchResponse search(String systemPrompt, String userPrompt) throws LlmClient.LlmException {
         Exception last = null;
         for (int i = 0; i < endpointCount(); i++) {
@@ -185,38 +169,7 @@ public class NativeWebSearchClient {
     }
     private void addCitation(SearchResponse r, String url, String title, String snippet) {
         if (url == null || url.isBlank()) return;
-        if (r.citations.stream().anyMatch(c -> url.equals(c.url))) return;
-        Citation c = new Citation(); c.url=url; c.title=title; c.snippet=snippet; c.retrievedAt=System.currentTimeMillis();
-        try { c.domain=URI.create(url).getHost(); } catch(Exception ignored) {}
-        c.reliability=reliability(c.domain); r.citations.add(c);
-    }
-    /**
-     * 高可信注册表。必须精确匹配或子域名匹配：
-     * 早期的 contains() 写法会把 fake-discogs.example.com、musicbrainz-data.example.org
-     * 这类伪造域名当成 HIGH，直接绕过来源门槛。
-     */
-    private static final List<String> HIGH_TRUST = List.of(
-        "musicbrainz.org", "discogs.com", "vgmdb.net", "spotify.com",
-        "music.apple.com", "bandcamp.com");
-    private static final List<String> MEDIUM_TRUST = List.of(
-        "wikipedia.org", "amazon.com", "amazon.co.jp", "amazon.jp",
-        "last.fm", "allmusic.com", "rateyourmusic.com");
-
-    private String reliability(String domain) {
-        if (domain == null || domain.isBlank()) return "LOW";
-        String d = domain.toLowerCase(java.util.Locale.ROOT);
-        if (d.startsWith("www.")) d = d.substring(4);
-        if (matchesRegistry(d, HIGH_TRUST)) return "HIGH";
-        if (matchesRegistry(d, MEDIUM_TRUST)) return "MEDIUM";
-        return "LOW";
-    }
-
-    /** 精确相等，或是其真子域（artist.bandcamp.com 这类合法子域仍然放行） */
-    private boolean matchesRegistry(String domain, List<String> registry) {
-        for (String allowed : registry) {
-            if (domain.equals(allowed) || domain.endsWith("." + allowed)) return true;
-        }
-        return false;
+        r.addCitation(Citation.of(url, title, snippet));
     }
     private int endpointCount(){ return Math.min(config.getLlmApiKeys().size(), Math.min(config.getLlmApiUrls().size(), config.getLlmModels().size())); }
     private boolean enabled(int i){ List<Boolean> f=config.getLlmWebSearchEnabled(); return f!=null && i<f.size() && Boolean.TRUE.equals(f.get(i)); }

@@ -110,6 +110,13 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("llmMaxRetries", "llm.maxRetries"),
             Map.entry("llmWebSearchMaxTokens", "llm.webSearch.maxTokens"),
             Map.entry("llmWebSearchTimeoutSeconds", "llm.webSearch.timeoutSeconds"),
+            Map.entry("webSearchProvider", "llm.webSearch.provider"),
+            Map.entry("tavilyApiKey", "tavily.apiKey"),
+            Map.entry("tavilyApiUrl", "tavily.apiUrl"),
+            Map.entry("tavilySearchDepth", "tavily.searchDepth"),
+            Map.entry("tavilyMaxResults", "tavily.maxResults"),
+            Map.entry("tavilyTimeoutSeconds", "tavily.timeoutSeconds"),
+            Map.entry("tavilyIncludeDomains", "tavily.includeDomains"),
             Map.entry("llmAlbumJudgeEnabled", "llm.album.judge.enabled"),
             Map.entry("llmAlbumAutoApply", "llm.album.autoApply"),
             Map.entry("llmAlbumAutoApplyMinConfidence", "llm.album.autoApplyMinConfidence"),
@@ -139,7 +146,8 @@ public class ConfigServlet extends HttpServlet {
             "dbPassword",
             "proxyPassword",
             "acoustIdApiKey",
-            "llmApiKey"
+            "llmApiKey",
+            "tavilyApiKey"
         );
     }
 
@@ -221,6 +229,13 @@ public class ConfigServlet extends HttpServlet {
         handleInteger(body, updates, propertyUpdates, "llmMaxRetries");
         handleInteger(body, updates, propertyUpdates, "llmWebSearchMaxTokens");
         handleInteger(body, updates, propertyUpdates, "llmWebSearchTimeoutSeconds");
+        handleString(body, updates, propertyUpdates, "webSearchProvider", false);
+        handleString(body, updates, propertyUpdates, "tavilyApiKey", false);
+        handleString(body, updates, propertyUpdates, "tavilyApiUrl", false);
+        handleString(body, updates, propertyUpdates, "tavilySearchDepth", false);
+        handleInteger(body, updates, propertyUpdates, "tavilyMaxResults");
+        handleInteger(body, updates, propertyUpdates, "tavilyTimeoutSeconds");
+        handleString(body, updates, propertyUpdates, "tavilyIncludeDomains", false);
         handleBoolean(body, updates, propertyUpdates, "llmAlbumJudgeEnabled");
         handleBoolean(body, updates, propertyUpdates, "llmAlbumAutoApply");
         handleDouble(body, updates, propertyUpdates, "llmAlbumAutoApplyMinConfidence");
@@ -322,6 +337,14 @@ public class ConfigServlet extends HttpServlet {
         data.put("llmMaxRetries", config.getLlmMaxRetries());
         data.put("llmWebSearchMaxTokens", config.getLlmWebSearchMaxTokens());
         data.put("llmWebSearchTimeoutSeconds", config.getLlmWebSearchTimeoutSeconds());
+        data.put("webSearchProvider", config.getWebSearchProvider());
+        data.put("tavilyApiKey", maskSecret(config.getTavilyApiKey()));
+        data.put("tavilyApiUrl", config.getTavilyApiUrl());
+        data.put("tavilySearchDepth", config.getTavilySearchDepth());
+        data.put("tavilyMaxResults", config.getTavilyMaxResults());
+        data.put("tavilyTimeoutSeconds", config.getTavilyTimeoutSeconds());
+        data.put("tavilyIncludeDomains", config.getTavilyIncludeDomains() == null ? ""
+            : String.join(",", config.getTavilyIncludeDomains()));
         data.put("llmAlbumJudgeEnabled", config.isLlmAlbumJudgeEnabled());
         data.put("llmAlbumAutoApply", config.isLlmAlbumAutoApply());
         data.put("llmAlbumAutoApplyMinConfidence", config.getLlmAlbumAutoApplyMinConfidence());
@@ -566,6 +589,35 @@ public class ConfigServlet extends HttpServlet {
         }
         if (updates.containsKey("llmWebSearchTimeoutSeconds")) {
             config.setLlmWebSearchTimeoutSeconds(clamp((Integer) updates.get("llmWebSearchTimeoutSeconds"), 30, 900));
+        }
+        // 联网搜索来源：未知值一律回落 native，避免拼错后静默停用联网搜索
+        if (updates.containsKey("webSearchProvider")) {
+            String provider = (String) updates.get("webSearchProvider");
+            config.setWebSearchProvider("tavily".equalsIgnoreCase(provider) ? "tavily" : "native");
+        }
+        if (updates.containsKey("tavilyApiKey")) {
+            config.setTavilyApiKey((String) updates.get("tavilyApiKey"));
+        }
+        if (updates.containsKey("tavilyApiUrl")) {
+            String url = (String) updates.get("tavilyApiUrl");
+            config.setTavilyApiUrl(url == null || url.isBlank() ? "https://api.tavily.com/search" : url.trim());
+        }
+        if (updates.containsKey("tavilySearchDepth")) {
+            String depth = (String) updates.get("tavilySearchDepth");
+            config.setTavilySearchDepth("basic".equalsIgnoreCase(depth) ? "basic" : "advanced");
+        }
+        if (updates.containsKey("tavilyMaxResults")) {
+            config.setTavilyMaxResults(clamp((Integer) updates.get("tavilyMaxResults"), 1, 20));
+        }
+        if (updates.containsKey("tavilyTimeoutSeconds")) {
+            config.setTavilyTimeoutSeconds(clamp((Integer) updates.get("tavilyTimeoutSeconds"), 5, 300));
+        }
+        if (updates.containsKey("tavilyIncludeDomains")) {
+            String domains = (String) updates.get("tavilyIncludeDomains");
+            config.setTavilyIncludeDomains(domains == null || domains.isBlank()
+                ? new java.util.ArrayList<>()
+                : java.util.Arrays.stream(domains.split(",")).map(String::trim)
+                    .filter(s -> !s.isEmpty()).collect(java.util.stream.Collectors.toList()));
         }
         if (updates.containsKey("llmAlbumJudgeEnabled")) {
             config.setLlmAlbumJudgeEnabled((Boolean) updates.get("llmAlbumJudgeEnabled"));

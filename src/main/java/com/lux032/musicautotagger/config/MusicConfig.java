@@ -135,6 +135,23 @@ public class MusicConfig {
     /** 联网搜索超时；搜索本身就要几十秒，比普通调用需要更宽的窗口 */
     private int llmWebSearchTimeoutSeconds;
 
+    // Tavily 外部检索（替代模型原生 Web Search）
+    /**
+     * 联网搜索的实现来源：native / tavily。
+     *
+     * native 依赖模型厂商自带的 web search 工具，多数第三方 OpenAI 兼容端点并不支持，
+     * 且是否真的检索完全不可控；tavily 用外部检索器取回真实 URL，再让普通 chat 端点归纳。
+     */
+    private String webSearchProvider;
+    private String tavilyApiKey;
+    private String tavilyApiUrl;
+    /** basic 便宜但摘要短，advanced 更适合小众/日系发行的考据 */
+    private String tavilySearchDepth;
+    private int tavilyMaxResults;
+    private int tavilyTimeoutSeconds;
+    /** 限定检索域名；留空表示全网检索（此时低可信来源会明显变多） */
+    private List<String> tavilyIncludeDomains;
+
     // 恢复与联网辅助识别
     /** 原子归档工作目录；空值时使用 outputDirectory/.recovery-work */
     private String recoveryWorkDirectory;
@@ -218,6 +235,17 @@ public class MusicConfig {
 
         this.llmWebSearchMaxTokens = 4000;
         this.llmWebSearchTimeoutSeconds = 180;
+
+        // 默认仍为 native，保证已有部署升级后行为不变；切到 tavily 需显式配置 key
+        this.webSearchProvider = "native";
+        this.tavilyApiKey = "";
+        this.tavilyApiUrl = "https://api.tavily.com/search";
+        this.tavilySearchDepth = "advanced";
+        this.tavilyMaxResults = 8;
+        this.tavilyTimeoutSeconds = 60;
+        // 默认收敛到可信音乐数据库：全网检索会引入大量转载站，拉低候选质量
+        this.tavilyIncludeDomains = new ArrayList<>(
+            com.lux032.musicautotagger.service.llm.WebSearchClient.SourceReliability.defaultPreferredDomains());
 
         this.recoveryWorkDirectory = null;
         this.recoveryTrashRetentionDays = 7;
@@ -501,6 +529,43 @@ public class MusicConfig {
                     this.llmWebSearchTimeoutSeconds, 30, 900, "llm.webSearch.timeoutSeconds");
             }
 
+            // 加载 Tavily 外部检索配置
+            if (props.containsKey("llm.webSearch.provider")) {
+                String provider = props.getProperty("llm.webSearch.provider", "native").trim();
+                // 未知值一律回落 native，避免拼错后静默停用联网搜索
+                this.webSearchProvider = "tavily".equalsIgnoreCase(provider) ? "tavily" : "native";
+            }
+            if (props.containsKey("tavily.apiKey")) {
+                this.tavilyApiKey = props.getProperty("tavily.apiKey", "").trim();
+            }
+            if (props.containsKey("tavily.apiUrl")) {
+                String url = props.getProperty("tavily.apiUrl", "").trim();
+                if (!url.isEmpty()) {
+                    this.tavilyApiUrl = url;
+                }
+            }
+            if (props.containsKey("tavily.searchDepth")) {
+                String depth = props.getProperty("tavily.searchDepth", "advanced").trim();
+                this.tavilySearchDepth = "basic".equalsIgnoreCase(depth) ? "basic" : "advanced";
+            }
+            if (props.containsKey("tavily.maxResults")) {
+                this.tavilyMaxResults = parseIntInRange(
+                    props.getProperty("tavily.maxResults"), this.tavilyMaxResults, 1, 20, "tavily.maxResults");
+            }
+            if (props.containsKey("tavily.timeoutSeconds")) {
+                this.tavilyTimeoutSeconds = parseIntInRange(
+                    props.getProperty("tavily.timeoutSeconds"), this.tavilyTimeoutSeconds, 5, 300,
+                    "tavily.timeoutSeconds");
+            }
+            if (props.containsKey("tavily.includeDomains")) {
+                // 显式写空值表示「不限域名」，因此这里不做非空回退
+                String domains = props.getProperty("tavily.includeDomains", "").trim();
+                this.tavilyIncludeDomains = Arrays.stream(domains.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .collect(java.util.stream.Collectors.toList());
+            }
+
             // 加载 LLM 专辑判定配置（阶段七 #22）
             if (props.containsKey("llm.album.judge.enabled")) {
                 this.llmAlbumJudgeEnabled = Boolean.parseBoolean(props.getProperty("llm.album.judge.enabled"));
@@ -701,6 +766,14 @@ public class MusicConfig {
         props.setProperty("file.partial.minTagCoverage", String.valueOf(partialMinTagCoverage));
         props.setProperty("llm.webSearch.maxTokens", String.valueOf(llmWebSearchMaxTokens));
         props.setProperty("llm.webSearch.timeoutSeconds", String.valueOf(llmWebSearchTimeoutSeconds));
+        props.setProperty("llm.webSearch.provider", webSearchProvider == null ? "native" : webSearchProvider);
+        props.setProperty("tavily.apiKey", tavilyApiKey == null ? "" : tavilyApiKey);
+        props.setProperty("tavily.apiUrl", tavilyApiUrl == null ? "https://api.tavily.com/search" : tavilyApiUrl);
+        props.setProperty("tavily.searchDepth", tavilySearchDepth == null ? "advanced" : tavilySearchDepth);
+        props.setProperty("tavily.maxResults", String.valueOf(tavilyMaxResults));
+        props.setProperty("tavily.timeoutSeconds", String.valueOf(tavilyTimeoutSeconds));
+        props.setProperty("tavily.includeDomains",
+            tavilyIncludeDomains == null ? "" : String.join(",", tavilyIncludeDomains));
         if (recoveryWorkDirectory != null && !recoveryWorkDirectory.isEmpty()) {
             props.setProperty("recovery.workDirectory", recoveryWorkDirectory);
         }

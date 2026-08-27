@@ -892,6 +892,59 @@
                         </div>
                     </div>
 
+                    <div class="form-section-title" style="margin-top: 20px;">联网搜索来源</div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="cfgWebSearchProvider" class="label-with-tip">
+                                <span>搜索实现</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">native 依赖模型厂商自带的搜索工具，多数第三方 OpenAI 兼容端点并不支持，且无法确认模型是否真的检索过。tavily 由外部检索器取回真实网页再让普通 chat 端点归纳，来源 URL 真实可核。</span>
+                                </span>
+                            </label>
+                            <select id="cfgWebSearchProvider">
+                                <option value="native">native（模型原生搜索）</option>
+                                <option value="tavily">tavily（外部检索 + 模型归纳）</option>
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgTavilyApiKey">Tavily API Key</label>
+                            <input id="cfgTavilyApiKey" type="password" placeholder="tvly-..." autocomplete="off">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgTavilyApiUrl">Tavily API URL</label>
+                            <input id="cfgTavilyApiUrl" type="text" placeholder="https://api.tavily.com/search">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgTavilySearchDepth" class="label-with-tip">
+                                <span>检索深度</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">basic 更便宜但摘要短；advanced 挖得更深，适合小众 / 非英语发行。</span>
+                                </span>
+                            </label>
+                            <select id="cfgTavilySearchDepth">
+                                <option value="advanced">advanced</option>
+                                <option value="basic">basic</option>
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgTavilyMaxResults">每条查询结果数</label>
+                            <input id="cfgTavilyMaxResults" type="number" min="1" max="20" placeholder="8">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgTavilyTimeoutSeconds">Tavily 请求超时（秒）</label>
+                            <input id="cfgTavilyTimeoutSeconds" type="number" min="5" max="300" placeholder="60">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgTavilyIncludeDomains" class="label-with-tip">
+                                <span>限定检索域名</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">逗号分隔。留空表示全网检索，低可信来源会明显变多，而低可信来源单独无法构成正式候选。</span>
+                                </span>
+                            </label>
+                            <input id="cfgTavilyIncludeDomains" type="text" placeholder="musicbrainz.org,discogs.com,vgmdb.net">
+                        </div>
+                    </div>
+
                     <div class="form-section-title" style="margin-top: 20px;">LLM 专辑判定</div>
                     <div class="form-grid">
                         <div class="form-row checkbox-row">
@@ -1922,6 +1975,13 @@
                 document.getElementById('cfgLlmMaxRetries').value = cfg.llmMaxRetries ?? '';
                 document.getElementById('cfgLlmWebSearchMaxTokens').value = cfg.llmWebSearchMaxTokens ?? '';
                 document.getElementById('cfgLlmWebSearchTimeoutSeconds').value = cfg.llmWebSearchTimeoutSeconds ?? '';
+                document.getElementById('cfgWebSearchProvider').value = cfg.webSearchProvider || 'native';
+                document.getElementById('cfgTavilyApiKey').value = cfg.tavilyApiKey || '';
+                document.getElementById('cfgTavilyApiUrl').value = cfg.tavilyApiUrl || '';
+                document.getElementById('cfgTavilySearchDepth').value = cfg.tavilySearchDepth || 'advanced';
+                document.getElementById('cfgTavilyMaxResults').value = cfg.tavilyMaxResults ?? '';
+                document.getElementById('cfgTavilyTimeoutSeconds').value = cfg.tavilyTimeoutSeconds ?? '';
+                document.getElementById('cfgTavilyIncludeDomains').value = cfg.tavilyIncludeDomains || '';
                 document.getElementById('cfgLlmAlbumJudgeEnabled').checked = !!cfg.llmAlbumJudgeEnabled;
                 document.getElementById('cfgLlmAlbumAutoApply').checked = !!cfg.llmAlbumAutoApply;
                 document.getElementById('cfgLlmAlbumAutoApplyMinConfidence').value = cfg.llmAlbumAutoApplyMinConfidence ?? '';
@@ -1994,6 +2054,14 @@
                 llmMaxRetries: getNumberValue('cfgLlmMaxRetries'),
                 llmWebSearchMaxTokens: getNumberValue('cfgLlmWebSearchMaxTokens'),
                 llmWebSearchTimeoutSeconds: getNumberValue('cfgLlmWebSearchTimeoutSeconds'),
+                webSearchProvider: getValue('cfgWebSearchProvider'),
+                // 未修改时回传的是掩码串，后端识别后保留原值
+                tavilyApiKey: getValue('cfgTavilyApiKey'),
+                tavilyApiUrl: getValue('cfgTavilyApiUrl'),
+                tavilySearchDepth: getValue('cfgTavilySearchDepth'),
+                tavilyMaxResults: getNumberValue('cfgTavilyMaxResults'),
+                tavilyTimeoutSeconds: getNumberValue('cfgTavilyTimeoutSeconds'),
+                tavilyIncludeDomains: getValue('cfgTavilyIncludeDomains'),
                 llmAlbumJudgeEnabled: document.getElementById('cfgLlmAlbumJudgeEnabled').checked,
                 llmAlbumAutoApply: document.getElementById('cfgLlmAlbumAutoApply').checked,
                 llmAlbumAutoApplyMinConfidence: getNumberValue('cfgLlmAlbumAutoApplyMinConfidence'),
