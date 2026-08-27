@@ -512,7 +512,9 @@ public class ConfigServlet extends HttpServlet {
                 trashDirectory == null || trashDirectory.isBlank() ? "data/recovery-trash" : trashDirectory);
         }
         if (updates.containsKey("recoveryTrashRetentionDays")) {
-            config.setRecoveryTrashRetentionDays((Integer) updates.get("recoveryTrashRetentionDays"));
+            // handleInteger 不做范围校验，而这里是直接 setter，会绕过配置文件加载时的 -1..365 限制
+            int retention = (Integer) updates.get("recoveryTrashRetentionDays");
+            config.setRecoveryTrashRetentionDays(Math.max(-1, Math.min(365, retention)));
         }
     }
 

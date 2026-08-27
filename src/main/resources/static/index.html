@@ -830,6 +830,37 @@
                             <button type="button" onclick="addLLMConfig()" style="margin-top: 10px; padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;" data-i18n="config.llm.add">添加 LLM</button>
                         </div>
                     </div>
+
+                    <div class="form-section-title" style="margin-top: 20px;">重新识别与恢复</div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="cfgRecoveryWorkDirectory" class="label-with-tip">
+                                <span>原子归档工作目录</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">恢复任务先把整张专辑写入该目录，全部成功后才整体提交到输出目录。留空时使用 {输出目录}/.recovery-work。建议与输出目录位于同一磁盘，否则提交需跨盘复制。</span>
+                                </span>
+                            </label>
+                            <input id="cfgRecoveryWorkDirectory" type="text" placeholder="留空使用默认">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgRecoveryTrashDirectory" class="label-with-tip">
+                                <span>回收站目录</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">恢复成功后，隔离目录里的副本会移到这里而不是直接删除，便于误判时回退。</span>
+                                </span>
+                            </label>
+                            <input id="cfgRecoveryTrashDirectory" type="text" placeholder="data/recovery-trash">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgRecoveryTrashRetentionDays" class="label-with-tip">
+                                <span>回收站保留天数</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text">0 = 成功后立即删除副本（无法回退，不建议）；-1 = 永久保留；1…365 = 保留对应天数。清理在每次启动时执行。</span>
+                                </span>
+                            </label>
+                            <input id="cfgRecoveryTrashRetentionDays" type="number" min="-1" max="365" placeholder="7">
+                        </div>
+                    </div>
                 </div>
 
                 <div class="tab-panel" id="tab-database">
@@ -1677,15 +1708,19 @@
         // LLM 配置管理
         let llmConfigs = [];
 
-        function addLLMConfig(apiKey = '', apiUrl = '', model = '') {
-            const index = llmConfigs.length;
-            llmConfigs.push({ apiKey, apiUrl, model });
+        function addLLMConfig(apiKey = '', apiUrl = '', model = '', webSearch = false) {
+            llmConfigs.push({ apiKey, apiUrl, model, webSearch });
             renderLLMConfigs();
         }
 
         function removeLLMConfig(index) {
             llmConfigs.splice(index, 1);
             renderLLMConfigs();
+        }
+
+        /** 只保留 key/url/model 都填全的端点，保证四个逗号列表严格按下标对齐 */
+        function validLlmConfigs() {
+            return llmConfigs.filter(c => (c.apiKey || '').trim() && (c.apiUrl || '').trim() && (c.model || '').trim());
         }
 
         function renderLLMConfigs() {
@@ -1698,7 +1733,11 @@
                     </div>
                     <input type="password" placeholder="API Key" value="${cfg.apiKey}" onchange="llmConfigs[${i}].apiKey = this.value" style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
                     <input type="text" placeholder="API URL" value="${cfg.apiUrl}" onchange="llmConfigs[${i}].apiUrl = this.value" style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
-                    <input type="text" placeholder="Model" value="${cfg.model}" onchange="llmConfigs[${i}].model = this.value" style="width: 100%; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                    <input type="text" placeholder="Model" value="${cfg.model}" onchange="llmConfigs[${i}].model = this.value" style="width: 100%; margin-bottom: 8px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                    <label style="display: flex; align-items: center; gap: 6px; font-size: 0.88em; color: #444;">
+                        <input type="checkbox" ${cfg.webSearch ? 'checked' : ''} onchange="llmConfigs[${i}].webSearch = this.checked">
+                        <span>参与联网辅助识别（需端点支持原生 Web Search）</span>
+                    </label>
                 </div>
             `).join('');
         }
@@ -1735,18 +1774,24 @@
                 const apiKeys = (cfg.llmApiKey || '').split(',').filter(s => s.trim());
                 const apiUrls = (cfg.llmApiUrl || '').split(',').filter(s => s.trim());
                 const models = (cfg.llmModel || '').split(',').filter(s => s.trim());
+                // 与 key/url/model 按下标对应；未配置的端点一律视为不参与联网
+                const webFlags = (cfg.llmWebSearchEnabled || '').split(',').map(s => s.trim() === 'true');
                 const maxLen = Math.max(apiKeys.length, apiUrls.length, models.length);
                 for (let i = 0; i < maxLen; i++) {
                     llmConfigs.push({
                         apiKey: apiKeys[i] || '',
                         apiUrl: apiUrls[i] || '',
-                        model: models[i] || ''
+                        model: models[i] || '',
+                        webSearch: webFlags[i] === true
                     });
                 }
                 if (llmConfigs.length === 0) {
-                    llmConfigs.push({ apiKey: '', apiUrl: '', model: '' });
+                    llmConfigs.push({ apiKey: '', apiUrl: '', model: '', webSearch: false });
                 }
                 renderLLMConfigs();
+                document.getElementById('cfgRecoveryWorkDirectory').value = cfg.recoveryWorkDirectory || '';
+                document.getElementById('cfgRecoveryTrashDirectory').value = cfg.recoveryTrashDirectory || '';
+                document.getElementById('cfgRecoveryTrashRetentionDays').value = cfg.recoveryTrashRetentionDays ?? '';
                 document.getElementById('cfgDbType').value = cfg.dbType || 'file';
                 document.getElementById('cfgDbHost').value = cfg.dbHost || '';
                 document.getElementById('cfgDbPort').value = cfg.dbPort ?? '';
@@ -1796,9 +1841,15 @@
                 acoustIdApiKey: getValue('cfgAcoustIdApiKey'),
                 acoustIdApiUrl: getValue('cfgAcoustIdApiUrl'),
                 enableLLMMatching: document.getElementById('cfgEnableLLMMatching').checked,
-                llmApiKey: llmConfigs.map(c => c.apiKey).filter(k => k.trim()).join(','),
-                llmApiUrl: llmConfigs.map(c => c.apiUrl).filter(u => u.trim()).join(','),
-                llmModel: llmConfigs.map(c => c.model).filter(m => m.trim()).join(','),
+                // 四个字段必须锁步过滤。各自 filter 会在某个端点缺项时造成下标错位，
+                // 把 A 的 key 配到 B 的 url 上去。
+                llmApiKey: validLlmConfigs().map(c => c.apiKey.trim()).join(','),
+                llmApiUrl: validLlmConfigs().map(c => c.apiUrl.trim()).join(','),
+                llmModel: validLlmConfigs().map(c => c.model.trim()).join(','),
+                llmWebSearchEnabled: validLlmConfigs().map(c => c.webSearch === true).join(','),
+                recoveryWorkDirectory: getValue('cfgRecoveryWorkDirectory'),
+                recoveryTrashDirectory: getValue('cfgRecoveryTrashDirectory'),
+                recoveryTrashRetentionDays: getNumberValue('cfgRecoveryTrashRetentionDays'),
                 dbType: getValue('cfgDbType'),
                 dbHost: getValue('cfgDbHost'),
                 dbPort: getNumberValue('cfgDbPort'),
