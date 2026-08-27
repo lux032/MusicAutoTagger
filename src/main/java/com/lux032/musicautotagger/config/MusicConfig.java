@@ -82,6 +82,18 @@ public class MusicConfig {
     // 发行地区优先级配置
     private List<String> releaseCountryPriority; // 发行地区优先级列表
 
+    // 人工确认队列配置（阶段六）
+    /**
+     * 是否启用「待人工确认」链路。
+     *
+     * 关闭（默认）时保持阶段一的行为：专辑定不下来时直接合成专辑信息并归档。
+     * 打开后：这类文件不写标签、不移动，而是进入可跨重启的待确认队列，
+     * 等人在 Web 面板上选定。默认关闭是为了避免无人值守部署里文件默默堆积。
+     */
+    private boolean reviewEnabled;
+    private String reviewQueuePath;        // 待确认队列 JSON 路径
+    private String reviewStagingDirectory; // 转码暂存目录（长期挂起时不能占用临时目录）
+
     // LLM 匹配配置
     private boolean enableLLMMatching; // 是否启用 LLM 辅助艺术家匹配
     private List<String> llmApiKeys; // LLM API Keys（支持多个）
@@ -133,6 +145,11 @@ public class MusicConfig {
 
         // 发行地区优先级默认配置（空列表表示不按地区筛选）
         this.releaseCountryPriority = new ArrayList<>();
+
+        // 人工确认队列默认配置
+        this.reviewEnabled = false;
+        this.reviewQueuePath = "data/review-queue.json";
+        this.reviewStagingDirectory = "data/review-staging";
 
         // LLM 匹配默认配置
         this.enableLLMMatching = false;
@@ -331,6 +348,17 @@ public class MusicConfig {
                 }
             }
 
+            // 加载人工确认队列配置
+            if (props.containsKey("review.enabled")) {
+                this.reviewEnabled = Boolean.parseBoolean(props.getProperty("review.enabled"));
+            }
+            if (props.containsKey("review.queuePath")) {
+                this.reviewQueuePath = props.getProperty("review.queuePath");
+            }
+            if (props.containsKey("review.stagingDirectory")) {
+                this.reviewStagingDirectory = props.getProperty("review.stagingDirectory");
+            }
+
             // 加载 LLM 匹配配置
             if (props.containsKey("llm.matching.enabled")) {
                 this.enableLLMMatching = Boolean.parseBoolean(props.getProperty("llm.matching.enabled"));
@@ -447,6 +475,13 @@ public class MusicConfig {
         }
         if (releaseCountryPriority != null && !releaseCountryPriority.isEmpty()) {
             props.setProperty("release.countryPriority", String.join(",", releaseCountryPriority));
+        }
+        props.setProperty("review.enabled", String.valueOf(reviewEnabled));
+        if (reviewQueuePath != null) {
+            props.setProperty("review.queuePath", reviewQueuePath);
+        }
+        if (reviewStagingDirectory != null) {
+            props.setProperty("review.stagingDirectory", reviewStagingDirectory);
         }
         props.setProperty("llm.matching.enabled", String.valueOf(enableLLMMatching));
         if (llmApiKeys != null && !llmApiKeys.isEmpty()) {

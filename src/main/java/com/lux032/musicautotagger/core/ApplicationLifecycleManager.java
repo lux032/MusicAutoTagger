@@ -42,6 +42,10 @@ public class ApplicationLifecycleManager {
     private FailedFileHandler failedFileHandler;
     private AlbumBatchProcessor albumBatchProcessor;
     private AudioFileProcessorService audioFileProcessorService;
+
+    // 阶段六：待人工确认链路
+    private ReviewQueueService reviewQueueService;
+    private ReviewResolutionService reviewResolutionService;
     
     public ApplicationLifecycleManager(MusicConfig config) {
         this.config = config;
@@ -109,6 +113,31 @@ public class ApplicationLifecycleManager {
         
         log.info(I18nUtil.getMessage("app.init.album.batch.processor"));
         albumBatchProcessor = new AlbumBatchProcessor(config, folderAlbumCache, tagWriter, processedLogger, coverArtService);
+
+        // 待人工确认队列（阶段六 #18/#19）
+        // 队列本身总是初始化（否则重启后已有条目永远无人能处理），
+        // 是否把新的未确定专辑放进去则由 review.enabled 控制。
+        reviewQueueService = new ReviewQueueService(config);
+        reviewResolutionService = new ReviewResolutionService(
+            config,
+            reviewQueueService,
+            folderAlbumCache,
+            albumBatchProcessor,
+            musicBrainzClient,
+            durationSequenceService,
+            processedLogger
+        );
+        albumBatchProcessor.setReviewQueueService(reviewQueueService);
+        // 人工确认的专辑锁定必须跨重启生效：
+        // FolderAlbumCache 是纯内存的，不回放的话，重启后同目录新增的文件
+        // 会重新走自动匹配，可能选出与人工确认不同的专辑。
+        reviewQueueService.restoreManualLocks(folderAlbumCache);
+        if (config.isReviewEnabled()) {
+            log.info("待人工确认链路已启用（专辑无法确定时不写标签，等待面板确认），当前待确认 {} 条",
+                reviewQueueService.countPending());
+        } else {
+            log.info("待人工确认链路未启用（review.enabled=false），专辑未确定时仍按合成信息直接归档");
+        }
         
         log.info(I18nUtil.getMessage("app.init.failed.file.handler"));
         failedFileHandler = new FailedFileHandler(config, tagWriter, coverArtService, processedLogger, fileSystemUtils);
@@ -128,6 +157,7 @@ public class ApplicationLifecycleManager {
             fileSystemUtils,
             folderAlbumCache
         );
+        audioFileProcessorService.setReviewQueueService(reviewQueueService);
         
         // Level 4: 初始化文件监控服务
         log.info(I18nUtil.getMessage("app.init.file.monitor"));
@@ -143,7 +173,8 @@ public class ApplicationLifecycleManager {
     public void startWebServer() {
         try {
             webServer = new WebServer(8080);
-            webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this);
+            webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this,
+                reviewQueueService, reviewResolutionService);
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.web.start.error"), e);
             log.warn(I18nUtil.getMessage("main.web.unavailable"));

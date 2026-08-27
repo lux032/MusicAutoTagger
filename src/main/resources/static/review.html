@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>待人工确认 - Music Auto Tagger</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh; padding: 24px; color: #333;
+        }
+        .container { max-width: 1280px; margin: 0 auto; }
+        .header {
+            background: rgba(255,255,255,0.12); border-radius: 14px; padding: 20px 24px;
+            color: #fff; margin-bottom: 20px; display: flex; align-items: center;
+            justify-content: space-between; flex-wrap: wrap; gap: 12px;
+        }
+        .header h1 { font-size: 1.5em; }
+        .header p { opacity: .85; font-size: .9em; margin-top: 4px; }
+        .header a, .header button {
+            background: rgba(255,255,255,.2); color: #fff; border: none; border-radius: 8px;
+            padding: 8px 16px; cursor: pointer; text-decoration: none; font-size: .9em;
+        }
+        .header a:hover, .header button:hover { background: rgba(255,255,255,.32); }
+        .layout { display: grid; grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
+        @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+        .card { background: #fff; border-radius: 14px; padding: 18px; box-shadow: 0 8px 24px rgba(0,0,0,.15); }
+        .card h2 { font-size: 1.1em; margin-bottom: 12px; color: #444; }
+        .item {
+            border: 1px solid #eee; border-left: 4px solid #ffc107; border-radius: 10px;
+            padding: 12px; margin-bottom: 10px; cursor: pointer; transition: .15s;
+        }
+        .item:hover { background: #fafafa; transform: translateX(2px); }
+        .item.active { border-color: #667eea; border-left-color: #667eea; background: #f5f6ff; }
+        .item .name { font-weight: 600; word-break: break-all; }
+        .item .meta { font-size: .82em; color: #777; margin-top: 4px; }
+        .badge {
+            display: inline-block; padding: 2px 8px; border-radius: 10px;
+            font-size: .75em; background: #eee; color: #555; margin-right: 6px;
+        }
+        .badge.pending { background: #fff3cd; color: #8a6d3b; }
+        .badge.confirmed { background: #d4edda; color: #256029; }
+        .badge.unverified { background: #d1ecf1; color: #0c5460; }
+        .badge.rejected { background: #f8d7da; color: #721c24; }
+        table { width: 100%; border-collapse: collapse; font-size: .88em; }
+        th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
+        th { background: #f7f7fb; color: #555; font-weight: 600; }
+        .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+        .btn { border: none; border-radius: 8px; padding: 9px 18px; cursor: pointer; font-size: .9em; color: #fff; }
+        .btn.primary { background: #667eea; }
+        .btn.secondary { background: #17a2b8; }
+        .btn.danger { background: #dc3545; }
+        .btn.ghost { background: #6c757d; }
+        .btn:disabled { opacity: .5; cursor: not-allowed; }
+        .empty { text-align: center; color: #999; padding: 32px 0; }
+        .section { margin-top: 18px; }
+        .section-title { font-weight: 600; color: #555; margin-bottom: 8px; }
+        .toast {
+            position: fixed; right: 20px; bottom: 20px; background: #333; color: #fff;
+            padding: 12px 18px; border-radius: 8px; display: none; max-width: 420px;
+        }
+        .hint { font-size: .82em; color: #888; margin-top: 6px; line-height: 1.5; }
+        .diff-ok { color: #256029; }
+        .diff-bad { color: #a94442; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div>
+            <h1>待人工确认</h1>
+            <p>曲目已识别、专辑无法确定的文件夹。文件保持原样，未写入任何标签。</p>
+        </div>
+        <div>
+            <button onclick="loadList()">刷新</button>
+            <a href="/index.html">返回面板</a>
+        </div>
+    </div>
+
+    <div class="layout">
+        <div class="card">
+            <h2>队列</h2>
+            <div style="margin-bottom:10px;">
+                <select id="statusFilter" onchange="loadList()" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;">
+                    <option value="PENDING_REVIEW">待确认</option>
+                    <option value="ALL">全部</option>
+                    <option value="CONFIRMED">已确认</option>
+                    <option value="ARCHIVED_UNVERIFIED">按未收录归档</option>
+                    <option value="REJECTED">已忽略</option>
+                </select>
+            </div>
+            <div id="list"><div class="empty">加载中...</div></div>
+        </div>
+
+        <div class="card">
+            <h2>详情</h2>
+            <div id="detail"><div class="empty">请从左侧选择一个文件夹</div></div>
+        </div>
+    </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+    let csrfToken = null;
+    let currentId = null;
+
+    async function init() {
+        try {
+            const resp = await fetch('/api/auth/status');
+            const data = await resp.json();
+            if (!data.authenticated) {
+                document.body.innerHTML = '<div class="container"><div class="card"><div class="empty">未登录，请先在<a href="/index.html">主面板</a>登录。</div></div></div>';
+                return;
+            }
+            csrfToken = data.csrfToken;
+        } catch (e) {
+            toast('无法获取登录状态: ' + e.message);
+            return;
+        }
+        loadList();
+    }
+
+    function toast(msg) {
+        const el = document.getElementById('toast');
+        el.textContent = msg;
+        el.style.display = 'block';
+        setTimeout(() => { el.style.display = 'none'; }, 4000);
+    }
+
+    async function api(path, options = {}) {
+        options.headers = options.headers || {};
+        if (csrfToken) options.headers['X-CSRF-Token'] = csrfToken;
+        if (options.body) options.headers['Content-Type'] = 'application/json';
+        const resp = await fetch(path, options);
+        let data = {};
+        try { data = await resp.json(); } catch (e) { /* ignore */ }
+        if (!resp.ok) {
+            throw new Error(data.error || ('HTTP ' + resp.status));
+        }
+        return data;
+    }
+
+    function statusBadge(status) {
+        const map = {
+            PENDING_REVIEW: ['pending', '待确认'],
+            CONFIRMED: ['confirmed', '已确认'],
+            ARCHIVED_UNVERIFIED: ['unverified', '未收录归档'],
+            REJECTED: ['rejected', '已忽略']
+        };
+        const [cls, text] = map[status] || ['', status];
+        return `<span class="badge ${cls}">${text}</span>`;
+    }
+
+    async function loadList() {
+        const status = document.getElementById('statusFilter').value;
+        const listEl = document.getElementById('list');
+        try {
+            const data = await api('/api/review/list?status=' + encodeURIComponent(status));
+            if (!data.items || data.items.length === 0) {
+                listEl.innerHTML = '<div class="empty">没有条目</div>';
+                return;
+            }
+            listEl.innerHTML = data.items.map(item => `
+                <div class="item ${item.id === currentId ? 'active' : ''}" onclick="openItem('${item.id}')">
+                    <div class="name">${escapeHtml(item.folderName || '')}</div>
+                    <div class="meta">
+                        ${statusBadge(item.status)}
+                        ${item.fileCount} 个文件 · ${item.candidateCount} 个候选 ·
+                        置信度 ${(item.confidence * 100).toFixed(0)}%
+                    </div>
+                    <div class="meta">${escapeHtml(item.reason || '')}</div>
+                </div>`).join('');
+        } catch (e) {
+            listEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    async function openItem(id, expand) {
+        currentId = id;
+        const detailEl = document.getElementById('detail');
+        detailEl.innerHTML = '<div class="empty">加载中...</div>';
+        try {
+            const url = '/api/review/item?id=' + encodeURIComponent(id) + (expand ? '&expand=1' : '');
+            const data = await api(url);
+            renderDetail(data.item);
+            loadList();
+        } catch (e) {
+            detailEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    function renderDetail(item) {
+        const pending = item.status === 'PENDING_REVIEW';
+        const candidateRows = (item.candidates || []).map(c => {
+            const sim = c.durationSimilarity == null ? '-' : (c.durationSimilarity * 100).toFixed(1) + '%';
+            const key = c.releaseId || '';
+            const rg = c.releaseGroupId || '';
+            const trackDelta = c.trackCount && item.fileCount
+                ? (c.trackCount - item.fileCount) : null;
+            const deltaText = trackDelta === null ? '' :
+                `<span class="${Math.abs(trackDelta) <= 1 ? 'diff-ok' : 'diff-bad'}">(${trackDelta >= 0 ? '+' : ''}${trackDelta})</span>`;
+            // 只有展开到具体 Release（有 releaseId）才能确认：
+            // 仅 Release Group 级则拿不到磟号/曲目号/发行日期，确认也是残缺的。
+            // 后端同样做了硬校验，这里只是避免误导。
+            const confirmCell = !pending ? ''
+                : (key
+                    ? `<button class="btn primary" onclick="confirmCandidate('${key}','${rg}')">确认</button>`
+                    : `<span class="hint">需先展开版本明细</span>`);
+            return `<tr>
+                <td>${escapeHtml(c.title || '')}<div class="hint">${escapeHtml(c.releaseId || c.releaseGroupId || '')}</div></td>
+                <td>${escapeHtml(c.mediaFormat || '-')}</td>
+                <td>${c.trackCount || '-'} ${deltaText}</td>
+                <td>${sim}</td>
+                <td>${c.supportCount || 0}/${c.totalSamples || 0}</td>
+                <td>${confirmCell}</td>
+            </tr>`;
+        }).join('');
+
+        const fileRows = (item.files || []).map(f => `<tr>
+            <td>${escapeHtml(f.fileName || '')}</td>
+            <td>${escapeHtml(f.title || '')}</td>
+            <td>${escapeHtml(f.artist || '')}</td>
+            <td>${f.duration == null ? '-' : formatDuration(f.duration)}</td>
+        </tr>`).join('');
+
+        document.getElementById('detail').innerHTML = `
+            <div><strong>${escapeHtml(item.folderName || '')}</strong> ${statusBadge(item.status)}</div>
+            <div class="hint">${escapeHtml(item.folderPath || '')}</div>
+            <div class="hint">${escapeHtml(item.reason || '')}</div>
+            <div class="hint">
+                合成专辑名：${escapeHtml(item.synthesizedAlbumTitle || '')} ·
+                合成专辑艺术家：${escapeHtml(item.synthesizedAlbumArtist || '')} ·
+                统一置信度：${(item.confidence * 100).toFixed(0)}%
+            </div>
+
+            <div class="section">
+                <div class="section-title">
+                    候选专辑
+                    ${item.candidatesExpanded ? '' :
+                        `<button class="btn ghost" style="margin-left:8px;padding:4px 10px;font-size:.8em;"
+                            onclick="openItem('${item.id}', true)">从 MusicBrainz 展开版本明细</button>`}
+                </div>
+                ${candidateRows ? `<table>
+                    <tr><th>专辑</th><th>格式</th><th>曲目数</th><th>时长相似度</th><th>样本支持</th><th></th></tr>
+                    ${candidateRows}</table>`
+                    : '<div class="empty">没有候选</div>'}
+                <div class="hint">
+                    「时长相似度」是文件夹时长序列与该版本官方时长序列的 DTW 相似度，是最强的判断依据。
+                    展开明细会调用 MusicBrainz，可能需要几秒。
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-title">文件（${(item.files || []).length}）</div>
+                <table>
+                    <tr><th>文件名</th><th>识别曲目</th><th>艺术家</th><th>时长</th></tr>
+                    ${fileRows}
+                </table>
+            </div>
+
+            <div class="actions">
+                <button class="btn secondary" ${pending ? '' : 'disabled'} onclick="archiveItem()">
+                    按「MusicBrainz 未收录」归档
+                </button>
+                <button class="btn danger" ${pending ? '' : 'disabled'} onclick="rejectItem()">
+                    标记失败 / 忽略
+                </button>
+            </div>
+            <div class="hint">
+                · 「确认」：按选定版本锁定整张专辑并归档（优先级最高，后续自动流程不会再改写）<br>
+                · 「按未收录归档」：使用上面的合成专辑名归档，年份留空，标记为未验证<br>
+                · 「标记失败 / 忽略」：不写标签、不归档，仅记录以避免下一轮扫描反复重试
+            </div>
+            ${item.resolutionNote ? `<div class="hint">处置结果：${escapeHtml(item.resolutionNote)}</div>` : ''}
+        `;
+    }
+
+    async function confirmCandidate(releaseId, releaseGroupId) {
+        if (!currentId) return;
+        if (!confirm('确认按该版本锁定并归档整个文件夹？此操作会写入标签并移动文件。')) return;
+        await runAction('/api/review/confirm', { id: currentId, releaseId, releaseGroupId });
+    }
+
+    async function archiveItem() {
+        if (!currentId) return;
+        if (!confirm('按「MusicBrainz 未收录」归档？将使用合成的专辑信息，年份留空。')) return;
+        await runAction('/api/review/archive', { id: currentId });
+    }
+
+    async function rejectItem() {
+        if (!currentId) return;
+        const note = prompt('备注（可留空）：', '');
+        if (note === null) return;
+        await runAction('/api/review/reject', { id: currentId, note });
+    }
+
+    async function runAction(path, body) {
+        try {
+            const data = await api(path, { method: 'POST', body: JSON.stringify(body) });
+            // 部分失败时后端会把条目保留在 PENDING_REVIEW，不能报「成功」
+            if (data.item && data.item.status === 'PENDING_REVIEW') {
+                toast('处理未全部成功，条目仍在待确认：' + (data.item.resolutionNote || ''));
+            } else {
+                toast('操作成功');
+            }
+            renderDetail(data.item);
+            loadList();
+        } catch (e) {
+            const msg = {
+                'item.already.resolved': '该条目已被处置过（可能是重复提交）',
+                'files.missing': '有原始文件已不存在，为避免只归档一部分，已拒绝本次处理',
+                'candidate.not.found': '找不到所选候选',
+                'release.id.required': '请先展开版本明细，并选择一个具体的 Release',
+                'csrf.invalid': '会话已失效，请重新登录'
+            }[e.message] || e.message;
+            toast('操作失败: ' + msg);
+        }
+    }
+
+    function formatDuration(seconds) {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function escapeHtml(text) {
+        return String(text == null ? '' : text)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    init();
+</script>
+</body>
+</html>

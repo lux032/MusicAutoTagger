@@ -15,6 +15,8 @@ import com.lux032.musicautotagger.service.CoverArtCache;
 import com.lux032.musicautotagger.service.DatabaseService;
 import com.lux032.musicautotagger.service.FolderAlbumCache;
 import com.lux032.musicautotagger.service.ProcessedFileLogger;
+import com.lux032.musicautotagger.service.ReviewQueueService;
+import com.lux032.musicautotagger.service.ReviewResolutionService;
 import com.lux032.musicautotagger.util.I18nUtil;
 import com.lux032.musicautotagger.util.AdminCredentialsStore;
 import com.lux032.musicautotagger.core.ApplicationLifecycleManager;
@@ -45,6 +47,21 @@ public class WebServer {
                      MusicConfig config,
                      DatabaseService databaseService,
                      ApplicationLifecycleManager lifecycleManager) throws Exception {
+        start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService,
+            lifecycleManager, null, null);
+    }
+
+    /**
+     * 启动 Web 服务器（含待人工确认 API，阶段六 #19）
+     */
+    public void start(ProcessedFileLogger processedLogger,
+                     CoverArtCache coverArtCache,
+                     FolderAlbumCache folderAlbumCache,
+                     MusicConfig config,
+                     DatabaseService databaseService,
+                     ApplicationLifecycleManager lifecycleManager,
+                     ReviewQueueService reviewQueueService,
+                     ReviewResolutionService reviewResolutionService) throws Exception {
         
         server = new Server();
         
@@ -94,6 +111,12 @@ public class WebServer {
         // 注册控制 API (暂停/恢复/重启)
         ControlServlet controlServlet = new ControlServlet(lifecycleManager);
         servletHandler.addServlet(new ServletHolder(controlServlet), "/api/control/*");
+
+        // 注册待人工确认 API（写入型，会触发文件写入与移动）
+        if (reviewQueueService != null && reviewResolutionService != null) {
+            ReviewServlet reviewServlet = new ReviewServlet(reviewQueueService, reviewResolutionService);
+            servletHandler.addServlet(new ServletHolder(reviewServlet), "/api/review/*");
+        }
 
         // API 认证过滤器
         servletHandler.addFilter(AuthFilter.class, "/api/*", EnumSet.of(DispatcherType.REQUEST));

@@ -39,6 +39,8 @@ public class AudioFileProcessorService {
     private final Map<String, FolderNormalizationPlan> folderNormalizationPlans = new java.util.concurrent.ConcurrentHashMap<>();
     /** 文件夹路径 -> 尚未处理的音乐文件数（批量 flush 后失效） */
     private final Map<String, Integer> folderUnprocessedCounts = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 人工确认队列（可选，未启用时为 null） */
+    private ReviewQueueService reviewQueueService;
     
     public AudioFileProcessorService(MusicConfig config,
                                      AudioFingerprintService fingerprintService,
@@ -66,6 +68,14 @@ public class AudioFileProcessorService {
         this.folderAlbumCache = folderAlbumCache;
         this.audioFormatNormalizer = new AudioFormatNormalizer(config);
         this.cueSplitService = new CueSplitService(config, fileSystemUtils);
+    }
+
+    /**
+     * 注入人工确认队列（阶段六）。
+     * 用 setter 而不是构造参数，是为了保持现有构造器签名兼容。
+     */
+    public void setReviewQueueService(ReviewQueueService reviewQueueService) {
+        this.reviewQueueService = reviewQueueService;
     }
     
     /**
@@ -155,6 +165,14 @@ public class AudioFileProcessorService {
             boolean musicFilesCountReliable = musicFileCount.isReliable();
             boolean safeForFastLock = musicFileCount.isSafeForFastLock();
             
+            // 0.5.2 阶段六 #18：该文件夹已进入「待人工确认」队列时，不得再自动处理。
+            // 待确认的文件故意不写标签、不改名、不移动，也就不会被记为 processed，
+            // 如果不在这里拦住，下一轮扫描会反复重新识别并重复入队。
+            if (reviewQueueService != null && reviewQueueService.isFolderUnderReview(folderPath)) {
+                log.info("文件夹已在待人工确认队列中，跳过自动处理: {}", albumRootDir.getName());
+                return ProcessResult.SUCCESS;
+            }
+
             // 0.6. 检测是否为散落在监控目录根目录的单个文件（保底处理）
             boolean isLooseFileInMonitorRoot = fileSystemUtils.isLooseFileInMonitorRoot(originalAudioFile);
 
@@ -261,25 +279,39 @@ public class AudioFileProcessorService {
             AudioFingerprintService.AcoustIdResult acoustIdResult =
                 fingerprintService.identifyAudioFile(processingAudioFile);
 
+            // ===== 阶段五 #17：缓存反悔检查 =====
+            // 以前 validateAgainstCache() 实际从未被调用——一旦专辑被锁定，
+            // 后续每个文件都会被 applyLockedAlbumInfo() 强行套上锁定专辑，
+            // 永远「匹配」，反悔机制形同虚设。
+            // 现改为用指纹识别返回的**原始候选集**反验缓存。
+            if (cachedAlbum != null && !isLooseFileInMonitorRoot) {
+                List<FolderAlbumCache.CandidateReleaseGroup> candidatesForValidation =
+                    collectCandidateReleaseGroups(acoustIdResult);
+                FolderAlbumCache.CacheValidationResult validation = folderAlbumCache.validateAgainstCandidates(
+                    folderPath, originalAudioFile.getName(), candidatesForValidation);
+
+                // 只有 INVALIDATED 才代表缓存真的被丢弃；
+                // CONFLICT_RETAINED 表示冲突已登记但尚未达阈值，缓存仍需继续使用。
+                if (validation == FolderAlbumCache.CacheValidationResult.INVALIDATED) {
+                    log.warn("专辑缓存已因与识别结果冲突而被丢弃，本文件改走样本收集流程: {}",
+                        originalAudioFile.getName());
+                    cachedAlbum = null;
+                    lockedAlbumTitle = null;
+                    lockedAlbumArtist = null;
+                    lockedReleaseGroupId = null;
+                    lockedReleaseId = null;
+                    lockedReleaseDate = null;
+                }
+            }
+
             // ===== 关键修复：在获取详细元数据之前，先执行时长序列匹配确定专辑 =====
             // 这样第一个文件就能使用正确的 preferredReleaseGroupId
             if (lockedAlbumTitle == null && !isLooseFileInMonitorRoot &&
                 acoustIdResult.getRecordings() != null && !acoustIdResult.getRecordings().isEmpty()) {
                 
                 // 收集 AcoustID 返回的所有候选专辑
-                java.util.List<FolderAlbumCache.CandidateReleaseGroup> allCandidates = new java.util.ArrayList<>();
-                for (AudioFingerprintService.RecordingInfo recording : acoustIdResult.getRecordings()) {
-                    if (recording.getReleaseGroups() != null) {
-                        for (AudioFingerprintService.ReleaseGroupInfo rg : recording.getReleaseGroups()) {
-                            boolean exists = allCandidates.stream()
-                                .anyMatch(c -> c.getReleaseGroupId().equals(rg.getId()));
-                            if (!exists) {
-                                allCandidates.add(new FolderAlbumCache.CandidateReleaseGroup(
-                                    rg.getId(), rg.getTitle()));
-                            }
-                        }
-                    }
-                }
+                java.util.List<FolderAlbumCache.CandidateReleaseGroup> allCandidates =
+                    collectCandidateReleaseGroups(acoustIdResult);
                 
                 if (!allCandidates.isEmpty()) {
                     log.info("第一个文件处理：收集到 {} 个候选专辑，立即执行时长序列匹配", allCandidates.size());
@@ -593,22 +625,8 @@ public class AudioFileProcessorService {
                 int trackCount = detailedMetadata.getTrackCount();
 
                 // 收集 AcoustID 返回的所有候选 ReleaseGroups
-                java.util.List<FolderAlbumCache.CandidateReleaseGroup> allCandidates = new java.util.ArrayList<>();
-                if (acoustIdResult.getRecordings() != null) {
-                    for (AudioFingerprintService.RecordingInfo recording : acoustIdResult.getRecordings()) {
-                        if (recording.getReleaseGroups() != null) {
-                            for (AudioFingerprintService.ReleaseGroupInfo rg : recording.getReleaseGroups()) {
-                                // 避免重复添加
-                                boolean exists = allCandidates.stream()
-                                    .anyMatch(c -> c.getReleaseGroupId().equals(rg.getId()));
-                                if (!exists) {
-                                    allCandidates.add(new FolderAlbumCache.CandidateReleaseGroup(
-                                        rg.getId(), rg.getTitle()));
-                                }
-                            }
-                        }
-                    }
-                }
+                java.util.List<FolderAlbumCache.CandidateReleaseGroup> allCandidates =
+                    collectCandidateReleaseGroups(acoustIdResult);
                 log.info("收集到 {} 个候选专辑用于时长序列匹配", allCandidates.size());
 
                 FolderAlbumCache.AlbumIdentificationInfo albumInfo = new FolderAlbumCache.AlbumIdentificationInfo(
@@ -755,6 +773,33 @@ public class AudioFileProcessorService {
             folderUnprocessedCounts.put(folderPath, count);
         }
         return count;
+    }
+
+    /**
+     * 从 AcoustID 结果中收集去重后的候选 Release Group 列表
+     */
+    private List<FolderAlbumCache.CandidateReleaseGroup> collectCandidateReleaseGroups(
+            AudioFingerprintService.AcoustIdResult acoustIdResult) {
+        List<FolderAlbumCache.CandidateReleaseGroup> candidates = new ArrayList<>();
+        if (acoustIdResult == null || acoustIdResult.getRecordings() == null) {
+            return candidates;
+        }
+        for (AudioFingerprintService.RecordingInfo recording : acoustIdResult.getRecordings()) {
+            if (recording.getReleaseGroups() == null) {
+                continue;
+            }
+            for (AudioFingerprintService.ReleaseGroupInfo rg : recording.getReleaseGroups()) {
+                if (rg == null || rg.getId() == null) {
+                    continue;
+                }
+                boolean exists = candidates.stream()
+                    .anyMatch(c -> rg.getId().equals(c.getReleaseGroupId()));
+                if (!exists) {
+                    candidates.add(new FolderAlbumCache.CandidateReleaseGroup(rg.getId(), rg.getTitle()));
+                }
+            }
+        }
+        return candidates;
     }
 
     private FolderNormalizationPlan getOrPrepareNormalizationPlan(File originalAudioFile, File albumRootDir, boolean isLooseFileInMonitorRoot) {

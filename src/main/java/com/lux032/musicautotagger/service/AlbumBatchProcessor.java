@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.service;
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.util.I18nUtil;
 
 import java.io.File;
@@ -24,6 +25,8 @@ public class AlbumBatchProcessor {
     private final TagWriterService tagWriter;
     private final ProcessedFileLogger processedLogger;
     private final CoverArtService coverArtService;
+    /** 人工确认队列（阶段六，可选） */
+    private ReviewQueueService reviewQueueService;
     
     public AlbumBatchProcessor(MusicConfig config, FolderAlbumCache folderAlbumCache,
                                TagWriterService tagWriter, ProcessedFileLogger processedLogger,
@@ -34,6 +37,15 @@ public class AlbumBatchProcessor {
         this.processedLogger = processedLogger;
         this.coverArtService = coverArtService;
     }
+
+    /**
+     * 注入人工确认队列（阶段六 #18）。
+     * 用 setter 保持现有构造器签名兼容。
+     */
+    public void setReviewQueueService(ReviewQueueService reviewQueueService) {
+        this.reviewQueueService = reviewQueueService;
+    }
+
     /**
      * 处理并写入单个文件
      * @param audioFile 音频文件
@@ -41,8 +53,9 @@ public class AlbumBatchProcessor {
      * @param metadata 元数据
      * @param coverArtData 封面数据
      * @param isQuickScanMode 是否为快速扫描模式（用于区分日志显示）
+     * @return true 表示标签写入与归档成功；false 表示失败（已记录到数据库）
      */
-    public void processAndWriteFile(File audioFile, File originalFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
+    public boolean processAndWriteFile(File audioFile, File originalFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
         File displayFile = originalFile != null ? originalFile : audioFile;
         try {
             log.info("正在写入文件标签: {}", displayFile.getName());
@@ -65,6 +78,7 @@ public class AlbumBatchProcessor {
                     metadata.getTitle(),
                     metadata.getAlbum()
                 );
+                return true;
             } else {
                 log.error("? 文件处理失败: {}", displayFile.getName());
                 LogCollector.addLog("ERROR", I18nUtil.getMessage("main.process.error", displayFile.getName()));
@@ -77,6 +91,7 @@ public class AlbumBatchProcessor {
                     metadata.getAlbum() != null ? metadata.getAlbum() : "Unknown Album"
                 );
                 log.info("已将写入失败文件记录到数据库: {}", displayFile.getName());
+                return false;
             }
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.write.exception"), displayFile.getName(), e);
@@ -93,23 +108,61 @@ public class AlbumBatchProcessor {
             } catch (Exception recordError) {
                 log.error("记录异常文件到数据库失败: {} - {}", displayFile.getName(), recordError.getMessage());
             }
+            return false;
         }
     }
 
     /**
      * 兼容旧调用：处理并写入单个文件
      */
-    public void processAndWriteFile(File audioFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
-        processAndWriteFile(audioFile, audioFile, metadata, coverArtData, isQuickScanMode);
+    public boolean processAndWriteFile(File audioFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
+        return processAndWriteFile(audioFile, audioFile, metadata, coverArtData, isQuickScanMode);
     }
 
 
 
     /**
+     * 批量处理结果（阶段六审查 #5）
+     *
+     * 以前 `processPendingFilesWithAlbum()` 返回 void，内部逐文件捕获异常，
+     * 调用方（尤其是人工确认链路）根本无从得知有没有文件写失败，
+     * 于是总是把条目标为「已确认」——用户看到成功，实际只归档了一部分。
+     */
+    public static class BatchProcessResult {
+        private final int successCount;
+        private final List<String> failedFiles;
+
+        public BatchProcessResult(int successCount, List<String> failedFiles) {
+            this.successCount = successCount;
+            this.failedFiles = failedFiles == null ? new ArrayList<>() : failedFiles;
+        }
+
+        public int getSuccessCount() {
+            return successCount;
+        }
+
+        public List<String> getFailedFiles() {
+            return failedFiles;
+        }
+
+        public int getFailedCount() {
+            return failedFiles.size();
+        }
+
+        public boolean isFullySuccessful() {
+            return failedFiles.isEmpty() && successCount > 0;
+        }
+
+        public static BatchProcessResult empty() {
+            return new BatchProcessResult(0, new ArrayList<>());
+        }
+    }
+
+    /**
      * 批量处理文件夹内的待处理文件，统一应用确定的专辑信息
      */
-    public void processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo) {
-        processPendingFilesWithAlbum(folderPath, albumInfo, false);
+    public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo) {
+        return processPendingFilesWithAlbum(folderPath, albumInfo, false);
     }
 
     /**
@@ -118,13 +171,13 @@ public class AlbumBatchProcessor {
      * @param unresolvedAlbum 是否为「专辑未确定」模式。为 true 时会显式清空年份标签，
      *                        避免原文件里旧专辑的年份残留下来。
      */
-    public void processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo,
-                                             boolean unresolvedAlbum) {
+    public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo,
+                                                           boolean unresolvedAlbum) {
         List<FolderAlbumCache.PendingFile> pendingFiles = folderAlbumCache.getPendingFiles(folderPath);
         
         if (pendingFiles == null || pendingFiles.isEmpty()) {
             log.warn("文件夹没有待处理文件: {}", folderPath);
-            return;
+            return BatchProcessResult.empty();
         }
         
         log.info("开始批量处理 {} 个待处理文件", pendingFiles.size());
@@ -150,6 +203,9 @@ public class AlbumBatchProcessor {
         int successCount = 0;
         int failCount = 0;
         List<File> failedFiles = new ArrayList<>();
+        // 写入失败也要计入失败（processAndWriteFile 内部会吃掉异常），
+        // 否则人工确认链路会把「写失败」当成成功。
+        List<String> failedFileNames = new ArrayList<>();
         
         for (FolderAlbumCache.PendingFile pending : pendingFiles) {
             try {
@@ -178,13 +234,20 @@ public class AlbumBatchProcessor {
                 }
                 
                 // 写入文件（metadata已包含作词、作曲、风格等信息）
-                processAndWriteFile(audioFile, pending.getAudioFile(), metadata, coverArtData, false);
-                successCount++;
+                boolean written = processAndWriteFile(audioFile, pending.getAudioFile(), metadata, coverArtData, false);
+                if (written) {
+                    successCount++;
+                } else {
+                    failCount++;
+                    failedFiles.add(pending.getAudioFile());
+                    failedFileNames.add(pending.getAudioFile().getName());
+                }
                 
             } catch (Exception e) {
                 log.error("批量处理文件失败: {}", pending.getAudioFile().getName(), e);
                 failCount++;
                 failedFiles.add(pending.getAudioFile());
+                failedFileNames.add(pending.getAudioFile().getName());
                 // 对于失败的文件，也记录到数据库，避免数据缺失
                 try {
                     MusicMetadata metadata = (MusicMetadata) pending.getMetadata();
@@ -216,6 +279,8 @@ public class AlbumBatchProcessor {
         
         // 清除待处理列表
         folderAlbumCache.clearPendingFiles(folderPath);
+
+        return new BatchProcessResult(successCount, failedFileNames);
     }
     
     /**
@@ -231,6 +296,9 @@ public class AlbumBatchProcessor {
         processPendingFilesAsUnresolvedAlbum(folderPath);
     }
 
+    /** 入队失败时的占位结果：文件仍然留在 pending 里，什么都没写 */
+    private static final BatchProcessResult QUEUED_FOR_REVIEW = BatchProcessResult.empty();
+
     /**
      * 按「专辑未确定」处理待处理文件
      *
@@ -240,15 +308,68 @@ public class AlbumBatchProcessor {
      *   - 缺的只是「专辑名」→ 用原文件标签或文件夹名合成
      *   - 专辑艺术家如果不一致 → 写 Various Artists（否则 Plex/Emby 会把一张精选集拆成一堆单曲专辑）
      */
-    public void processPendingFilesAsUnresolvedAlbum(String folderPath) {
+    public BatchProcessResult processPendingFilesAsUnresolvedAlbum(String folderPath) {
+        return processPendingFilesAsUnresolvedAlbum(folderPath, true);
+    }
+
+    /**
+     * @param allowReviewQueue 是否允许进入「待人工确认」队列。
+     *        人工已经在面板上选择了「按 MB 未收录归档」时必须传 false，
+     *        否则会把刚刚取出的条目又塞回队列，形成死循环。
+     */
+    public BatchProcessResult processPendingFilesAsUnresolvedAlbum(String folderPath, boolean allowReviewQueue) {
         List<FolderAlbumCache.PendingFile> pendingFiles = folderAlbumCache.getPendingFiles(folderPath);
 
         if (pendingFiles == null || pendingFiles.isEmpty()) {
             log.warn("文件夹没有待处理文件: {}", folderPath);
-            return;
+            return BatchProcessResult.empty();
         }
 
         FolderAlbumCache.CachedAlbumInfo synthesized = buildUnresolvedAlbumInfo(folderPath, pendingFiles);
+
+        // 阶段六 #18：开启人工确认时，不再直接落盘，而是进入可跨重启的待确认队列。
+        // 关键：此时文件仍未被写标签 / 改名 / 移动，人工选定后才真正执行。
+        if (allowReviewQueue && reviewQueueService != null && config.isReviewEnabled()) {
+            int filesWithTrackMetadata = 0;
+            for (FolderAlbumCache.PendingFile pending : pendingFiles) {
+                MusicMetadata md = (MusicMetadata) pending.getMetadata();
+                if (md != null && md.getTitle() != null && !md.getTitle().trim().isEmpty()) {
+                    filesWithTrackMetadata++;
+                }
+            }
+            double unified = com.lux032.musicautotagger.util.ConfidenceModel
+                .unresolvedAlbumConfidence(filesWithTrackMetadata, pendingFiles.size());
+
+            if (com.lux032.musicautotagger.util.ConfidenceModel.decide(unified)
+                    == com.lux032.musicautotagger.util.ConfidenceModel.Decision.PENDING_REVIEW) {
+                // 关键（审查 #3）：入队必须**确认落盘成功**才能清空内存 pending。
+                // 否则会出现：JSON 里没有这个条目 + 内存队列也清了 = 任务直接丢失。
+                ReviewItem queued = reviewQueueService.enqueue(
+                    folderPath,
+                    pendingFiles,
+                    synthesized,
+                    folderAlbumCache.getFolderCandidates(folderPath),
+                    folderAlbumCache.getFolderDurationSequence(folderPath),
+                    "专辑无法在 MusicBrainz 中确定（候选覆盖率不足 / 时长序列不匹配）",
+                    unified
+                );
+
+                if (queued != null) {
+                    // 标记 unresolved：同目录后续文件不得再去匹配旧专辑
+                    folderAlbumCache.markFolderUnresolved(folderPath);
+                    // pending 已转移到待确认队列（含转码暂存文件的接管），不能再留在内存队列里，
+                    // 否则关机 flush 会把它们又写一遍
+                    folderAlbumCache.clearPendingFiles(folderPath);
+                    return QUEUED_FOR_REVIEW;
+                }
+
+                log.error("待确认队列落盘失败，为避免任务丢失，改为按「专辑未确定」直接归档（pending 保留）");
+                LogCollector.addLog("ERROR", "待确认队列落盘失败，已回退为直接归档");
+            }
+
+            log.warn("待确认队列已启用，但曲目级元数据覆盖率过低（统一置信度 {}），不入队，改为直接归档",
+                String.format("%.2f", unified));
+        }
 
         log.warn("========================================");
         log.warn("⚠ 专辑无法在 MusicBrainz 中确定，按「专辑未确定」处理");
@@ -270,7 +391,7 @@ public class AlbumBatchProcessor {
         // 收齐后重新合成（年份再次被清除、艺术家基于当前批次重算）。
         folderAlbumCache.markFolderUnresolved(folderPath);
 
-        processPendingFilesWithAlbum(folderPath, synthesized, true);
+        return processPendingFilesWithAlbum(folderPath, synthesized, true);
     }
 
     /**

@@ -287,3 +287,21 @@ llm.apiUrl=https://api.anthropic.com/v1/messages
 # LLM 模型名称（支持多个，用逗号分隔）
 # 示例：claude-3-5-sonnet-20241022,gpt-4
 llm.model=claude-3-5-sonnet-20241022
+
+# ========================================
+# 人工确认队列（阶段六）
+# ========================================
+
+# 是否启用「待人工确认」链路。
+# 当一个文件夹的曲目都识别出来了、但专辑定不下来时（典型场景：MusicBrainz
+# 尚未收录的精选集），文件不会被写标签 / 改名 / 移动，而是进入可跨重启的
+# 待确认队列，等待在 Web 面板（/review.html）中人工选择。
+# 默认关闭：关闭时保持原有行为——直接用合成的专辑信息归档。
+review.enabled=false
+
+# 待确认队列持久化文件（JSON），必须能跨重启保留
+review.queuePath=data/review-queue.json
+
+# 待确认条目的转码暂存目录
+# 长期挂起的条目不能一直占用系统临时目录，否则会被系统清理掉
+review.stagingDirectory=data/review-staging

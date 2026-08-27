@@ -38,8 +38,22 @@ public class FolderAlbumCache {
 
     /** 文件夹 -> 缓存专辑曲目数与实际文件数连续不一致的次数 */
     private final Map<String, Integer> cacheTrackCountMismatches = new ConcurrentHashMap<>();
-    /** 连续不一致达到该次数才丢弃专辑缓存，避免边下载边处理时反复重新匹配 */
+    /**
+     * 强证据缓存（时长序列）连续不一致达到该次数才丢弃，
+     * 避免边下载边处理时文件数持续变化导致反复重新匹配。
+     */
     private static final int MAX_CACHE_TRACK_COUNT_MISMATCHES = 3;
+    /**
+     * 阶段五 #17：弱证据（快速扫描 / 投票）的反悔阈值要低得多。
+     * 弱证据本身就很可能是错的，再要求「连续 3 次不匹配」才重新评估，
+     * 意味着一整张小专辑（3~6 首）可能在反悔生效前就已经全部写错了。
+     */
+    private static final int MAX_WEAK_CACHE_MISMATCHES = 1;
+    /** 强证据缓存与识别结果冲突时的反悔阈值 */
+    private static final int MAX_STRONG_CACHE_MISMATCHES = 3;
+
+    /** 文件夹 -> 最后一次分析时看到的候选专辑快照（用于人工确认面板） */
+    private final Map<String, List<FolderCandidate>> folderCandidates = new ConcurrentHashMap<>();
     
     // 依赖服务
     private final DurationSequenceService durationSequenceService;
@@ -108,7 +122,10 @@ public class FolderAlbumCache {
     public CachedAlbumInfo getFolderAlbum(String folderPath, int musicFilesCount, boolean musicFilesCountReliable) {
         CachedAlbumInfo cached = folderAlbumCache.get(folderPath);
         if (cached != null) {
-            if (musicFilesCountReliable && cached.getTrackCount() > 0 && musicFilesCount > 0) {
+            CacheSource cachedSource = cached.getSource() != null ? cached.getSource() : CacheSource.UNKNOWN;
+            // 人工确认的结果不参与任何自动反悔
+            if (musicFilesCountReliable && !cachedSource.isManual()
+                && cached.getTrackCount() > 0 && musicFilesCount > 0) {
                 int difference = Math.abs(cached.getTrackCount() - musicFilesCount);
                 int allowed = Math.max(2, (int) Math.ceil(musicFilesCount * TRACK_COUNT_TOLERANCE));
                 if (difference > allowed) {
@@ -116,9 +133,13 @@ public class FolderAlbumCache {
                     // 边下载边处理时文件数会持续变化，单次不一致就删缓存会导致
                     // 同一文件夹反复重新匹配，每次都是一整轮 MusicBrainz 查询。
                     int mismatches = cacheTrackCountMismatches.merge(folderPath, 1, Integer::sum);
-                    log.warn("缓存专辑曲目数与当前可靠文件数不一致（第{}次）: {} (缓存{}首/当前{}首)",
-                        mismatches, cached.getAlbumTitle(), cached.getTrackCount(), musicFilesCount);
-                    if (mismatches >= MAX_CACHE_TRACK_COUNT_MISMATCHES) {
+                    // 阶段五 #17：弱证据缓存（快速扫描 / 投票）反悔得更快
+                    int maxMismatches = cachedSource.isWeakEvidence()
+                        ? MAX_WEAK_CACHE_MISMATCHES : MAX_CACHE_TRACK_COUNT_MISMATCHES;
+                    log.warn("缓存专辑曲目数与当前可靠文件数不一致（第{}/{}次，来源: {}）: {} (缓存{}首/当前{}首)",
+                        mismatches, maxMismatches, cachedSource,
+                        cached.getAlbumTitle(), cached.getTrackCount(), musicFilesCount);
+                    if (mismatches >= maxMismatches) {
                         log.warn("连续 {} 次不一致，丢弃该文件夹的专辑缓存并重新匹配", mismatches);
                         folderAlbumCache.remove(folderPath, cached);
                         cacheTrackCountMismatches.remove(folderPath);
@@ -178,14 +199,16 @@ public class FolderAlbumCache {
                         existing.getAlbumArtist(), existing.getAlbumTitle(),
                         existingSource, newSource);
                 } else {
-                    // 优先级相同，使用置信度判断
-                    if (albumInfo.getConfidence() > existing.getConfidence()) {
+                    // 优先级相同，使用**统一置信度**判断（阶段六 #20）。
+                    // 不能直接比 confidence：各链路量纲不同，快速扫描的 0.92
+                    // 并不比时长序列的 0.80 更可信。
+                    if (albumInfo.getUnifiedConfidence() > existing.getUnifiedConfidence()) {
                         folderAlbumCache.put(folderPath, albumInfo);
                         folderSampleCollectors.remove(folderPath);
-                        log.info("更新文件夹专辑缓存（置信度更高）: {} - {} (置信度: {}% -> {}%)",
+                        log.info("更新文件夹专辑缓存（统一置信度更高）: {} - {} (统一置信度: {}% -> {}%)",
                             albumInfo.getAlbumArtist(), albumInfo.getAlbumTitle(),
-                            String.format("%.2f", existing.getConfidence() * 100),
-                            String.format("%.2f", albumInfo.getConfidence() * 100));
+                            String.format("%.2f", existing.getUnifiedConfidence() * 100),
+                            String.format("%.2f", albumInfo.getUnifiedConfidence() * 100));
                     } else {
                         log.info("保留现有缓存（置信度更高或相同）: {} - {}",
                             existing.getAlbumArtist(), existing.getAlbumTitle());
@@ -318,36 +341,120 @@ public class FolderAlbumCache {
     }
     
     /**
+     * 缓存反验结果（阶段五审查）
+     *
+     * 原先用 boolean 返回值语义不清：强证据的第一次冲突也返回 false，
+     * 很容易被误读成「缓存已被丢弃」。现拆分为三种明确状态。
+     */
+    public enum CacheValidationResult {
+        /** 识别结果与缓存一致（或无法判定） */
+        VALID,
+        /** 冲突已登记，但尚未达到反悔阈值，**缓存仍然在位** */
+        CONFLICT_RETAINED,
+        /** 冲突达到阈值，缓存已被丢弃，需要重新评估 */
+        INVALIDATED
+    }
+
+    /**
      * 验证歌曲是否匹配缓存的专辑
      * @param folderPath 文件夹路径
      * @param fileName 文件名
      * @param albumInfo 识别到的专辑信息
-     * @return true表示匹配，false表示不匹配（可能需要重新评估）
      */
-    public boolean validateAgainstCache(String folderPath, String fileName, AlbumIdentificationInfo albumInfo) {
+    public CacheValidationResult validateAgainstCache(String folderPath, String fileName,
+                                                     AlbumIdentificationInfo albumInfo) {
         CachedAlbumInfo cached = folderAlbumCache.get(folderPath);
         if (cached == null) {
-            return true; // 没有缓存，不需要验证
+            return CacheValidationResult.VALID; // 没有缓存，不需要验证
         }
         
         // 检查是否匹配
         boolean matches = matchesAlbum(albumInfo, cached);
         
         if (!matches) {
-            cached.incrementMismatchCount();
-            log.warn("歌曲识别结果与文件夹专辑不匹配: {} - 期望: {}, 实际: {} (不匹配次数: {})", 
-                fileName, cached.getAlbumTitle(), albumInfo.getAlbumTitle(), cached.getMismatchCount());
-            
-            // 如果不匹配次数过多，触发重新评估
-            if (cached.getMismatchCount() >= 3) {
-                log.warn("不匹配次数过多，清除文件夹专辑缓存，触发重新评估");
-                folderAlbumCache.remove(folderPath);
-                folderSampleCollectors.remove(folderPath);
-                return false;
+            return registerCacheMismatch(folderPath, fileName, cached,
+                albumInfo != null ? albumInfo.getAlbumTitle() : null);
+        }
+
+        // 匹配上了就清零，避免偶发的不匹配累积成误删
+        cached.resetMismatchCount();
+        return CacheValidationResult.VALID;
+    }
+
+    /**
+     * 阶段五 #17：用「此文件的全部候选专辑」反验已锁定的缓存。
+     *
+     * 为什么不直接用 validateAgainstCache：
+     * 那个方法拿的是「最终选定的专辑」，而一旦上游已经锁定了专辑，
+     * 后续每个文件都会被强行套上锁定专辑（applyLockedAlbumInfo），
+     * 结果永远「匹配」，反悔机制实际从未被触发过。
+     *
+     * 这里改用**指纹识别返回的原始候选集合**做判断：
+     * 如果一首歌的所有候选专辑里**没有任何一个**是已锁定的专辑，
+     * 说明这首歌很可能根本不属于这张专辑。
+     *
+     * @return 见 {@link CacheValidationResult}；只有 {@code INVALIDATED} 才代表缓存被丢弃
+     */
+    public CacheValidationResult validateAgainstCandidates(String folderPath, String fileName,
+                                                          List<CandidateReleaseGroup> candidates) {
+        CachedAlbumInfo cached = folderAlbumCache.get(folderPath);
+        if (cached == null) {
+            return CacheValidationResult.VALID;
+        }
+        String cachedRgId = cached.getReleaseGroupId();
+        if (cachedRgId == null || cachedRgId.isEmpty()) {
+            // 缓存本身没有 Release Group（如合成信息），无法做这个判断
+            return CacheValidationResult.VALID;
+        }
+        if (candidates == null || candidates.isEmpty()) {
+            // 这首歌压根没有候选（未收录 / 识别失败），不能拿它当反证
+            return CacheValidationResult.VALID;
+        }
+
+        for (CandidateReleaseGroup candidate : candidates) {
+            if (candidate != null && cachedRgId.equals(candidate.getReleaseGroupId())) {
+                cached.resetMismatchCount();
+                return CacheValidationResult.VALID;
             }
         }
-        
-        return matches;
+
+        return registerCacheMismatch(folderPath, fileName, cached, "候选集中无此专辑");
+    }
+
+    /**
+     * 登记一次「识别结果与缓存专辑冲突」，必要时丢弃缓存。
+     * 反悔阈值按缓存来源分级（阶段五 #17）。
+     */
+    private CacheValidationResult registerCacheMismatch(String folderPath, String fileName,
+                                                        CachedAlbumInfo cached, String actualTitle) {
+        CacheSource source = cached.getSource() != null ? cached.getSource() : CacheSource.UNKNOWN;
+
+        if (source.isManual()) {
+            log.info("歌曲识别结果与人工确认的专辑不一致，以人工确认为准: {} ({} vs {})",
+                fileName, cached.getAlbumTitle(), actualTitle);
+            return CacheValidationResult.VALID;
+        }
+
+        cached.incrementMismatchCount();
+        int threshold = source.isWeakEvidence() ? MAX_WEAK_CACHE_MISMATCHES : MAX_STRONG_CACHE_MISMATCHES;
+
+        log.warn("歌曲识别结果与文件夹专辑不匹配: {} - 期望: {}, 实际: {} (不匹配 {}/{}，来源: {})",
+            fileName, cached.getAlbumTitle(), actualTitle,
+            cached.getMismatchCount(), threshold, source);
+
+        if (cached.getMismatchCount() >= threshold) {
+            log.warn("不匹配次数达到阈值（来源 {} 属于{}证据），清除文件夹专辑缓存，触发重新评估",
+                source, source.isWeakEvidence() ? "弱" : "强");
+            LogCollector.addLog("WARN", "专辑缓存与识别结果冲突，已丢弃缓存并重新评估: " + cached.getAlbumTitle());
+            folderAlbumCache.remove(folderPath, cached);
+            folderSampleCollectors.remove(folderPath);
+            cacheTrackCountMismatches.remove(folderPath);
+            return CacheValidationResult.INVALIDATED;
+        }
+
+        // 注意：到这里表示「冲突已登记、但缓存仍在位」，
+        // 调用方不能把它当成缓存已被丢弃。
+        return CacheValidationResult.CONFLICT_RETAINED;
     }
     
     /**
@@ -468,6 +575,16 @@ public class FolderAlbumCache {
 
         double maxCoverage = (double) bestCount / samplesWithCandidates;
 
+        // 把当前看到的候选快照存下来，供人工确认面板使用（阶段六 #18/#19）。
+        // 不做任何额外的网络请求，候选全部来自已有的 AcoustID 结果。
+        final int totalSamples = samplesWithCandidates;
+        List<FolderCandidate> snapshot = new ArrayList<>();
+        coverageCount.entrySet().stream()
+            .sorted((a, b) -> Integer.compare(b.getValue(), a.getValue()))
+            .forEach(e -> snapshot.add(new FolderCandidate(
+                e.getKey(), titleOf.get(e.getKey()), e.getValue(), totalSamples)));
+        recordFolderCandidates(folderPath, snapshot);
+
         log.info("=== 候选专辑覆盖率检测 ===");
         log.info("有效样本数: {}, 不同候选专辑数: {}", samplesWithCandidates, coverageCount.size());
         log.info("最高覆盖率: {}/{} = {}%  ({})",
@@ -508,6 +625,46 @@ public class FolderAlbumCache {
      */
     public boolean isFolderUnresolved(String folderPath) {
         return folderPath != null && unresolvedFolders.contains(folderPath);
+    }
+
+    /**
+     * 清除「专辑未确定」标记。
+     * 人工在待确认面板里选定了具体的 release 后必须调用，
+     * 否则同目录后续新增的文件会继续被 unresolved 守卫拦住。
+     */
+    public void clearFolderUnresolved(String folderPath) {
+        if (folderPath != null) {
+            unresolvedFolders.remove(folderPath);
+        }
+    }
+
+    /**
+     * 记录文件夹级的候选专辑快照（阶段六 #18）。
+     *
+     * 进入人工确认队列时需要把「当时看到的候选」一并落盘，
+     * 否则重启后面板上会只剩一个文件夹路径，人无从选起。
+     */
+    public void recordFolderCandidates(String folderPath, List<FolderCandidate> candidates) {
+        if (folderPath == null || candidates == null || candidates.isEmpty()) {
+            return;
+        }
+        folderCandidates.put(folderPath, new ArrayList<>(candidates));
+    }
+
+    /**
+     * 获取文件夹级的候选专辑快照（可能为空列表）
+     */
+    public List<FolderCandidate> getFolderCandidates(String folderPath) {
+        List<FolderCandidate> candidates = folderCandidates.get(folderPath);
+        return candidates == null ? new ArrayList<>() : new ArrayList<>(candidates);
+    }
+
+    /**
+     * 获取已缓存的文件夹时长序列（可能为 null）
+     */
+    public List<Integer> getFolderDurationSequence(String folderPath) {
+        List<Integer> durations = folderDurationSequences.get(folderPath);
+        return durations == null ? null : new ArrayList<>(durations);
     }
 
     /**
@@ -726,6 +883,18 @@ public class FolderAlbumCache {
         
         log.info("=== 第一个文件处理：立即执行时长序列匹配 ===");
         log.info("文件夹: {}, 候选专辑数: {}, 音乐文件数: {}", folderPath, candidateReleaseGroups.size(), musicFilesCount);
+
+        // 先把候选快照记下来：即使快速通道失败，后续进人工确认队列时也能拿到可选项。
+        // （覆盖率检测需要 3 个样本才运行，样本不足时候选快照只能靠这里填）
+        if (folderCandidates.get(folderPath) == null) {
+            List<FolderCandidate> snapshot = new ArrayList<>();
+            for (CandidateReleaseGroup c : candidateReleaseGroups) {
+                if (c != null && c.getReleaseGroupId() != null) {
+                    snapshot.add(new FolderCandidate(c.getReleaseGroupId(), c.getTitle(), 1, 1));
+                }
+            }
+            recordFolderCandidates(folderPath, snapshot);
+        }
         
         try {
             // 1. 提取文件夹时长序列
@@ -1083,6 +1252,7 @@ public class FolderAlbumCache {
         folderDurationSequences.remove(folderPath);
         unresolvedFolders.remove(folderPath);
         cacheTrackCountMismatches.remove(folderPath);
+        folderCandidates.remove(folderPath);
         log.info("已清除文件夹专辑缓存: {}", folderPath);
     }
     
@@ -1201,6 +1371,25 @@ public class FolderAlbumCache {
     }
     
     /**
+     * 文件夹级候选专辑快照（用于人工确认队列）
+     * supportCount = 有多少个样本的候选里包含这张专辑
+     */
+    @Data
+    public static class FolderCandidate {
+        private final String releaseGroupId;
+        private final String title;
+        private final int supportCount;
+        private final int totalSamples;
+
+        public FolderCandidate(String releaseGroupId, String title, int supportCount, int totalSamples) {
+            this.releaseGroupId = releaseGroupId;
+            this.title = title;
+            this.supportCount = supportCount;
+            this.totalSamples = totalSamples;
+        }
+    }
+
+    /**
      * 候选专辑信息（来自 AcoustID）
      */
     @Data
@@ -1219,9 +1408,18 @@ public class FolderAlbumCache {
      * 用于区分不同方式产生的缓存，实现优先级控制
      */
     public enum CacheSource {
-        QUICK_SCAN(100),           // 快速扫描（最高优先级）- 基于文件标签和文件夹名的精确匹配
-        DURATION_SEQUENCE(50),     // 时长序列匹配（中等优先级）- 基于音频时长序列的匹配
-        VOTING(30),                // 投票方法（较低优先级）- 基于多个样本的投票
+        // 阶段五 #16：优先级重排。
+        //
+        // 原顺序是 QUICK_SCAN(100) > DURATION_SEQUENCE(50) > VOTING(30)，
+        // 但快速扫描只靠「标签 + 文件夹名」搜一次 MusicBrainz，是**最弱的证据**，
+        // 却被设为最高优先级，导致基于音频本身的时长序列匹配结果**永远无法纠正它**——
+        // 一旦上传者的标签是错的，整个文件夹就全错，而且改不回来。
+        //
+        // 现顺序：手动确认 > 时长序列 > 快速扫描 > 投票 > 未知。
+        MANUAL_CONFIRMED(200),     // 人工确认（最高优先级）- 任何自动链路都不得覆盖
+        DURATION_SEQUENCE(100),    // 时长序列匹配 - 基于音频本身，最强的自动证据
+        QUICK_SCAN(50),            // 快速扫描 - 仅基于文件标签和文件夹名，最弱的自动证据
+        VOTING(30),                // 投票方法 - 基于多个样本的投票
         UNKNOWN(0);                // 未知来源（最低优先级）
         
         private final int priority;
@@ -1237,6 +1435,19 @@ public class FolderAlbumCache {
         public boolean hasHigherPriorityThan(CacheSource other) {
             return this.priority > other.priority;
         }
+
+        /**
+         * 是否为弱证据来源。
+         * 弱证据一旦与后续文件的识别结果冲突，应当**更快地反悔**（见阶段五 #17）。
+         */
+        public boolean isWeakEvidence() {
+            return this == QUICK_SCAN || this == VOTING || this == UNKNOWN;
+        }
+
+        /** 人工确认的结果不接受任何自动反悔 */
+        public boolean isManual() {
+            return this == MANUAL_CONFIRMED;
+        }
     }
     
     /**
@@ -1250,8 +1461,14 @@ public class FolderAlbumCache {
         private final String albumArtist;
         private final int trackCount;
         private final String releaseDate;
-        private final double confidence; // 置信度
+        private final double confidence; // 置信度（该链路自己的原始分数，量纲不统一）
         private final CacheSource source; // 新增：缓存来源，用于优先级判断
+        /**
+         * 阶段六 #20：统一置信度。
+         * confidence 是各链路自己的标尺（快速扫描 0.90、DTW 0.70、投票 0.60），
+         * 直接互相比较是没有意义的。unifiedConfidence 把它们映射到同一把尺子上。
+         */
+        private final double unifiedConfidence;
         private int mismatchCount = 0; // 不匹配次数
         
         public CachedAlbumInfo(String releaseGroupId, String releaseId, String albumTitle, String albumArtist,
@@ -1270,10 +1487,15 @@ public class FolderAlbumCache {
             this.releaseDate = releaseDate;
             this.confidence = confidence;
             this.source = source;
+            this.unifiedConfidence = com.lux032.musicautotagger.util.ConfidenceModel.unify(source, confidence);
         }
         
         public void incrementMismatchCount() {
             this.mismatchCount++;
+        }
+
+        public void resetMismatchCount() {
+            this.mismatchCount = 0;
         }
     }
     

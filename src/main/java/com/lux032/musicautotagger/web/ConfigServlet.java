@@ -97,6 +97,7 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("cueSplitEnabled", "cue.split.enabled"),
             Map.entry("cueSplitOutputDir", "cue.split.outputDir"),
             Map.entry("releaseCountryPriority", "release.countryPriority"),
+            Map.entry("reviewEnabled", "review.enabled"),
             Map.entry("enableLLMMatching", "llm.matching.enabled"),
             Map.entry("llmApiKey", "llm.apiKey"),
             Map.entry("llmApiUrl", "llm.apiUrl"),
@@ -186,6 +187,8 @@ public class ConfigServlet extends HttpServlet {
         handleBoolean(body, updates, propertyUpdates, "cueSplitEnabled");
         handleString(body, updates, propertyUpdates, "cueSplitOutputDir", false);
         handleString(body, updates, propertyUpdates, "releaseCountryPriority", false);
+        // 阶段六：待人工确认开关（队列路径 / 暂存目录仍为只读，只能改 config.properties）
+        handleBoolean(body, updates, propertyUpdates, "reviewEnabled");
         handleBoolean(body, updates, propertyUpdates, "enableLLMMatching");
         handleString(body, updates, propertyUpdates, "llmApiKey", false);
         handleString(body, updates, propertyUpdates, "llmApiUrl", false);
@@ -259,6 +262,7 @@ public class ConfigServlet extends HttpServlet {
         data.put("audioNormalizeFfmpegPath", config.getAudioNormalizeFfmpegPath());
         data.put("cueSplitEnabled", config.isCueSplitEnabled());
         data.put("cueSplitOutputDir", config.getCueSplitOutputDir());
+        data.put("reviewEnabled", config.isReviewEnabled());
         data.put("releaseCountryPriority", config.getReleaseCountryPriority() == null || config.getReleaseCountryPriority().isEmpty()
             ? null
             : String.join(",", config.getReleaseCountryPriority()));
@@ -450,6 +454,9 @@ public class ConfigServlet extends HttpServlet {
         }
         if (updates.containsKey("cueSplitOutputDir")) {
             config.setCueSplitOutputDir((String) updates.get("cueSplitOutputDir"));
+        }
+        if (updates.containsKey("reviewEnabled")) {
+            config.setReviewEnabled((Boolean) updates.get("reviewEnabled"));
         }
         if (updates.containsKey("releaseCountryPriority")) {
             @SuppressWarnings("unchecked")

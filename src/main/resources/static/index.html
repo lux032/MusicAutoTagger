@@ -943,6 +943,10 @@
                             <label for="cfgCueSplitOutputDirectory" data-i18n="config.cue.output.directory">CUE 分割输出目录</label>
                             <input id="cfgCueSplitOutputDirectory" type="text">
                         </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgReviewEnabled" type="checkbox">
+                            <label for="cfgReviewEnabled" data-i18n="config.review.enabled">启用待人工确认（专辑无法确定时不写标签，等待确认）</label>
+                        </div>
                         <div class="form-row">
                             <label for="cfgReleaseCountryPriority" class="label-with-tip">
                                 <span data-i18n="config.release.country.priority">发行地区优先级</span>
@@ -981,6 +985,7 @@
             </div>
             <div class="auth-bar" id="authBar" style="display: none;">
                 <span id="authUser"></span>
+                <button onclick="location.href='review.html'" data-i18n="web.review">待确认</button>
                 <button onclick="openSettings()" data-i18n="web.settings">设置</button>
                 <button onclick="openChangePassword()" data-i18n="web.change.password">修改密码</button>
                 <button onclick="logout()" data-i18n="web.logout">退出登录</button>
@@ -1761,6 +1766,7 @@
                 document.getElementById('cfgAudioNormalizeFfmpegPath').value = cfg.audioNormalizeFfmpegPath || '';
                 document.getElementById('cfgCueSplitEnabled').checked = !!cfg.cueSplitEnabled;
                 document.getElementById('cfgCueSplitOutputDirectory').value = cfg.cueSplitOutputDir || '';
+                document.getElementById('cfgReviewEnabled').checked = !!cfg.reviewEnabled;
                 document.getElementById('cfgReleaseCountryPriority').value = cfg.releaseCountryPriority || '';
                 document.getElementById('loginLanguage').value = cfg.language || 'en_US';
                 document.getElementById('setupLanguage').value = cfg.language || 'en_US';
@@ -1812,6 +1818,7 @@
                 audioNormalizeFfmpegPath: getValue('cfgAudioNormalizeFfmpegPath'),
                 cueSplitEnabled: document.getElementById('cfgCueSplitEnabled').checked,
                 cueSplitOutputDir: getValue('cfgCueSplitOutputDirectory'),
+                reviewEnabled: document.getElementById('cfgReviewEnabled').checked,
                 releaseCountryPriority: getValue('cfgReleaseCountryPriority')
             };
 

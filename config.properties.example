@@ -327,3 +327,22 @@ llm.apiUrl=https://api.anthropic.com/v1/messages
 # LLM Model Names (supports multiple, comma-separated)
 # Example: claude-3-5-sonnet-20241022,gpt-4
 llm.model=claude-3-5-sonnet-20241022
+
+# ========================================
+# Manual Review Queue (Phase 6)
+# ========================================
+
+# Enable the "pending manual review" pipeline.
+# When a folder's tracks are recognized but the album cannot be determined
+# (typically a compilation not yet in MusicBrainz), files are NOT tagged/moved.
+# Instead the folder is queued and waits for a decision in the web panel
+# (/review.html). Disabled by default: with it off, such folders are archived
+# immediately using synthesized album info (previous behaviour).
+review.enabled=false
+
+# Persisted review queue (JSON). Must survive restarts.
+review.queuePath=data/review-queue.json
+
+# Staging directory for transcoded temp files of queued folders.
+# Long-pending items must not keep occupying the system temp directory.
+review.stagingDirectory=data/review-staging
