@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.service;
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.util.FileNameSanitizer;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.tag.FieldKey;
@@ -129,6 +130,9 @@ public class TagWriterService {
             } else {
                 newFileName = artist + " - " + title + extension;
             }
+
+            // 艺术家和曲名各自都不超限,拼起来仍可能超过文件系统的单文件名字节上限
+            newFileName = FileNameSanitizer.limitFileName(newFileName, extension);
         }
 
         // 构建目录结构: 输出目录/专辑艺术家/专辑/文件名
@@ -435,34 +439,10 @@ public class TagWriterService {
     
     /**
      * 清理文件名中的非法字符
-     * 保留<INST>等有意义的标记，只替换文件系统真正不允许的字符
+     * 具体规则(非法字符、长度上限、Windows 保留设备名等)见 {@link FileNameSanitizer}
      */
     private String sanitizeFileName(String fileName) {
-        if (fileName == null) {
-            return "";
-        }
-        
-        // Windows文件系统不允许的字符: \ / : * ? " < > |
-        // 但我们需要保留<INST>这样的标记，所以特殊处理
-        String result = fileName;
-        
-        // 先保护<INST>等特殊标记，临时替换为全角括号
-        result = result.replace("<INST>", "〔INST〕");
-        result = result.replace("<inst>", "〔inst〕");
-        result = result.replace("<Inst>", "〔Inst〕");
-        
-        // 替换文件系统不允许的字符
-        result = result.replaceAll("[\\\\/:*?\"<>|]", "");
-        
-        // 恢复<INST>标记，使用方括号代替尖括号（文件系统安全）
-        result = result.replace("〔INST〕", "[INST]");
-        result = result.replace("〔inst〕", "[inst]");
-        result = result.replace("〔Inst〕", "[Inst]");
-        
-        // 清理多余空格
-        result = result.replaceAll("\\s+", " ").trim();
-        
-        return result;
+        return FileNameSanitizer.sanitize(fileName);
     }
 
     private void ensureWritablePermissions(Path path, boolean isDirectory) {

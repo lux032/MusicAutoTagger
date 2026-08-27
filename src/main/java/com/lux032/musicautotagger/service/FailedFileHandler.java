@@ -2,6 +2,7 @@ package com.lux032.musicautotagger.service;
 
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FileSystemUtils;
 import com.lux032.musicautotagger.util.I18nUtil;
 
@@ -406,12 +407,10 @@ public class FailedFileHandler {
             log.info("LLM 匹配到艺术家: {}", matchedArtist);
 
             // 构建目标路径：outputDirectory/艺术家/专辑/文件
-            String albumName = metadata.getAlbum();
-            if (albumName == null || albumName.trim().isEmpty()) {
-                albumName = "Unknown Album";
-            }
+            // 专辑名直接来自文件自带标签,可能含路径分隔符或超长,必须清洗后才能当目录名
+            String albumName = FileNameSanitizer.sanitize(metadata.getAlbum(), "Unknown Album");
 
-            File artistDir = new File(config.getOutputDirectory(), matchedArtist);
+            File artistDir = new File(config.getOutputDirectory(), FileNameSanitizer.sanitize(matchedArtist));
             File albumDir = new File(artistDir, albumName);
             albumDir.mkdirs();
 
@@ -470,12 +469,10 @@ public class FailedFileHandler {
             }
 
             com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(sourceFile);
-            String albumName = metadata.getAlbum();
-            if (albumName == null || albumName.trim().isEmpty()) {
-                albumName = "Unknown Album";
-            }
+            // 专辑名直接来自文件自带标签,可能含路径分隔符或超长,必须清洗后才能当目录名
+            String albumName = FileNameSanitizer.sanitize(metadata.getAlbum(), "Unknown Album");
 
-            File artistDir = new File(config.getOutputDirectory(), matchedArtist);
+            File artistDir = new File(config.getOutputDirectory(), FileNameSanitizer.sanitize(matchedArtist));
             File albumDir = new File(artistDir, albumName);
             albumDir.mkdirs();
 
