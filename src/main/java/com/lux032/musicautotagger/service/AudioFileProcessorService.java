@@ -10,7 +10,7 @@ import com.lux032.musicautotagger.util.MetadataUtils;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Comparator;
+import com.lux032.musicautotagger.util.AudioFileOrdering;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -757,7 +757,7 @@ public class AudioFileProcessorService {
         } else {
             fileSystemUtils.collectAudioFilesForMarking(albumRootDir, audioFiles);
         }
-        audioFiles.sort(Comparator.comparing(File::getPath));
+        AudioFileOrdering.sort(audioFiles);
 
         Map<String, AudioFormatNormalizer.NormalizationResult> results = new HashMap<>();
         List<File> orderedOriginalFiles = new ArrayList<>(audioFiles.size());
@@ -800,7 +800,7 @@ public class AudioFileProcessorService {
             AudioFormatNormalizer.NormalizationResult result = normalizer.normalizeIfNeeded(originalFile);
             results.put(key, result);
             orderedOriginalFiles.add(originalFile);
-            orderedOriginalFiles.sort(Comparator.comparing(File::getPath));
+            AudioFileOrdering.sort(orderedOriginalFiles);
             durationSequence = null;
         }
 

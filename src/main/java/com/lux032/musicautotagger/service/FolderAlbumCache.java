@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.service;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.util.AudioFileOrdering;
 
 import java.io.File;
 import java.util.*;
@@ -828,8 +829,8 @@ public class FolderAlbumCache {
         List<File> audioFiles = new ArrayList<>();
         collectAudioFilesRecursively(folder, audioFiles);
         
-        // 按完整路径排序，确保多CD专辑顺序正确
-        audioFiles.sort((f1, f2) -> f1.getPath().compareTo(f2.getPath()));
+        // 优先按 DISC/TRACK 标签排序，失败时使用数字感知的目录/文件名排序。
+        AudioFileOrdering.sort(audioFiles);
         
         return audioFiles;
     }

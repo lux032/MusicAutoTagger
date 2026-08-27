@@ -1214,43 +1214,33 @@ public class MusicBrainzClient {
         }
 
         JsonNode bestRelease = null;
-        int bestScore = -1;
-        int bestTrackCountDiff = Integer.MAX_VALUE;
+        double bestScore = Double.NEGATIVE_INFINITY;
 
-        log.info("开始选择最佳专辑版本（文件夹内{}个文件），优先匹配曲目数接近的版本", musicFilesInFolder);
+        log.info("开始选择最佳专辑版本（文件夹内{}个文件），曲目数仅作为加权评分而非硬主键", musicFilesInFolder);
 
         for (JsonNode release : releases) {
-            int currentScore = calculateReleaseScore(release, musicFilesInFolder);
-            
-            // 从media中计算总曲目数
             int trackCount = calculateTrackCount(release);
-            int trackCountDiff = Math.abs(trackCount - musicFilesInFolder);
-            
-            // 统一策略：所有专辑都优先考虑曲目数匹配度
-            // 曲目数差异最小的优先
-            if (trackCountDiff < bestTrackCountDiff) {
+            if (!isTrackCountPlausible(trackCount, musicFilesInFolder)) {
+                int trackCountDiff = trackCount > 0 && musicFilesInFolder > 0
+                    ? Math.abs(trackCount - musicFilesInFolder) : -1;
+                log.debug("跳过曲目数不可信的候选: {} (候选{}首, 文件夹{}首, 差异{})",
+                    release.path("title").asText(), trackCount, musicFilesInFolder, trackCountDiff);
+                continue;
+            }
+
+            double currentScore = calculateReleaseScore(release, musicFilesInFolder);
+            if (currentScore > bestScore) {
                 bestRelease = release;
                 bestScore = currentScore;
-                bestTrackCountDiff = trackCountDiff;
-                log.debug("选择曲目数更接近的专辑: {} ({}首 vs 文件夹{}首)",
-                    release.path("title").asText(), trackCount, musicFilesInFolder);
-            }
-            // 曲目数差异相同时，比较类型评分
-            else if (trackCountDiff == bestTrackCountDiff) {
-                if (currentScore > bestScore) {
+                log.debug("选择综合评分更高的专辑: {} (评分: {}, {}首 vs 文件夹{}首)",
+                    release.path("title").asText(), String.format("%.2f", currentScore),
+                    trackCount, musicFilesInFolder);
+            } else if (Double.compare(currentScore, bestScore) == 0 && bestRelease != null) {
+                // 综合评分相同，优先选择发行时间早的版本，保证选择稳定。
+                String date1 = bestRelease.path("date").asText("");
+                String date2 = release.path("date").asText("");
+                if (!date2.isEmpty() && (date1.isEmpty() || date2.compareTo(date1) < 0)) {
                     bestRelease = release;
-                    bestScore = currentScore;
-                    log.debug("曲目数相同，选择评分更高的: {} (评分: {})",
-                        release.path("title").asText(), currentScore);
-                } else if (currentScore == bestScore) {
-                    // 评分也相同，优先选择发行时间早的
-                    String date1 = bestRelease.path("date").asText("");
-                    String date2 = release.path("date").asText("");
-                    if (!date2.isEmpty() && date2.compareTo(date1) < 0) {
-                        bestRelease = release;
-                        log.debug("曲目数和评分相同，选择发行时间更早的: {} ({})",
-                            release.path("title").asText(), date2);
-                    }
                 }
             }
         }
@@ -1309,143 +1299,96 @@ public class MusicBrainzClient {
                 country);
         }
         
-        return bestRelease != null ? bestRelease : releases.get(0);
+        if (bestRelease == null) {
+            log.warn("允许猜测专辑，但没有候选通过曲目数可信度门槛");
+        }
+        return bestRelease;
+    }
+
+    private boolean isTrackCountPlausible(int trackCount, int musicFilesInFolder) {
+        if (trackCount <= 0 || musicFilesInFolder <= 0) {
+            return false;
+        }
+        int maxDifference = Math.max(2, (int) Math.ceil(musicFilesInFolder * 0.20));
+        return Math.abs(trackCount - musicFilesInFolder) <= maxDifference;
     }
 
     /**
-     * 从release的media中计算总曲目数
+     * 从 release 的 media 中计算音频曲目数。视频 medium/track 与时长序列使用相同口径排除。
      */
     private int calculateTrackCount(JsonNode release) {
+        JsonNode media = release.path("media");
+        if (!media.isArray() || media.isEmpty()) {
+            return release.path("track-count").asInt(0);
+        }
+
         int totalTracks = 0;
-        
-        // 首先尝试从 track-count 字段获取
-        totalTracks = release.path("track-count").asInt(0);
-        
-        // 如果没有track-count字段，从media中计算
-        if (totalTracks == 0) {
-            JsonNode media = release.path("media");
-            if (media.isArray()) {
-                for (JsonNode medium : media) {
-                    int trackCountInMedium = medium.path("track-count").asInt(0);
-                    totalTracks += trackCountInMedium;
+        for (JsonNode medium : media) {
+            String format = medium.path("format").asText("").toLowerCase();
+            if (isVideoFormat(format)) {
+                continue;
+            }
+
+            JsonNode tracks = medium.path("tracks");
+            if (tracks.isArray() && !tracks.isEmpty()) {
+                for (JsonNode track : tracks) {
+                    if (!track.path("recording").path("video").asBoolean(false)) {
+                        totalTracks++;
+                    }
                 }
+            } else {
+                totalTracks += medium.path("track-count").asInt(0);
             }
         }
-        
         return totalTracks;
     }
 
     /**
-     * 计算专辑评分
-     * @param release 发行版本
-     * @param musicFilesInFolder 文件所在文件夹的音乐文件数量
+     * 计算统一量纲的发行评分（0-100 左右）。曲目数、类型、媒体格式分别占 60/30/10，
+     * 避免曲目数既做硬主键又重复以魔数档位计分。
      */
-    private int calculateReleaseScore(JsonNode release, int musicFilesInFolder) {
-        int score = 0;
-        
+    private double calculateReleaseScore(JsonNode release, int musicFilesInFolder) {
+        int trackCount = calculateTrackCount(release);
+        int trackDiff = Math.abs(trackCount - musicFilesInFolder);
+        int allowedDiff = Math.max(2, (int) Math.ceil(musicFilesInFolder * 0.20));
+        double trackScore = 60.0 * Math.max(0.0, 1.0 - (double) trackDiff / (allowedDiff + 1));
+
         JsonNode releaseGroup = release.path("release-group");
         String type = releaseGroup.path("primary-type").asText("").toLowerCase();
-        int trackCount = calculateTrackCount(release);
-        
-        // 1. 类型评分 (0-100)
-        // 根据文件夹内音乐文件数量,优先匹配对应类型
-        boolean isMiniCD = (musicFilesInFolder <= 2);        // 单曲或单曲+伴奏
-        boolean isEPSized = (musicFilesInFolder >= 3 && musicFilesInFolder <= 6);  // EP大小
-        boolean isLargeCollection = (musicFilesInFolder >= 15); // 大型合辑
-        
-        switch (type) {
-            case "album":
-                if (isMiniCD) {
-                    score += 50;  // 迷你CD,降低Album权重
-                } else if (isEPSized) {
-                    score += 90;  // EP大小,略微降低Album权重,优先匹配EP
-                } else if (isLargeCollection) {
-                    // 大型合辑场景：优先匹配Album和Compilation类型
-                    score += 120;
-                } else {
-                    score += 100; // 正常情况,Album优先
-                }
-                break;
-            case "ep":
-                if (isMiniCD) {
-                    score += 70;
-                } else if (isEPSized) {
-                    score += 150; // EP大小,大幅提升EP权重
-                } else if (isLargeCollection && trackCount >= musicFilesInFolder * 0.7) {
-                    // 如果EP曲目数接近文件夹数量,也可能是合辑的一部分
-                    score += 90;
-                } else {
-                    score += 80;
-                }
-                break;
-            case "single":
-                score += isMiniCD ? 150 : 60;  // 迷你CD,大幅提升Single权重
-                break;
-            case "compilation":
-                if (isLargeCollection) {
-                    // 大型合辑场景：Compilation类型也是很好的选择
-                    score += 110;
-                } else {
-                    score += 40;
-                }
-                break;
-            default:
-                score += 20;
+        double typeScore;
+        if (musicFilesInFolder <= 2) {
+            typeScore = "single".equals(type) ? 30 : ("ep".equals(type) ? 20 : 12);
+        } else if (musicFilesInFolder <= 6) {
+            typeScore = "ep".equals(type) ? 30 : ("album".equals(type) ? 24 : 12);
+        } else {
+            typeScore = "album".equals(type) ? 30 : ("compilation".equals(type) ? 27 : 12);
         }
-        
-        if (isMiniCD && type.equals("single")) {
-            log.debug("检测到迷你CD（文件夹内{}个文件），优先匹配Single类型", musicFilesInFolder);
-        }
-        if (isEPSized && type.equals("ep")) {
-            log.debug("检测到EP大小（文件夹内{}个文件），优先匹配EP类型", musicFilesInFolder);
-        }
-        if (isLargeCollection && (type.equals("album") || type.equals("compilation"))) {
-            log.debug("检测到大型合辑（文件夹内{}个文件），当前专辑{}首，类型{}",
-                musicFilesInFolder, trackCount, type.toUpperCase());
-        }
-        
-        // 二级类型降权 (如 Live, Remix)
+
         JsonNode secondaryTypes = releaseGroup.path("secondary-types");
         if (secondaryTypes.isArray()) {
             for (JsonNode secondaryType : secondaryTypes) {
-                String sType = secondaryType.asText().toLowerCase();
-                if (sType.equals("live") || sType.equals("remix") || sType.equals("demo")) {
-                    score -= 15;
+                String secondary = secondaryType.asText("").toLowerCase();
+                if (secondary.equals("live") || secondary.equals("remix") || secondary.equals("demo")) {
+                    typeScore -= 5;
                 }
             }
         }
 
-        // 2. 媒体格式评分 (0-10)
+        double mediaScore = 0;
         JsonNode media = release.path("media");
-        if (media.isArray() && media.size() > 0) {
-            String format = media.get(0).path("format").asText("").toLowerCase();
-            if (format.contains("cd") || format.contains("digital")) {
-                score += 10;
-            } else if (format.contains("vinyl")) {
-                score += 5;
-            }
-        }
-        
-        // 3. 曲目数量匹配度评分
-        if (trackCount > 0) {
-            if (isLargeCollection) {
-                // 大型合辑：曲目数越接近文件夹数量,分数越高
-                int trackDiff = Math.abs(trackCount - musicFilesInFolder);
-                int matchScore = Math.max(0, 50 - trackDiff * 2); // 差异越小分数越高
-                score += matchScore;
-                
-                // 额外奖励：如果曲目数在文件夹数量的80%-120%范围内
-                if (trackCount >= musicFilesInFolder * 0.8 && trackCount <= musicFilesInFolder * 1.2) {
-                    score += 30;
-                    log.debug("曲目数匹配度高: {}首 vs 文件夹{}首 (+30分)", trackCount, musicFilesInFolder);
+        if (media.isArray()) {
+            for (JsonNode medium : media) {
+                String format = medium.path("format").asText("").toLowerCase();
+                if (isVideoFormat(format)) continue;
+                if (format.contains("cd") || format.contains("digital")) {
+                    mediaScore = Math.max(mediaScore, 10);
+                } else if (!format.isEmpty()) {
+                    mediaScore = Math.max(mediaScore, 5);
                 }
-            } else {
-                // 非大型合辑：轻微加分
-                score += Math.min(trackCount, 20);
             }
         }
 
-        return score;
+        return trackScore + Math.max(0, typeScore) + mediaScore;
     }
 
     /**

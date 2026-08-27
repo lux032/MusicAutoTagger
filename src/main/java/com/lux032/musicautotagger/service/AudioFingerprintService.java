@@ -151,20 +151,26 @@ public class AudioFingerprintService {
      */
     public List<Integer> extractDurationSequence(List<File> audioFiles) {
         List<Integer> durations = new ArrayList<>();
-        
+
         log.info("开始批量提取时长序列 - 文件数: {}", audioFiles.size());
-        
+
         for (File audioFile : audioFiles) {
             try {
                 int duration = extractDuration(audioFile);
+                if (duration <= 0) {
+                    log.warn("提取到无效时长，整段序列作废以避免曲序错位: {}", audioFile.getName());
+                    return new ArrayList<>();
+                }
                 durations.add(duration);
             } catch (Exception e) {
-                log.warn("提取时长失败,跳过文件: {} - {}", audioFile.getName(), e.getMessage());
+                // 不能 continue：静默少一个元素会让后续所有时长与官方曲序错位，产生高风险误匹配。
+                log.warn("提取时长失败，整段序列作废: {} - {}", audioFile.getName(), e.getMessage());
+                return new ArrayList<>();
             }
         }
-        
+
         log.info("完成时长序列提取 - 成功: {}/{}", durations.size(), audioFiles.size());
-        
+
         return durations;
     }
     

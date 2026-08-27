@@ -4,6 +4,7 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.util.AudioFileOrdering;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.tag.FieldKey;
@@ -306,8 +307,7 @@ public class QuickScanService {
             }
         }
         
-        // 按文件名排序
-        audioFiles.sort((f1, f2) -> f1.getName().compareTo(f2.getName()));
+        AudioFileOrdering.sort(audioFiles);
         
         return audioFiles;
     }
@@ -323,10 +323,8 @@ public class QuickScanService {
         List<File> audioFiles = new ArrayList<>();
         collectAudioFilesRecursively(folder, audioFiles);
         
-        // 按完整路径排序，这样可以保证：
-        // 1. CD1 的文件在 CD2 前面
-        // 2. 同一文件夹内的文件按文件名排序
-        audioFiles.sort((f1, f2) -> f1.getPath().compareTo(f2.getPath()));
+        // 优先使用标签曲序；无标签时数字感知地处理 CD1/CD10 与文件名前缀。
+        AudioFileOrdering.sort(audioFiles);
         
         return audioFiles;
     }
