@@ -5,6 +5,7 @@ import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.LlmAlbumJudge;
 import com.lux032.musicautotagger.service.llm.LlmClient;
+import com.lux032.musicautotagger.util.MetadataUtils;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
@@ -603,7 +604,11 @@ public class ReviewResolutionService {
             }
             fromRelease.setReleaseId(lockedRelease.getReleaseId());
             fromRelease.setDuration(duration);
-            return fromRelease;
+
+            // 人工确认/LLM 自动确认也会走这里。伴奏和原唱通常等长，
+            // getTrackFromLockedAlbumByDuration() 在多个 0 秒差候选中会取第一首，
+            // 因此必须像正常处理链路一样保留源元数据中明确的版本标题与曲序。
+            return MetadataUtils.mergeMetadata(metadata, fromRelease);
         } catch (Exception e) {
             log.warn("从锁定 release 获取曲目信息失败，保留原识别结果: {} - {}",
                 entry.getFileName(), e.getMessage());
