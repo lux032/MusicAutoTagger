@@ -100,6 +100,18 @@ file.failedDirectory=/app/failed_files
 # Leave empty to not copy partial recognition files
 file.partialDirectory=/app/partial_files
 
+# Partial recognition admission gate (Phase 8 #23/#24)
+# A cover alone is NOT enough: "cover.jpg + Track 01 / Unknown Artist" torrents
+# are very common, and once they land in partialDirectory Plex shows a pile of
+# "Unknown Artist" entries - polluting the library instead of helping.
+# With this on, a folder/file must have a cover AND readable tags:
+#   - >= coverage of files have a non-placeholder album
+#   - >= coverage of files have a track number (or a numeric filename prefix)
+#   - >= coverage of files have a non-placeholder artist
+# Set to false to restore the old "cover only" behaviour.
+file.partial.requireReadableTags=true
+file.partial.minTagCoverage=0.8
+
 # Maximum retry count (for network errors)
 # Default: 3
 file.maxRetries=3
@@ -327,6 +339,39 @@ llm.apiUrl=https://api.anthropic.com/v1/messages
 # LLM Model Names (supports multiple, comma-separated)
 # Example: claude-3-5-sonnet-20241022,gpt-4
 llm.model=claude-3-5-sonnet-20241022
+
+# ---- Generic LLM call settings (Phase 7 #21) ----
+# Wire protocol: auto | anthropic | openai
+# auto = guess from the URL (/v1/messages or *anthropic* -> anthropic, otherwise
+# OpenAI-compatible). Set explicitly if your endpoint uses an unusual URL.
+llm.provider=auto
+
+# Max output tokens. Judgement tasks must be able to output a short reason,
+# so the old hard-coded 100 was too small.
+llm.maxTokens=600
+
+# Temperature. Keep 0 for reproducible decisions.
+llm.temperature=0.0
+
+# Per-request timeout (seconds)
+llm.timeoutSeconds=60
+
+# Retries with exponential backoff for 429 / 5xx / network errors.
+# After the retries are exhausted the next configured endpoint is tried.
+llm.maxRetries=2
+
+# ---- LLM album judgement (Phase 7 #22) ----
+# Adds a "Let the LLM decide" button to the manual review panel.
+# It is a CLOSED multiple-choice question: the model may only pick one of the
+# candidate releases or answer "none of them". It is never asked "what album is
+# this?", because an open question makes it invent album titles, years and
+# track numbers - a bug much harder to notice than the current one.
+llm.album.judge.enabled=false
+
+# Whether an LLM conclusion may be written to disk without human confirmation.
+# Default false: the conclusion is only a suggestion shown in the panel.
+llm.album.autoApply=false
+llm.album.autoApplyMinConfidence=0.85
 
 # ========================================
 # Manual Review Queue (Phase 6)

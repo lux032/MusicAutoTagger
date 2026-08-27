@@ -100,6 +100,17 @@ file.failedDirectory=/app/failed_files
 # 留空则不复制部分识别文件
 file.partialDirectory=/app/partial_files
 
+# 部分识别目录的准入门槛（阶段八 #23/#24）
+# 单靠封面不够：「cover.jpg + Track 01 / Unknown Artist」的种子非常常见，
+# 这类文件进了 partialDirectory 后，Plex 会读出一堆 Unknown Artist，
+# 反而污染音乐库。开启后要求同时满足「有封面」与「标签 Plex 可读」：
+#   - ≥ 覆盖率的文件有非占位值的 album
+#   - ≥ 覆盖率的文件有曲目号（或文件名带数字前缀）
+#   - ≥ 覆盖率的文件有非占位值的 artist
+# 设为 false 可回到旧的「只看封面」行为。
+file.partial.requireReadableTags=true
+file.partial.minTagCoverage=0.8
+
 # 最大重试次数（网络错误时）
 # 默认值：3
 file.maxRetries=3
@@ -287,6 +298,35 @@ llm.apiUrl=https://api.anthropic.com/v1/messages
 # LLM 模型名称（支持多个，用逗号分隔）
 # 示例：claude-3-5-sonnet-20241022,gpt-4
 llm.model=claude-3-5-sonnet-20241022
+
+# ---- LLM 通用调用参数（阶段七 #21） ----
+# 协议：auto | anthropic | openai
+# auto = 按 URL 猜（含 /v1/messages 或 anthropic 归为 Anthropic，其余按 OpenAI 兼容）。
+# 端点 URL 不常规时请显式指定。
+llm.provider=auto
+
+# 最大输出 token。判定类任务需要输出简短理由，原来写死的 100 不够。
+llm.maxTokens=600
+
+# 采样温度。判定任务保持 0，保证结果可复现。
+llm.temperature=0.0
+
+# 单次请求超时（秒）
+llm.timeoutSeconds=60
+
+# 429 / 5xx / 网络错误的指数退避重试次数；用尽后才换下一个端点。
+llm.maxRetries=2
+
+# ---- LLM 专辑判定（阶段七 #22） ----
+# 在人工确认面板上增加「让 LLM 判定」按钮。
+# 它是**封闭选择题**：模型只能从已有候选中选一个，或回答「都不是」，
+# 绝不会问「这是什么专辑」——开放式提问会让它编造专辑名/年份/曲目号，
+# 那比现在的 bug 更难发现。
+llm.album.judge.enabled=false
+
+# 是否允许 LLM 结论直接落盘。默认 false：结论只作为面板上的建议。
+llm.album.autoApply=false
+llm.album.autoApplyMinConfidence=0.85
 
 # ========================================
 # 人工确认队列（阶段六）
