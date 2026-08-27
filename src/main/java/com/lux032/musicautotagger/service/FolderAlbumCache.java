@@ -97,10 +97,26 @@ public class FolderAlbumCache {
      * @return 如果已确定专辑信息则返回，否则返回null
      */
     public CachedAlbumInfo getFolderAlbum(String folderPath, int musicFilesCount) {
+        return getFolderAlbum(folderPath, musicFilesCount, true);
+    }
+
+    public CachedAlbumInfo getFolderAlbum(String folderPath, int musicFilesCount, boolean musicFilesCountReliable) {
         CachedAlbumInfo cached = folderAlbumCache.get(folderPath);
         if (cached != null) {
-            log.debug("使用文件夹缓存的专辑信息: {}", cached.getAlbumTitle());
-            return cached;
+            if (musicFilesCountReliable && cached.getTrackCount() > 0 && musicFilesCount > 0) {
+                int difference = Math.abs(cached.getTrackCount() - musicFilesCount);
+                int allowed = Math.max(2, (int) Math.ceil(musicFilesCount * TRACK_COUNT_TOLERANCE));
+                if (difference > allowed) {
+                    log.warn("缓存专辑曲目数与当前可靠文件数不一致，拒绝复用缓存: {} (缓存{}首/当前{}首)",
+                        cached.getAlbumTitle(), cached.getTrackCount(), musicFilesCount);
+                    folderAlbumCache.remove(folderPath, cached);
+                    cached = null;
+                }
+            }
+            if (cached != null) {
+                log.debug("使用文件夹缓存的专辑信息: {}", cached.getAlbumTitle());
+                return cached;
+            }
         }
         
         // 检查是否正在收集样本
@@ -209,6 +225,12 @@ public class FolderAlbumCache {
      */
     public CachedAlbumInfo addSample(String folderPath, String fileName, int musicFilesCount,
                                      AlbumIdentificationInfo albumInfo, int remainingUnprocessedCount) {
+        return addSample(folderPath, fileName, musicFilesCount, albumInfo, remainingUnprocessedCount, true);
+    }
+
+    public CachedAlbumInfo addSample(String folderPath, String fileName, int musicFilesCount,
+                                     AlbumIdentificationInfo albumInfo, int remainingUnprocessedCount,
+                                     boolean musicFilesCountReliable) {
         // 如果已经确定了专辑，直接返回（不再收集样本）
         CachedAlbumInfo cached = folderAlbumCache.get(folderPath);
         if (cached != null) {
@@ -257,7 +279,8 @@ public class FolderAlbumCache {
         if (collector.getSamples().size() >= effectiveRequiredSamples) {
 
             // 分析样本，确定最佳专辑
-            CachedAlbumInfo bestAlbum = analyzeSamplesAndDetermineAlbum(folderPath, collector, musicFilesCount);
+            CachedAlbumInfo bestAlbum = analyzeSamplesAndDetermineAlbum(
+                folderPath, collector, musicFilesCount, musicFilesCountReliable);
 
             if (bestAlbum != null) {
                 // 缓存确定的专辑信息
@@ -334,7 +357,8 @@ public class FolderAlbumCache {
     /**
      * 分析样本并确定最佳专辑（使用时长序列匹配）
      */
-    private CachedAlbumInfo analyzeSamplesAndDetermineAlbum(String folderPath, AlbumSampleCollector collector, int musicFilesCount) {
+    private CachedAlbumInfo analyzeSamplesAndDetermineAlbum(String folderPath, AlbumSampleCollector collector,
+                                                              int musicFilesCount, boolean musicFilesCountReliable) {
         List<AlbumIdentificationInfo> samples = new ArrayList<>(collector.getSamples().values());
         
         if (samples.isEmpty()) {
@@ -356,11 +380,12 @@ public class FolderAlbumCache {
 
         // 如果启用时长序列匹配，使用新方法
         if (useDurationSequenceMatching) {
-            return analyzeSamplesWithDurationSequence(folderPath, samples, musicFilesCount);
+            return analyzeSamplesWithDurationSequence(
+                folderPath, samples, musicFilesCount, musicFilesCountReliable);
         }
-        
+
         // 否则使用原有的投票方法（保留以备兼容）
-        return analyzeSamplesWithVoting(samples, musicFilesCount);
+        return analyzeSamplesWithVoting(samples, musicFilesCount, musicFilesCountReliable);
     }
     
     /**
@@ -476,7 +501,8 @@ public class FolderAlbumCache {
      */
     private CachedAlbumInfo analyzeSamplesWithDurationSequence(String folderPath,
                                                                List<AlbumIdentificationInfo> samples,
-                                                               int musicFilesCount) {
+                                                               int musicFilesCount,
+                                                               boolean musicFilesCountReliable) {
         log.info("=== 开始时长序列匹配分析 ===");
         log.info("文件夹: {}, 样本数: {}, 音乐文件数: {}", folderPath, samples.size(), musicFilesCount);
 
@@ -498,7 +524,7 @@ public class FolderAlbumCache {
 
             if (folderDurations == null || folderDurations.isEmpty()) {
                 log.warn("无法提取文件夹时长序列,回退到投票方法");
-                return analyzeSamplesWithVoting(samples, musicFilesCount);
+                return analyzeSamplesWithVoting(samples, musicFilesCount, musicFilesCountReliable);
             }
 
             // 2. 收集所有候选专辑的 ReleaseGroupId（关键改进：包含 AcoustID 返回的所有候选）
@@ -529,7 +555,7 @@ public class FolderAlbumCache {
 
             if (allCandidateReleaseGroups.isEmpty()) {
                 log.warn("没有有效的候选 ReleaseGroupId,回退到投票方法");
-                return analyzeSamplesWithVoting(samples, musicFilesCount);
+                return analyzeSamplesWithVoting(samples, musicFilesCount, musicFilesCountReliable);
             }
 
             // 2.3 获取文件夹名称用于相似度匹配
@@ -593,7 +619,7 @@ public class FolderAlbumCache {
 
             if (candidates.isEmpty()) {
                 log.warn("没有获取到任何候选专辑的时长序列,回退到投票方法");
-                return analyzeSamplesWithVoting(samples, musicFilesCount);
+                return analyzeSamplesWithVoting(samples, musicFilesCount, musicFilesCountReliable);
             }
 
             log.info("成功获取 {} 个候选专辑的时长序列", candidates.size());
@@ -622,12 +648,12 @@ public class FolderAlbumCache {
                 );
             } else {
                 log.warn("时长序列匹配未找到合适专辑,回退到投票方法");
-                return analyzeSamplesWithVoting(samples, musicFilesCount);
+                return analyzeSamplesWithVoting(samples, musicFilesCount, musicFilesCountReliable);
             }
 
         } catch (Exception e) {
             log.error("时长序列匹配过程出错,回退到投票方法", e);
-            return analyzeSamplesWithVoting(samples, musicFilesCount);
+            return analyzeSamplesWithVoting(samples, musicFilesCount, musicFilesCountReliable);
         }
     }
     
@@ -644,7 +670,15 @@ public class FolderAlbumCache {
             String folderPath,
             List<CandidateReleaseGroup> candidateReleaseGroups,
             int musicFilesCount) {
-        
+        return determineAlbumWithDurationSequence(folderPath, candidateReleaseGroups, musicFilesCount, true);
+    }
+
+    public CachedAlbumInfo determineAlbumWithDurationSequence(
+            String folderPath,
+            List<CandidateReleaseGroup> candidateReleaseGroups,
+            int musicFilesCount,
+            boolean musicFilesCountReliable) {
+
         if (!useDurationSequenceMatching) {
             log.debug("时长序列匹配已禁用");
             return null;
@@ -774,6 +808,12 @@ public class FolderAlbumCache {
                     return null;
                 }
 
+                // 第一文件快速锁定依赖完整专辑曲目数；输入不可靠时必须降级到多样本流程。
+                if (!musicFilesCountReliable) {
+                    log.info("文件夹曲目数输入不可靠，禁用第一文件立即锁定，改走多样本分析");
+                    return null;
+                }
+
                 // 防御性检查：快速通道风险高，曲目数信息缺失时宁可不走
                 if (candidateTrackCount <= 0 || musicFilesCount <= 0) {
                     log.info("曲目数信息不足（候选 {} 首 / 文件夹 {} 个），不允许第一首立即锁定",
@@ -874,10 +914,15 @@ public class FolderAlbumCache {
      * 使用原有投票方法分析样本（保留用于兼容）
      */
     private CachedAlbumInfo analyzeSamplesWithVoting(List<AlbumIdentificationInfo> samples, int musicFilesCount) {
+        return analyzeSamplesWithVoting(samples, musicFilesCount, true);
+    }
+
+    private CachedAlbumInfo analyzeSamplesWithVoting(List<AlbumIdentificationInfo> samples, int musicFilesCount,
+                                                      boolean musicFilesCountReliable) {
         log.info("使用投票方法分析样本");
-        
-        // 是否为大型专辑
-        boolean isLargeAlbum = musicFilesCount >= LARGE_ALBUM_THRESHOLD;
+
+        // 文件数不可靠时禁用大型专辑的曲目数加权，只按多样本一致性投票。
+        boolean isLargeAlbum = musicFilesCountReliable && musicFilesCount >= LARGE_ALBUM_THRESHOLD;
 
         // 0. 关键：先过滤掉「根本没有专辑信息」的样本。
         //    开启 allowAlbumGuess=false 后，MusicBrainz 可能返回 albumTitle / releaseGroupId 均为空的元数据。

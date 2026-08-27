@@ -145,8 +145,12 @@ public class AudioFileProcessorService {
             File albumRootDir = fileSystemUtils.getAlbumRootDirectory(originalAudioFile);
             String folderPath = albumRootDir.getAbsolutePath();
             
-            // 0.5.1 统计专辑根目录内音乐文件数量（递归统计所有子文件夹）
-            int musicFilesInFolder = fileSystemUtils.countMusicFilesInFolder(originalAudioFile);
+            // 0.5.1 统计专辑根目录内音乐文件数量，并评估这个数字是否适合参与专辑匹配。
+            // count 始终可用于队列/样本规模控制；reliable=false 时禁止曲目数评分和快速锁定。
+            FileSystemUtils.MusicFileCountResult musicFileCount =
+                fileSystemUtils.inspectMusicFilesInFolder(originalAudioFile);
+            int musicFilesInFolder = musicFileCount.getCount();
+            boolean musicFilesCountReliable = musicFileCount.isReliable();
             
             // 0.6. 检测是否为散落在监控目录根目录的单个文件（保底处理）
             boolean isLooseFileInMonitorRoot = fileSystemUtils.isLooseFileInMonitorRoot(originalAudioFile);
@@ -166,7 +170,8 @@ public class AudioFileProcessorService {
             boolean isQuickScanMode = false; // 标记是否使用快速扫描模式处理
             
             // ===== 优先检查文件夹专辑缓存 =====
-            FolderAlbumCache.CachedAlbumInfo cachedAlbum = albumBatchProcessor.getCachedAlbum(folderPath, musicFilesInFolder);
+            FolderAlbumCache.CachedAlbumInfo cachedAlbum = albumBatchProcessor.getCachedAlbum(
+                folderPath, musicFilesInFolder, musicFilesCountReliable);
             
             String lockedAlbumTitle = null;
             String lockedAlbumArtist = null;
@@ -202,6 +207,7 @@ public class AudioFileProcessorService {
                 QuickScanService.QuickScanResult quickResult = quickScanService.quickScan(
                     originalAudioFile,
                     musicFilesInFolder,
+                    musicFilesCountReliable,
                     folderDurations
                 );
 
@@ -277,7 +283,8 @@ public class AudioFileProcessorService {
                     
                     // 立即执行时长序列匹配
                     FolderAlbumCache.CachedAlbumInfo determinedAlbum =
-                        folderAlbumCache.determineAlbumWithDurationSequence(folderPath, allCandidates, musicFilesInFolder);
+                        folderAlbumCache.determineAlbumWithDurationSequence(
+                            folderPath, allCandidates, musicFilesInFolder, musicFilesCountReliable);
                     
                     if (determinedAlbum != null) {
                         // 时长序列匹配成功，设置到缓存中（尊重优先级）
@@ -286,7 +293,7 @@ public class AudioFileProcessorService {
                         // 关键修复：从缓存重新获取专辑信息，确保使用优先级更高的正确值
                         // 这样可以避免时长序列匹配返回的 albumArtist 覆盖快速扫描的正确值
                         FolderAlbumCache.CachedAlbumInfo actualCached =
-                            albumBatchProcessor.getCachedAlbum(folderPath, musicFilesInFolder);
+                            albumBatchProcessor.getCachedAlbum(folderPath, musicFilesInFolder, musicFilesCountReliable);
                         if (actualCached != null) {
                             lockedAlbumTitle = actualCached.getAlbumTitle();
                             lockedAlbumArtist = actualCached.getAlbumArtist();
@@ -400,7 +407,9 @@ public class AudioFileProcessorService {
                 if (!allowAlbumGuess && lockedReleaseGroupId == null) {
                     log.info("专辑文件夹尚未锁定专辑，已禁用「按曲目数猜测专辑」，避免错误归入旧专辑");
                 }
-                detailedMetadata = musicBrainzClient.getRecordingById(bestMatch.getRecordingId(), musicFilesParam, lockedReleaseGroupId, lockedReleaseId, fileDurationSeconds, allowAlbumGuess);
+                detailedMetadata = musicBrainzClient.getRecordingById(
+                    bestMatch.getRecordingId(), musicFilesParam, musicFilesCountReliable,
+                    lockedReleaseGroupId, lockedReleaseId, fileDurationSeconds, allowAlbumGuess);
 
                 if (detailedMetadata == null) {
                     log.warn("无法从 MusicBrainz 获取详细元数据");
@@ -507,6 +516,7 @@ public class AudioFileProcessorService {
                                     lockedReleaseGroupId,
                                     fileDurationSeconds,
                                     musicFilesInFolder,
+                                    musicFilesCountReliable,
                                     lockedAlbumTitle,
                                     lockedAlbumArtist
                                 );
@@ -627,7 +637,8 @@ public class AudioFileProcessorService {
                     audioFile.getName(),
                     musicFilesInFolder,
                     albumInfo,
-                    remainingUnprocessed
+                    remainingUnprocessed,
+                    musicFilesCountReliable
                 );
 
                 if (determinedAlbum != null) {

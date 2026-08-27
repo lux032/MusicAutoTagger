@@ -7,6 +7,12 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import org.jaudiotagger.audio.AudioFileIO;
+import org.jaudiotagger.tag.FieldKey;
+import org.jaudiotagger.tag.Tag;
 
 /**
  * 文件系统工具类
@@ -69,54 +75,143 @@ public class FileSystemUtils {
      * - 如果父文件夹是专辑根目录，递归统计（支持多CD专辑）
      */
     public int countMusicFilesInFolder(File audioFile) {
+        return inspectMusicFilesInFolder(audioFile).getCount();
+    }
+
+    /**
+     * 统计音乐文件，并同时判断这个数字能否代表一张完整、单一的专辑。
+     * 不可靠时调用方仍可将 count 用于队列/样本规模控制，但不得用于候选发行版评分或硬门槛。
+     */
+    public MusicFileCountResult inspectMusicFilesInFolder(File audioFile) {
         File parentDir = audioFile.getParentFile();
         if (parentDir == null || !parentDir.exists() || !parentDir.isDirectory()) {
-            return 1;
+            return new MusicFileCountResult(1, false, Collections.singletonList("无法确定文件所在目录"));
         }
-        
-        // 获取监控目录的规范路径
-        String monitorDirPath;
-        try {
-            monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
-        } catch (IOException e) {
-            monitorDirPath = config.getMonitorDirectory();
-        }
-        
-        // 获取父文件夹的规范路径
-        String parentDirPath;
-        try {
-            parentDirPath = parentDir.getCanonicalPath();
-        } catch (IOException e) {
-            parentDirPath = parentDir.getAbsolutePath();
-        }
-        
-        // 如果父文件夹就是监控目录，只统计当前层级
-        if (parentDirPath.equals(monitorDirPath)) {
-            log.info("文件位于监控目录根目录，只统计当前层级");
-            File[] files = parentDir.listFiles();
-            if (files == null) {
-                return 1;
-            }
-            
-            int count = 0;
-            for (File file : files) {
-                if (file.isFile() && isMusicFile(file)) {
-                    count++;
+
+        boolean looseFile = isLooseFileInMonitorRoot(audioFile);
+        File scanRoot = looseFile ? parentDir : getAlbumRootDirectory(audioFile);
+        List<File> musicFiles = new ArrayList<>();
+        if (looseFile) {
+            File[] files = scanRoot.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    if (file.isFile() && isMusicFile(file)) musicFiles.add(file);
                 }
             }
-            log.info("监控目录根目录中共有 {} 个音乐文件", count);
-            return count;
         } else {
-            // 从父文件夹向上查找专辑根目录（监控目录的第一级子目录）
-            // 创建一个临时文件来调用 getAlbumRootDirectory
-            File tempFile = new File(parentDir, "temp");
-            File albumRootDir = getAlbumRootDirectory(tempFile);
-            
-            // 递归统计专辑根目录下的所有音乐文件
-            int count = countMusicFilesRecursively(albumRootDir);
-            log.info("专辑文件夹 {} 中共有 {} 个音乐文件（包括子文件夹）", albumRootDir.getName(), count);
-            return count;
+            collectAudioFilesForMarking(scanRoot, musicFiles);
         }
+
+        int count = Math.max(1, musicFiles.size());
+        List<String> reasons = new ArrayList<>();
+        if (musicFiles.isEmpty()) reasons.add("目录扫描未找到音乐文件");
+        if (looseFile && musicFiles.size() > 1) reasons.add("监控目录根部混有多个散落音乐文件");
+        if (containsTempFileRecursively(scanRoot)) reasons.add("目录中存在下载临时文件");
+        if (containsCueFile(scanRoot) && musicFiles.size() > 1) reasons.add("CUE 与多个音频文件并存，可能重复统计源大文件");
+
+        Pattern auxiliaryPattern = Pattern.compile(
+            "(?i)(^|[\\s._\\-\\[\\]()])(bonus|sample|preview|snippet|试听|花絮|dj[\\s._-]*mix)([\\s._\\-\\[\\]()]|$)");
+        for (File file : musicFiles) {
+            String relative = scanRoot.toPath().relativize(file.toPath()).toString();
+            if (auxiliaryPattern.matcher(relative).find()) {
+                reasons.add("存在 bonus/试听/DJ mix 等附加音频");
+                break;
+            }
+        }
+
+        Set<String> albumNames = new HashSet<>();
+        Map<Integer, Set<Integer>> tracksByDisc = new HashMap<>();
+        Map<Integer, Integer> declaredTotalsByDisc = new HashMap<>();
+        for (File file : musicFiles) {
+            try {
+                Tag tag = AudioFileIO.read(file).getTag();
+                if (tag == null) continue;
+                String album = tag.getFirst(FieldKey.ALBUM);
+                if (album != null && !album.trim().isEmpty() && !"unknown album".equalsIgnoreCase(album.trim())) {
+                    albumNames.add(album.trim().toLowerCase(Locale.ROOT));
+                }
+                int disc = parseLeadingNumber(tag.getFirst(FieldKey.DISC_NO), 1);
+                String trackValue = tag.getFirst(FieldKey.TRACK);
+                int track = parseLeadingNumber(trackValue, 0);
+                if (track > 0) tracksByDisc.computeIfAbsent(disc, k -> new HashSet<>()).add(track);
+                int declaredTotal = parseDeclaredTotal(trackValue);
+                if (declaredTotal > 0) declaredTotalsByDisc.merge(disc, declaredTotal, Math::max);
+            } catch (Exception e) {
+                log.debug("检查曲目数可靠性时无法读取标签: {} - {}", file.getName(), e.getMessage());
+            }
+        }
+        if (albumNames.size() > 1) reasons.add("音频标签包含多个不同专辑名");
+        for (Map.Entry<Integer, Set<Integer>> entry : tracksByDisc.entrySet()) {
+            Set<Integer> tracks = entry.getValue();
+            int maxTrack = tracks.stream().mapToInt(Integer::intValue).max().orElse(0);
+            if (maxTrack > tracks.size()) {
+                reasons.add("碟 " + entry.getKey() + " 的曲号存在缺口，可能只下载了专辑子集");
+                break;
+            }
+            Integer declaredTotal = declaredTotalsByDisc.get(entry.getKey());
+            if (declaredTotal != null && declaredTotal != tracks.size()) {
+                reasons.add("碟 " + entry.getKey() + " 的标签总曲目数与实际文件数不一致");
+                break;
+            }
+        }
+
+        boolean reliable = reasons.isEmpty();
+        if (reliable) {
+            log.info("{} 中共有 {} 个音乐文件，曲目数输入判定为可靠", scanRoot.getName(), count);
+        } else {
+            log.warn("{} 中共有 {} 个音乐文件，但曲目数输入不可靠: {}", scanRoot.getName(), count, String.join("；", reasons));
+        }
+        return new MusicFileCountResult(count, reliable, reasons);
+    }
+
+    private boolean containsTempFileRecursively(File directory) {
+        File[] files = directory.listFiles();
+        if (files == null) return false;
+        for (File file : files) {
+            if (file.isDirectory() && containsTempFileRecursively(file)) return true;
+            String name = file.getName().toLowerCase(Locale.ROOT);
+            if (file.isFile() && (name.endsWith(".!qb") || name.endsWith(".part") || name.endsWith(".ut!") ||
+                name.endsWith(".crdownload") || name.endsWith(".tmp") || name.endsWith(".download"))) return true;
+        }
+        return false;
+    }
+
+    private boolean containsCueFile(File directory) {
+        File[] files = directory.listFiles();
+        if (files == null) return false;
+        for (File file : files) {
+            if (file.isDirectory() && containsCueFile(file)) return true;
+            if (file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(".cue")) return true;
+        }
+        return false;
+    }
+
+    private int parseLeadingNumber(String value, int fallback) {
+        if (value == null) return fallback;
+        Matcher matcher = Pattern.compile("^\\s*(\\d+)").matcher(value);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : fallback;
+    }
+
+    private int parseDeclaredTotal(String value) {
+        if (value == null) return 0;
+        Matcher matcher = Pattern.compile("/\\s*(\\d+)").matcher(value);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : 0;
+    }
+
+    public static final class MusicFileCountResult {
+        private final int count;
+        private final boolean reliable;
+        private final List<String> reasons;
+
+        public MusicFileCountResult(int count, boolean reliable, List<String> reasons) {
+            this.count = count;
+            this.reliable = reliable;
+            this.reasons = Collections.unmodifiableList(new ArrayList<>(reasons));
+        }
+
+        public int getCount() { return count; }
+        public boolean isReliable() { return reliable; }
+        public List<String> getReasons() { return reasons; }
     }
     
     /**

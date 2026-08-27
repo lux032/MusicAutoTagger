@@ -544,6 +544,15 @@ public class AlbumBatchProcessor {
                                                               int remainingUnprocessedCount) {
         return folderAlbumCache.addSample(folderPath, fileName, musicFilesInFolder, albumInfo, remainingUnprocessedCount);
     }
+
+    public FolderAlbumCache.CachedAlbumInfo tryDetermineAlbum(String folderPath, String fileName,
+                                                              int musicFilesInFolder,
+                                                              FolderAlbumCache.AlbumIdentificationInfo albumInfo,
+                                                              int remainingUnprocessedCount,
+                                                              boolean musicFilesCountReliable) {
+        return folderAlbumCache.addSample(folderPath, fileName, musicFilesInFolder, albumInfo,
+            remainingUnprocessedCount, musicFilesCountReliable);
+    }
     
     /**
      * 获取待处理文件数量
@@ -557,6 +566,11 @@ public class AlbumBatchProcessor {
      */
     public FolderAlbumCache.CachedAlbumInfo getCachedAlbum(String folderPath, int musicFilesInFolder) {
         return folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder);
+    }
+
+    public FolderAlbumCache.CachedAlbumInfo getCachedAlbum(String folderPath, int musicFilesInFolder,
+                                                            boolean musicFilesCountReliable) {
+        return folderAlbumCache.getFolderAlbum(folderPath, musicFilesInFolder, musicFilesCountReliable);
     }
     
     /**

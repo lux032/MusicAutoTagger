@@ -75,6 +75,14 @@ public class QuickScanService {
      * @return 如果快速扫描成功返回结果,否则返回null进入第二级扫描
      */
     public QuickScanResult quickScan(File audioFile, int musicFilesInFolder, List<Integer> folderDurations) {
+        return quickScan(audioFile, musicFilesInFolder, true, folderDurations);
+    }
+
+    /**
+     * @param musicFilesCountReliable false 时，曲目数仅供日志使用，不参与候选过滤或评分
+     */
+    public QuickScanResult quickScan(File audioFile, int musicFilesInFolder,
+                                     boolean musicFilesCountReliable, List<Integer> folderDurations) {
         log.info("========================================");
         log.info("开始第一级快速扫描: {}", audioFile.getName());
         log.info("========================================");
@@ -119,7 +127,7 @@ public class QuickScanService {
             
             // 4. 为每个候选专辑获取时长序列并匹配
             QuickScanResult bestMatch = findBestMatchByDuration(
-                searchResults, durationsToUse, musicFilesInFolder
+                searchResults, durationsToUse, musicFilesInFolder, musicFilesCountReliable
             );
             
             if (bestMatch != null && bestMatch.getSimilarity() >= QUICK_MATCH_THRESHOLD) {
@@ -403,7 +411,8 @@ public class QuickScanService {
     private QuickScanResult findBestMatchByDuration(
             List<MusicMetadata> candidates,
             List<Integer> folderDurations,
-            int musicFilesInFolder) {
+            int musicFilesInFolder,
+            boolean musicFilesCountReliable) {
         
         QuickScanResult bestResult = null;
         double bestSimilarity = 0.0;
@@ -427,7 +436,14 @@ public class QuickScanService {
                     continue;
                 }
                 
-                // 计算相似度
+                if (musicFilesCountReliable && candidate.getTrackCount() > 0 &&
+                    Math.abs(candidate.getTrackCount() - musicFilesInFolder) >
+                        Math.max(2, (int) Math.ceil(musicFilesInFolder * 0.20))) {
+                    log.debug("候选专辑 {} 的曲目数与可靠文件数差异过大，跳过", candidate.getAlbum());
+                    continue;
+                }
+
+                // 计算相似度；文件数不可靠时只依赖完整时长序列，不做曲目数加权。
                 double similarity = durationSequenceService.calculateSimilarityDTW(
                     folderDurations, albumDurations
                 );
