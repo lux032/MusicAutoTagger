@@ -1,11 +1,12 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-i18n-title-key="review.page.title">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>待人工确认 - Music Auto Tagger</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=7">
+    <link rel="stylesheet" href="app.css?v=8">
+    <script src="i18n.js?v=1"></script>
     <style>
         .layout {
             display: grid;
@@ -15,7 +16,7 @@
         }
         @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
 
-        .queue-list { max-height: calc(100vh - 250px); overflow-y: auto; display: grid; gap: 10px; }
+        .queue-list { max-height: calc(100vh - 250px); overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 
         .item {
             border: 1px solid var(--border);
@@ -105,28 +106,28 @@
             <div class="brand">
                 <img class="brand-logo" src="logo.png" alt="Music Auto Tagger">
                 <div>
-                    <div class="brand-title">待人工确认</div>
-                    <div class="brand-subtitle">曲目已识别、专辑无法确定的文件夹，文件保持原样未写入标签</div>
+                    <div class="brand-title" data-i18n="review.page.title">待人工确认</div>
+                    <div class="brand-subtitle" data-i18n="review.page.subtitle">曲目已识别、专辑无法确定的文件夹，文件保持原样未写入标签</div>
                 </div>
             </div>
         </div>
         <nav class="navbar">
             <button class="nav-toggle" onclick="document.getElementById('navGroup').classList.toggle('open')" aria-label="menu">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                菜单
+                <span data-i18n="web.menu">菜单</span>
             </button>
             <div class="nav-group" id="navGroup">
                 <button class="nav-btn" onclick="loadList()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                    刷新
+                    <span data-i18n="review.nav.refresh">刷新</span>
                 </button>
                 <a class="nav-btn" href="recovery.html">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
-                    重新识别
+                    <span data-i18n="web.recovery">重新识别</span>
                 </a>
                 <a class="nav-btn active" href="index.html">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"></path><path d="M9 21V12h6v9"></path><path d="M5 10v11h14V10"></path></svg>
-                    返回面板
+                    <span data-i18n="review.nav.back">返回面板</span>
                 </a>
             </div>
         </nav>
@@ -139,19 +140,19 @@
                     <span class="card-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
                     </span>
-                    队列
+                    <span data-i18n="review.queue">队列</span>
                 </div>
             </div>
             <div class="form-row" style="margin-bottom: 12px;">
                 <select id="statusFilter" onchange="loadList()">
-                    <option value="PENDING_REVIEW">待确认</option>
-                    <option value="ALL">全部</option>
-                    <option value="CONFIRMED">已确认</option>
-                    <option value="ARCHIVED_UNVERIFIED">按未收录归档</option>
-                    <option value="REJECTED">已忽略</option>
+                    <option value="PENDING_REVIEW" data-i18n="review.filter.pending">待确认</option>
+                    <option value="ALL" data-i18n="review.filter.all">全部</option>
+                    <option value="CONFIRMED" data-i18n="review.filter.confirmed">已确认</option>
+                    <option value="ARCHIVED_UNVERIFIED" data-i18n="review.filter.archived">按未收录归档</option>
+                    <option value="REJECTED" data-i18n="review.filter.rejected">已忽略</option>
                 </select>
             </div>
-            <div class="queue-list" id="list"><div class="empty">加载中...</div></div>
+            <div class="queue-list" id="list"><div class="empty" data-i18n="review.loading">加载中...</div></div>
         </section>
 
         <section class="card">
@@ -160,10 +161,10 @@
                     <span class="card-icon">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
                     </span>
-                    详情
+                    <span data-i18n="review.detail">详情</span>
                 </div>
             </div>
-            <div id="detail"><div class="empty">请从左侧选择一个文件夹</div></div>
+            <div id="detail"><div class="empty" data-i18n="review.select.folder">请从左侧选择一个文件夹</div></div>
         </section>
     </div>
 
@@ -178,33 +179,33 @@
 <!-- 确认联网候选：以前是五个连续的 prompt()，改成一个表单弹窗 -->
 <div class="overlay" id="onlineDialog">
     <div class="dialog" style="width: min(520px, 96vw);">
-        <div class="dialog-title">确认联网候选</div>
-        <div class="dialog-subtitle">所有文件先写入工作目录，全部成功后才原子提交归档。</div>
+        <div class="dialog-title" data-i18n="review.online.dialog.title">确认联网候选</div>
+        <div class="dialog-subtitle" data-i18n="review.online.dialog.subtitle">所有文件先写入工作目录，全部成功后才原子提交归档。</div>
         <div class="dialog-stack">
             <div class="form-row">
-                <label for="ocTitle">最终专辑名</label>
+                <label for="ocTitle" data-i18n="review.online.title">最终专辑名</label>
                 <input id="ocTitle" type="text">
             </div>
             <div class="form-row">
-                <label for="ocArtist">最终专辑艺术家</label>
+                <label for="ocArtist" data-i18n="review.online.artist">最终专辑艺术家</label>
                 <input id="ocArtist" type="text">
             </div>
             <div class="form-row">
-                <label for="ocDate">发行日期</label>
-                <input id="ocDate" type="text" placeholder="保留来源精度，可留空">
+                <label for="ocDate" data-i18n="review.online.date">发行日期</label>
+                <input id="ocDate" type="text" placeholder="保留来源精度，可留空" data-i18n-placeholder="review.online.date.placeholder">
             </div>
             <div class="form-row">
-                <label for="ocEdition">版本信息</label>
-                <input id="ocEdition" type="text" placeholder="与专辑名分开保存，可留空">
+                <label for="ocEdition" data-i18n="review.online.edition">版本信息</label>
+                <input id="ocEdition" type="text" placeholder="与专辑名分开保存，可留空" data-i18n-placeholder="review.online.edition.placeholder">
             </div>
             <div class="form-row">
-                <label for="ocDir">归档目录名</label>
-                <input id="ocDir" type="text" placeholder="留空则自动生成">
+                <label for="ocDir" data-i18n="review.online.dir">归档目录名</label>
+                <input id="ocDir" type="text" placeholder="留空则自动生成" data-i18n-placeholder="review.online.dir.placeholder">
             </div>
         </div>
         <div class="dialog-actions">
-            <button class="btn ghost" onclick="closeOnlineDialog()">取消</button>
-            <button class="btn primary" onclick="submitOnlineConfirm()">确认归档</button>
+            <button class="btn ghost" onclick="closeOnlineDialog()" data-i18n="web.cancel">取消</button>
+            <button class="btn primary" onclick="submitOnlineConfirm()" data-i18n="review.online.submit">确认归档</button>
         </div>
     </div>
 </div>
@@ -212,15 +213,15 @@
 <!-- 标记失败 / 忽略 -->
 <div class="overlay" id="rejectDialog">
     <div class="dialog">
-        <div class="dialog-title">标记失败 / 忽略</div>
-        <div class="dialog-subtitle">不写标签、不归档，仅记录以避免下一轮扫描反复重试。</div>
+        <div class="dialog-title" data-i18n="review.reject.dialog.title">标记失败 / 忽略</div>
+        <div class="dialog-subtitle" data-i18n="review.reject.dialog.subtitle">不写标签、不归档，仅记录以避免下一轮扫描反复重试。</div>
         <div class="form-row">
-            <label for="rejectNote">备注（可留空）</label>
+            <label for="rejectNote" data-i18n="review.reject.note">备注（可留空）</label>
             <input id="rejectNote" type="text">
         </div>
         <div class="dialog-actions">
-            <button class="btn ghost" onclick="closeRejectDialog()">取消</button>
-            <button class="btn danger" onclick="submitReject()">确认忽略</button>
+            <button class="btn ghost" onclick="closeRejectDialog()" data-i18n="web.cancel">取消</button>
+            <button class="btn danger" onclick="submitReject()" data-i18n="review.reject.submit">确认忽略</button>
         </div>
     </div>
 </div>
@@ -230,19 +231,24 @@
 <script>
     let csrfToken = null;
     let currentId = null;
+    const t = (k, d) => I18n.t(k, d);
+    const tf = (k, ...a) => I18n.tf(k, ...a);
 
     async function init() {
+        await I18n.load();
+        I18n.apply();
         try {
             const resp = await fetch('/api/auth/status');
             const data = await resp.json();
             if (!data.authenticated) {
                 document.body.innerHTML = '<div class="app" style="max-width: 460px; margin-top: 12vh;">'
-                    + '<div class="card"><div class="empty">未登录，请先在 <a href="/index.html">主面板</a> 登录。</div></div></div>';
+                    + '<div class="card"><div class="empty">' + escapeHtml(t('review.not.logged.in'))
+                    + ' <a href="/index.html">' + escapeHtml(t('review.main.panel')) + '</a>.</div></div></div>';
                 return;
             }
             csrfToken = data.csrfToken;
         } catch (e) {
-            toast('无法获取登录状态: ' + e.message);
+            toast(t('review.auth.failed') + ': ' + e.message);
             return;
         }
         loadList();
@@ -269,31 +275,34 @@
     }
 
     // 后端错误码 -> 人话。GET（展开）与 POST（处置）共用。
-    const ERROR_MESSAGES = {
-        'item.already.resolved': '该条目已被处置过（可能是重复提交）',
-        'files.missing': '有原始文件已不存在，为避免只归档一部分，已拒绝本次处理',
-        'candidate.not.found': '找不到所选候选',
-        'release.id.required': '请先展开版本明细，并选择一个具体的 Release',
-        'csrf.invalid': '会话已失效，请重新登录',
-        'candidates.expand.failed': '候选版本尚未成功展开（MusicBrainz 可能暂时不可用），请点「展开版本明细」重试后再操作',
-        'llm.judge.disabled': 'LLM 判定未启用（llm.album.judge.enabled=false）',
-        'llm.not.configured': '未配置可用的 LLM（llm.apiKey / llm.apiUrl / llm.model）',
-        'llm.call.failed': 'LLM 调用失败，请检查网络、API Key 与协议配置'
+    const ERROR_KEYS = {
+        'item.already.resolved': 'review.error.already.resolved',
+        'files.missing': 'review.error.files.missing',
+        'candidate.not.found': 'review.error.candidate.not.found',
+        'release.id.required': 'review.error.release.required',
+        'csrf.invalid': 'review.error.csrf',
+        'candidates.expand.failed': 'review.error.expand.failed',
+        'llm.judge.disabled': 'review.error.llm.disabled',
+        'llm.not.configured': 'review.error.llm.not.configured',
+        'llm.call.failed': 'review.error.llm.call.failed'
     };
 
     function humanError(message) {
-        return ERROR_MESSAGES[message] || message;
+        const key = ERROR_KEYS[message];
+        return key ? t(key) : message;
     }
 
     function statusBadge(status) {
         const map = {
-            PENDING_REVIEW: ['pending', '待确认'],
-            CONFIRMED: ['confirmed', '已确认'],
-            ARCHIVED_UNVERIFIED: ['unverified', '未收录归档'],
-            REJECTED: ['rejected', '已忽略']
+            PENDING_REVIEW: ['pending', 'review.status.pending'],
+            CONFIRMED: ['confirmed', 'review.status.confirmed'],
+            ARCHIVED_UNVERIFIED: ['unverified', 'review.status.archived'],
+            REJECTED: ['rejected', 'review.status.rejected']
         };
-        const [cls, text] = map[status] || ['', status];
-        return `<span class="badge ${cls}">${text}</span>`;
+        const entry = map[status];
+        const cls = entry ? entry[0] : '';
+        const text = entry ? t(entry[1]) : status;
+        return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
     }
 
     async function loadList() {
@@ -302,7 +311,7 @@
         try {
             const data = await api('/api/review/list?status=' + encodeURIComponent(status));
             if (!data.items || data.items.length === 0) {
-                listEl.innerHTML = '<div class="empty">没有条目</div>';
+                listEl.innerHTML = `<div class="empty">${escapeHtml(t('review.no.items'))}</div>`;
                 return;
             }
             listEl.innerHTML = data.items.map(item => {
@@ -315,33 +324,33 @@
                     <div class="name">${escapeHtml(item.folderName || '')}</div>
                     <div class="meta">
                         ${statusBadge(item.status)}
-                        <span>${item.fileCount} 个文件 · 本地候选 ${item.candidateCount} 个</span>
+                        <span>${escapeHtml(tf('review.files.count', item.fileCount, item.candidateCount))}</span>
                     </div>
                     <div class="item-signals">
-                        ${localConfidence === null ? '' : `<span class="signal">本地证据 ${localConfidence}</span>`}
-                        ${onlineCount ? `<span class="signal online">联网候选 ${onlineCount} 个 · 最佳覆盖 ${percent(item.bestOnlineTrackCoverage)}</span>` : ''}
-                        ${llm ? `<span class="signal llm">LLM 建议 ${percent(llm.confidence)}</span>` : ''}
-                        ${item.onlineEvidenceStale ? '<span class="signal stale">联网证据已过期</span>' : ''}
+                        ${localConfidence === null ? '' : `<span class="signal">${escapeHtml(tf('review.signal.local', localConfidence))}</span>`}
+                        ${onlineCount ? `<span class="signal online">${escapeHtml(tf('review.signal.online', onlineCount, percent(item.bestOnlineTrackCoverage)))}</span>` : ''}
+                        ${llm ? `<span class="signal llm">${escapeHtml(tf('review.signal.llm', percent(llm.confidence)))}</span>` : ''}
+                        ${item.onlineEvidenceStale ? `<span class="signal stale">${escapeHtml(t('review.signal.stale'))}</span>` : ''}
                     </div>
                     <div class="meta">${escapeHtml(item.reason || '')}</div>
                 </div>`;
             }).join('');
         } catch (e) {
-            listEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(e.message)}</div>`;
+            listEl.innerHTML = `<div class="empty">${escapeHtml(t('review.load.failed'))}: ${escapeHtml(e.message)}</div>`;
         }
     }
 
     async function openItem(id, expand) {
         currentId = id;
         const detailEl = document.getElementById('detail');
-        detailEl.innerHTML = '<div class="empty">加载中...</div>';
+        detailEl.innerHTML = `<div class="empty">${escapeHtml(t('review.loading'))}</div>`;
         try {
             const url = '/api/review/item?id=' + encodeURIComponent(id) + (expand ? '&expand=1' : '');
             const data = await api(url);
             renderDetail(data.item);
             loadList();
         } catch (e) {
-            detailEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(humanError(e.message))}</div>`;
+            detailEl.innerHTML = `<div class="empty">${escapeHtml(t('review.load.failed'))}: ${escapeHtml(humanError(e.message))}</div>`;
         }
     }
 
@@ -360,8 +369,8 @@
             // 后端同样做了硬校验，这里只是避免误导。
             const confirmCell = !pending ? ''
                 : (key
-                    ? `<button class="btn primary sm" onclick="confirmCandidate('${key}','${rg}')">确认</button>`
-                    : `<span class="hint">需先展开版本明细</span>`);
+                    ? `<button class="btn primary sm" onclick="confirmCandidate('${key}','${rg}')">${escapeHtml(t('review.confirm'))}</button>`
+                    : `<span class="hint">${escapeHtml(t('review.need.expand'))}</span>`);
             return `<tr>
                 <td>${escapeHtml(c.title || '')}<div class="hint">${escapeHtml(c.releaseId || c.releaseGroupId || '')}</div></td>
                 <td>${escapeHtml(c.mediaFormat || '-')}</td>
@@ -375,20 +384,17 @@
         const llm = item.llmSuggestion;
         const llmBlock = !llm ? '' : `
             <div class="section">
-                <div class="section-title">LLM 判定建议</div>
+                <div class="section-title">${escapeHtml(t('review.llm.section'))}</div>
                 <div class="panel">
                 <div>${llm.choiceIndex > 0
-                    ? '建议选择：<strong>' + escapeHtml(llm.suggestedTitle || '') + '</strong>'
-                    : '建议：<strong>候选里都不是</strong>'
-                    }${llm.unreleasedCompilation ? ' · 判定为 <strong>MusicBrainz 未收录的精选集/自制合辑</strong>' : ''}</div>
-                <div class="hint">置信度 ${(llm.confidence * 100).toFixed(0)}% ·
-                    模型 ${escapeHtml(llm.model || '')} (${escapeHtml(llm.provider || '')})
-                    ${llm.applied ? '· <strong>已自动落盘</strong>' : '· 仅为建议，仍需人工确认'}</div>
-                <div class="hint">理由：${escapeHtml(llm.reason || '')}</div>
-                <div class="hint">
-                    LLM 只被允许在上面的候选中选择或回答「都不是」，不会自行给出专辑名与年份，
-                    因此它不会编造一张不存在的专辑；但它仍可能选错，请对照时长序列复核。
-                </div>
+                    ? escapeHtml(t('review.llm.suggest')) + ' <strong>' + escapeHtml(llm.suggestedTitle || '') + '</strong>'
+                    : '<strong>' + escapeHtml(t('review.llm.none')) + '</strong>'
+                    }${llm.unreleasedCompilation ? ' · <strong>' + escapeHtml(t('review.llm.unreleased')) + '</strong>' : ''}</div>
+                <div class="hint">${escapeHtml(tf('review.llm.confidence', (llm.confidence * 100).toFixed(0) + '%'))} ·
+                    ${escapeHtml(tf('review.llm.model', llm.model || '', llm.provider || ''))}
+                    ${llm.applied ? '· <strong>' + escapeHtml(t('review.llm.applied')) + '</strong>' : '· ' + escapeHtml(t('review.llm.suggestion.only'))}</div>
+                <div class="hint">${escapeHtml(tf('review.llm.reason', llm.reason || ''))}</div>
+                <div class="hint">${escapeHtml(t('review.llm.note'))}</div>
                 </div>
             </div>`;
 
@@ -397,21 +403,21 @@
             const totalLocal = (item.files || []).length;
             const trackRows = (c.tracks || []).filter(t => t.matchedFilePath).map(t => `
                 <div class="hint">${t.discNo || 1}-${t.trackNo || '-'} ${escapeHtml(t.title || '')}
-                    → ${escapeHtml(baseName(t.matchedFilePath))} · 匹配 ${percent(t.matchConfidence)}</div>`).join('');
+                    → ${escapeHtml(baseName(t.matchedFilePath))} · ${escapeHtml(tf('review.match', percent(t.matchConfidence)))}</div>`).join('');
             return `<div class="panel accent">
             <div><strong>${escapeHtml(c.title || '')}</strong>${c.edition ? ' · ' + escapeHtml(c.edition) : ''}</div>
-            <div class="hint">${escapeHtml(c.albumArtist || c.artist || '')} · ${escapeHtml(c.releaseDate || '日期未知')}</div>
+            <div class="hint">${escapeHtml(c.albumArtist || c.artist || '')} · ${escapeHtml(c.releaseDate || t('review.date.unknown'))}</div>
             <div class="item-signals">
-                <span class="signal online">搜索来源自评 ${percent(c.confidence)}</span>
-                <span class="signal">可靠逐曲匹配 ${matchedTracks}/${totalLocal}</span>
-                <span class="signal">本地覆盖率 ${percent(c.trackCoverage)}</span>
+                <span class="signal online">${escapeHtml(tf('review.signal.source.self', percent(c.confidence)))}</span>
+                <span class="signal">${escapeHtml(tf('review.signal.reliable.match', matchedTracks, totalLocal))}</span>
+                <span class="signal">${escapeHtml(tf('review.signal.local.coverage', percent(c.trackCoverage)))}</span>
             </div>
             <div class="hint">${escapeHtml(c.reason || '')}</div>
-            <div class="hint">曲目表 ${(c.tracks||[]).length} 首 · 来源 ${(c.sources||[]).length} 个</div>
-            ${trackRows ? `<details class="track-match"><summary>查看逐曲匹配明细</summary>${trackRows}</details>` : ''}
+            <div class="hint">${escapeHtml(tf('review.tracklist.summary', (c.tracks||[]).length, (c.sources||[]).length))}</div>
+            ${trackRows ? `<details class="track-match"><summary>${escapeHtml(t('review.track.match.detail'))}</summary>${trackRows}</details>` : ''}
             ${(c.sources||[]).map(s=>`<div class="hint">[${escapeHtml(s.reliability||'')}] ${linkOrText(s.url, s.title||s.domain||s.url)}${s.snippet?' — '+escapeHtml(s.snippet):''}</div>`).join('')}
-            ${safeUrl(c.coverUrl)?`<div class="hint">联网封面：${linkOrText(c.coverUrl,'预览')}（确认时默认不自动使用）</div>`:''}
-            ${pending && !item.onlineEvidenceStale ? `<button class="btn primary sm" style="margin-top:10px" onclick='confirmOnline(${JSON.stringify(c.id)},${JSON.stringify(c.title||'')},${JSON.stringify(c.albumArtist||c.artist||'')},${JSON.stringify(c.releaseDate||'')},${JSON.stringify(c.edition||'')})'>确认联网候选</button>` : ''}
+            ${safeUrl(c.coverUrl)?`<div class="hint">${escapeHtml(t('review.online.cover'))}${linkOrText(c.coverUrl, t('review.online.cover.preview'))} ${escapeHtml(t('review.online.cover.note'))}</div>`:''}
+            ${pending && !item.onlineEvidenceStale ? `<button class="btn primary sm" style="margin-top:10px" onclick='confirmOnline(${JSON.stringify(c.id)},${JSON.stringify(c.title||'')},${JSON.stringify(c.albumArtist||c.artist||'')},${JSON.stringify(c.releaseDate||'')},${JSON.stringify(c.edition||'')})'>${escapeHtml(t('review.online.confirm.btn'))}</button>` : ''}
         </div>`;
         }).join('');
 
@@ -430,75 +436,68 @@
             <div class="hint">${escapeHtml(item.reason || '')}</div>
             <div class="detail-facts">
                 <div class="fact">
-                    <div class="fact-label">合成专辑名</div>
+                    <div class="fact-label">${escapeHtml(t('review.fact.synth.title'))}</div>
                     <div class="fact-value">${escapeHtml(item.synthesizedAlbumTitle || '-')}</div>
                 </div>
                 <div class="fact">
-                    <div class="fact-label">合成专辑艺术家</div>
+                    <div class="fact-label">${escapeHtml(t('review.fact.synth.artist'))}</div>
                     <div class="fact-value">${escapeHtml(item.synthesizedAlbumArtist || '-')}</div>
                 </div>
                 <div class="fact">
-                    <div class="fact-label">本地证据可用度</div>
-                    <div class="fact-value">${item.localEvidenceAvailable && validScore(item.confidence) ? percent(item.confidence) : '不适用'}</div>
+                    <div class="fact-label">${escapeHtml(t('review.fact.local.evidence'))}</div>
+                    <div class="fact-value">${item.localEvidenceAvailable && validScore(item.confidence) ? percent(item.confidence) : escapeHtml(t('review.not.applicable'))}</div>
                 </div>
             </div>
-            <div class="confidence-note">
-                本页存在多套不同含义的分数，不能横向直接比较：本地证据可用度表示已有曲目元数据覆盖情况；
-                MusicBrainz 时长相似度表示官方时长序列吻合程度；LLM 建议置信度与联网来源自评都来自模型；
-                联网本地覆盖率和逐曲匹配分数才是联网候选与当前文件的实际匹配证据。
-            </div>
+            <div class="confidence-note">${escapeHtml(t('review.confidence.note'))}</div>
 
             ${(item.candidates || []).length ? `<div class="section">
                 <div class="section-title">
-                    MusicBrainz 候选专辑
+                    ${escapeHtml(t('review.section.mb.candidates'))}
                     ${item.candidatesExpanded ? '' :
-                        `<button class="btn ghost sm" onclick="openItem('${item.id}', true)">从 MusicBrainz 展开版本明细</button>
-                         <span class="hint">（展开失败时可重复点击重试）</span>`}
+                        `<button class="btn ghost sm" onclick="openItem('${item.id}', true)">${escapeHtml(t('review.expand.releases'))}</button>
+                         <span class="hint">${escapeHtml(t('review.expand.retry.hint'))}</span>`}
                 </div>
                 ${candidateRows ? `<div class="table-wrap table-scroll"><table class="table">
-                    <thead><tr><th>专辑</th><th>格式</th><th>曲目数</th><th>时长相似度</th><th>样本支持</th><th></th></tr></thead>
+                    <thead><tr><th>${escapeHtml(t('review.table.album'))}</th><th>${escapeHtml(t('review.table.format'))}</th><th>${escapeHtml(t('review.table.tracks'))}</th><th>${escapeHtml(t('review.table.duration.similarity'))}</th><th>${escapeHtml(t('review.table.sample.support'))}</th><th></th></tr></thead>
                     <tbody>${candidateRows}</tbody></table></div>`
-                    : '<div class="empty">没有候选</div>'}
-                <div class="hint">
-                    「时长相似度」是文件夹时长序列与该版本官方时长序列的 DTW 相似度，是最强的判断依据。
-                    展开明细会调用 MusicBrainz，可能需要几秒。
-                </div>
+                    : `<div class="empty">${escapeHtml(t('review.no.candidates'))}</div>`}
+                <div class="hint">${escapeHtml(t('review.candidates.hint'))}</div>
             </div>` : ''}
 
             ${llmBlock}
 
             ${(item.onlineCandidates||[]).length || (item.onlineClues||[]).length ? `<div class="section">
-                <div class="section-title">联网搜索候选 ${item.onlineEvidenceStale ? '<span class="badge rejected">证据已过期</span>' : ''}</div>
-                <div class="hint">提供商 ${escapeHtml(item.onlineSearchProvider||'')} · 模型 ${escapeHtml(item.onlineSearchModel||'')} · 检索时间 ${item.onlineSearchedAt?new Date(item.onlineSearchedAt).toLocaleString():'-'}</div>
-                ${onlineRows || '<div class="empty">未找到满足来源门槛的正式候选</div>'}
-                ${(item.onlineClues||[]).length ? `<details><summary>查看其他搜索线索（${item.onlineClues.length}）— 未达来源门槛，仅供参考</summary>${item.onlineClues.map(s=>`<div class="hint">${linkOrText(s.url, s.title||s.url||'线索')}</div>`).join('')}</details>`:''}
+                <div class="section-title">${escapeHtml(t('review.section.online'))} ${item.onlineEvidenceStale ? `<span class="badge rejected">${escapeHtml(t('review.evidence.stale'))}</span>` : ''}</div>
+                <div class="hint">${escapeHtml(tf('review.online.meta', item.onlineSearchProvider||'', item.onlineSearchModel||'', item.onlineSearchedAt?new Date(item.onlineSearchedAt).toLocaleString():'-'))}</div>
+                ${onlineRows || `<div class="empty">${escapeHtml(t('review.online.none'))}</div>`}
+                ${(item.onlineClues||[]).length ? `<details><summary>${escapeHtml(tf('review.clues.summary', item.onlineClues.length))}</summary>${item.onlineClues.map(s=>`<div class="hint">${linkOrText(s.url, s.title||s.url||t('review.clue'))}</div>`).join('')}</details>`:''}
             </div>` : ''}
 
             <div class="section">
-                <div class="section-title">文件（${(item.files || []).length}）</div>
+                <div class="section-title">${escapeHtml(tf('review.section.files', (item.files || []).length))}</div>
                 <div class="table-wrap table-scroll"><table class="table">
-                    <thead><tr><th>文件名</th><th>识别曲目</th><th>艺术家</th><th>时长</th></tr></thead>
+                    <thead><tr><th>${escapeHtml(t('review.table.filename'))}</th><th>${escapeHtml(t('review.table.track'))}</th><th>${escapeHtml(t('review.table.artist'))}</th><th>${escapeHtml(t('review.table.length'))}</th></tr></thead>
                     <tbody>${fileRows}</tbody>
                 </table></div>
             </div>
 
             <div class="actions">
                 ${item.llmJudgeEnabled ? `<button class="btn ghost" ${pending ? '' : 'disabled'} onclick="llmJudge()">
-                    让 LLM 判定（封闭选择题）
+                    ${escapeHtml(t('review.action.llm.judge'))}
                 </button>` : ''}
                 <button class="btn info" ${pending ? '' : 'disabled'} onclick="archiveItem()">
-                    按「MusicBrainz 未收录」归档
+                    ${escapeHtml(t('review.action.archive'))}
                 </button>
                 <button class="btn danger" ${pending ? '' : 'disabled'} onclick="rejectItem()">
-                    标记失败 / 忽略
+                    ${escapeHtml(t('review.action.reject'))}
                 </button>
             </div>
             <div class="hint" style="margin-top: 12px;">
-                · 「确认」：按选定版本锁定整张专辑并归档（优先级最高，后续自动流程不会再改写）<br>
-                · 「按未收录归档」：使用上面的合成专辑名归档，年份留空，标记为未验证<br>
-                · 「标记失败 / 忽略」：不写标签、不归档，仅记录以避免下一轮扫描反复重试
+                ${escapeHtml(t('review.action.hint.confirm'))}<br>
+                ${escapeHtml(t('review.action.hint.archive'))}<br>
+                ${escapeHtml(t('review.action.hint.reject'))}
             </div>
-            ${item.resolutionNote ? `<div class="hint">处置结果：${escapeHtml(item.resolutionNote)}</div>` : ''}
+            ${item.resolutionNote ? `<div class="hint">${escapeHtml(tf('review.resolution', item.resolutionNote))}</div>` : ''}
         `;
     }
 
@@ -532,7 +531,7 @@
             archiveDirectoryName: document.getElementById('ocDir').value.trim()
         };
         if (!payload.albumTitle) {
-            toast('专辑名不能为空');
+            toast(t('review.album.title.required'));
             return;
         }
         closeOnlineDialog();
@@ -541,20 +540,20 @@
 
     async function confirmCandidate(releaseId, releaseGroupId) {
         if (!currentId) return;
-        if (!confirm('确认按该版本锁定并归档整个文件夹？此操作会写入标签并移动文件。')) return;
+        if (!confirm(t('review.confirm.candidate'))) return;
         await runAction('/api/review/confirm', { id: currentId, releaseId, releaseGroupId });
     }
 
     async function llmJudge() {
         if (!currentId) return;
         // 会先从 MusicBrainz 展开版本明细再调用模型，可能需要十几秒
-        toast('正在调用 LLM 判定，请稍候...');
+        toast(t('review.llm.running'));
         await runAction('/api/review/llm', { id: currentId });
     }
 
     async function archiveItem() {
         if (!currentId) return;
-        if (!confirm('按「MusicBrainz 未收录」归档？将使用合成的专辑信息，年份留空。')) return;
+        if (!confirm(t('review.archive.confirm'))) return;
         await runAction('/api/review/archive', { id: currentId });
     }
 
@@ -582,19 +581,19 @@
             if (data.item && data.item.status === 'PENDING_REVIEW') {
                 if (data.item.llmSuggestion && !data.item.llmSuggestion.applied
                     && path === '/api/review/llm') {
-                    toast('LLM 判定完成，结论仅供参考，请人工确认');
+                    toast(t('review.llm.done.suggestion'));
                 } else if (path === '/api/review/llm') {
-                    toast('LLM 判定完成');
+                    toast(t('review.llm.done'));
                 } else {
-                    toast('处理未全部成功，条目仍在待确认：' + (data.item.resolutionNote || ''));
+                    toast(tf('review.partial.success', data.item.resolutionNote || ''));
                 }
             } else {
-                toast('操作成功');
+                toast(t('review.action.success'));
             }
             renderDetail(data.item);
             loadList();
         } catch (e) {
-            toast('操作失败: ' + humanError(e.message));
+            toast(tf('review.action.failed', humanError(e.message)));
         }
     }
 
@@ -633,7 +632,7 @@
 
     function linkOrText(url, label) {
         const href = safeUrl(url);
-        const text = escapeHtml(label || url || '来源');
+        const text = escapeHtml(label || url || t('review.source'));
         return href ? `<a href="${href}" target="_blank" rel="noopener">${text}</a>` : text;
     }
 

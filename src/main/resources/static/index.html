@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>音乐自动标签器 - 仪表板</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=7">
+    <link rel="stylesheet" href="app.css?v=8">
     <style>
         /* ---- 仪表板专用布局 ---- */
         .dash-grid {
@@ -15,7 +15,11 @@
             align-items: start;
         }
 
-        .side-col, .main-col { display: grid; gap: 18px; align-content: start; min-width: 0; }
+        /* 单列显式声明 minmax(0, 1fr)：否则自动列会按最宽子项的 max-content 撑开，
+           英文文案更长时整列会溢出到右侧主区域上，造成模块错位 */
+        .side-col, .main-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; align-content: start; min-width: 0; }
+        /* 栅格子项默认 min-width:auto，英文等长文案会把卡片撑破列宽导致错位 */
+        .side-col > *, .main-col > * { min-width: 0; }
 
         @media (max-width: 1000px) {
             .dash-grid { grid-template-columns: 1fr; }
@@ -30,7 +34,7 @@
             box-shadow: 0 8px 20px rgba(21, 80, 198, .25);
         }
 
-        .monitor-top { display: flex; align-items: center; gap: 12px; }
+        .monitor-top { display: flex; align-items: center; gap: 12px; min-width: 0; }
 
         .monitor-badge {
             width: 40px; height: 40px;
@@ -43,13 +47,16 @@
         }
         .monitor-badge svg { width: 20px; height: 20px; }
 
-        .monitor-state { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+        .monitor-state { font-size: 18px; font-weight: 700; letter-spacing: .5px; white-space: nowrap; }
+        /* 标题不参与收缩，空间不够时只剪裁右侧的装饰性波形 */
+        .monitor-top > div:not(.wave) { flex: 0 0 auto; }
 
-        .wave { display: flex; align-items: center; gap: 3px; margin-left: auto; height: 26px; }
+        .wave { display: flex; align-items: center; gap: 3px; margin-left: auto; height: 26px; min-width: 0; overflow: hidden; flex: 1 1 0; justify-content: flex-end; }
         .wave span {
             display: block;
             width: 3px;
             border-radius: 2px;
+            flex: 0 0 3px;
             background: rgba(255, 255, 255, .55);
             animation: wave 1.1s ease-in-out infinite;
         }
@@ -59,8 +66,10 @@
             50% { height: 22px; }
         }
 
-        .monitor-actions { display: flex; gap: 10px; margin-top: 18px; }
-        .monitor-actions .btn { flex: 1; }
+        .monitor-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+        /* flex-basis 用 auto + 不收缩：一行放不下两个按钮（英文）时整个换行各占一行，
+           而不是挤在一行把文字截断；实在还不够宽时允许按钮内文字换行 */
+        .monitor-actions .btn { flex: 1 1 auto; white-space: normal; text-align: center; }
         /* 图标包裹 span 默认是 inline，svg 会按基线对齐导致图标偏移 */
         .monitor-actions .btn > span { display: inline-flex; align-items: center; }
         .monitor-actions .btn > span > svg { display: block; }
@@ -548,107 +557,107 @@
                         <div class="form-row checkbox-row">
                             <input id="cfgLlmAllowPrivateEndpoints" type="checkbox">
                             <label for="cfgLlmAllowPrivateEndpoints" class="label-with-tip">
-                                <span>允许内网 / HTTP 端点</span>
+                                <span data-i18n="config.llm.allow.private">允许内网 / HTTP 端点</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">默认关闭。「拉取模型」会让服务端去请求你填的地址，允许内网地址等于把一个登录会话变成内网探测工具（SSRF）。只有要接自建 Ollama / vLLM 时才打开。</span>
+                                    <span class="tip-text" data-i18n="config.llm.allow.private.hint">默认关闭。「拉取模型」会让服务端去请求你填的地址，允许内网地址等于把一个登录会话变成内网探测工具（SSRF）。只有要接自建 Ollama / vLLM 时才打开。</span>
                                 </span>
                             </label>
                         </div>
                     </div>
 
-                    <div class="form-section-title">供应商与模型</div>
+                    <div class="form-section-title" data-i18n="settings.section.llm.providers">供应商与模型</div>
                     <div class="form-grid">
                         <div class="form-row span-2">
                             <label class="label-with-tip">
-                                <span>供应商列表</span>
+                                <span data-i18n="config.llm.providers.list">供应商列表</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">自上而下依次尝试：先按供应商顺序，同一供应商内再按模型顺序。前一个失败才会用下一个。</span>
+                                    <span class="tip-text" data-i18n="config.llm.providers.list.hint">自上而下依次尝试：先按供应商顺序，同一供应商内再按模型顺序。前一个失败才会用下一个。</span>
                                 </span>
                             </label>
                             <div id="llmProvidersList" style="display: flex; flex-direction: column; gap: 12px;"></div>
                             <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center; flex-wrap: wrap;">
-                                <button type="button" class="btn soft" onclick="addLlmProvider()">+ 添加供应商</button>
-                                <button type="button" class="btn primary" onclick="saveLlmProviders()">保存供应商</button>
+                                <button type="button" class="btn soft" onclick="addLlmProvider()" data-i18n="config.llm.providers.add">+ 添加供应商</button>
+                                <button type="button" class="btn primary" onclick="saveLlmProviders()" data-i18n="config.llm.providers.save">保存供应商</button>
                                 <span id="llmProvidersStatus" class="hint"></span>
                             </div>
                         </div>
                     </div>
 
-                    <div class="form-section-title">LLM 调用参数</div>
+                    <div class="form-section-title" data-i18n="settings.section.llm.params">LLM 调用参数</div>
                     <div class="form-grid">
                         <div class="form-row">
                             <label for="cfgLlmMaxTokens" class="label-with-tip">
-                                <span>最大输出 Token</span>
+                                <span data-i18n="config.llm.max.tokens">最大输出 Token</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">用于艺术家匹配、专辑判定这类短回答，默认 600 已够。联网搜索不用这个值，见下方单独设置。范围 1—32000。</span>
+                                    <span class="tip-text" data-i18n="config.llm.max.tokens.hint">用于艺术家匹配、专辑判定这类短回答，默认 600 已够。联网搜索不用这个值，见下方单独设置。范围 1—32000。</span>
                                 </span>
                             </label>
                             <input id="cfgLlmMaxTokens" type="number" min="1" max="32000" placeholder="600">
                         </div>
                         <div class="form-row">
                             <label for="cfgLlmTemperature" class="label-with-tip">
-                                <span>Temperature</span>
+                                <span data-i18n="config.llm.temperature">Temperature</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">识别类任务建议保持 0，避免模型发挥。范围 0—2（Anthropic 上限为 1）。</span>
+                                    <span class="tip-text" data-i18n="config.llm.temperature.hint">识别类任务建议保持 0，避免模型发挥。范围 0—2（Anthropic 上限为 1）。</span>
                                 </span>
                             </label>
                             <input id="cfgLlmTemperature" type="number" min="0" max="2" step="0.1" placeholder="0.0">
                         </div>
                         <div class="form-row">
-                            <label for="cfgLlmTimeoutSeconds">请求超时（秒）</label>
+                            <label for="cfgLlmTimeoutSeconds" data-i18n="config.llm.timeout">请求超时（秒）</label>
                             <input id="cfgLlmTimeoutSeconds" type="number" min="5" max="600" placeholder="60">
                         </div>
                         <div class="form-row">
-                            <label for="cfgLlmMaxRetries">最大重试次数</label>
+                            <label for="cfgLlmMaxRetries" data-i18n="config.llm.max.retries">最大重试次数</label>
                             <input id="cfgLlmMaxRetries" type="number" min="0" max="10" placeholder="2">
                         </div>
                         <div class="form-row">
                             <label for="cfgLlmWebSearchMaxTokens" class="label-with-tip">
-                                <span>联网搜索最大输出 Token</span>
+                                <span data-i18n="config.llm.websearch.max.tokens">联网搜索最大输出 Token</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">联网搜索要返回最多 5 个候选、每个带完整曲目表与来源 URL，需要比普通调用大得多的预算。设得太小会导致 JSON 被截断、解析失败。范围 256—32000。</span>
+                                    <span class="tip-text" data-i18n="config.llm.websearch.max.tokens.hint">联网搜索要返回最多 5 个候选、每个带完整曲目表与来源 URL，需要比普通调用大得多的预算。设得太小会导致 JSON 被截断、解析失败。范围 256—32000。</span>
                                 </span>
                             </label>
                             <input id="cfgLlmWebSearchMaxTokens" type="number" min="256" max="32000" placeholder="4000">
                         </div>
                         <div class="form-row">
                             <label for="cfgLlmWebSearchTimeoutSeconds" class="label-with-tip">
-                                <span>联网搜索超时（秒）</span>
+                                <span data-i18n="config.llm.websearch.timeout">联网搜索超时（秒）</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">搜索本身就要几十秒，且可能执行两轮。范围 30—900。</span>
+                                    <span class="tip-text" data-i18n="config.llm.websearch.timeout.hint">搜索本身就要几十秒，且可能执行两轮。范围 30—900。</span>
                                 </span>
                             </label>
                             <input id="cfgLlmWebSearchTimeoutSeconds" type="number" min="30" max="900" placeholder="180">
                         </div>
                     </div>
 
-                    <div class="form-section-title">联网搜索来源</div>
+                    <div class="form-section-title" data-i18n="settings.section.websearch">联网搜索来源</div>
                     <div class="form-grid">
                         <div class="form-row">
                             <label for="cfgWebSearchProvider" class="label-with-tip">
-                                <span>搜索实现</span>
+                                <span data-i18n="config.websearch.provider">搜索实现</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">native 依赖模型厂商自带的搜索工具，多数第三方 OpenAI 兼容端点并不支持，且无法确认模型是否真的检索过。tavily 由外部检索器取回真实网页再让普通 chat 端点归纳，来源 URL 真实可核。</span>
+                                    <span class="tip-text" data-i18n="config.websearch.provider.hint">native 依赖模型厂商自带的搜索工具，多数第三方 OpenAI 兼容端点并不支持，且无法确认模型是否真的检索过。tavily 由外部检索器取回真实网页再让普通 chat 端点归纳，来源 URL 真实可核。</span>
                                 </span>
                             </label>
                             <select id="cfgWebSearchProvider">
-                                <option value="native">native（模型原生搜索）</option>
-                                <option value="tavily">tavily（外部检索 + 模型归纳）</option>
+                                <option value="native" data-i18n="config.websearch.provider.native">native（模型原生搜索）</option>
+                                <option value="tavily" data-i18n="config.websearch.provider.tavily">tavily（外部检索 + 模型归纳）</option>
                             </select>
                         </div>
                         <div class="form-row">
-                            <label for="cfgTavilyApiKey">Tavily API Key</label>
+                            <label for="cfgTavilyApiKey" data-i18n="config.tavily.api.key">Tavily API Key</label>
                             <input id="cfgTavilyApiKey" type="password" placeholder="tvly-..." autocomplete="off">
                         </div>
                         <div class="form-row">
-                            <label for="cfgTavilyApiUrl">Tavily API URL</label>
+                            <label for="cfgTavilyApiUrl" data-i18n="config.tavily.api.url">Tavily API URL</label>
                             <input id="cfgTavilyApiUrl" type="text" placeholder="https://api.tavily.com/search">
                         </div>
                         <div class="form-row">
                             <label for="cfgTavilySearchDepth" class="label-with-tip">
-                                <span>检索深度</span>
+                                <span data-i18n="config.tavily.search.depth">检索深度</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">basic 更便宜但摘要短；advanced 挖得更深，适合小众 / 非英语发行。</span>
+                                    <span class="tip-text" data-i18n="config.tavily.search.depth.hint">basic 更便宜但摘要短；advanced 挖得更深，适合小众 / 非英语发行。</span>
                                 </span>
                             </label>
                             <select id="cfgTavilySearchDepth">
@@ -657,114 +666,114 @@
                             </select>
                         </div>
                         <div class="form-row">
-                            <label for="cfgTavilyMaxResults">每条查询结果数</label>
+                            <label for="cfgTavilyMaxResults" data-i18n="config.tavily.max.results">每条查询结果数</label>
                             <input id="cfgTavilyMaxResults" type="number" min="1" max="20" placeholder="8">
                         </div>
                         <div class="form-row">
-                            <label for="cfgTavilyTimeoutSeconds">Tavily 请求超时（秒）</label>
+                            <label for="cfgTavilyTimeoutSeconds" data-i18n="config.tavily.timeout">Tavily 请求超时（秒）</label>
                             <input id="cfgTavilyTimeoutSeconds" type="number" min="5" max="300" placeholder="60">
                         </div>
                         <div class="form-row">
                             <label for="cfgTavilyIncludeDomains" class="label-with-tip">
-                                <span>限定检索域名</span>
+                                <span data-i18n="config.tavily.include.domains">限定检索域名</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">逗号分隔。留空表示全网检索，低可信来源会明显变多，而低可信来源单独无法构成正式候选。</span>
+                                    <span class="tip-text" data-i18n="config.tavily.include.domains.hint">逗号分隔。留空表示全网检索，低可信来源会明显变多，而低可信来源单独无法构成正式候选。</span>
                                 </span>
                             </label>
                             <input id="cfgTavilyIncludeDomains" type="text" placeholder="musicbrainz.org,discogs.com,vgmdb.net">
                         </div>
                     </div>
 
-                    <div class="form-section-title">LLM 专辑判定</div>
+                    <div class="form-section-title" data-i18n="settings.section.llm.album">LLM 专辑判定</div>
                     <div class="form-grid">
                         <div class="form-row checkbox-row">
                             <input id="cfgLlmAlbumJudgeEnabled" type="checkbox">
                             <label for="cfgLlmAlbumJudgeEnabled" class="label-with-tip">
-                                <span>启用 LLM 专辑判定</span>
+                                <span data-i18n="config.llm.album.judge.enabled">启用 LLM 专辑判定</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">在待确认页面启用「LLM 判定」按钮。封闭式选择题：只能从已有候选中选一个或回答「都不是」，不允许模型自由编造专辑名。</span>
+                                    <span class="tip-text" data-i18n="config.llm.album.judge.enabled.hint">在待确认页面启用「LLM 判定」按钮。封闭式选择题：只能从已有候选中选一个或回答「都不是」，不允许模型自由编造专辑名。</span>
                                 </span>
                             </label>
                         </div>
                         <div class="form-row checkbox-row">
                             <input id="cfgLlmAlbumAutoApply" type="checkbox">
                             <label for="cfgLlmAlbumAutoApply" class="label-with-tip">
-                                <span>高置信度时自动应用判定结果</span>
+                                <span data-i18n="config.llm.album.auto.apply">高置信度时自动应用判定结果</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">关闭时判定结果仅作为建议，仍需人工确认。开启后达到下方阈值的判定会直接写入并归档，请谨慎。</span>
+                                    <span class="tip-text" data-i18n="config.llm.album.auto.apply.hint">关闭时判定结果仅作为建议，仍需人工确认。开启后达到下方阈值的判定会直接写入并归档，请谨慎。</span>
                                 </span>
                             </label>
                         </div>
                         <div class="form-row">
-                            <label for="cfgLlmAlbumAutoApplyMinConfidence">自动应用最低置信度（0—1）</label>
+                            <label for="cfgLlmAlbumAutoApplyMinConfidence" data-i18n="config.llm.album.auto.apply.confidence">自动应用最低置信度（0—1）</label>
                             <input id="cfgLlmAlbumAutoApplyMinConfidence" type="number" min="0" max="1" step="0.05" placeholder="0.9">
                         </div>
                     </div>
 
-                    <div class="form-section-title">部分识别准入</div>
+                    <div class="form-section-title" data-i18n="settings.section.partial.admission">部分识别准入</div>
                     <div class="form-grid">
                         <div class="form-row checkbox-row">
                             <input id="cfgPartialRequireReadableTags" type="checkbox">
                             <label for="cfgPartialRequireReadableTags" class="label-with-tip">
-                                <span>要求标签可读</span>
+                                <span data-i18n="config.partial.require.readable.tags">要求标签可读</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">开启后，只有标签能正常读取的文件才能进入部分识别流程，避免拿乱码标签去匹配。</span>
+                                    <span class="tip-text" data-i18n="config.partial.require.readable.tags.hint">开启后，只有标签能正常读取的文件才能进入部分识别流程，避免拿乱码标签去匹配。</span>
                                 </span>
                             </label>
                         </div>
                         <div class="form-row">
                             <label for="cfgPartialMinTagCoverage" class="label-with-tip">
-                                <span>标签最低覆盖率（0—1）</span>
+                                <span data-i18n="config.partial.min.tag.coverage">标签最低覆盖率（0—1）</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">文件夹内 album / tracknumber 标签的最低完整度。低于该比例不进入部分识别。</span>
+                                    <span class="tip-text" data-i18n="config.partial.min.tag.coverage.hint">文件夹内 album / tracknumber 标签的最低完整度。低于该比例不进入部分识别。</span>
                                 </span>
                             </label>
                             <input id="cfgPartialMinTagCoverage" type="number" min="0" max="1" step="0.05" placeholder="0.8">
                         </div>
                     </div>
 
-                    <div class="form-section-title">待确认队列存储</div>
+                    <div class="form-section-title" data-i18n="settings.section.review.queue">待确认队列存储</div>
                     <div class="form-grid">
                         <div class="form-row">
-                            <label for="cfgReviewQueuePath">队列文件路径</label>
-                            <input id="cfgReviewQueuePath" type="text" placeholder="留空使用默认">
+                            <label for="cfgReviewQueuePath" data-i18n="config.review.queue.path">队列文件路径</label>
+                            <input id="cfgReviewQueuePath" type="text" placeholder="留空使用默认" data-i18n-placeholder="web.placeholder.default">
                         </div>
                         <div class="form-row">
                             <label for="cfgReviewStagingDirectory" class="label-with-tip">
-                                <span>暂存目录</span>
+                                <span data-i18n="config.review.staging.directory">暂存目录</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">发生格式规范化转码时，转码后的文件存放在这里等待确认。</span>
+                                    <span class="tip-text" data-i18n="config.review.staging.directory.hint">发生格式规范化转码时，转码后的文件存放在这里等待确认。</span>
                                 </span>
                             </label>
-                            <input id="cfgReviewStagingDirectory" type="text" placeholder="留空使用默认">
+                            <input id="cfgReviewStagingDirectory" type="text" placeholder="留空使用默认" data-i18n-placeholder="web.placeholder.default">
                         </div>
                     </div>
 
-                    <div class="form-section-title">重新识别与恢复</div>
+                    <div class="form-section-title" data-i18n="settings.section.recovery">重新识别与恢复</div>
                     <div class="form-grid">
                         <div class="form-row">
                             <label for="cfgRecoveryWorkDirectory" class="label-with-tip">
-                                <span>原子归档工作目录</span>
+                                <span data-i18n="config.recovery.work.directory">原子归档工作目录</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">恢复任务先把整张专辑写入该目录，全部成功后才整体提交到输出目录。留空时使用 {输出目录}/.recovery-work。建议与输出目录位于同一磁盘，否则提交需跨盘复制。</span>
+                                    <span class="tip-text" data-i18n="config.recovery.work.directory.hint">恢复任务先把整张专辑写入该目录，全部成功后才整体提交到输出目录。留空时使用 {输出目录}/.recovery-work。建议与输出目录位于同一磁盘，否则提交需跨盘复制。</span>
                                 </span>
                             </label>
-                            <input id="cfgRecoveryWorkDirectory" type="text" placeholder="留空使用默认">
+                            <input id="cfgRecoveryWorkDirectory" type="text" placeholder="留空使用默认" data-i18n-placeholder="web.placeholder.default">
                         </div>
                         <div class="form-row">
                             <label for="cfgRecoveryTrashDirectory" class="label-with-tip">
-                                <span>回收站目录</span>
+                                <span data-i18n="config.recovery.trash.directory">回收站目录</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">恢复成功后，隔离目录里的副本会移到这里而不是直接删除，便于误判时回退。</span>
+                                    <span class="tip-text" data-i18n="config.recovery.trash.directory.hint">恢复成功后，隔离目录里的副本会移到这里而不是直接删除，便于误判时回退。</span>
                                 </span>
                             </label>
                             <input id="cfgRecoveryTrashDirectory" type="text" placeholder="data/recovery-trash">
                         </div>
                         <div class="form-row">
                             <label for="cfgRecoveryTrashRetentionDays" class="label-with-tip">
-                                <span>回收站保留天数</span>
+                                <span data-i18n="config.recovery.trash.retention">回收站保留天数</span>
                                 <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text">0 = 成功后立即删除副本（无法回退，不建议）；-1 = 永久保留；1…365 = 保留对应天数。清理在每次启动时执行。</span>
+                                    <span class="tip-text" data-i18n="config.recovery.trash.retention.hint">0 = 成功后立即删除副本（无法回退，不建议）；-1 = 永久保留；1…365 = 保留对应天数。清理在每次启动时执行。</span>
                                 </span>
                             </label>
                             <input id="cfgRecoveryTrashRetentionDays" type="number" min="-1" max="365" placeholder="7">
@@ -898,20 +907,20 @@
                         </div>
                     </div>
 
-                    <div class="form-section-title">维护工具</div>
+                    <div class="form-section-title" data-i18n="settings.section.tools">维护工具</div>
                     <div class="tool-card">
                         <div class="tool-head">
                             <div>
-                                <div class="tool-title">回填历史记录的封面</div>
-                                <div class="tool-desc">
+                                <div class="tool-title" data-i18n="tool.backfill.title">回填历史记录的封面</div>
+                                <div class="tool-desc" data-i18n="tool.backfill.desc">
                                     早期处理的文件没有记录专辑 ID，仪表板只能显示占位图。
                                     该工具按专辑名去 MusicBrainz 重新匹配并补写 ID，同时预热封面缓存。
                                 </div>
                             </div>
-                            <button type="button" class="btn primary" id="backfillBtn" onclick="startBackfill()">开始回填</button>
+                            <button type="button" class="btn primary" id="backfillBtn" onclick="startBackfill()" data-i18n="tool.backfill.start">开始回填</button>
                         </div>
-                        <div class="tool-hint">
-                            只写入缺失的专辑 ID 字段，<strong>不会修改任何音频文件，也不会覆盖已有值</strong>。
+                        <div class="tool-hint" data-i18n="tool.backfill.hint">
+                            只写入缺失的专辑 ID 字段，不会修改任何音频文件，也不会覆盖已有值。
                             按专辑（非文件）发请求，MusicBrainz 限速约每秒 1 次，可随时中断，重跑只处理剩下的。
                             匹配不确定的专辑会直接跳过，宁可不补也不贴错封面。
                         </div>
@@ -1173,7 +1182,7 @@
                 <span class="footer-divider">|</span>
                 <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" rel="noopener">Music Auto Tagger</a>
                 <span class="footer-divider">|</span>
-                <span id="runningTime">运行时间: --</span>
+                <span id="runningTime" data-i18n="web.running.time.placeholder">运行时间: --</span>
             </div>
         </footer>
     </div>
@@ -1187,6 +1196,14 @@
         // 获取国际化文本
         function t(key, defaultValue) {
             return i18nMessages[key] || defaultValue || key;
+        }
+
+        // 带 {0} {1} 占位符的格式化翻译
+        function tf(key, ...args) {
+            return String(t(key)).replace(/\{(\d+)\}/g, (m, i) => {
+                const v = args[Number(i)];
+                return v === undefined || v === null ? '' : String(v);
+            });
         }
 
         function showLoginOverlay(show) {
@@ -1344,7 +1361,7 @@
             const action = monitoringPaused ? 'resume' : 'pause';
             try {
                 const response = await authFetch('/api/control/' + action, { method: 'POST' });
-                if (!response.ok) throw new Error('操作失败');
+                if (!response.ok) throw new Error(t('web.operation.failed'));
                 const data = await response.json();
                 monitoringPaused = data.monitoringPaused;
                 updateControlUI();
@@ -1358,7 +1375,7 @@
             if (!confirm(t('control.restart.confirm'))) return;
             try {
                 const response = await authFetch('/api/control/restart', { method: 'POST' });
-                if (!response.ok) throw new Error('操作失败');
+                if (!response.ok) throw new Error(t('web.operation.failed'));
                 alert(t('control.restart.success'));
             } catch (err) {
                 alert(t('control.error') + ': ' + err.message);
@@ -1392,11 +1409,19 @@
             document.getElementById('connectionText').textContent = t('web.connecting');
             document.getElementById('refreshStatsText').textContent = t('web.refresh.stats');
 
+            document.documentElement.lang = currentLanguage === 'zh_CN' ? 'zh-CN' : 'en';
+
             // 其余文案全部由 data-i18n 驱动（新版页面所有静态文案都带这个属性）
             document.querySelectorAll('[data-i18n]').forEach(el => {
                 const key = el.getAttribute('data-i18n');
-                el.textContent = t(key);
+                el.textContent = t(key, el.textContent.trim());
             });
+            document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+                const key = el.getAttribute('data-i18n-placeholder');
+                el.setAttribute('placeholder', t(key, el.getAttribute('placeholder') || ''));
+            });
+            // 供应商列表等动态渲染块需要在语言就绪后重画
+            if (typeof renderLlmProviders === 'function') renderLlmProviders();
 
             const loginLang = document.getElementById('loginLanguage');
             if (loginLang) {
@@ -1666,7 +1691,7 @@
                 error.style.display = 'none';
 
                 const response = await authFetch('/api/dashboard');
-                if (!response.ok) throw new Error('获取数据失败');
+                if (!response.ok) throw new Error(t('web.fetch.failed'));
 
                 const data = await response.json();
 
@@ -1858,7 +1883,7 @@
         async function loadLlmProviders() {
             try {
                 const response = await authFetch('/api/llm/providers');
-                if (!response.ok) throw new Error('获取供应商失败');
+                if (!response.ok) throw new Error(t('llm.providers.fetch.failed'));
                 const data = await response.json();
                 llmProviders = data.providers || [];
             } catch (e) {
@@ -1887,7 +1912,7 @@
 
         /** 拉取失败时的手动退路：部分中转站不提供 /models */
         function addLlmModelManually(index) {
-            const id = prompt('模型名称');
+            const id = prompt(t('llm.model.name.prompt'));
             if (!id || !id.trim()) return;
             llmProviders[index].models.push({ id: id.trim(), enabled: true, webSearch: false });
             renderLlmProviders();
@@ -1896,7 +1921,7 @@
         async function fetchLlmModels(index) {
             const provider = llmProviders[index];
             const status = document.getElementById(`llmProviderStatus${index}`);
-            status.textContent = '拉取中...';
+            status.textContent = t('llm.pulling');
             status.style.color = '#666';
             try {
                 const response = await authFetch('/api/llm/providers/models', {
@@ -1909,11 +1934,11 @@
                 const data = await response.json();
                 if (!response.ok) {
                     // detail 里带着实际请求的 URL 与状态码，直接摆出来，不要吐一个笼统的「失败」
-                    throw new Error(data.detail || data.error || '拉取失败');
+                    throw new Error(data.detail || data.error || t('llm.pull.failed'));
                 }
                 const models = data.models || [];
                 showLlmModelPicker(index, models);
-                status.textContent = `拉到 ${models.length} 个模型`;
+                status.textContent = tf('llm.pulled.count', models.length);
                 status.style.color = '#10b981';
                 // 拉模型走的是 /models，和实际聊天路径不是一回事：
                 // 用户只填域名时拉取能成功，但真正调用会 404，所以这里主动提示补全
@@ -1932,10 +1957,10 @@
             box.style.display = 'block';
             box.innerHTML = `
                 <div class="llm-warn">
-                    当前 API URL 不是完整的调用地址，拉取模型能成功但实际调用会失败。<br>
-                    探测到的地址：<code>${escapeHtml(suggested)}</code>
+                    ${escapeHtml(t('llm.apiurl.mismatch'))}<br>
+                    ${escapeHtml(t('llm.apiurl.detected'))}<code>${escapeHtml(suggested)}</code>
                     <button type="button" class="btn primary sm" style="margin-left: 8px;"
-                        onclick="applyLlmApiUrl(${index}, '${escapeHtml(suggested)}')">使用它</button>
+                        onclick="applyLlmApiUrl(${index}, '${escapeHtml(suggested)}')">${escapeHtml(t('llm.apiurl.use'))}</button>
                 </div>`;
         }
 
@@ -1950,7 +1975,7 @@
             const container = document.getElementById(`llmModelPicker${index}`);
             container.style.display = 'block';
             container.innerHTML = `
-                <input type="text" class="input" placeholder="过滤模型..." style="margin-bottom: 8px;"
+                <input type="text" class="input" placeholder="${escapeHtml(t('llm.model.filter'))}" style="margin-bottom: 8px;"
                     oninput="filterLlmModelPicker(${index}, this.value)">
                 <div id="llmModelPickerList${index}" class="llm-picker-list">
                     ${models.map(id => `
@@ -1960,7 +1985,7 @@
                         </label>`).join('')}
                 </div>
                 <button type="button" class="btn primary sm" style="margin-top: 8px;"
-                    onclick="applyLlmModelPicker(${index})">使用选中的模型</button>`;
+                    onclick="applyLlmModelPicker(${index})">${escapeHtml(t('llm.model.use.selected'))}</button>`;
         }
 
         function filterLlmModelPicker(index, keyword) {
@@ -1985,7 +2010,7 @@
             const container = document.getElementById('llmProvidersList');
             if (!container) return;
             if (llmProviders.length === 0) {
-                container.innerHTML = '<div class="empty" style="padding: 18px;">尚未配置任何供应商</div>';
+                container.innerHTML = `<div class="empty" style="padding: 18px;">${escapeHtml(t('llm.providers.empty'))}</div>`;
                 return;
             }
             container.innerHTML = llmProviders.map((p, i) => `
@@ -1994,32 +2019,32 @@
                         <label class="llm-inline">
                             <input type="checkbox" ${p.enabled !== false ? 'checked' : ''}
                                 onchange="llmProviders[${i}].enabled = this.checked">
-                            <strong>供应商 #${i + 1}</strong>
+                            <strong>${escapeHtml(tf('llm.provider.index', i + 1))}</strong>
                         </label>
-                        <button type="button" class="btn danger-soft sm" onclick="removeLlmProvider(${i})">删除</button>
+                        <button type="button" class="btn danger-soft sm" onclick="removeLlmProvider(${i})">${escapeHtml(t('web.delete'))}</button>
                     </div>
                     <div class="llm-fields">
-                        <input type="text" class="input" placeholder="名称（如 OpenAI 官方）" value="${escapeHtml(p.name || '')}"
+                        <input type="text" class="input" placeholder="${escapeHtml(t('llm.provider.name.placeholder'))}" value="${escapeHtml(p.name || '')}"
                             onchange="llmProviders[${i}].name = this.value">
-                        <input type="text" class="input" placeholder="API URL（完整路径，如 https://api.openai.com/v1/chat/completions）"
+                        <input type="text" class="input" placeholder="${escapeHtml(t('llm.provider.apiurl.placeholder'))}"
                             value="${escapeHtml(p.apiUrl || '')}" onchange="llmProviders[${i}].apiUrl = this.value">
                         <input type="password" class="input" placeholder="API Key" value="${escapeHtml(p.apiKey || '')}"
                             onchange="llmProviders[${i}].apiKey = this.value" autocomplete="off">
                     </div>
                     <div class="llm-toolbar">
                         <select class="input" style="width: auto;" onchange="llmProviders[${i}].format = this.value">
-                            <option value="openai" ${p.format !== 'anthropic' ? 'selected' : ''}>OpenAI 格式</option>
-                            <option value="anthropic" ${p.format === 'anthropic' ? 'selected' : ''}>Claude 格式</option>
+                            <option value="openai" ${p.format !== 'anthropic' ? 'selected' : ''}>${escapeHtml(t('llm.format.openai'))}</option>
+                            <option value="anthropic" ${p.format === 'anthropic' ? 'selected' : ''}>${escapeHtml(t('llm.format.anthropic'))}</option>
                         </select>
-                        <button type="button" class="btn soft sm" onclick="fetchLlmModels(${i})">拉取模型</button>
-                        <button type="button" class="btn ghost sm" onclick="addLlmModelManually(${i})">手动添加</button>
+                        <button type="button" class="btn soft sm" onclick="fetchLlmModels(${i})">${escapeHtml(t('llm.fetch.models'))}</button>
+                        <button type="button" class="btn ghost sm" onclick="addLlmModelManually(${i})">${escapeHtml(t('llm.add.model.manually'))}</button>
                         <span id="llmProviderStatus${i}" class="hint"></span>
                     </div>
                     <div id="llmUrlSuggestion${i}" style="display: none; margin-bottom: 8px;"></div>
                     <div id="llmModelPicker${i}" style="display: none; margin-bottom: 8px;"></div>
                     <div class="llm-models">
                         ${(p.models || []).length === 0
-                            ? '<div class="hint">尚未选择模型（未选模型的供应商不会被调用）</div>'
+                            ? `<div class="hint">${escapeHtml(t('llm.no.model.selected'))}</div>`
                             : (p.models || []).map((m, j) => `
                             <div class="llm-model-row">
                                 <label class="llm-inline">
@@ -2030,10 +2055,10 @@
                                 <label class="llm-inline muted">
                                     <input type="checkbox" ${m.webSearch ? 'checked' : ''}
                                         onchange="llmProviders[${i}].models[${j}].webSearch = this.checked">
-                                    <span>参与原生联网搜索</span>
+                                    <span>${escapeHtml(t('llm.model.native.websearch'))}</span>
                                 </label>
                                 <button type="button" class="btn ghost sm" style="margin-left: auto;"
-                                    onclick="removeLlmModel(${i}, ${j})">移除</button>
+                                    onclick="removeLlmModel(${i}, ${j})">${escapeHtml(t('web.remove'))}</button>
                             </div>`).join('')}
                     </div>
                 </div>
@@ -2042,7 +2067,7 @@
 
         async function saveLlmProviders() {
             const status = document.getElementById('llmProvidersStatus');
-            status.textContent = '保存中...';
+            status.textContent = t('web.saving');
             status.style.color = '#666';
             try {
                 const response = await authFetch('/api/llm/providers', {
@@ -2050,8 +2075,8 @@
                     body: JSON.stringify({ providers: llmProviders })
                 });
                 const data = await response.json();
-                if (!response.ok) throw new Error(data.error || '保存失败');
-                status.textContent = `已保存，当前可用端点 ${data.endpointCount} 个`;
+                if (!response.ok) throw new Error(data.error || t('web.save.failed'));
+                status.textContent = tf('llm.providers.saved', data.endpointCount);
                 status.style.color = '#10b981';
                 await loadLlmProviders();
             } catch (e) {
@@ -2066,7 +2091,7 @@
                     return;
                 }
                 const response = await authFetch('/api/config');
-                if (!response.ok) throw new Error('获取配置失败');
+                if (!response.ok) throw new Error(t('web.fetch.config.failed'));
                 const data = await response.json();
                 const cfg = data.config || {};
                 document.getElementById('cfgMonitorDirectory').value = cfg.monitorDirectory || '';
@@ -2315,7 +2340,7 @@
             } catch (err) {
                 // 接口不可用时直接禁用按钮，不报错弹窗
                 btn.disabled = true;
-                btn.textContent = '不可用';
+                btn.textContent = t('tool.backfill.unavailable');
                 stopBackfillPolling();
             }
         }
@@ -2323,7 +2348,7 @@
         function renderBackfill(data, btn, box, bar, statusEl) {
             if (data.running) {
                 btn.disabled = false;
-                btn.textContent = '停止';
+                btn.textContent = t('tool.backfill.stop');
                 btn.className = 'btn danger-soft';
                 btn.onclick = cancelBackfill;
 
@@ -2332,9 +2357,9 @@
                 const percent = total > 0 ? Math.round(done / total * 100) : 0;
                 box.style.display = 'block';
                 bar.style.width = percent + '%';
-                statusEl.textContent = `处理中 ${done}/${total}（${percent}%）`
-                    + `· 已匹配 ${data.matchedAlbums || 0} 张 · 已补全 ${data.updatedFiles || 0} 条`
-                    + (data.currentAlbum ? ` · 当前：${data.currentAlbum}` : '');
+                statusEl.textContent = tf('tool.backfill.progress', done, total, percent,
+                        data.matchedAlbums || 0, data.updatedFiles || 0)
+                    + (data.currentAlbum ? ' ' + tf('tool.backfill.current', data.currentAlbum) : '');
                 return;
             }
 
@@ -2344,10 +2369,10 @@
             const pending = data.pendingAlbums;
             if (pending === 0) {
                 btn.disabled = true;
-                btn.textContent = '无需回填';
+                btn.textContent = t('tool.backfill.nothing');
             } else {
                 btn.disabled = false;
-                btn.textContent = pending > 0 ? `开始回填（${pending} 张）` : '开始回填';
+                btn.textContent = pending > 0 ? tf('tool.backfill.start.count', pending) : t('tool.backfill.start');
             }
 
             if (data.message) {
@@ -2365,7 +2390,8 @@
                 const response = await authFetch('/api/backfill/start', { method: 'POST' });
                 if (!response.ok) {
                     const data = await response.json().catch(() => ({}));
-                    throw new Error(data.error === 'backfill.already.running' ? '回填已在进行中' : '启动失败');
+                    throw new Error(data.error === 'backfill.already.running'
+                        ? t('tool.backfill.already.running') : t('tool.backfill.start.failed'));
                 }
                 ensureBackfillPolling(true);
                 loadBackfillStatus();
@@ -2379,7 +2405,7 @@
                 await authFetch('/api/backfill/cancel', { method: 'POST' });
                 loadBackfillStatus();
             } catch (err) {
-                alert('停止失败: ' + err.message);
+                alert(t('tool.backfill.stop.failed') + ': ' + err.message);
             }
         }
 
@@ -2399,7 +2425,7 @@
                     return;
                 }
                 const response = await authFetch('/api/logs?limit=100');
-                if (!response.ok) throw new Error('获取日志失败');
+                if (!response.ok) throw new Error(t('web.fetch.logs.failed'));
 
                 const data = await response.json();
                 const logContainer = document.getElementById('logContainer');

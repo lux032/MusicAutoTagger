@@ -1,11 +1,12 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-i18n-title-key="recovery.page.title">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>重新识别 - Music Auto Tagger</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=7">
+    <link rel="stylesheet" href="app.css?v=8">
+    <script src="i18n.js?v=1"></script>
     <style>
         .tabs { display: flex; gap: 4px; padding: 4px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 14px; }
 
@@ -35,7 +36,7 @@
             margin-bottom: 16px;
         }
 
-        .items { display: grid; gap: 10px; }
+        .items { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 
         .item {
             border: 1px solid var(--border);
@@ -84,28 +85,28 @@
             <div class="brand">
                 <img class="brand-logo" src="logo.png" alt="Music Auto Tagger">
                 <div>
-                    <div class="brand-title">重新识别与辅助恢复</div>
-                    <div class="brand-subtitle">手动重试部分识别与识别失败的文件夹，任务在后台执行</div>
+                    <div class="brand-title" data-i18n="recovery.page.title">重新识别与辅助恢复</div>
+                    <div class="brand-subtitle" data-i18n="recovery.page.subtitle">手动重试部分识别与识别失败的文件夹，任务在后台执行</div>
                 </div>
             </div>
         </div>
         <nav class="navbar">
             <button class="nav-toggle" onclick="document.getElementById('navGroup').classList.toggle('open')" aria-label="menu">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                菜单
+                <span data-i18n="web.menu">菜单</span>
             </button>
             <div class="nav-group" id="navGroup">
                 <button class="nav-btn" onclick="loadAll()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                    刷新
+                    <span data-i18n="recovery.nav.refresh">刷新</span>
                 </button>
                 <a class="nav-btn" href="review.html">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
-                    待确认
+                    <span data-i18n="web.review">待确认</span>
                 </a>
                 <a class="nav-btn active" href="index.html">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"></path><path d="M9 21V12h6v9"></path><path d="M5 10v11h14V10"></path></svg>
-                    返回面板
+                    <span data-i18n="recovery.nav.back">返回面板</span>
                 </a>
             </div>
         </nav>
@@ -113,16 +114,16 @@
 
     <section class="card" style="margin-bottom: 18px;">
         <div class="tabs">
-            <button class="tab active" id="partialTab" onclick="setTab('PARTIAL')">部分识别</button>
-            <button class="tab" id="failedTab" onclick="setTab('FAILED')">识别失败</button>
-            <button class="tab" id="trashTab" onclick="setTab('TRASH')">回收站</button>
+            <button class="tab active" id="partialTab" onclick="setTab('PARTIAL')" data-i18n="recovery.tab.partial">部分识别</button>
+            <button class="tab" id="failedTab" onclick="setTab('FAILED')" data-i18n="recovery.tab.failed">识别失败</button>
+            <button class="tab" id="trashTab" onclick="setTab('TRASH')" data-i18n="recovery.tab.trash">回收站</button>
         </div>
         <div class="notice">
-            「部分识别」与「识别失败」通常是互斥状态：完整写入部分识别目录后不再重复生成失败副本；处理异常、目标撞名或 LLM 自动归档时仍保留失败副本供复核。<br>
-            「重新识别」会重新运行快速扫描、音频指纹和 MusicBrainz 流程；成功后当前隔离副本及另一分类中升级前遗留的同名副本都会遵循回收站保留策略。<br>
-            部分识别还可单独使用 LLM，把已有艺术家标签匹配到输出目录中的艺术家文件夹。LLM 不会自由创建新艺术家。
+            <div data-i18n="recovery.notice.1">「部分识别」与「识别失败」通常是互斥状态：完整写入部分识别目录后不再重复生成失败副本；处理异常、目标撞名或 LLM 自动归档时仍保留失败副本供复核。</div>
+            <div data-i18n="recovery.notice.2">「重新识别」会重新运行快速扫描、音频指纹和 MusicBrainz 流程；成功后当前隔离副本及另一分类中升级前遗留的同名副本都会遵循回收站保留策略。</div>
+            <div data-i18n="recovery.notice.3">部分识别还可单独使用 LLM，把已有艺术家标签匹配到输出目录中的艺术家文件夹。LLM 不会自由创建新艺术家。</div>
         </div>
-        <div class="items" id="list"><div class="empty">加载中...</div></div>
+        <div class="items" id="list"><div class="empty" data-i18n="recovery.loading">加载中...</div></div>
     </section>
 
     <section class="card">
@@ -131,10 +132,10 @@
                 <span class="card-icon">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline></svg>
                 </span>
-                最近任务
+                <span data-i18n="recovery.recent.jobs">最近任务</span>
             </div>
         </div>
-        <div id="jobs"><div class="empty">暂无任务</div></div>
+        <div id="jobs"><div class="empty" data-i18n="recovery.no.jobs">暂无任务</div></div>
     </section>
 
     <footer class="footer">
@@ -149,11 +150,11 @@
 <!-- 通用确认弹窗：替代原来的 confirm()，可以放多行说明 -->
 <div class="overlay" id="confirmDialog">
     <div class="dialog" style="width: min(480px, 96vw);">
-        <div class="dialog-title" id="confirmTitle">确认操作</div>
+        <div class="dialog-title" id="confirmTitle" data-i18n="recovery.confirm.title">确认操作</div>
         <div class="dialog-subtitle" id="confirmBody" style="white-space: pre-line;"></div>
         <div class="dialog-actions">
-            <button class="btn ghost" onclick="closeConfirm(false)">取消</button>
-            <button class="btn primary" id="confirmOkBtn" onclick="closeConfirm(true)">确认</button>
+            <button class="btn ghost" onclick="closeConfirm(false)" data-i18n="web.cancel">取消</button>
+            <button class="btn primary" id="confirmOkBtn" onclick="closeConfirm(true)" data-i18n="recovery.confirm.ok">确认</button>
         </div>
     </div>
 </div>
@@ -162,19 +163,21 @@
 
 <script>
     let csrfToken = null, currentTab = 'PARTIAL', items = [], trashItems = [], onlineSearchAvailable = false;
+    const T = (k, d) => I18n.t(k, d);
+    const TF = (k, ...a) => I18n.tf(k, ...a);
 
-    const errors = {
-        'csrf.invalid': '会话已失效，请重新登录',
-        'recovery.already.running': '该项目正在处理中',
-        'recovery.item.not.found': '文件或文件夹已不存在',
-        'recovery.llm.partial.only': 'LLM 辅助仅支持部分识别项目',
-        'recovery.directory.not.configured': '对应目录尚未配置',
-        'llm.web.search.unavailable': '未配置可用的联网搜索端点',
-        'trash.restore.target.exists': '原路径已存在同名项目，为避免覆盖已拒绝恢复',
-        'trash.manifest.missing': '缺少 manifest，无法确定原始位置',
-        'trash.manifest.invalid': 'manifest 已损坏，无法自动恢复',
-        'trash.entry.not.found': '回收站条目已不存在',
-        'trash.id.invalid': '非法的回收站条目'
+    const errorKeys = {
+        'csrf.invalid': 'recovery.error.csrf',
+        'recovery.already.running': 'recovery.error.already.running',
+        'recovery.item.not.found': 'recovery.error.item.not.found',
+        'recovery.llm.partial.only': 'recovery.error.llm.partial.only',
+        'recovery.directory.not.configured': 'recovery.error.directory.not.configured',
+        'llm.web.search.unavailable': 'recovery.error.web.search.unavailable',
+        'trash.restore.target.exists': 'recovery.error.restore.target.exists',
+        'trash.manifest.missing': 'recovery.error.manifest.missing',
+        'trash.manifest.invalid': 'recovery.error.manifest.invalid',
+        'trash.entry.not.found': 'recovery.error.entry.not.found',
+        'trash.id.invalid': 'recovery.error.id.invalid'
     };
 
     // ---------- 弹窗：用同一个 Promise 化的确认框替换原生 confirm ----------
@@ -184,7 +187,7 @@
         document.getElementById('confirmTitle').textContent = title;
         document.getElementById('confirmBody').textContent = body || '';
         const ok = document.getElementById('confirmOkBtn');
-        ok.textContent = okLabel || '确认';
+        ok.textContent = okLabel || T('recovery.confirm.ok');
         ok.className = 'btn ' + (danger ? 'danger' : 'primary');
         document.getElementById('confirmDialog').classList.add('show');
         return new Promise(resolve => { confirmResolver = resolve; });
@@ -205,6 +208,8 @@
 
     // ---------- 基础 ----------
     async function init() {
+        await I18n.load();
+        I18n.apply();
         const r = await fetch('/api/auth/status'), d = await r.json();
         if (!d.authenticated) { location.href = '/index.html'; return; }
         csrfToken = d.csrfToken;
@@ -219,7 +224,7 @@
         const r = await fetch(path, opt);
         let d = {};
         try { d = await r.json(); } catch (e) { /* ignore */ }
-        if (!r.ok) throw new Error(errors[d.error] || d.error || ('HTTP ' + r.status));
+        if (!r.ok) throw new Error(errorKeys[d.error] ? T(errorKeys[d.error]) : (d.error || ('HTTP ' + r.status)));
         return d;
     }
 
@@ -238,52 +243,52 @@
             trashItems = d.items || [];
             render();
         } catch (e) {
-            toast('加载回收站失败: ' + e.message);
+            toast(TF('recovery.trash.load.failed', e.message));
         }
     }
 
     function renderTrash() {
         const el = document.getElementById('list');
-        if (!trashItems.length) { el.innerHTML = '<div class="empty">回收站为空</div>'; return; }
+        if (!trashItems.length) { el.innerHTML = `<div class="empty">${esc(T('recovery.trash.empty'))}</div>`; return; }
         el.innerHTML = trashItems.map(i => `
             <div class="item">
                 <div>
                     <div class="name">${esc(i.relativePath || i.id)}</div>
                     <div class="meta">
-                        ${i.sourceType ? esc(i.sourceType) : '来源未知'} · ${i.fileCount} 个音频文件 ·
-                        入站于 ${i.trashedAt && i.trashedAt < 8640000000000000 ? new Date(i.trashedAt).toLocaleString() : '未知'}
+                        ${i.sourceType ? esc(i.sourceType) : esc(T('recovery.source.unknown'))} · ${esc(TF('recovery.audio.files', i.fileCount))} ·
+                        ${esc(TF('recovery.trashed.at', i.trashedAt && i.trashedAt < 8640000000000000 ? new Date(i.trashedAt).toLocaleString() : T('recovery.unknown')))}
                     </div>
-                    ${i.restorable ? '' : '<div class="meta warn">manifest 缺失或损坏，无法自动恢复，需手动处理</div>'}
+                    ${i.restorable ? '' : `<div class="meta warn">${esc(T('recovery.manifest.broken'))}</div>`}
                 </div>
                 <div class="item-actions">
                     <button class="btn ghost sm" ${i.restorable ? '' : 'disabled'}
-                        onclick='restoreTrash(${JSON.stringify(i.id)},${JSON.stringify(i.relativePath || i.id)})'>恢复</button>
+                        onclick='restoreTrash(${JSON.stringify(i.id)},${JSON.stringify(i.relativePath || i.id)})'>${esc(T('recovery.restore'))}</button>
                     <button class="btn danger sm"
-                        onclick='deleteTrash(${JSON.stringify(i.id)},${JSON.stringify(i.relativePath || i.id)})'>彻底删除</button>
+                        onclick='deleteTrash(${JSON.stringify(i.id)},${JSON.stringify(i.relativePath || i.id)})'>${esc(T('recovery.delete.forever'))}</button>
                 </div>
             </div>`).join('');
     }
 
     async function restoreTrash(id, name) {
-        const ok = await ask('恢复到隔离目录',
-            `确认把「${name}」恢复回隔离目录？\n\n只搬回隔离副本，不会删除已生成的输出目录（可能产生重复文件，需自行确认）。`,
-            '恢复');
+        const ok = await ask(T('recovery.restore.title'),
+            TF('recovery.restore.body', name),
+            T('recovery.restore'));
         if (!ok) return;
         try {
             await api('/api/recovery/trash-restore', { method: 'POST', body: JSON.stringify({ id }) });
-            toast('已恢复');
+            toast(T('recovery.restored'));
             loadTrash();
-        } catch (e) { toast('恢复失败: ' + e.message); }
+        } catch (e) { toast(TF('recovery.restore.failed', e.message)); }
     }
 
     async function deleteTrash(id, name) {
-        const ok = await ask('彻底删除', `彻底删除「${name}」？此操作不可撤销。`, '彻底删除', true);
+        const ok = await ask(T('recovery.delete.forever'), TF('recovery.delete.body', name), T('recovery.delete.forever'), true);
         if (!ok) return;
         try {
             await api('/api/recovery/trash-delete', { method: 'POST', body: JSON.stringify({ id }) });
-            toast('已删除');
+            toast(T('recovery.deleted'));
             loadTrash();
-        } catch (e) { toast('删除失败: ' + e.message); }
+        } catch (e) { toast(TF('recovery.delete.failed', e.message)); }
     }
 
     // ---------- 列表与任务 ----------
@@ -294,7 +299,7 @@
             onlineSearchAvailable = !!d.onlineSearchAvailable;
             render();
             renderJobs(d.jobs || []);
-        } catch (e) { toast('加载失败: ' + e.message); }
+        } catch (e) { toast(TF('recovery.load.failed', e.message)); }
     }
 
     async function loadJobs() {
@@ -310,69 +315,74 @@
         if (currentTab === 'TRASH') { renderTrash(); return; }
         const list = items.filter(i => i.sourceType === currentTab);
         const el = document.getElementById('list');
-        if (!list.length) { el.innerHTML = '<div class="empty">该目录没有可恢复项目</div>'; return; }
+        if (!list.length) { el.innerHTML = `<div class="empty">${esc(T('recovery.empty'))}</div>`; return; }
         el.innerHTML = list.map(i => `
             <div class="item ${i.sourceType === 'FAILED' ? 'failed' : ''}">
                 <div>
                     <div class="name">${esc(i.name)}</div>
-                    <div class="meta">${i.directory ? '文件夹' : '文件'} · ${i.fileCount} 个音频文件 · ${esc(i.path)}</div>
+                    <div class="meta">${esc(i.directory ? T('recovery.item.folder') : T('recovery.item.file'))} · ${esc(TF('recovery.audio.files', i.fileCount))} · ${esc(i.path)}</div>
                 </div>
                 <div class="item-actions">
                     <button class="btn primary sm" ${i.running ? 'disabled' : ''}
-                        onclick='retryMode(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},"REIDENTIFY")'>完整重新识别</button>
+                        onclick='retryMode(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},"REIDENTIFY")'>${esc(T('recovery.btn.reidentify'))}</button>
                     <button class="btn soft sm" ${i.running || !onlineSearchAvailable ? 'disabled' : ''}
-                        onclick='onlineSearch(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},${i.fileCount})'>联网辅助识别</button>
+                        onclick='onlineSearch(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},${i.fileCount})'>${esc(T('recovery.btn.online'))}</button>
                     ${i.sourceType === 'PARTIAL' ? `<button class="btn ghost sm" ${i.running ? 'disabled' : ''}
-                        onclick='retryMode(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},"LOCAL_ARTIST_MATCH")'>仅匹配艺术家目录</button>` : ''}
+                        onclick='retryMode(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},"LOCAL_ARTIST_MATCH")'>${esc(T('recovery.btn.artist.only'))}</button>` : ''}
                 </div>
             </div>`).join('');
     }
 
     function renderJobs(jobs) {
         const el = document.getElementById('jobs');
-        if (!jobs.length) { el.innerHTML = '<div class="empty">暂无任务</div>'; return; }
+        if (!jobs.length) { el.innerHTML = `<div class="empty">${esc(T('recovery.no.jobs'))}</div>`; return; }
         el.innerHTML = jobs.slice(0, 20).map(j => `
             <div class="job ${j.status}">
                 <span class="job-name">${esc(j.relativePath)}</span>
-                <span class="badge">${j.useLlm ? 'LLM 辅助' : '重新识别'}</span>
-                <span class="job-status">${status(j.status)}</span>
-                <div class="meta">${esc(j.message || '处理中...')}</div>
+                <span class="badge">${esc(j.useLlm ? T('recovery.job.llm') : T('recovery.job.reidentify'))}</span>
+                <span class="job-status">${esc(status(j.status))}</span>
+                <div class="meta">${esc(j.message || T('recovery.job.processing'))}</div>
             </div>`).join('');
     }
 
     function status(s) {
-        return ({ RUNNING: '处理中', SUCCEEDED: '成功', WAITING_REVIEW: '等待人工确认', FAILED: '失败' })[s] || s;
+        const keys = {
+            RUNNING: 'recovery.status.running',
+            SUCCEEDED: 'recovery.status.succeeded',
+            WAITING_REVIEW: 'recovery.status.waiting',
+            FAILED: 'recovery.status.failed'
+        };
+        return keys[s] ? T(keys[s]) : s;
     }
 
     async function retryMode(sourceType, relativePath, mode, analyzeCover = false) {
-        const msg = mode === 'REIDENTIFY' ? '现在按完整专辑重新执行识别？'
-            : mode === 'LOCAL_ARTIST_MATCH' ? '现在只匹配已有艺术家目录？'
-            : '现在开始联网辅助识别？';
-        if (!await ask('重新识别', relativePath + '\n\n' + msg, '开始')) return;
+        const msg = mode === 'REIDENTIFY' ? T('recovery.ask.reidentify')
+            : mode === 'LOCAL_ARTIST_MATCH' ? T('recovery.ask.artist')
+            : T('recovery.ask.online.start');
+        if (!await ask(T('recovery.ask.reidentify.title'), relativePath + '\n\n' + msg, T('recovery.ask.start'))) return;
         try {
             await api('/api/recovery/retry', {
                 method: 'POST',
                 body: JSON.stringify({ sourceType, relativePath, mode, analyzeCover })
             });
-            toast('任务已提交，将在后台执行');
+            toast(T('recovery.submitted'));
             loadAll();
-        } catch (e) { toast('提交失败: ' + e.message); }
+        } catch (e) { toast(TF('recovery.submit.failed', e.message)); }
     }
 
     async function onlineSearch(sourceType, relativePath, fileCount) {
-        const ok = await ask('联网辅助识别',
-            `文件数：${fileCount}\n\n最多两轮原生网络搜索、最多 5 个候选，可能产生额外 API 费用。\n`
-            + `当前仅支持文本搜索（封面视觉分析尚未接入）。\n\n结果只生成候选，必须在待确认页人工确认。`,
-            '开始搜索');
+        const ok = await ask(T('recovery.online.title'),
+            TF('recovery.online.body', fileCount),
+            T('recovery.online.start'));
         if (!ok) return;
         try {
             await api('/api/recovery/retry', {
                 method: 'POST',
                 body: JSON.stringify({ sourceType, relativePath, mode: 'ONLINE_SEARCH', analyzeCover: false })
             });
-            toast('联网搜索任务已提交');
+            toast(T('recovery.online.submitted'));
             loadAll();
-        } catch (e) { toast('提交失败: ' + e.message); }
+        } catch (e) { toast(TF('recovery.submit.failed', e.message)); }
     }
 
     function toast(t) {

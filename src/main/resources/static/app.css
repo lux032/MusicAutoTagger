@@ -419,7 +419,8 @@ a { color: var(--primary); }
 
 /* ---------------- 表单 ---------------- */
 
-.form-row { display: grid; gap: 6px; min-width: 0; }
+/* 显式单列，避免长英文标签把自动列撑到 max-content 造成溢出错位 */
+.form-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; }
 
 .form-row label {
     font-weight: 600;
@@ -613,7 +614,7 @@ a { color: var(--primary); }
     gap: 10px;
 }
 
-.dialog-stack { display: grid; gap: 12px; }
+.dialog-stack { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
 
 /* 大型模态（设置） */
 .modal-card {
