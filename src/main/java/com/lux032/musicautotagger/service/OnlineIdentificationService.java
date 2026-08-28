@@ -133,7 +133,7 @@ public class OnlineIdentificationService {
         sb.append("Search current official and music database sources. Return strict JSON:\n")
             .append("{\"needs_second_round\":boolean,\"candidates\":[{\"title\":string,\"artist\":string,")
             .append("\"album_artist\":string,\"release_date\":string,\"edition\":string,\"country\":string,")
-            .append("\"label\":string,\"catalog_number\":string,\"cover_url\":string,\"confidence\":number,")
+            .append("\"label\":string,\"catalog_number\":string,\"cover_url\":string,\"confidence\":number 0..1,")
             .append("\"reason\":string,\"tracks\":[{\"disc\":number,\"track\":number,\"title\":string,\"artist\":string,\"duration\":number}],")
             .append("\"source_urls\":[string]}],\"clues\":[{\"url\":string,\"title\":string,\"snippet\":string}]}.");
         return sb.toString();
@@ -165,7 +165,7 @@ public class OnlineIdentificationService {
         ReviewItem.OnlineCandidate c=new ReviewItem.OnlineCandidate();c.setId(UUID.randomUUID().toString());
         c.setTitle(str(o,"title"));c.setArtist(str(o,"artist"));c.setAlbumArtist(str(o,"album_artist"));
         c.setReleaseDate(str(o,"release_date"));c.setEdition(str(o,"edition"));c.setCountry(str(o,"country"));c.setLabel(str(o,"label"));
-        c.setCatalogNumber(str(o,"catalog_number"));c.setCoverUrl(str(o,"cover_url"));c.setConfidence(number(o,"confidence"));c.setReason(str(o,"reason"));
+        c.setCatalogNumber(str(o,"catalog_number"));c.setCoverUrl(str(o,"cover_url"));c.setConfidence(normalizeConfidence(number(o,"confidence")));c.setReason(str(o,"reason"));
         Set<String> sourceUrls=new HashSet<>();JsonArray urls=o.getAsJsonArray("source_urls");if(urls!=null)for(JsonElement u:urls)if(u.isJsonPrimitive())sourceUrls.add(u.getAsString());
         // 模型未标注 source_urls 时不得继承全部检索证据：否则只要本轮搜索出现过任意一个
         // HIGH 域名，候选就会无条件通过来源门槛，恰好在模型输出不规范时失效。
@@ -199,5 +199,8 @@ public class OnlineIdentificationService {
     public String evidenceHashForFolder(File albumRoot)throws Exception{return evidenceHash(collect(albumRoot));}
     public String evidenceHash(List<File> files)throws Exception{MessageDigest md=MessageDigest.getInstance("SHA-256");for(File f:files){md.update(f.getAbsolutePath().getBytes(StandardCharsets.UTF_8));md.update(Long.toString(f.length()).getBytes());md.update(Long.toString(f.lastModified()).getBytes());MusicMetadata m=tagWriter.readTags(f);if(m!=null)md.update((nz(m.getTitle())+nz(m.getArtist())+nz(m.getAlbum())+nz(m.getTrackNo())+nz(m.getDiscNo())).getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();for(byte b:md.digest())sb.append(String.format("%02x",b));return sb.toString();}
     private static class Parsed{boolean needsSecondRound;List<ReviewItem.OnlineCandidate> candidates=new ArrayList<>();List<ReviewItem.OnlineEvidence> clues=new ArrayList<>();}
-    private String str(JsonObject o,String k){return o.has(k)&&o.get(k).isJsonPrimitive()?o.get(k).getAsString():null;}private boolean bool(JsonObject o,String k){try{return o.has(k)&&o.get(k).getAsBoolean();}catch(Exception e){return false;}}private double number(JsonObject o,String k){try{return o.get(k).getAsDouble();}catch(Exception e){return 0;}}private int integer(JsonObject o,String k){Integer i=integerNullable(o,k);return i==null?0:i;}private Integer integerNullable(JsonObject o,String k){try{return o.has(k)?o.get(k).getAsInt():null;}catch(Exception e){return null;}}private String nz(String s){return s==null?"":s;}
+    private String str(JsonObject o,String k){return o.has(k)&&o.get(k).isJsonPrimitive()?o.get(k).getAsString():null;}private boolean bool(JsonObject o,String k){try{return o.has(k)&&o.get(k).getAsBoolean();}catch(Exception e){return false;}}private double number(JsonObject o,String k){try{return o.get(k).getAsDouble();}catch(Exception e){return 0;}}
+    /** 兼容模型偶尔返回 85 而不是 0.85，同时挡住 NaN/Infinity 和越界值。 */
+    private double normalizeConfidence(double value){if(!Double.isFinite(value))return 0;if(value>1&&value<=100)value/=100;return Math.max(0,Math.min(1,value));}
+    private int integer(JsonObject o,String k){Integer i=integerNullable(o,k);return i==null?0:i;}private Integer integerNullable(JsonObject o,String k){try{return o.has(k)?o.get(k).getAsInt():null;}catch(Exception e){return null;}}private String nz(String s){return s==null?"":s;}
 }

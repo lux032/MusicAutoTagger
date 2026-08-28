@@ -208,6 +208,9 @@ public class ReviewServlet extends HttpServlet {
         map.put("status", item.getStatus().name());
         map.put("reason", item.getReason());
         map.put("confidence", item.getConfidence());
+        boolean localEvidenceAvailable = (item.getCandidates() != null && !item.getCandidates().isEmpty())
+            || item.getSynthesizedAlbumTitle() != null || item.getSynthesizedAlbumArtist() != null;
+        map.put("localEvidenceAvailable", localEvidenceAvailable);
         map.put("fileCount", item.getFiles() == null ? 0 : item.getFiles().size());
         map.put("candidateCount", item.getCandidates() == null ? 0 : item.getCandidates().size());
         map.put("synthesizedAlbumTitle", item.getSynthesizedAlbumTitle());
@@ -218,6 +221,16 @@ public class ReviewServlet extends HttpServlet {
         map.put("llmSuggestion", toLlmView(item.getLlmSuggestion()));
         map.put("verificationSource", item.getVerificationSource() == null ? null : item.getVerificationSource().name());
         map.put("onlineCandidateCount", item.getOnlineCandidates() == null ? 0 : item.getOnlineCandidates().size());
+        double bestOnlineSourceConfidence = 0;
+        double bestOnlineTrackCoverage = 0;
+        if (item.getOnlineCandidates() != null) {
+            for (ReviewItem.OnlineCandidate candidate : item.getOnlineCandidates()) {
+                bestOnlineSourceConfidence = Math.max(bestOnlineSourceConfidence, candidate.getConfidence());
+                bestOnlineTrackCoverage = Math.max(bestOnlineTrackCoverage, candidate.getTrackCoverage());
+            }
+        }
+        map.put("bestOnlineSourceConfidence", bestOnlineSourceConfidence);
+        map.put("bestOnlineTrackCoverage", bestOnlineTrackCoverage);
         map.put("onlineEvidenceStale", item.isOnlineEvidenceStale());
         map.put("onlineSearchedAt", item.getOnlineSearchedAt());
         return map;

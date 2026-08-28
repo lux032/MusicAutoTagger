@@ -30,6 +30,11 @@
         .item.active { border-color: var(--primary); border-left-color: var(--primary); background: var(--primary-soft); }
         .item .name { font-weight: 600; word-break: break-all; font-size: 13.5px; }
         .item .meta { font-size: 12px; color: var(--text-mute); margin-top: 5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .item-signals { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+        .signal { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 7px; font-size: 11px; font-weight: 600; background: var(--bg-soft); color: var(--text-soft); border: 1px solid var(--border); }
+        .signal.online { background: #eef6ff; color: #1d4ed8; border-color: #cfe1fb; }
+        .signal.llm { background: #f5f0ff; color: #6d28d9; border-color: #ded0fb; }
+        .signal.stale { background: #fff1f2; color: var(--danger); border-color: #fecdd3; }
 
         .detail-head {
             display: flex;
@@ -89,6 +94,8 @@
 
         details { margin-top: 8px; }
         summary { cursor: pointer; font-size: 12.5px; color: var(--primary); }
+        .confidence-note { margin-top: 10px; padding: 9px 11px; border-radius: var(--radius-sm); background: #fffbea; border: 1px solid #f3df9b; color: #785b13; font-size: 12px; line-height: 1.6; }
+        .track-match { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
     </style>
 </head>
 <body>
@@ -298,15 +305,27 @@
                 listEl.innerHTML = '<div class="empty">没有条目</div>';
                 return;
             }
-            listEl.innerHTML = data.items.map(item => `
+            listEl.innerHTML = data.items.map(item => {
+                const localConfidence = item.localEvidenceAvailable && validScore(item.confidence)
+                    ? percent(item.confidence) : null;
+                const onlineCount = item.onlineCandidateCount || 0;
+                const llm = item.llmSuggestion;
+                return `
                 <div class="item ${item.id === currentId ? 'active' : ''}" onclick="openItem('${item.id}')">
                     <div class="name">${escapeHtml(item.folderName || '')}</div>
                     <div class="meta">
                         ${statusBadge(item.status)}
-                        <span>${item.fileCount} 个文件 · ${item.candidateCount} 个候选 · 置信度 ${(item.confidence * 100).toFixed(0)}%</span>
+                        <span>${item.fileCount} 个文件 · 本地候选 ${item.candidateCount} 个</span>
+                    </div>
+                    <div class="item-signals">
+                        ${localConfidence === null ? '' : `<span class="signal">本地证据 ${localConfidence}</span>`}
+                        ${onlineCount ? `<span class="signal online">联网候选 ${onlineCount} 个 · 最佳覆盖 ${percent(item.bestOnlineTrackCoverage)}</span>` : ''}
+                        ${llm ? `<span class="signal llm">LLM 建议 ${percent(llm.confidence)}</span>` : ''}
+                        ${item.onlineEvidenceStale ? '<span class="signal stale">联网证据已过期</span>' : ''}
                     </div>
                     <div class="meta">${escapeHtml(item.reason || '')}</div>
-                </div>`).join('');
+                </div>`;
+            }).join('');
         } catch (e) {
             listEl.innerHTML = `<div class="empty">加载失败: ${escapeHtml(e.message)}</div>`;
         }
@@ -373,15 +392,28 @@
                 </div>
             </div>`;
 
-        const onlineRows = (item.onlineCandidates || []).map(c => `<div class="panel accent">
+        const onlineRows = (item.onlineCandidates || []).map(c => {
+            const matchedTracks = (c.tracks || []).filter(t => (t.matchConfidence || 0) >= 0.6).length;
+            const totalLocal = (item.files || []).length;
+            const trackRows = (c.tracks || []).filter(t => t.matchedFilePath).map(t => `
+                <div class="hint">${t.discNo || 1}-${t.trackNo || '-'} ${escapeHtml(t.title || '')}
+                    → ${escapeHtml(baseName(t.matchedFilePath))} · 匹配 ${percent(t.matchConfidence)}</div>`).join('');
+            return `<div class="panel accent">
             <div><strong>${escapeHtml(c.title || '')}</strong>${c.edition ? ' · ' + escapeHtml(c.edition) : ''}</div>
-            <div class="hint">${escapeHtml(c.albumArtist || c.artist || '')} · ${escapeHtml(c.releaseDate || '日期未知')} · 置信度 ${((c.confidence||0)*100).toFixed(0)}%</div>
+            <div class="hint">${escapeHtml(c.albumArtist || c.artist || '')} · ${escapeHtml(c.releaseDate || '日期未知')}</div>
+            <div class="item-signals">
+                <span class="signal online">搜索来源自评 ${percent(c.confidence)}</span>
+                <span class="signal">可靠逐曲匹配 ${matchedTracks}/${totalLocal}</span>
+                <span class="signal">本地覆盖率 ${percent(c.trackCoverage)}</span>
+            </div>
             <div class="hint">${escapeHtml(c.reason || '')}</div>
             <div class="hint">曲目表 ${(c.tracks||[]).length} 首 · 来源 ${(c.sources||[]).length} 个</div>
+            ${trackRows ? `<details class="track-match"><summary>查看逐曲匹配明细</summary>${trackRows}</details>` : ''}
             ${(c.sources||[]).map(s=>`<div class="hint">[${escapeHtml(s.reliability||'')}] ${linkOrText(s.url, s.title||s.domain||s.url)}${s.snippet?' — '+escapeHtml(s.snippet):''}</div>`).join('')}
             ${safeUrl(c.coverUrl)?`<div class="hint">联网封面：${linkOrText(c.coverUrl,'预览')}（确认时默认不自动使用）</div>`:''}
             ${pending && !item.onlineEvidenceStale ? `<button class="btn primary sm" style="margin-top:10px" onclick='confirmOnline(${JSON.stringify(c.id)},${JSON.stringify(c.title||'')},${JSON.stringify(c.albumArtist||c.artist||'')},${JSON.stringify(c.releaseDate||'')},${JSON.stringify(c.edition||'')})'>确认联网候选</button>` : ''}
-        </div>`).join('');
+        </div>`;
+        }).join('');
 
         const fileRows = (item.files || []).map(f => `<tr>
             <td>${escapeHtml(f.fileName || '')}</td>
@@ -406,14 +438,19 @@
                     <div class="fact-value">${escapeHtml(item.synthesizedAlbumArtist || '-')}</div>
                 </div>
                 <div class="fact">
-                    <div class="fact-label">统一置信度</div>
-                    <div class="fact-value">${(item.confidence * 100).toFixed(0)}%</div>
+                    <div class="fact-label">本地证据可用度</div>
+                    <div class="fact-value">${item.localEvidenceAvailable && validScore(item.confidence) ? percent(item.confidence) : '不适用'}</div>
                 </div>
             </div>
+            <div class="confidence-note">
+                本页存在多套不同含义的分数，不能横向直接比较：本地证据可用度表示已有曲目元数据覆盖情况；
+                MusicBrainz 时长相似度表示官方时长序列吻合程度；LLM 建议置信度与联网来源自评都来自模型；
+                联网本地覆盖率和逐曲匹配分数才是联网候选与当前文件的实际匹配证据。
+            </div>
 
-            <div class="section">
+            ${(item.candidates || []).length ? `<div class="section">
                 <div class="section-title">
-                    候选专辑
+                    MusicBrainz 候选专辑
                     ${item.candidatesExpanded ? '' :
                         `<button class="btn ghost sm" onclick="openItem('${item.id}', true)">从 MusicBrainz 展开版本明细</button>
                          <span class="hint">（展开失败时可重复点击重试）</span>`}
@@ -426,7 +463,7 @@
                     「时长相似度」是文件夹时长序列与该版本官方时长序列的 DTW 相似度，是最强的判断依据。
                     展开明细会调用 MusicBrainz，可能需要几秒。
                 </div>
-            </div>
+            </div>` : ''}
 
             ${llmBlock}
 
@@ -559,6 +596,20 @@
         } catch (e) {
             toast('操作失败: ' + humanError(e.message));
         }
+    }
+
+    function validScore(value) {
+        return Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 1;
+    }
+
+    function percent(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return '-';
+        return (Math.max(0, Math.min(1, n)) * 100).toFixed(0) + '%';
+    }
+
+    function baseName(path) {
+        return String(path || '').split(/[\\/]/).pop() || '';
     }
 
     function formatDuration(seconds) {
