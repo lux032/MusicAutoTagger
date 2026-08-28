@@ -33,3 +33,7 @@ fpcalc
 # Local data
 data/
 db/
+
+# Local working notes (not shipped with the repo)
+ALBUM_MATCHING_FIXES.md
+UPGRADE_NOTES.md
