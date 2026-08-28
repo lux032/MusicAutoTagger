@@ -543,8 +543,9 @@ public class RecoveryService implements AutoCloseable {
             if (job.mode == RecoveryMode.LOCAL_ARTIST_MATCH) {
                 boolean matched = failedFileHandler.retryPartialWithLlm(target);
                 if (matched) {
-                    moveToTrash(target, job);
-                    complete(job, JobStatus.SUCCEEDED, "本地艺术家目录匹配成功，已移动到输出目录");
+                    // 主副本已经被匹配流程移动到输出目录，只需清理另一隔离目录里的历史重复副本。
+                    cleanupAssociatedRecoveryCopy(job);
+                    complete(job, JobStatus.SUCCEEDED, "本地艺术家目录匹配成功，已移动到输出目录；关联隔离副本已清理");
                 } else {
                     complete(job, JobStatus.FAILED, "LLM 未找到可靠的现有艺术家目录，文件保持不变");
                 }
@@ -611,11 +612,11 @@ public class RecoveryService implements AutoCloseable {
                     deleteRecursively(reidentifyWorkRoot.toPath());
                     throw commitError;
                 }
-                moveToTrash(target, job);
+                retireRecoveryCopies(target, job);
                 if (singleFileWorkspace != null) {
                     deleteRecursively(singleFileWorkspace.toPath());
                 }
-                complete(job, JobStatus.SUCCEEDED, "重新识别成功，整张专辑已原子提交，隔离副本已移入回收站");
+                complete(job, JobStatus.SUCCEEDED, "重新识别成功，整张专辑已原子提交，关联隔离副本已清理");
             } else {
                 deleteRecursively(reidentifyWorkRoot.toPath());
                 if (singleFileWorkspace != null) {
@@ -761,7 +762,44 @@ public class RecoveryService implements AutoCloseable {
         return Path.of(configured == null || configured.isBlank() ? "data/recovery-trash" : configured);
     }
 
+    /**
+     * 恢复成功后同时收敛 PARTIAL/FAILED 两个隔离视图。
+     *
+     * 新产生的数据已经保证两者互斥；这里继续处理另一侧的同名历史副本，
+     * 兼容升级前已经存在的重复记录，避免“部分识别已成功，但失败页仍残留”的歧义。
+     * 两份内容可能并不相同（部分识别副本可能经过转码/补标签），因此都遵守回收站策略，
+     * 不能把关联副本直接永久删除。
+     */
+    private void retireRecoveryCopies(File source, RecoveryJob job) throws IOException {
+        moveToTrash(source, job);
+        cleanupAssociatedRecoveryCopy(job);
+    }
+
+    private void cleanupAssociatedRecoveryCopy(RecoveryJob job) {
+        SourceType siblingType = job.sourceType == SourceType.PARTIAL ? SourceType.FAILED : SourceType.PARTIAL;
+        String siblingRoot = siblingType == SourceType.PARTIAL
+            ? config.getPartialDirectory() : config.getFailedDirectory();
+        if (siblingRoot == null || siblingRoot.isBlank()) return;
+
+        try {
+            File sibling = resolveItem(siblingType, job.relativePath);
+            if (sibling.exists()) {
+                moveToTrash(sibling, job.id, siblingType, job.relativePath);
+                log.info("关联的历史隔离副本已移入回收站: {}", sibling.getAbsolutePath());
+            }
+        } catch (IOException e) {
+            // 输出已经成功提交时，清理历史重复副本失败不应把整个恢复任务反转成失败。
+            log.warn("处理关联隔离副本失败，将保留给用户手动处理: {} / {} - {}",
+                siblingType, job.relativePath, e.getMessage());
+        }
+    }
+
     private void moveToTrash(File source, RecoveryJob job) throws IOException {
+        moveToTrash(source, job.id, job.sourceType, job.relativePath);
+    }
+
+    private void moveToTrash(File source, String jobId, SourceType sourceType,
+                             String relativePath) throws IOException {
         int retention = config.getRecoveryTrashRetentionDays();
         if (retention == 0) {
             deleteRecursively(source.toPath());
@@ -771,12 +809,13 @@ public class RecoveryService implements AutoCloseable {
         Files.createDirectories(root);
         String safeName = source.getName().replaceAll("[^\\p{L}\\p{N}._ -]", "_");
         long trashedAt = System.currentTimeMillis();
-        Path target = root.resolve(trashedAt + "_" + job.id + "_" + safeName);
+        // PARTIAL/FAILED 历史副本可能同名且在同一毫秒入站，类型标签用于避免目标路径碰撞。
+        Path target = root.resolve(trashedAt + "_" + jobId + "_" + sourceType + "_" + safeName);
         moveAcrossDevices(source.toPath(), target);
 
         JsonObject manifest = new JsonObject();
-        manifest.addProperty("sourceType", String.valueOf(job.sourceType));
-        manifest.addProperty("relativePath", job.relativePath);
+        manifest.addProperty("sourceType", String.valueOf(sourceType));
+        manifest.addProperty("relativePath", relativePath);
         manifest.addProperty("trashedAt", trashedAt);
         Files.writeString(target.resolveSibling(target.getFileName() + ".json"), gson.toJson(manifest));
     }

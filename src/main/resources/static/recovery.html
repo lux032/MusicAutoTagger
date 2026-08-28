@@ -118,7 +118,8 @@
             <button class="tab" id="trashTab" onclick="setTab('TRASH')">回收站</button>
         </div>
         <div class="notice">
-            「重新识别」会重新运行快速扫描、音频指纹和 MusicBrainz 流程；成功后隔离副本移入回收站而不是直接删除。<br>
+            「部分识别」与「识别失败」通常是互斥状态：完整写入部分识别目录后不再重复生成失败副本；处理异常、目标撞名或 LLM 自动归档时仍保留失败副本供复核。<br>
+            「重新识别」会重新运行快速扫描、音频指纹和 MusicBrainz 流程；成功后当前隔离副本及另一分类中升级前遗留的同名副本都会遵循回收站保留策略。<br>
             部分识别还可单独使用 LLM，把已有艺术家标签匹配到输出目录中的艺术家文件夹。LLM 不会自由创建新艺术家。
         </div>
         <div class="items" id="list"><div class="empty">加载中...</div></div>

@@ -23,6 +23,16 @@ import java.util.Locale;
  */
 @Slf4j
 public class FailedFileHandler {
+
+    /**
+     * 部分识别是失败处置中的一个更具体状态，而不是和 FAILED 并列的第二份副本。
+     * STORED/ARCHIVED 表示文件已经有明确去向，调用方不应再复制到失败目录。
+     */
+    public enum PartialHandlingResult {
+        NOT_HANDLED,
+        STORED,
+        ARCHIVED
+    }
     
     private final MusicConfig config;
     private final TagWriterService tagWriter;
@@ -48,19 +58,19 @@ public class FailedFileHandler {
      * 处理部分识别的文件(有标签或封面但指纹识别失败)
      * 将文件复制到部分识别目录，保留原始的文件夹结构，并尝试内嵌文件夹封面
      */
-    public void handlePartialRecognitionFile(File audioFile) {
-        handlePartialRecognitionFile(audioFile, null);
+    public PartialHandlingResult handlePartialRecognitionFile(File audioFile) {
+        return handlePartialRecognitionFile(audioFile, null);
     }
 
     /**
      * 处理部分识别的文件(有标签或封面但指纹识别失败)
      * 将文件复制到部分识别目录，保留原始的文件夹结构，并尝试内嵌文件夹封面
      */
-    public void handlePartialRecognitionFile(File audioFile, File processingFile) {
+    public PartialHandlingResult handlePartialRecognitionFile(File audioFile, File processingFile) {
         if (config.getPartialDirectory() == null || config.getPartialDirectory().isEmpty()) {
-            return; // 未配置部分识别目录，跳过
+            return PartialHandlingResult.NOT_HANDLED; // 未配置部分识别目录，跳过
         }
-        
+
         try {
             // 检查是否有内嵌封面
             boolean hasEmbeddedCover = tagWriter.hasEmbeddedCover(audioFile);
@@ -73,7 +83,7 @@ public class FailedFileHandler {
             if (!hasEmbeddedCover && !hasFolderCover) {
                 log.info(I18nUtil.getMessage("main.partial.recognition.no.cover"));
                 LogCollector.addLog("INFO", "  " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
-                return;
+                return PartialHandlingResult.NOT_HANDLED;
             }
             
             // 检查是否有部分标签信息
@@ -83,7 +93,7 @@ public class FailedFileHandler {
             // cover.jpg + 「Track 01 / Unknown Artist」的种子非常常见，
             // 放进 partialDirectory 后 Plex 会读出一堆 Unknown Artist，反而污染音乐库。
             if (!isTagsUsableForPartial(Collections.singletonList(audioFile), hasPartialTags, audioFile.getName())) {
-                return;
+                return PartialHandlingResult.NOT_HANDLED;
             }
 
             log.info("========================================");
@@ -108,10 +118,12 @@ public class FailedFileHandler {
                 targetFile.getParentFile().mkdirs();
             }
             
-            // 如果目标文件已存在，跳过复制
+            // 目标路径已有内容时无法证明它就是本次源文件的有效副本。
+            // 不能仅凭同名就吞掉 FAILED 入口，否则历史撞名/旧半成品会被误判为成功存储。
             if (targetFile.exists()) {
-                log.debug("部分识别文件已存在，跳过复制: {}", targetFile.getAbsolutePath());
-                return;
+                log.warn("部分识别目标已存在，保留失败副本供复核: {}", targetFile.getAbsolutePath());
+                LogCollector.addLog("WARN", "部分识别目标已存在，已同时保留失败副本: " + relativePath);
+                return PartialHandlingResult.NOT_HANDLED;
             }
             
             // 复制文件到部分识别目录
@@ -149,15 +161,18 @@ public class FailedFileHandler {
             // LLM 匹配逻辑：如果启用且源文件有艺术家标签，尝试匹配并移动到 outputDirectory
             if (config.isEnableLLMMatching() && tryLLMMatchAndMove(audioFile, targetFile)) {
                 log.info("LLM 匹配成功，文件已移动到 outputDirectory");
-                return;
+                return PartialHandlingResult.ARCHIVED;
             }
 
             log.info(I18nUtil.getMessage("main.partial.recognition.complete") + ": {}", targetFile.getAbsolutePath());
             LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.partial.recognition.complete") + ": " + relativePath);
             log.info("========================================");
+            return PartialHandlingResult.STORED;
             
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.partial.recognition.failed") + ": {}", audioFile.getName(), e);
+            LogCollector.addLog("WARN", "部分识别副本处理不完整，已同时保留失败副本: " + audioFile.getName());
+            return PartialHandlingResult.NOT_HANDLED;
         }
     }
     
@@ -165,15 +180,15 @@ public class FailedFileHandler {
      * 处理部分识别的专辑（整个专辑文件夹）
      * 将整个专辑文件夹复制到部分识别目录，并为每个文件内嵌封面
      */
-    public void handlePartialRecognitionAlbum(File albumRootDir) {
+    public PartialHandlingResult handlePartialRecognitionAlbum(File albumRootDir) {
         if (config.getPartialDirectory() == null || config.getPartialDirectory().isEmpty()) {
-            return; // 未配置部分识别目录，跳过
+            return PartialHandlingResult.NOT_HANDLED; // 未配置部分识别目录，跳过
         }
         
         if (albumRootDir == null || !albumRootDir.exists()) {
-            return;
+            return PartialHandlingResult.NOT_HANDLED;
         }
-        
+
         try {
             // 检查文件夹中是否有封面（优先专辑根目录，必要时回退到子目录）
             byte[] folderCover = coverArtService.findCoverInDirectory(albumRootDir);
@@ -184,7 +199,7 @@ public class FailedFileHandler {
             fileSystemUtils.collectAudioFilesForMarking(albumRootDir, audioFiles);
             
             if (audioFiles.isEmpty()) {
-                return;
+                return PartialHandlingResult.NOT_HANDLED;
             }
             
             if (folderCover == null || folderCover.length == 0) {
@@ -204,7 +219,7 @@ public class FailedFileHandler {
             if (!anyHasEmbeddedCover && !hasFolderCover) {
                 log.info(I18nUtil.getMessage("main.partial.recognition.no.cover"));
                 LogCollector.addLog("INFO", "  " + I18nUtil.getMessage("main.partial.recognition.no.cover"));
-                return;
+                return PartialHandlingResult.NOT_HANDLED;
             }
             
             // 是否有可用标签：不能只看第一个文件（它可能恰好是唯一带标签的那个），
@@ -219,7 +234,7 @@ public class FailedFileHandler {
 
             // 阶段八 #23/#24：封面 + 标签可读性双门槛
             if (!isTagsUsableForPartial(audioFiles, hasPartialTags, albumRootDir.getName())) {
-                return;
+                return PartialHandlingResult.NOT_HANDLED;
             }
 
             log.info("========================================");
@@ -233,10 +248,12 @@ public class FailedFileHandler {
             String folderName = albumRootDir.getName();
             File targetFolder = new File(config.getPartialDirectory(), folderName);
 
-            // 如果目标文件夹已存在，跳过复制
+            // 同名目录可能是升级前遗留副本、半成品或另一张撞名专辑。
+            // 无法证明内容一致时按不确定状态处理，保留 FAILED 复核入口。
             if (targetFolder.exists()) {
-                log.debug("部分识别专辑文件夹已存在，跳过复制: {}", targetFolder.getAbsolutePath());
-                return;
+                log.warn("部分识别专辑目标已存在，保留失败副本供复核: {}", targetFolder.getAbsolutePath());
+                LogCollector.addLog("WARN", "部分识别专辑目标已存在，已同时保留失败副本: " + folderName);
+                return PartialHandlingResult.NOT_HANDLED;
             }
             
             // 复制整个专辑文件夹到部分识别目录
@@ -316,15 +333,18 @@ public class FailedFileHandler {
             log.info("LLM 匹配配置检查: enabled={}", config.isEnableLLMMatching());
             if (config.isEnableLLMMatching() && !audioFiles.isEmpty() && tryLLMMatchAndMoveAlbum(audioFiles.get(0), targetFolder)) {
                 log.info("LLM 匹配成功，专辑已移动到 outputDirectory");
-                return;
+                return PartialHandlingResult.ARCHIVED;
             }
 
             log.info(I18nUtil.getMessage("main.partial.recognition.album.complete") + ": {}", targetFolder.getAbsolutePath());
             LogCollector.addLog("SUCCESS", I18nUtil.getMessage("main.partial.recognition.album.complete") + ": " + folderName);
             log.info("========================================");
+            return PartialHandlingResult.STORED;
             
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.partial.recognition.album.failed") + ": {}", albumRootDir.getName(), e);
+            LogCollector.addLog("WARN", "部分识别专辑处理不完整，已同时保留失败副本: " + albumRootDir.getName());
+            return PartialHandlingResult.NOT_HANDLED;
         }
     }
 
@@ -814,11 +834,14 @@ public class FailedFileHandler {
         log.warn("散落文件识别失败: {}", audioFile.getName());
         LogCollector.addLog("WARN", I18nUtil.getMessage("main.recognition.failed.loose", audioFile.getName()));
         
-        // 尝试处理部分识别文件
-        handlePartialRecognitionFile(audioFile, processingFile);
+        // PARTIAL 是比 FAILED 更具体的处置结果。已进入部分识别（或已自动归档）后，
+        // 不再额外制造一份 FAILED 副本，避免恢复页面出现同一项目的双重状态。
+        PartialHandlingResult partialResult = handlePartialRecognitionFile(audioFile, processingFile);
         
-        // 复制到失败目录
-        if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
+        // 未进入部分识别，或 LLM 已自动归档时仍保留 FAILED 副本作为复核/重试入口。
+        // 自动归档不是人工确认，不能因为一次目录匹配就让项目从恢复页面彻底消失。
+        if (partialResult != PartialHandlingResult.STORED
+            && config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
             try {
                 copyFailedFileToFailedDirectory(audioFile);
             } catch (Exception e) {
@@ -842,11 +865,12 @@ public class FailedFileHandler {
         log.warn("专辑识别失败: {}", albumRootDir.getName());
         LogCollector.addLog("WARN", I18nUtil.getMessage("main.recognition.failed.album", albumRootDir.getName(), audioFile.getName()));
         
-        // 尝试处理整个专辑的部分识别（复制整个专辑到部分识别目录）
-        handlePartialRecognitionAlbum(albumRootDir);
+        // 尝试处理整个专辑的部分识别。PARTIAL 与 FAILED 互斥，不能同时保留两份副本。
+        PartialHandlingResult partialResult = handlePartialRecognitionAlbum(albumRootDir);
         
-        // 复制整个专辑到失败目录
-        if (config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
+        // 未进入部分识别，或 LLM 已自动归档时仍保留 FAILED 副本作为复核/重试入口。
+        if (partialResult != PartialHandlingResult.STORED
+            && config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
             try {
                 copyFailedFolderToFailedDirectory(albumRootDir);
             } catch (Exception e) {
