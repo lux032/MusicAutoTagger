@@ -4,86 +4,139 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>待人工确认 - Music Auto Tagger</title>
+    <link rel="icon" href="logo.png" type="image/png">
+    <link rel="stylesheet" href="app.css?v=4">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh; padding: 24px; color: #333;
+        .layout {
+            display: grid;
+            grid-template-columns: 340px minmax(0, 1fr);
+            gap: 18px;
+            align-items: start;
         }
-        .container { max-width: 1280px; margin: 0 auto; }
-        .header {
-            background: rgba(255,255,255,0.12); border-radius: 14px; padding: 20px 24px;
-            color: #fff; margin-bottom: 20px; display: flex; align-items: center;
-            justify-content: space-between; flex-wrap: wrap; gap: 12px;
-        }
-        .header h1 { font-size: 1.5em; }
-        .header p { opacity: .85; font-size: .9em; margin-top: 4px; }
-        .header a, .header button {
-            background: rgba(255,255,255,.2); color: #fff; border: none; border-radius: 8px;
-            padding: 8px 16px; cursor: pointer; text-decoration: none; font-size: .9em;
-        }
-        .header a:hover, .header button:hover { background: rgba(255,255,255,.32); }
-        .layout { display: grid; grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
-        @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
-        .card { background: #fff; border-radius: 14px; padding: 18px; box-shadow: 0 8px 24px rgba(0,0,0,.15); }
-        .card h2 { font-size: 1.1em; margin-bottom: 12px; color: #444; }
+        @media (max-width: 980px) { .layout { grid-template-columns: 1fr; } }
+
+        .queue-list { max-height: calc(100vh - 250px); overflow-y: auto; display: grid; gap: 10px; }
+
         .item {
-            border: 1px solid #eee; border-left: 4px solid #ffc107; border-radius: 10px;
-            padding: 12px; margin-bottom: 10px; cursor: pointer; transition: .15s;
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--warn);
+            border-radius: var(--radius);
+            padding: 12px 14px;
+            cursor: pointer;
+            transition: background .15s ease, border-color .15s ease, transform .15s ease;
+            background: #fff;
         }
-        .item:hover { background: #fafafa; transform: translateX(2px); }
-        .item.active { border-color: #667eea; border-left-color: #667eea; background: #f5f6ff; }
-        .item .name { font-weight: 600; word-break: break-all; }
-        .item .meta { font-size: .82em; color: #777; margin-top: 4px; }
-        .badge {
-            display: inline-block; padding: 2px 8px; border-radius: 10px;
-            font-size: .75em; background: #eee; color: #555; margin-right: 6px;
+        .item:hover { background: var(--bg-soft); transform: translateX(2px); }
+        .item.active { border-color: var(--primary); border-left-color: var(--primary); background: var(--primary-soft); }
+        .item .name { font-weight: 600; word-break: break-all; font-size: 13.5px; }
+        .item .meta { font-size: 12px; color: var(--text-mute); margin-top: 5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+        .detail-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            font-size: 15px;
+            font-weight: 700;
+            word-break: break-all;
         }
-        .badge.pending { background: #fff3cd; color: #8a6d3b; }
-        .badge.confirmed { background: #d4edda; color: #256029; }
-        .badge.unverified { background: #d1ecf1; color: #0c5460; }
-        .badge.rejected { background: #f8d7da; color: #721c24; }
-        table { width: 100%; border-collapse: collapse; font-size: .88em; }
-        th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; vertical-align: top; }
-        th { background: #f7f7fb; color: #555; font-weight: 600; }
-        .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
-        .btn { border: none; border-radius: 8px; padding: 9px 18px; cursor: pointer; font-size: .9em; color: #fff; }
-        .btn.primary { background: #667eea; }
-        .btn.secondary { background: #17a2b8; }
-        .btn.danger { background: #dc3545; }
-        .btn.ghost { background: #6c757d; }
-        .btn:disabled { opacity: .5; cursor: not-allowed; }
-        .empty { text-align: center; color: #999; padding: 32px 0; }
-        .section { margin-top: 18px; }
-        .section-title { font-weight: 600; color: #555; margin-bottom: 8px; }
-        .toast {
-            position: fixed; right: 20px; bottom: 20px; background: #333; color: #fff;
-            padding: 12px 18px; border-radius: 8px; display: none; max-width: 420px;
+
+        .detail-facts {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+            margin-top: 14px;
         }
-        .hint { font-size: .82em; color: #888; margin-top: 6px; line-height: 1.5; }
-        .diff-ok { color: #256029; }
-        .diff-bad { color: #a94442; }
+        .fact {
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 9px 12px;
+        }
+        .fact-label { font-size: 11.5px; color: var(--text-mute); }
+        .fact-value { font-size: 13.5px; font-weight: 600; margin-top: 2px; word-break: break-all; }
+
+        .section { margin-top: 22px; }
+        .section-title {
+            font-weight: 700;
+            font-size: 14px;
+            color: var(--text);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            padding-left: 10px;
+            border-left: 3px solid var(--primary);
+        }
+
+        .table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+        .table-scroll { overflow-x: auto; }
+
+        .panel {
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px;
+            background: var(--bg-soft);
+            margin: 10px 0;
+        }
+        .panel.accent { background: #f7faff; border-color: #dbe6fb; }
+
+        .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+
+        .diff-ok { color: var(--success); font-weight: 600; }
+        .diff-bad { color: var(--danger); font-weight: 600; }
+
+        details { margin-top: 8px; }
+        summary { cursor: pointer; font-size: 12.5px; color: var(--primary); }
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <div>
-            <h1>待人工确认</h1>
-            <p>曲目已识别、专辑无法确定的文件夹。文件保持原样，未写入任何标签。</p>
+<div class="app">
+    <header class="topbar">
+        <div class="topbar-main">
+            <div class="brand">
+                <img class="brand-logo" src="logo.png" alt="Music Auto Tagger">
+                <div>
+                    <div class="brand-title">待人工确认</div>
+                    <div class="brand-subtitle">曲目已识别、专辑无法确定的文件夹，文件保持原样未写入标签</div>
+                </div>
+            </div>
         </div>
-        <div>
-            <button onclick="loadList()">刷新</button>
-            <a href="/index.html">返回面板</a>
-        </div>
-    </div>
+        <nav class="navbar">
+            <button class="nav-toggle" onclick="document.getElementById('navGroup').classList.toggle('open')" aria-label="menu">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                菜单
+            </button>
+            <div class="nav-group" id="navGroup">
+                <button class="nav-btn" onclick="loadList()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                    刷新
+                </button>
+                <a class="nav-btn" href="recovery.html">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
+                    重新识别
+                </a>
+                <a class="nav-btn active" href="index.html">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"></path><path d="M9 21V12h6v9"></path><path d="M5 10v11h14V10"></path></svg>
+                    返回面板
+                </a>
+            </div>
+        </nav>
+    </header>
 
     <div class="layout">
-        <div class="card">
-            <h2>队列</h2>
-            <div style="margin-bottom:10px;">
-                <select id="statusFilter" onchange="loadList()" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd;">
+        <section class="card">
+            <div class="card-head section-underline">
+                <div class="card-title">
+                    <span class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
+                    </span>
+                    队列
+                </div>
+            </div>
+            <div class="form-row" style="margin-bottom: 12px;">
+                <select id="statusFilter" onchange="loadList()">
                     <option value="PENDING_REVIEW">待确认</option>
                     <option value="ALL">全部</option>
                     <option value="CONFIRMED">已确认</option>
@@ -91,15 +144,80 @@
                     <option value="REJECTED">已忽略</option>
                 </select>
             </div>
-            <div id="list"><div class="empty">加载中...</div></div>
-        </div>
+            <div class="queue-list" id="list"><div class="empty">加载中...</div></div>
+        </section>
 
-        <div class="card">
-            <h2>详情</h2>
+        <section class="card">
+            <div class="card-head section-underline">
+                <div class="card-title">
+                    <span class="card-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                    </span>
+                    详情
+                </div>
+            </div>
             <div id="detail"><div class="empty">请从左侧选择一个文件夹</div></div>
+        </section>
+    </div>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <a href="https://032.im" target="_blank" rel="noopener">Lux032</a>
+            <span class="footer-divider">|</span>
+            <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" rel="noopener">Music Auto Tagger</a>
+        </div>
+    </footer>
+</div>
+<!-- 确认联网候选：以前是五个连续的 prompt()，改成一个表单弹窗 -->
+<div class="overlay" id="onlineDialog">
+    <div class="dialog" style="width: min(520px, 96vw);">
+        <div class="dialog-title">确认联网候选</div>
+        <div class="dialog-subtitle">所有文件先写入工作目录，全部成功后才原子提交归档。</div>
+        <div class="dialog-stack">
+            <div class="form-row">
+                <label for="ocTitle">最终专辑名</label>
+                <input id="ocTitle" type="text">
+            </div>
+            <div class="form-row">
+                <label for="ocArtist">最终专辑艺术家</label>
+                <input id="ocArtist" type="text">
+            </div>
+            <div class="form-row">
+                <label for="ocDate">发行日期</label>
+                <input id="ocDate" type="text" placeholder="保留来源精度，可留空">
+            </div>
+            <div class="form-row">
+                <label for="ocEdition">版本信息</label>
+                <input id="ocEdition" type="text" placeholder="与专辑名分开保存，可留空">
+            </div>
+            <div class="form-row">
+                <label for="ocDir">归档目录名</label>
+                <input id="ocDir" type="text" placeholder="留空则自动生成">
+            </div>
+        </div>
+        <div class="dialog-actions">
+            <button class="btn ghost" onclick="closeOnlineDialog()">取消</button>
+            <button class="btn primary" onclick="submitOnlineConfirm()">确认归档</button>
         </div>
     </div>
 </div>
+
+<!-- 标记失败 / 忽略 -->
+<div class="overlay" id="rejectDialog">
+    <div class="dialog">
+        <div class="dialog-title">标记失败 / 忽略</div>
+        <div class="dialog-subtitle">不写标签、不归档，仅记录以避免下一轮扫描反复重试。</div>
+        <div class="form-row">
+            <label for="rejectNote">备注（可留空）</label>
+            <input id="rejectNote" type="text">
+        </div>
+        <div class="dialog-actions">
+            <button class="btn ghost" onclick="closeRejectDialog()">取消</button>
+            <button class="btn danger" onclick="submitReject()">确认忽略</button>
+        </div>
+    </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -111,7 +229,8 @@
             const resp = await fetch('/api/auth/status');
             const data = await resp.json();
             if (!data.authenticated) {
-                document.body.innerHTML = '<div class="container"><div class="card"><div class="empty">未登录，请先在<a href="/index.html">主面板</a>登录。</div></div></div>';
+                document.body.innerHTML = '<div class="app" style="max-width: 460px; margin-top: 12vh;">'
+                    + '<div class="card"><div class="empty">未登录，请先在 <a href="/index.html">主面板</a> 登录。</div></div></div>';
                 return;
             }
             csrfToken = data.csrfToken;
@@ -184,8 +303,7 @@
                     <div class="name">${escapeHtml(item.folderName || '')}</div>
                     <div class="meta">
                         ${statusBadge(item.status)}
-                        ${item.fileCount} 个文件 · ${item.candidateCount} 个候选 ·
-                        置信度 ${(item.confidence * 100).toFixed(0)}%
+                        <span>${item.fileCount} 个文件 · ${item.candidateCount} 个候选 · 置信度 ${(item.confidence * 100).toFixed(0)}%</span>
                     </div>
                     <div class="meta">${escapeHtml(item.reason || '')}</div>
                 </div>`).join('');
@@ -223,7 +341,7 @@
             // 后端同样做了硬校验，这里只是避免误导。
             const confirmCell = !pending ? ''
                 : (key
-                    ? `<button class="btn primary" onclick="confirmCandidate('${key}','${rg}')">确认</button>`
+                    ? `<button class="btn primary sm" onclick="confirmCandidate('${key}','${rg}')">确认</button>`
                     : `<span class="hint">需先展开版本明细</span>`);
             return `<tr>
                 <td>${escapeHtml(c.title || '')}<div class="hint">${escapeHtml(c.releaseId || c.releaseGroupId || '')}</div></td>
@@ -239,6 +357,7 @@
         const llmBlock = !llm ? '' : `
             <div class="section">
                 <div class="section-title">LLM 判定建议</div>
+                <div class="panel">
                 <div>${llm.choiceIndex > 0
                     ? '建议选择：<strong>' + escapeHtml(llm.suggestedTitle || '') + '</strong>'
                     : '建议：<strong>候选里都不是</strong>'
@@ -251,16 +370,17 @@
                     LLM 只被允许在上面的候选中选择或回答「都不是」，不会自行给出专辑名与年份，
                     因此它不会编造一张不存在的专辑；但它仍可能选错，请对照时长序列复核。
                 </div>
+                </div>
             </div>`;
 
-        const onlineRows = (item.onlineCandidates || []).map(c => `<div style="border:1px solid #dbe4ff;border-radius:10px;padding:12px;margin:10px 0;background:#f8faff">
+        const onlineRows = (item.onlineCandidates || []).map(c => `<div class="panel accent">
             <div><strong>${escapeHtml(c.title || '')}</strong>${c.edition ? ' · ' + escapeHtml(c.edition) : ''}</div>
             <div class="hint">${escapeHtml(c.albumArtist || c.artist || '')} · ${escapeHtml(c.releaseDate || '日期未知')} · 置信度 ${((c.confidence||0)*100).toFixed(0)}%</div>
             <div class="hint">${escapeHtml(c.reason || '')}</div>
             <div class="hint">曲目表 ${(c.tracks||[]).length} 首 · 来源 ${(c.sources||[]).length} 个</div>
             ${(c.sources||[]).map(s=>`<div class="hint">[${escapeHtml(s.reliability||'')}] ${linkOrText(s.url, s.title||s.domain||s.url)}${s.snippet?' — '+escapeHtml(s.snippet):''}</div>`).join('')}
             ${safeUrl(c.coverUrl)?`<div class="hint">联网封面：${linkOrText(c.coverUrl,'预览')}（确认时默认不自动使用）</div>`:''}
-            ${pending && !item.onlineEvidenceStale ? `<button class="btn primary" style="margin-top:8px" onclick='confirmOnline(${JSON.stringify(c.id)},${JSON.stringify(c.title||'')},${JSON.stringify(c.albumArtist||c.artist||'')},${JSON.stringify(c.releaseDate||'')},${JSON.stringify(c.edition||'')})'>确认联网候选</button>` : ''}
+            ${pending && !item.onlineEvidenceStale ? `<button class="btn primary sm" style="margin-top:10px" onclick='confirmOnline(${JSON.stringify(c.id)},${JSON.stringify(c.title||'')},${JSON.stringify(c.albumArtist||c.artist||'')},${JSON.stringify(c.releaseDate||'')},${JSON.stringify(c.edition||'')})'>确认联网候选</button>` : ''}
         </div>`).join('');
 
         const fileRows = (item.files || []).map(f => `<tr>
@@ -271,26 +391,36 @@
         </tr>`).join('');
 
         document.getElementById('detail').innerHTML = `
-            <div><strong>${escapeHtml(item.folderName || '')}</strong> ${statusBadge(item.status)}</div>
+            <div class="detail-head">
+                <span>${escapeHtml(item.folderName || '')}</span> ${statusBadge(item.status)}
+            </div>
             <div class="hint">${escapeHtml(item.folderPath || '')}</div>
             <div class="hint">${escapeHtml(item.reason || '')}</div>
-            <div class="hint">
-                合成专辑名：${escapeHtml(item.synthesizedAlbumTitle || '')} ·
-                合成专辑艺术家：${escapeHtml(item.synthesizedAlbumArtist || '')} ·
-                统一置信度：${(item.confidence * 100).toFixed(0)}%
+            <div class="detail-facts">
+                <div class="fact">
+                    <div class="fact-label">合成专辑名</div>
+                    <div class="fact-value">${escapeHtml(item.synthesizedAlbumTitle || '-')}</div>
+                </div>
+                <div class="fact">
+                    <div class="fact-label">合成专辑艺术家</div>
+                    <div class="fact-value">${escapeHtml(item.synthesizedAlbumArtist || '-')}</div>
+                </div>
+                <div class="fact">
+                    <div class="fact-label">统一置信度</div>
+                    <div class="fact-value">${(item.confidence * 100).toFixed(0)}%</div>
+                </div>
             </div>
 
             <div class="section">
                 <div class="section-title">
                     候选专辑
                     ${item.candidatesExpanded ? '' :
-                        `<button class="btn ghost" style="margin-left:8px;padding:4px 10px;font-size:.8em;"
-                            onclick="openItem('${item.id}', true)">从 MusicBrainz 展开版本明细</button>
+                        `<button class="btn ghost sm" onclick="openItem('${item.id}', true)">从 MusicBrainz 展开版本明细</button>
                          <span class="hint">（展开失败时可重复点击重试）</span>`}
                 </div>
-                ${candidateRows ? `<table>
-                    <tr><th>专辑</th><th>格式</th><th>曲目数</th><th>时长相似度</th><th>样本支持</th><th></th></tr>
-                    ${candidateRows}</table>`
+                ${candidateRows ? `<div class="table-wrap table-scroll"><table class="table">
+                    <thead><tr><th>专辑</th><th>格式</th><th>曲目数</th><th>时长相似度</th><th>样本支持</th><th></th></tr></thead>
+                    <tbody>${candidateRows}</tbody></table></div>`
                     : '<div class="empty">没有候选</div>'}
                 <div class="hint">
                     「时长相似度」是文件夹时长序列与该版本官方时长序列的 DTW 相似度，是最强的判断依据。
@@ -309,24 +439,24 @@
 
             <div class="section">
                 <div class="section-title">文件（${(item.files || []).length}）</div>
-                <table>
-                    <tr><th>文件名</th><th>识别曲目</th><th>艺术家</th><th>时长</th></tr>
-                    ${fileRows}
-                </table>
+                <div class="table-wrap table-scroll"><table class="table">
+                    <thead><tr><th>文件名</th><th>识别曲目</th><th>艺术家</th><th>时长</th></tr></thead>
+                    <tbody>${fileRows}</tbody>
+                </table></div>
             </div>
 
             <div class="actions">
                 ${item.llmJudgeEnabled ? `<button class="btn ghost" ${pending ? '' : 'disabled'} onclick="llmJudge()">
                     让 LLM 判定（封闭选择题）
                 </button>` : ''}
-                <button class="btn secondary" ${pending ? '' : 'disabled'} onclick="archiveItem()">
+                <button class="btn info" ${pending ? '' : 'disabled'} onclick="archiveItem()">
                     按「MusicBrainz 未收录」归档
                 </button>
                 <button class="btn danger" ${pending ? '' : 'disabled'} onclick="rejectItem()">
                     标记失败 / 忽略
                 </button>
             </div>
-            <div class="hint">
+            <div class="hint" style="margin-top: 12px;">
                 · 「确认」：按选定版本锁定整张专辑并归档（优先级最高，后续自动流程不会再改写）<br>
                 · 「按未收录归档」：使用上面的合成专辑名归档，年份留空，标记为未验证<br>
                 · 「标记失败 / 忽略」：不写标签、不归档，仅记录以避免下一轮扫描反复重试
@@ -335,15 +465,41 @@
         `;
     }
 
-    async function confirmOnline(candidateId,title,artist,releaseDate,edition) {
+    let pendingOnlineCandidateId = null;
+
+    function confirmOnline(candidateId, title, artist, releaseDate, edition) {
         if (!currentId) return;
-        const albumTitle = prompt('最终专辑名：', title); if (albumTitle === null) return;
-        const albumArtist = prompt('最终专辑艺术家：', artist); if (albumArtist === null) return;
-        const date = prompt('发行日期（保留来源精度，可留空）：', releaseDate || ''); if (date === null) return;
-        const finalEdition = prompt('版本信息（与专辑名分开保存，可留空）：', edition || ''); if (finalEdition === null) return;
-        const archiveDirectoryName = prompt('归档目录名（留空则自动生成）：', ''); if (archiveDirectoryName === null) return;
-        if (!confirm('确认按该联网候选原子归档整个专辑？所有文件会先写入工作目录，全部成功后才提交。')) return;
-        await runAction('/api/review/online-confirm', {id:currentId,candidateId,albumTitle,albumArtist,releaseDate:date,edition:finalEdition,archiveDirectoryName});
+        pendingOnlineCandidateId = candidateId;
+        document.getElementById('ocTitle').value = title || '';
+        document.getElementById('ocArtist').value = artist || '';
+        document.getElementById('ocDate').value = releaseDate || '';
+        document.getElementById('ocEdition').value = edition || '';
+        document.getElementById('ocDir').value = '';
+        document.getElementById('onlineDialog').classList.add('show');
+    }
+
+    function closeOnlineDialog() {
+        document.getElementById('onlineDialog').classList.remove('show');
+        pendingOnlineCandidateId = null;
+    }
+
+    async function submitOnlineConfirm() {
+        if (!currentId || pendingOnlineCandidateId === null) return;
+        const payload = {
+            id: currentId,
+            candidateId: pendingOnlineCandidateId,
+            albumTitle: document.getElementById('ocTitle').value.trim(),
+            albumArtist: document.getElementById('ocArtist').value.trim(),
+            releaseDate: document.getElementById('ocDate').value.trim(),
+            edition: document.getElementById('ocEdition').value.trim(),
+            archiveDirectoryName: document.getElementById('ocDir').value.trim()
+        };
+        if (!payload.albumTitle) {
+            toast('专辑名不能为空');
+            return;
+        }
+        closeOnlineDialog();
+        await runAction('/api/review/online-confirm', payload);
     }
 
     async function confirmCandidate(releaseId, releaseGroupId) {
@@ -365,10 +521,20 @@
         await runAction('/api/review/archive', { id: currentId });
     }
 
-    async function rejectItem() {
+    function rejectItem() {
         if (!currentId) return;
-        const note = prompt('备注（可留空）：', '');
-        if (note === null) return;
+        document.getElementById('rejectNote').value = '';
+        document.getElementById('rejectDialog').classList.add('show');
+    }
+
+    function closeRejectDialog() {
+        document.getElementById('rejectDialog').classList.remove('show');
+    }
+
+    async function submitReject() {
+        if (!currentId) return;
+        const note = document.getElementById('rejectNote').value;
+        closeRejectDialog();
         await runAction('/api/review/reject', { id: currentId, note });
     }
 
@@ -419,6 +585,21 @@
         const text = escapeHtml(label || url || '来源');
         return href ? `<a href="${href}" target="_blank" rel="noopener">${text}</a>` : text;
     }
+
+    // ESC 关闭任意弹窗
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeOnlineDialog();
+            closeRejectDialog();
+        }
+    });
+
+    // 点击遮罩层空白处关闭
+    document.querySelectorAll('.overlay').forEach(el => {
+        el.addEventListener('mousedown', (e) => {
+            if (e.target === el) el.classList.remove('show');
+        });
+    });
 
     init();
 </script>

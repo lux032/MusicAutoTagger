@@ -3,723 +3,389 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>音乐自动标记系统 - 监控面板</title>
+    <title>音乐自动标签器 - 仪表板</title>
     <link rel="icon" href="logo.png" type="image/png">
+    <link rel="stylesheet" href="app.css?v=4">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-            background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 50%, #06b6d4 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 30px;
-        }
-
-        .logo-row {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 12px;
-        }
-
-        .app-logo {
-            width: 96px;
-            height: 96px;
-            border-radius: 12px;
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
-        }
-
-        .header h1 {
-            font-size: 2.5em;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-            margin-bottom: 6px;
-        }
-
-        .header p {
-            font-size: 1.1em;
-            opacity: 0.9;
-        }
-
-        .status-bar {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 20px;
-            margin-top: 10px;
-            font-size: 0.9em;
-        }
-
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #4ade80;
-            animation: pulse 2s infinite;
-        }
-
-        .status-dot.error {
-            background: #f87171;
-            animation: none;
-        }
-
-        .status-dot.loading {
-            background: #fbbf24;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
-        .footer {
-            margin-top: 30px;
-            padding: 20px;
-            text-align: center;
-            color: rgba(255, 255, 255, 0.8);
-            font-size: 0.9em;
-        }
-
-        .footer-content {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-
-        .footer-content a:hover {
-            color: rgba(255, 255, 255, 1) !important;
-            text-decoration: underline;
-        }
-
-        .footer-divider {
-            opacity: 0.5;
-        }
-
-        .grid {
+        /* ---- 仪表板专用布局 ---- */
+        .dash-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 20px;
+            grid-template-columns: 300px minmax(0, 1fr);
+            gap: 18px;
+            align-items: start;
         }
 
-        .card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        .side-col, .main-col { display: grid; gap: 18px; align-content: start; min-width: 0; }
+
+        @media (max-width: 1000px) {
+            .dash-grid { grid-template-columns: 1fr; }
         }
 
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 8px 15px rgba(0,0,0,0.2);
+        /* 监控状态卡 */
+        .monitor-card {
+            background: linear-gradient(135deg, #1550c6 0%, #1d6ef0 55%, #2f8bf7 100%);
+            border-radius: var(--radius-lg);
+            padding: 18px;
+            color: #fff;
+            box-shadow: 0 8px 20px rgba(21, 80, 198, .25);
         }
 
-        .card-title {
-            font-size: 1.2em;
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 15px;
-            display: flex;
+        .monitor-top { display: flex; align-items: center; gap: 12px; }
+
+        .monitor-badge {
+            width: 40px; height: 40px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, .18);
+            display: inline-flex;
             align-items: center;
-            gap: 10px;
+            justify-content: center;
+            flex: 0 0 auto;
+        }
+        .monitor-badge svg { width: 20px; height: 20px; }
+
+        .monitor-state { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+
+        .wave { display: flex; align-items: center; gap: 3px; margin-left: auto; height: 26px; }
+        .wave span {
+            display: block;
+            width: 3px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, .55);
+            animation: wave 1.1s ease-in-out infinite;
+        }
+        .monitor-card.paused .wave span { animation-play-state: paused; opacity: .4; }
+        @keyframes wave {
+            0%, 100% { height: 6px; }
+            50% { height: 22px; }
         }
 
-        .card-icon {
-            font-size: 1.5em;
-        }
+        .monitor-actions { display: flex; gap: 10px; margin-top: 18px; }
+        .monitor-actions .btn { flex: 1; }
+        .monitor-actions .btn.light { background: #fff; color: var(--primary); }
+        .monitor-actions .btn.light:hover { background: #f0f5ff; }
+        .monitor-actions .btn.translucent { background: rgba(255, 255, 255, .18); color: #fff; border-color: rgba(255, 255, 255, .35); }
+        .monitor-actions .btn.translucent:hover { background: rgba(255, 255, 255, .3); }
 
+        /* 统计数字 */
         .stat-value {
-            font-size: 2.5em;
-            font-weight: bold;
-            color: #3b82f6;
-            margin: 10px 0;
+            font-size: 44px;
+            font-weight: 800;
+            color: var(--primary);
+            line-height: 1.1;
+            letter-spacing: -1px;
         }
+        .stat-label { color: var(--text-mute); font-size: 12.5px; margin-top: 4px; }
 
-        .stat-label {
-            color: #666;
-            font-size: 0.9em;
-        }
+        .stat-split { border-top: 1px solid var(--border); margin: 14px 0 10px; }
+
+        .stat-unit { font-size: 15px; font-weight: 600; color: var(--primary); margin-left: 3px; }
 
         .info-row {
             display: flex;
             justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid #eee;
-        }
-
-        .info-row:last-child {
-            border-bottom: none;
-        }
-
-        .info-label {
-            color: #666;
-            font-weight: 500;
-        }
-
-        .info-value {
-            color: #333;
-            font-weight: 600;
-        }
-
-        .recent-files {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-
-        .collapsible-header {
-            cursor: pointer;
-            user-select: none;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .collapsible-header:hover {
-            opacity: 0.8;
-        }
-
-        .toggle-icon {
-            transition: transform 0.3s ease;
-            font-size: 0.8em;
-        }
-
-        .toggle-icon.collapsed {
-            transform: rotate(-90deg);
-        }
-
-        .collapsible-content {
-            max-height: 0;
-            overflow: hidden;
-            transition: max-height 0.3s ease;
-        }
-
-        .collapsible-content.expanded {
-            max-height: 2000px;
-        }
-
-        .file-item {
-            padding: 15px;
-            border-bottom: 1px solid #eee;
-            transition: background 0.2s ease;
-        }
-
-        .file-item:hover {
-            background: #f8f9fa;
-        }
-
-        .file-item:last-child {
-            border-bottom: none;
-        }
-
-        .file-title {
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 5px;
-        }
-
-        .file-info {
-            color: #666;
-            font-size: 0.9em;
-        }
-
-        .file-time {
-            color: #999;
-            font-size: 0.85em;
-            margin-top: 5px;
-        }
-
-        .refresh-btn {
-            background: white;
-            border: none;
-            padding: 12px 30px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 1em;
-            font-weight: 600;
-            color: #3b82f6;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            transition: all 0.3s ease;
-            display: block;
-            margin: 20px auto;
-        }
-
-        .refresh-btn:hover {
-            transform: scale(1.05);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-        }
-
-        .loading {
-            text-align: center;
-            color: white;
-            font-size: 1.2em;
-            padding: 50px;
-        }
-
-        .error {
-            background: #ff4757;
-            color: white;
-            padding: 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-            text-align: center;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        .spinner {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid rgba(255,255,255,0.3);
-            border-radius: 50%;
-            border-top-color: white;
-            animation: spin 0.8s linear infinite;
-        }
-
-        .auth-bar {
-            margin-top: 12px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 10px;
-            font-size: 0.9em;
-            color: rgba(255, 255, 255, 0.9);
-        }
-
-        .auth-bar button {
-            border: none;
-            background: rgba(255, 255, 255, 0.15);
-            color: white;
-            padding: 6px 12px;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: background 0.2s ease;
-        }
-
-        .auth-bar button:hover {
-            background: rgba(255, 255, 255, 0.3);
-        }
-
-        .config-form {
-            display: grid;
-            gap: 14px;
-        }
-
-        .form-row {
-            display: grid;
-            gap: 6px;
-        }
-
-        .form-row label {
-            font-weight: 600;
-            color: #333;
-        }
-
-        .label-with-tip {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .form-row input {
-            border: 1px solid #d0d7e2;
-            border-radius: 8px;
-            padding: 10px 12px;
-            font-size: 0.95em;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        .form-row select {
-            border: 1px solid #d0d7e2;
-            border-radius: 8px;
-            padding: 10px 12px;
-            font-size: 0.95em;
-            background: white;
-        }
-
-        .form-row input:focus {
-            outline: none;
-            border-color: #3b82f6;
-            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
-        }
-
-        .form-hint {
-            font-size: 0.8em;
-            color: #6b7280;
-        }
-
-        .info-tip {
-            position: relative;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 18px;
-            height: 18px;
-            border-radius: 50%;
-            border: 1px solid #c7d2fe;
-            background: #eef2ff;
-            color: #3730a3;
-            font-size: 12px;
-            font-weight: 700;
-            cursor: pointer;
-            margin-left: 6px;
-        }
-
-        .info-tip .tip-text {
-            display: none;
-            position: absolute;
-            left: 50%;
-            top: calc(100% + 8px);
-            transform: translateX(-50%);
-            min-width: 220px;
-            max-width: 320px;
-            padding: 8px 10px;
-            border-radius: 8px;
-            background: #111827;
-            color: #f9fafb;
-            font-size: 12px;
-            line-height: 1.4;
-            z-index: 10;
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
-            white-space: normal;
-        }
-
-        .info-tip:hover .tip-text {
-            display: block;
-        }
-
-        .config-actions {
-            margin-top: 16px;
-            display: flex;
             align-items: center;
             gap: 12px;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
         }
+        .info-row:last-child { border-bottom: none; }
+        .info-label { color: var(--text-mute); }
+        .info-value { color: var(--text); font-weight: 600; text-align: right; word-break: break-all; }
 
-        .config-status {
-            font-size: 0.85em;
-            color: #2563eb;
-        }
+        .top-cards { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 18px; }
+        @media (max-width: 760px) { .top-cards { grid-template-columns: 1fr; } }
 
-        .login-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(8, 20, 44, 0.8);
-            display: none;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-            z-index: 1000;
-        }
-
-        .login-card {
-            width: min(420px, 90vw);
-            background: white;
-            border-radius: 16px;
-            padding: 28px;
-            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
-        }
-
-        .login-title {
-            font-size: 1.4em;
-            font-weight: 700;
-            margin-bottom: 10px;
-            color: #1f2937;
-        }
-
-        .login-subtitle {
-            color: #6b7280;
-            font-size: 0.95em;
-            margin-bottom: 18px;
-        }
-
-        .login-error {
-            display: none;
-            color: #dc2626;
-            background: #fee2e2;
-            padding: 10px 12px;
-            border-radius: 8px;
-            font-size: 0.9em;
-            margin-bottom: 12px;
-        }
-
-        .login-actions {
-            margin-top: 18px;
-            display: flex;
-            justify-content: flex-end;
-        }
-
-        .login-btn {
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 10px 18px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: background 0.2s ease;
-        }
-
-        .login-btn:hover {
-            background: #1d4ed8;
-        }
-
-        .login-btn.secondary {
-            background: #9ca3af;
-            margin-right: 8px;
-        }
-
-        .login-btn.secondary:hover {
-            background: #6b7280;
-        }
-
-        .card-text {
-            color: #4b5563;
-            line-height: 1.5;
-        }
-
-        .modal-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(8, 20, 44, 0.7);
-            display: none;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-            z-index: 1100;
-        }
-
-        .modal-card {
-            width: min(1100px, 96vw);
-            max-height: 90vh;
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.3);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 18px 24px;
-            border-bottom: 1px solid #e5e7eb;
-        }
-
-        .modal-title {
-            font-size: 1.3em;
-            font-weight: 700;
-            color: #1f2937;
-        }
-
-        .icon-btn {
+        /* 最近处理的文件 */
+        .collapse-toggle {
+            margin-left: auto;
             border: none;
             background: transparent;
-            font-size: 1.4em;
+            color: var(--text-mute);
             cursor: pointer;
-            color: #6b7280;
+            display: inline-flex;
+            padding: 4px;
+            border-radius: 6px;
+            transition: .15s;
         }
+        .collapse-toggle:hover { background: var(--bg-soft); color: var(--primary); }
+        .collapse-toggle svg { width: 18px; height: 18px; transition: transform .25s ease; }
+        .collapse-toggle.expanded svg { transform: rotate(90deg); }
 
-        .modal-tabs {
+        .collapsible-content { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .28s ease; }
+        .collapsible-content > div { overflow: hidden; min-height: 0; }
+        .collapsible-content.expanded { grid-template-rows: 1fr; }
+
+        /* 单行横向滚动：文件多的时候不押高卡片，滑到底给个渐隐提示还有内容 */
+        .files-viewport { position: relative; }
+        .files-viewport::after {
+            content: '';
+            position: absolute;
+            top: 0; right: 0; bottom: 10px;
+            width: 36px;
+            pointer-events: none;
+            background: linear-gradient(to right, rgba(255, 255, 255, 0), #fff);
+            opacity: 0;
+            transition: opacity .2s ease;
+        }
+        .files-viewport.has-overflow::after { opacity: 1; }
+
+        .files-strip {
             display: flex;
-            gap: 8px;
-            padding: 12px 20px;
-            border-bottom: 1px solid #e5e7eb;
-            flex-wrap: wrap;
-            background: #f9fafb;
+            gap: 16px;
+            padding: 4px 2px 10px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            scroll-snap-type: x proximity;
+            overscroll-behavior-x: contain;
+        }
+        .files-strip::-webkit-scrollbar { height: 7px; }
+
+        .file-tile {
+            flex: 0 0 132px;
+            width: 132px;
+            min-width: 0;
+            scroll-snap-align: start;
         }
 
-        .tab-btn {
-            border: none;
-            background: #e5e7eb;
-            color: #374151;
-            padding: 8px 14px;
-            border-radius: 999px;
-            cursor: pointer;
+        .file-cover {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            border-radius: var(--radius);
+            overflow: hidden;
+            background: linear-gradient(135deg, #c8d6ec, #9fb6d8);
+            box-shadow: var(--shadow);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .file-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .file-cover .ph { color: rgba(255, 255, 255, .85); }
+        .file-cover .ph svg { width: 34px; height: 34px; }
+
+        .file-name {
+            margin-top: 9px;
+            font-size: 12.5px;
             font-weight: 600;
-            font-size: 0.9em;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-
-        .tab-btn.active {
-            background: #2563eb;
-            color: white;
+        .file-sub {
+            font-size: 11.5px;
+            color: var(--text-mute);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-top: 1px;
         }
+        .file-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            margin-top: 5px;
+            font-size: 11.5px;
+            color: var(--success);
+            font-weight: 600;
+        }
+        .file-status svg { width: 13px; height: 13px; }
 
-        .modal-body {
-            padding: 20px 24px;
+        /* 日志 */
+        .log-tools { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+        .log-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12.5px;
+            color: var(--text-soft);
+            cursor: pointer;
+        }
+        .log-check input { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
+
+        .log-panel {
+            background: #1b2430;
+            color: #d6dde8;
+            border-radius: var(--radius);
+            padding: 14px 16px;
+            font-family: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+            font-size: 12.5px;
+            line-height: 1.6;
+            height: 240px;
             overflow-y: auto;
         }
-
-        .tab-panel {
-            display: none;
+        .log-panel::-webkit-scrollbar-thumb { background: #3b4757; }
+        .log-line { padding: 4px 0; border-bottom: 1px solid rgba(255, 255, 255, .06); display: flex; gap: 10px; align-items: baseline; }
+        .log-line:last-child { border-bottom: none; }
+        .log-time { color: #7c8899; flex: 0 0 auto; }
+        .log-level { flex: 0 0 auto; padding: 0 6px; border-radius: 4px; font-size: 11px; font-weight: 700; border: 1px solid currentColor; }
+        .log-msg { color: #e6ebf2; word-break: break-word; }
+        .log-empty {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            color: #6b7688;
+            font-size: 13px;
         }
 
-        .tab-panel.active {
-            display: block;
-        }
-
-        .form-grid {
-            display: grid;
-            gap: 16px;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-        }
-
+        /* 设置面板内的分组标题（沿用旧结构，视觉升级） */
         .form-section-title {
             font-weight: 700;
-            color: #1f2937;
-            margin-bottom: 10px;
+            font-size: 14px;
+            color: var(--text);
+            margin: 22px 0 12px;
+            padding-left: 10px;
+            border-left: 3px solid var(--primary);
+            line-height: 1.3;
         }
+        .tab-panel > .form-section-title:first-child { margin-top: 0; }
+        .tab-panel > .form-grid + .form-section-title { padding-top: 18px; border-top: 1px solid var(--border); margin-top: 4px; }
 
-        .checkbox-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-wrap: nowrap;
-        }
+        .settings-note { font-size: 12.5px; color: var(--text-mute); }
 
-        .checkbox-row input {
-            transform: scale(1.05);
+        .llm-provider-card {
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px;
+            background: var(--bg-soft);
         }
-
-        .checkbox-row label {
-            flex: 0 1 auto;
+        .llm-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .llm-fields { display: grid; gap: 8px; margin-bottom: 10px; }
+        .llm-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+        .llm-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+        .llm-inline.muted { color: var(--text-mute); }
+        .llm-inline input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
+        .llm-models { font-size: 13px; }
+        .llm-model-row {
+            display: flex; align-items: center; gap: 12px;
+            padding: 7px 0; border-top: 1px solid var(--border);
+            flex-wrap: wrap;
         }
-
-        .checkbox-row .info-tip {
-            flex: 0 0 auto;
+        .llm-picker-list {
+            max-height: 220px; overflow-y: auto;
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 8px; background: #fff;
         }
-
-        .modal-footer {
-            padding: 16px 24px;
-            border-top: 1px solid #e5e7eb;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-            background: #f9fafb;
+        .llm-model-option {
+            display: flex; align-items: center; gap: 7px;
+            padding: 4px 2px; font-size: 13px; cursor: pointer; border-radius: 4px;
         }
-
-        .settings-note {
-            font-size: 0.85em;
-            color: #6b7280;
+        .llm-model-option:hover { background: var(--bg-soft); }
+        .llm-model-option input { accent-color: var(--primary); }
+        .llm-warn {
+            background: var(--warn-soft); border: 1px solid #f6ddb5;
+            border-radius: var(--radius-sm); padding: 10px 12px;
+            font-size: 12.5px; color: #92400e; line-height: 1.6;
         }
+        .llm-warn code { background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px; }
     </style>
 </head>
 <body>
-    <div class="login-overlay" id="loginOverlay">
-        <div class="login-card">
+    <!-- ========== 登录 / 初始化 ========== -->
+    <div class="overlay" id="loginOverlay">
+        <div class="dialog">
             <div id="loginPanel">
-                <div class="login-title" data-i18n="web.login.title">面板登录</div>
-                <div class="login-subtitle" data-i18n="web.login.subtitle">请输入管理员账号以继续</div>
-                <div class="form-row" style="margin-bottom: 12px;">
-                    <label for="loginLanguage" data-i18n="web.language.label">语言</label>
-                    <select id="loginLanguage" disabled>
-                        <option value="en_US">English</option>
-                        <option value="zh_CN">中文</option>
-                    </select>
-                    <div class="form-hint" data-i18n="web.language.hint">登录后可切换语言</div>
+                <div class="dialog-title" data-i18n="web.login.title">面板登录</div>
+                <div class="dialog-subtitle" data-i18n="web.login.subtitle">请输入管理员账号以继续</div>
+                <div class="dialog-error" id="loginError"></div>
+                <div class="dialog-stack">
+                    <div class="form-row">
+                        <label for="loginLanguage" data-i18n="web.language.label">语言</label>
+                        <select id="loginLanguage" disabled>
+                            <option value="en_US">English</option>
+                            <option value="zh_CN">中文</option>
+                        </select>
+                        <div class="form-hint" data-i18n="web.language.hint">登录后可切换语言</div>
+                    </div>
+                    <div class="form-row">
+                        <label for="loginUsername" data-i18n="web.login.username">用户名</label>
+                        <input id="loginUsername" type="text" autocomplete="username">
+                    </div>
+                    <div class="form-row">
+                        <label for="loginPassword" data-i18n="web.login.password">密码</label>
+                        <input id="loginPassword" type="password" autocomplete="current-password">
+                    </div>
                 </div>
-                <div class="login-error" id="loginError"></div>
-                <div class="form-row">
-                    <label for="loginUsername" data-i18n="web.login.username">用户名</label>
-                    <input id="loginUsername" type="text" autocomplete="username">
-                </div>
-                <div class="form-row" style="margin-top: 10px;">
-                    <label for="loginPassword" data-i18n="web.login.password">密码</label>
-                    <input id="loginPassword" type="password" autocomplete="current-password">
-                </div>
-                <div class="login-actions">
-                    <button class="login-btn" onclick="submitLogin()" data-i18n="web.login.submit">登录</button>
+                <div class="dialog-actions">
+                    <button class="btn primary" onclick="submitLogin()" data-i18n="web.login.submit">登录</button>
                 </div>
             </div>
             <div id="setupPanel" style="display: none;">
-                <div class="login-title" data-i18n="web.setup.title">创建管理员</div>
-                <div class="login-subtitle" data-i18n="web.setup.subtitle">首次使用需要创建管理员账号</div>
-                <div class="form-row" style="margin-bottom: 12px;">
-                    <label for="setupLanguage" data-i18n="web.language.label">语言</label>
-                    <select id="setupLanguage" disabled>
-                        <option value="en_US">English</option>
-                        <option value="zh_CN">中文</option>
-                    </select>
-                    <div class="form-hint" data-i18n="web.language.hint">登录后可切换语言</div>
+                <div class="dialog-title" data-i18n="web.setup.title">创建管理员</div>
+                <div class="dialog-subtitle" data-i18n="web.setup.subtitle">首次使用需要创建管理员账号</div>
+                <div class="dialog-error" id="setupError"></div>
+                <div class="dialog-stack">
+                    <div class="form-row">
+                        <label for="setupLanguage" data-i18n="web.language.label">语言</label>
+                        <select id="setupLanguage" disabled>
+                            <option value="en_US">English</option>
+                            <option value="zh_CN">中文</option>
+                        </select>
+                        <div class="form-hint" data-i18n="web.language.hint">登录后可切换语言</div>
+                    </div>
+                    <div class="form-row">
+                        <label for="setupUsername" data-i18n="web.setup.username">用户名</label>
+                        <input id="setupUsername" type="text" autocomplete="username">
+                    </div>
+                    <div class="form-row">
+                        <label for="setupPassword" data-i18n="web.setup.password">密码</label>
+                        <input id="setupPassword" type="password" autocomplete="new-password">
+                    </div>
+                    <div class="form-row">
+                        <label for="setupPasswordConfirm" data-i18n="web.setup.password.confirm">确认密码</label>
+                        <input id="setupPasswordConfirm" type="password" autocomplete="new-password">
+                    </div>
                 </div>
-                <div class="login-error" id="setupError"></div>
+                <div class="dialog-actions">
+                    <button class="btn primary" onclick="submitSetup()" data-i18n="web.setup.submit">创建管理员</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 修改密码 ========== -->
+    <div class="overlay" id="changeOverlay">
+        <div class="dialog">
+            <div class="dialog-title" data-i18n="web.change.password.title">修改密码</div>
+            <div class="dialog-subtitle" data-i18n="web.change.password.subtitle">使用当前密码验证身份</div>
+            <div class="dialog-error" id="changeError"></div>
+            <div class="dialog-stack">
                 <div class="form-row">
-                    <label for="setupUsername" data-i18n="web.setup.username">用户名</label>
-                    <input id="setupUsername" type="text" autocomplete="username">
+                    <label for="changeCurrentPassword" data-i18n="web.change.password.current">当前密码</label>
+                    <input id="changeCurrentPassword" type="password" autocomplete="current-password">
                 </div>
-                <div class="form-row" style="margin-top: 10px;">
-                    <label for="setupPassword" data-i18n="web.setup.password">密码</label>
-                    <input id="setupPassword" type="password" autocomplete="new-password">
+                <div class="form-row">
+                    <label for="changeNewPassword" data-i18n="web.change.password.new">新密码</label>
+                    <input id="changeNewPassword" type="password" autocomplete="new-password">
                 </div>
-                <div class="form-row" style="margin-top: 10px;">
-                    <label for="setupPasswordConfirm" data-i18n="web.setup.password.confirm">确认密码</label>
-                    <input id="setupPasswordConfirm" type="password" autocomplete="new-password">
+                <div class="form-row">
+                    <label for="changeConfirmPassword" data-i18n="web.change.password.confirm">确认新密码</label>
+                    <input id="changeConfirmPassword" type="password" autocomplete="new-password">
                 </div>
-                <div class="login-actions">
-                    <button class="login-btn" onclick="submitSetup()" data-i18n="web.setup.submit">创建管理员</button>
-                </div>
+            </div>
+            <div class="dialog-actions">
+                <button class="btn ghost" onclick="closeChangePassword()" data-i18n="web.cancel">取消</button>
+                <button class="btn primary" onclick="submitChangePassword()" data-i18n="web.change.password.submit">更新密码</button>
             </div>
         </div>
     </div>
 
-    <div class="login-overlay" id="changeOverlay" style="display: none;">
-        <div class="login-card">
-            <div class="login-title" data-i18n="web.change.password.title">修改密码</div>
-            <div class="login-subtitle" data-i18n="web.change.password.subtitle">使用当前密码验证身份</div>
-            <div class="login-error" id="changeError"></div>
-            <div class="form-row">
-                <label for="changeCurrentPassword" data-i18n="web.change.password.current">当前密码</label>
-                <input id="changeCurrentPassword" type="password" autocomplete="current-password">
-            </div>
-            <div class="form-row" style="margin-top: 10px;">
-                <label for="changeNewPassword" data-i18n="web.change.password.new">新密码</label>
-                <input id="changeNewPassword" type="password" autocomplete="new-password">
-            </div>
-            <div class="form-row" style="margin-top: 10px;">
-                <label for="changeConfirmPassword" data-i18n="web.change.password.confirm">确认新密码</label>
-                <input id="changeConfirmPassword" type="password" autocomplete="new-password">
-            </div>
-            <div class="login-actions">
-                <button class="login-btn secondary" onclick="closeChangePassword()" data-i18n="web.cancel">取消</button>
-                <button class="login-btn" onclick="submitChangePassword()" data-i18n="web.change.password.submit">更新密码</button>
-            </div>
-        </div>
-    </div>
-
-    <div class="modal-overlay" id="settingsOverlay">
+    <!-- ========== 设置面板 ========== -->
+    <div class="overlay" id="settingsOverlay" style="z-index: 1100;">
         <div class="modal-card">
             <div class="modal-header">
-                <div class="modal-title" data-i18n="settings.title">设置</div>
-                <button class="icon-btn" onclick="closeSettings()">×</button>
+                <span class="card-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.61.77 1.03 1.42 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                </span>
+                <div>
+                    <div class="modal-title" data-i18n="settings.title">设置</div>
+                    <div class="modal-desc" data-i18n="settings.restart.note">配置更新后需要重启服务生效</div>
+                </div>
+                <button class="icon-btn" style="margin-left: auto;" onclick="closeSettings()" aria-label="close">&times;</button>
             </div>
             <div class="modal-tabs">
                 <button class="tab-btn active" data-tab="tab-basic" onclick="switchTab('tab-basic')" data-i18n="settings.tab.basic">基础</button>
@@ -813,7 +479,7 @@
                         </div>
                     </div>
 
-                    <div class="form-section-title" style="margin-top: 20px;" data-i18n="settings.section.llm">LLM 艺术家匹配</div>
+                    <div class="form-section-title" data-i18n="settings.section.llm">LLM 艺术家匹配</div>
                     <div class="form-grid">
                         <div class="form-row checkbox-row">
                             <input id="cfgEnableLLMMatching" type="checkbox">
@@ -835,9 +501,9 @@
                         </div>
                     </div>
 
-                    <div class="form-section-title" style="margin-top: 20px;">供应商与模型</div>
+                    <div class="form-section-title">供应商与模型</div>
                     <div class="form-grid">
-                        <div class="form-row">
+                        <div class="form-row span-2">
                             <label class="label-with-tip">
                                 <span>供应商列表</span>
                                 <span class="info-tip" aria-label="说明">!
@@ -845,15 +511,15 @@
                                 </span>
                             </label>
                             <div id="llmProvidersList" style="display: flex; flex-direction: column; gap: 12px;"></div>
-                            <div style="display: flex; gap: 8px; margin-top: 10px;">
-                                <button type="button" onclick="addLlmProvider()" style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">添加供应商</button>
-                                <button type="button" onclick="saveLlmProviders()" style="padding: 8px 16px; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer;">保存供应商</button>
-                                <span id="llmProvidersStatus" style="align-self: center; font-size: 0.88em; color: #666;"></span>
+                            <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center; flex-wrap: wrap;">
+                                <button type="button" class="btn soft" onclick="addLlmProvider()">+ 添加供应商</button>
+                                <button type="button" class="btn primary" onclick="saveLlmProviders()">保存供应商</button>
+                                <span id="llmProvidersStatus" class="hint"></span>
                             </div>
                         </div>
                     </div>
 
-                    <div class="form-section-title" style="margin-top: 20px;">LLM 调用参数</div>
+                    <div class="form-section-title">LLM 调用参数</div>
                     <div class="form-grid">
                         <div class="form-row">
                             <label for="cfgLlmMaxTokens" class="label-with-tip">
@@ -901,7 +567,7 @@
                         </div>
                     </div>
 
-                    <div class="form-section-title" style="margin-top: 20px;">联网搜索来源</div>
+                    <div class="form-section-title">联网搜索来源</div>
                     <div class="form-grid">
                         <div class="form-row">
                             <label for="cfgWebSearchProvider" class="label-with-tip">
@@ -954,7 +620,7 @@
                         </div>
                     </div>
 
-                    <div class="form-section-title" style="margin-top: 20px;">LLM 专辑判定</div>
+                    <div class="form-section-title">LLM 专辑判定</div>
                     <div class="form-grid">
                         <div class="form-row checkbox-row">
                             <input id="cfgLlmAlbumJudgeEnabled" type="checkbox">
@@ -980,7 +646,7 @@
                         </div>
                     </div>
 
-                    <div class="form-section-title" style="margin-top: 20px;">部分识别准入</div>
+                    <div class="form-section-title">部分识别准入</div>
                     <div class="form-grid">
                         <div class="form-row checkbox-row">
                             <input id="cfgPartialRequireReadableTags" type="checkbox">
@@ -1002,7 +668,7 @@
                         </div>
                     </div>
 
-                    <div class="form-section-title" style="margin-top: 20px;">待确认队列存储</div>
+                    <div class="form-section-title">待确认队列存储</div>
                     <div class="form-grid">
                         <div class="form-row">
                             <label for="cfgReviewQueuePath">队列文件路径</label>
@@ -1019,7 +685,7 @@
                         </div>
                     </div>
 
-                    <div class="form-section-title" style="margin-top: 20px;">重新识别与恢复</div>
+                    <div class="form-section-title">重新识别与恢复</div>
                     <div class="form-grid">
                         <div class="form-row">
                             <label for="cfgRecoveryWorkDirectory" class="label-with-tip">
@@ -1180,153 +846,254 @@
             </div>
             <div class="modal-footer">
                 <span class="settings-note" data-i18n="settings.restart.note">配置更新后需要重启服务生效</span>
-                <div style="display: flex; gap: 10px; align-items: center;">
+                <div style="display: flex; gap: 12px; align-items: center;">
                     <span class="config-status" id="configStatus"></span>
-                    <button class="refresh-btn" onclick="saveConfig()" style="margin: 0;" data-i18n="config.save">保存配置</button>
+                    <button class="btn ghost" onclick="closeSettings()" data-i18n="web.cancel">取消</button>
+                    <button class="btn primary" onclick="saveConfig()" data-i18n="config.save">保存配置</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <div class="container">
-        <div class="header">
-            <div class="logo-row">
-                <img class="app-logo" src="logo.png" alt="Music Auto Tagger Logo">
-            </div>
-            <h1>音乐自动标记系统</h1>
-            <p>实时监控 · 智能整理 · 数据统计</p>
-            <div class="status-bar">
-                <div class="status-indicator">
-                    <span class="status-dot" id="connectionStatus"></span>
-                    <span id="connectionText">连接中...</span>
+    <!-- ========== 主体 ========== -->
+    <div class="app">
+        <header class="topbar">
+            <div class="topbar-main">
+                <div class="brand">
+                    <img class="brand-logo" src="logo.png" alt="Music Auto Tagger">
+                    <div>
+                        <div class="brand-title" id="brandTitle">音乐自动标签器</div>
+                        <div class="brand-subtitle" id="brandSubtitle">实时监控 · 智能整理 · 数据统计</div>
+                    </div>
                 </div>
-                <span id="lastUpdate">--</span>
+
+                <div class="topbar-center">
+                    <span class="status-indicator">
+                        <span class="status-dot" id="connectionStatus"></span>
+                        <span id="connectionText">连接中...</span>
+                    </span>
+                    <span id="lastUpdate" style="display: none;"></span>
+                </div>
+
+                <!-- 账号类操作收进下拉，不占主导航位置 -->
+                <div class="user-menu" id="authBar" style="display: none;">
+                    <button class="user-chip" id="userChip" aria-expanded="false" aria-haspopup="true" onclick="toggleUserMenu(event)">
+                        <span class="user-avatar">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                        </span>
+                        <span id="authUser"></span>
+                        <span class="user-caret">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                        </span>
+                    </button>
+                    <div class="dropdown" id="userDropdown">
+                        <div class="dropdown-header">
+                            <div class="dd-label" data-i18n="web.logged.in.as">已登录</div>
+                            <div class="dd-user" id="authUserFull"></div>
+                        </div>
+                        <button class="dropdown-item" onclick="openChangePassword()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                            <span data-i18n="web.change.password">修改密码</span>
+                        </button>
+                        <button class="dropdown-item danger" onclick="logout()">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><path d="M16 17l5-5-5-5"></path><path d="M21 12H9"></path></svg>
+                            <span data-i18n="web.logout">退出登录</span>
+                        </button>
+                    </div>
+                </div>
             </div>
-            <div class="auth-bar" id="authBar" style="display: none;">
-                <span id="authUser"></span>
-                <button onclick="location.href='review.html'" data-i18n="web.review">待确认</button>
-                <button onclick="location.href='recovery.html'">重新识别</button>
-                <button onclick="openSettings()" data-i18n="web.settings">设置</button>
-                <button onclick="openChangePassword()" data-i18n="web.change.password">修改密码</button>
-                <button onclick="logout()" data-i18n="web.logout">退出登录</button>
-            </div>
-            <div class="auth-bar" id="controlBar" style="display: none;">
-                <span class="status-indicator">
-                    <span class="status-dot" id="monitorStatus"></span>
-                    <span id="monitorStatusText" data-i18n="control.monitoring">监控中</span>
-                </span>
-                <button id="pauseResumeBtn" onclick="toggleMonitoring()" data-i18n="control.pause">暂停监控</button>
-                <button onclick="restartService()" style="background: rgba(220, 53, 69, 0.3);" data-i18n="control.restart">重启服务</button>
-            </div>
+
+            <nav class="navbar" id="navBar" style="display: none;">
+                <button class="nav-toggle" onclick="toggleNavGroup()" aria-label="menu">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                    <span data-i18n="web.menu">菜单</span>
+                </button>
+                <div class="nav-group" id="navGroup">
+                    <a class="nav-btn" id="navReview" href="review.html" style="display: none;">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+                        <span data-i18n="web.review">待确认</span>
+                        <span class="nav-count" id="reviewCount">0</span>
+                    </a>
+                    <a class="nav-btn" href="recovery.html">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                        <span data-i18n="web.recovery">重新识别</span>
+                    </a>
+                    <button class="nav-btn" onclick="openSettings()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.61.77 1.03 1.42 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                        <span data-i18n="web.settings">设置</span>
+                    </button>
+                </div>
+            </nav>
+        </header>
+
+        <div id="loading" class="page-loading">
+            <div class="spinner"></div>
+            <p style="margin-top: 12px;" data-i18n="web.loading">加载数据中...</p>
         </div>
 
-        <div id="loading" class="loading">
-            <div class="spinner"></div>
-            <p>加载数据中...</p>
-        </div>
+        <div id="error" style="display: none;" class="alert"></div>
 
         <div id="content" style="display: none;">
-            <div class="grid">
-                <div class="card">
-                    <div class="card-title">
-                        <span class="card-icon">📊</span>
-                        处理统计
-                    </div>
-                    <div class="stat-value" id="totalProcessed">0</div>
-                    <div class="stat-label">已处理文件总数</div>
-                </div>
-
-                <div class="card">
-                    <div class="card-title">
-                        <span class="card-icon">🖼️</span>
-                        封面缓存
-                    </div>
-                    <div id="coverStats">
-                        <div class="info-row">
-                            <span class="info-label" data-i18n="stat.cache.count">缓存数量</span>
-                            <span class="info-value" id="coverCached">0</span>
+            <div class="dash-grid">
+                <!-- ---------- 左侧 ---------- -->
+                <aside class="side-col">
+                    <section class="monitor-card" id="monitorCard" style="display: none;">
+                        <div class="monitor-top">
+                            <span class="monitor-badge">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"></circle><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"></path></svg>
+                            </span>
+                            <div>
+                                <div class="monitor-state" id="monitorStatusText" data-i18n="control.monitoring">监控中</div>
+                            </div>
+                            <div class="wave" id="monitorWave"></div>
                         </div>
-                        <div class="info-row">
-                            <span class="info-label" data-i18n="stat.cache.size">占用空间</span>
-                            <span class="info-value" id="coverSizeMB">0 MB</span>
+                        <div class="monitor-actions">
+                            <button class="btn light" id="pauseResumeBtn" onclick="toggleMonitoring()">
+                                <span id="pauseResumeIcon">
+                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="9" y1="4" x2="9" y2="20"></line><line x1="15" y1="4" x2="15" y2="20"></line></svg>
+                                </span>
+                                <span id="pauseResumeText" data-i18n="control.pause">暂停监控</span>
+                            </button>
+                            <button class="btn translucent" onclick="restartService()">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                                <span data-i18n="control.restart">重启服务</span>
+                            </button>
                         </div>
-                    </div>
-                </div>
+                    </section>
 
-                <div class="card">
-                    <div class="card-title">
-                        <span class="card-icon">📁</span>
-                        文件夹缓存
-                    </div>
-                    <div id="folderStats">
+                    <section class="card">
+                        <div class="card-head">
+                            <div class="card-title">
+                                <span class="card-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="20" x2="6" y2="13"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="18" y1="20" x2="18" y2="9"></line></svg>
+                                </span>
+                                <span data-i18n="card.processing.stats">处理统计</span>
+                            </div>
+                        </div>
+                        <div class="stat-value" id="totalProcessed">0</div>
+                        <div class="stat-label" data-i18n="stat.total.processed">已处理文件数</div>
+                    </section>
+
+                    <section class="card">
+                        <div class="card-head">
+                            <div class="card-title">
+                                <span class="card-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                                </span>
+                                <span data-i18n="card.cover.cache">封面缓存</span>
+                            </div>
+                        </div>
+                        <div class="stat-value" id="coverCached">0</div>
+                        <div class="stat-split"></div>
+                        <div class="stat-label" data-i18n="stat.cache.size">占用存储</div>
+                        <div><span class="stat-value" style="font-size: 30px;" id="coverSizeValue">0</span><span class="stat-unit" id="coverSizeUnit">MB</span></div>
+                    </section>
+
+                    <section class="card">
+                        <div class="card-head">
+                            <div class="card-title">
+                                <span class="card-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                                </span>
+                                <span data-i18n="card.folder.cache">文件夹缓存</span>
+                            </div>
+                        </div>
                         <div class="info-row">
                             <span class="info-label" data-i18n="stat.cached">已缓存</span>
                             <span class="info-value" id="folderCached">0</span>
                         </div>
                         <div class="info-row">
-                            <span class="info-label" data-i18n="stat.collecting">收集中</span>
+                            <span class="info-label" data-i18n="stat.collecting">统计中</span>
                             <span class="info-value" id="pendingFiles">0</span>
                         </div>
+                    </section>
+                </aside>
+
+                <!-- ---------- 右侧 ---------- -->
+                <main class="main-col">
+                    <div class="top-cards">
+                        <section class="card">
+                            <div class="card-head">
+                                <div class="card-title">
+                                    <span class="card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.61.77 1.03 1.42 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                                    </span>
+                                    <span data-i18n="card.settings">设置</span>
+                                </div>
+                            </div>
+                            <p class="card-text" data-i18n="settings.card.desc">所有配置已集中到设置面板中管理。</p>
+                            <button class="btn primary" style="margin-top: 16px;" onclick="openSettings()" data-i18n="settings.open">打开设置</button>
+                        </section>
+
+                        <section class="card">
+                            <div class="card-head">
+                                <div class="card-title">
+                                    <span class="card-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                                    </span>
+                                    <span data-i18n="card.system.info">系统信息</span>
+                                </div>
+                            </div>
+                            <div id="systemInfo"></div>
+                        </section>
                     </div>
-                </div>
+
+                    <section class="card">
+                        <div class="card-head section-underline">
+                            <div class="card-title">
+                                <span class="card-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+                                </span>
+                                <span data-i18n="card.recent.files">最近处理的文件</span>
+                            </div>
+                            <button class="collapse-toggle expanded" id="recentFilesToggle" onclick="toggleRecentFiles()" aria-label="toggle">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                            </button>
+                        </div>
+                        <div class="collapsible-content expanded" id="recentFilesContent">
+                            <div><div class="files-viewport" id="recentFilesViewport"><div class="files-strip" id="recentFiles"></div></div></div>
+                        </div>
+                    </section>
+
+                    <section class="card">
+                        <div class="card-head">
+                            <div class="card-title">
+                                <span class="card-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1"></rect></svg>
+                                </span>
+                                <span data-i18n="card.runtime.logs">运行时日志</span>
+                            </div>
+                            <div class="log-tools">
+                                <label class="log-check">
+                                    <input type="checkbox" id="autoScroll" checked>
+                                    <span data-i18n="web.auto.scroll">自动滚动</span>
+                                </label>
+                                <button class="btn ghost sm" onclick="loadLogs()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                                    <span data-i18n="web.refresh">刷新</span>
+                                </button>
+                                <button class="btn danger sm" onclick="clearLogs()">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>
+                                    <span data-i18n="web.clear">清空</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div id="logContainer" class="log-panel"></div>
+                    </section>
+
+                    <button class="btn primary block" style="max-width: 320px; margin: 4px auto 0; padding: 12px;" onclick="loadData()">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                        <span id="refreshStatsText">刷新统计数据</span>
+                    </button>
+                </main>
             </div>
-
-            <div class="grid">
-                <div class="card">
-                    <div class="card-title">
-                        <span class="card-icon">⚙</span>
-                        <span data-i18n="card.settings">设置</span>
-                    </div>
-                    <p class="card-text" data-i18n="settings.card.desc">所有配置已集中到设置面板中管理。</p>
-                    <button class="refresh-btn" onclick="openSettings()" style="margin: 10px auto 0;" data-i18n="settings.open">打开设置</button>
-                </div>
-
-                <div class="card">
-                    <div class="card-title">
-                        <span class="card-icon">💻</span>
-                        系统信息
-                    </div>
-                    <div id="systemInfo"></div>
-                </div>
-            </div>
-
-            <div class="recent-files">
-                <div class="card-title collapsible-header" onclick="toggleRecentFiles()">
-                    <span class="toggle-icon collapsed" id="recentFilesToggle">▼</span>
-                    <span class="card-icon">📝</span>
-                    最近处理的文件
-                </div>
-                <div class="collapsible-content" id="recentFilesContent">
-                    <div id="recentFiles"></div>
-                </div>
-            </div>
-
-            <div class="recent-files" style="margin-top: 20px;">
-                <div class="card-title" style="flex-wrap: wrap;">
-                    <span class="card-icon">📋</span>
-                    <span data-i18n="card.runtime.logs">实时运行日志</span>
-                    <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
-                        <label style="display: flex; align-items: center; gap: 5px; font-size: 0.85em; font-weight: normal; cursor: pointer;">
-                            <input type="checkbox" id="autoScroll" checked style="cursor: pointer;">
-                            <span data-i18n="web.auto.scroll">自动滚动</span>
-                        </label>
-                        <button class="refresh-btn" onclick="loadLogs()" style="padding: 5px 15px; font-size: 0.9em; margin: 0;" data-i18n="web.refresh">刷新</button>
-                        <button class="refresh-btn" onclick="clearLogs()" style="padding: 5px 15px; font-size: 0.9em; margin: 0; background: #dc3545; color: white;" data-i18n="web.clear">清空</button>
-                    </div>
-                </div>
-                <div id="logContainer" style="max-height: 400px; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 0.85em; background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px;"></div>
-            </div>
-
-            <button class="refresh-btn" onclick="loadData()">🔄 刷新统计数据</button>
         </div>
-
-        <div id="error" style="display: none;" class="error"></div>
 
         <footer class="footer">
             <div class="footer-content">
-                <a href="https://032.im" target="_blank" style="color: rgba(255, 255, 255, 0.8); text-decoration: none; transition: color 0.3s;">👤 Lux032</a>
+                <a href="https://032.im" target="_blank" rel="noopener">Lux032</a>
                 <span class="footer-divider">|</span>
-                <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" style="color: rgba(255, 255, 255, 0.8); text-decoration: none; transition: color 0.3s;">Music Auto Tagger</a>
+                <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" rel="noopener">Music Auto Tagger</a>
                 <span class="footer-divider">|</span>
                 <span id="runningTime">运行时间: --</span>
             </div>
@@ -1366,16 +1133,78 @@
 
         function updateAuthBar() {
             const authBar = document.getElementById('authBar');
-            const controlBar = document.getElementById('controlBar');
+            const navBar = document.getElementById('navBar');
+            const monitorCard = document.getElementById('monitorCard');
             const authUser = document.getElementById('authUser');
             if (authState.authenticated) {
-                authUser.textContent = t('web.logged.in.as') + ' ' + authState.username;
-                authBar.style.display = 'flex';
-                controlBar.style.display = 'flex';
+                authUser.textContent = authState.username || '';
+                document.getElementById('authUserFull').textContent = authState.username || '';
+                authBar.style.display = 'block';
+                navBar.style.display = 'flex';
+                monitorCard.style.display = 'block';
                 loadControlStatus();
+                loadReviewStats();
             } else {
                 authBar.style.display = 'none';
-                controlBar.style.display = 'none';
+                navBar.style.display = 'none';
+                monitorCard.style.display = 'none';
+                closeUserMenu();
+            }
+        }
+
+        // ---------- 用户下拉菜单 ----------
+        function toggleUserMenu(event) {
+            if (event) event.stopPropagation();
+            const dropdown = document.getElementById('userDropdown');
+            const chip = document.getElementById('userChip');
+            const open = dropdown.classList.toggle('show');
+            chip.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+
+        function closeUserMenu() {
+            document.getElementById('userDropdown').classList.remove('show');
+            document.getElementById('userChip').setAttribute('aria-expanded', 'false');
+        }
+
+        // 窄屏汉堡菜单
+        function toggleNavGroup() {
+            document.getElementById('navGroup').classList.toggle('open');
+        }
+
+        // ---------- 待确认徒标 ----------
+        // 待确认关闭且队列为空时直接隐藏入口；关闭但有遗留条目则仍然显示，
+        // 否则那些条目就没地方处置了。
+        async function loadReviewStats() {
+            if (!authState.authenticated) return;
+            const link = document.getElementById('navReview');
+            const badge = document.getElementById('reviewCount');
+            try {
+                const response = await authFetch('/api/review/stats');
+                if (!response.ok) throw new Error('review stats unavailable');
+                const data = await response.json();
+                const pending = Number(data.pending) || 0;
+                const visible = data.enabled !== false || pending > 0;
+
+                link.style.display = visible ? 'inline-flex' : 'none';
+                badge.textContent = pending > 99 ? '99+' : String(pending);
+                badge.classList.toggle('show', pending > 0);
+            } catch (err) {
+                // 接口不可用（没注册 / 报错）就不展示这个入口
+                link.style.display = 'none';
+                badge.classList.remove('show');
+            }
+        }
+
+        // 监控卡里的波形条：纯装饰，随机高度让它看起来像在动
+        function buildWave() {
+            const wave = document.getElementById('monitorWave');
+            if (!wave || wave.childElementCount) return;
+            for (let i = 0; i < 22; i++) {
+                const bar = document.createElement('span');
+                bar.style.height = (5 + Math.random() * 16).toFixed(0) + 'px';
+                bar.style.animationDelay = (i * 0.07).toFixed(2) + 's';
+                bar.style.animationDuration = (0.9 + Math.random() * 0.7).toFixed(2) + 's';
+                wave.appendChild(bar);
             }
         }
 
@@ -1406,23 +1235,29 @@
         }
 
         // 更新控制UI
+        const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="9" y1="4" x2="9" y2="20"></line><line x1="15" y1="4" x2="15" y2="20"></line></svg>';
+        const ICON_PLAY = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><polygon points="6 4 20 12 6 20"></polygon></svg>';
+
         function updateControlUI() {
-            const statusDot = document.getElementById('monitorStatus');
+            const card = document.getElementById('monitorCard');
             const statusText = document.getElementById('monitorStatusText');
-            const btn = document.getElementById('pauseResumeBtn');
+            const btnText = document.getElementById('pauseResumeText');
+            const btnIcon = document.getElementById('pauseResumeIcon');
 
             if (monitoringPaused) {
-                statusDot.style.background = '#fbbf24';
-                statusDot.style.animation = 'none';
+                card.classList.add('paused');
                 statusText.textContent = t('control.paused');
-                btn.textContent = t('control.resume');
-                btn.setAttribute('data-i18n', 'control.resume');
+                statusText.setAttribute('data-i18n', 'control.paused');
+                btnText.textContent = t('control.resume');
+                btnText.setAttribute('data-i18n', 'control.resume');
+                btnIcon.innerHTML = ICON_PLAY;
             } else {
-                statusDot.style.background = '#4ade80';
-                statusDot.style.animation = 'pulse 2s infinite';
+                card.classList.remove('paused');
                 statusText.textContent = t('control.monitoring');
-                btn.textContent = t('control.pause');
-                btn.setAttribute('data-i18n', 'control.pause');
+                statusText.setAttribute('data-i18n', 'control.monitoring');
+                btnText.textContent = t('control.pause');
+                btnText.setAttribute('data-i18n', 'control.pause');
+                btnIcon.innerHTML = ICON_PAUSE;
             }
         }
 
@@ -1473,54 +1308,17 @@
             // 更新页面标题
             document.title = t('web.title');
 
-            // 更新页面文本
-            document.querySelector('.header h1').textContent = t('web.title').split(' - ')[0];
-            document.querySelector('.header p').textContent = t('web.subtitle');
+            // 顶栏品牌区
+            document.getElementById('brandTitle').textContent = t('web.title').split(' - ')[0];
+            document.getElementById('brandSubtitle').textContent = t('web.subtitle');
             document.getElementById('connectionText').textContent = t('web.connecting');
+            document.getElementById('refreshStatsText').textContent = t('web.refresh.stats');
 
-            // 更新带有 data-i18n 属性的元素
+            // 其余文案全部由 data-i18n 驱动（新版页面所有静态文案都带这个属性）
             document.querySelectorAll('[data-i18n]').forEach(el => {
                 const key = el.getAttribute('data-i18n');
                 el.textContent = t(key);
             });
-
-            // 更新卡片标题（只更新简单的卡片标题，跳过包含按钮的复杂标题）
-            const cardTitles = {
-                '处理统计': 'card.processing.stats',
-                '封面缓存': 'card.cover.cache',
-                '文件夹缓存': 'card.folder.cache',
-                '设置': 'card.settings',
-                '系统信息': 'card.system.info',
-                '最近处理的文件': 'card.recent.files'
-            };
-
-            document.querySelectorAll('.card-title').forEach(el => {
-                // 跳过包含按钮或复杂子元素的标题（如日志区域的标题，已通过 data-i18n 处理）
-                if (el.querySelector('button') || el.querySelector('label')) {
-                    return;
-                }
-
-                const text = el.textContent.trim();
-                for (const [cn, key] of Object.entries(cardTitles)) {
-                    if (text.includes(cn)) {
-                        const icon = el.querySelector('.card-icon');
-                        el.innerHTML = '';
-                        if (icon) el.appendChild(icon);
-                        const textNode = document.createTextNode(t(key));
-                        el.appendChild(textNode);
-                        break;
-                    }
-                }
-            });
-
-            // 更新统计标签
-            document.querySelector('.stat-label').textContent = t('stat.total.processed');
-
-            // 更新底部刷新统计按钮（没有 data-i18n 属性的）
-            const mainRefreshBtn = document.querySelector('.refresh-btn[onclick="loadData()"]');
-            if (mainRefreshBtn && !mainRefreshBtn.hasAttribute('data-i18n')) {
-                mainRefreshBtn.textContent = '🔄 ' + t('web.refresh.stats');
-            }
 
             const loginLang = document.getElementById('loginLanguage');
             if (loginLang) {
@@ -1756,7 +1554,8 @@
         function updateConnectionStatus(status, text) {
             const dot = document.getElementById('connectionStatus');
             const textEl = document.getElementById('connectionText');
-            dot.className = 'status-dot ' + status;
+            // 状态修饰类带 is- 前缀，避免和页面级的通用类（如 .loading）撞名
+            dot.className = 'status-dot' + (status ? ' is-' + status : '');
             textEl.textContent = text;
         }
 
@@ -1764,7 +1563,10 @@
         function updateLastTime() {
             const now = new Date();
             const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            document.getElementById('lastUpdate').textContent = t('web.updated.at') + ' ' + timeStr;
+            const el = document.getElementById('lastUpdate');
+            // 第一次拿到数据前不显示，避免顶栏挂一个孤零零的 "--"
+            el.textContent = t('web.updated.at') + ' ' + timeStr;
+            el.style.display = '';
         }
 
         let isFirstLoad = true;
@@ -1796,7 +1598,11 @@
                 // 更新封面缓存统计
                 if (data.coverCache) {
                     document.getElementById('coverCached').textContent = data.coverCache.totalCached ?? 0;
-                    document.getElementById('coverSizeMB').textContent = data.coverCache.totalSizeMB ?? '0 MB';
+                    // 后端返回的是 "9.54 MB" 这种字符串，拆成数值 + 单位才能做大小字号对比
+                    const raw = String(data.coverCache.totalSizeMB ?? '0 MB').trim();
+                    const parts = raw.split(/\s+/);
+                    document.getElementById('coverSizeValue').textContent = parts[0] || '0';
+                    document.getElementById('coverSizeUnit').textContent = parts.slice(1).join(' ') || 'MB';
                 }
 
                 // 更新文件夹缓存统计
@@ -1827,40 +1633,7 @@
                     }
                 }
 
-                // 更新最近处理的文件（安全方式）
-                const recentFiles = document.getElementById('recentFiles');
-                recentFiles.innerHTML = '';
-                if (data.recentFiles && data.recentFiles.length > 0) {
-                    data.recentFiles.forEach(file => {
-                        const item = document.createElement('div');
-                        item.className = 'file-item';
-
-                        const title = document.createElement('div');
-                        title.className = 'file-title';
-                        title.textContent = file.title || t('file.unknown');
-
-                        const info = document.createElement('div');
-                        info.className = 'file-info';
-                        const artist = document.createElement('strong');
-                        artist.textContent = file.artist || t('file.unknown.artist');
-                        info.appendChild(artist);
-                        info.appendChild(document.createTextNode(' · ' + (file.album || t('file.unknown.album'))));
-
-                        const time = document.createElement('div');
-                        time.className = 'file-time';
-                        time.textContent = '⏰ ' + (file.time || '');
-
-                        item.appendChild(title);
-                        item.appendChild(info);
-                        item.appendChild(time);
-                        recentFiles.appendChild(item);
-                    });
-                } else {
-                    const empty = document.createElement('div');
-                    empty.style.cssText = 'text-align: center; color: #999; padding: 30px;';
-                    empty.textContent = t('web.no.records');
-                    recentFiles.appendChild(empty);
-                }
+                renderRecentFiles(data.recentFiles);
 
                 loading.style.display = 'none';
                 content.style.display = 'block';
@@ -1878,6 +1651,114 @@
                 updateConnectionStatus('error', t('web.connection.failed'));
                 console.error('加载数据失败:', err);
             }
+        }
+
+        // 封面占位色：同一首歌总是同一个颜色，避免每次刷新都在变
+        const COVER_PALETTE = [
+            ['#7f9cf5', '#4c6fd8'], ['#f0a3a3', '#d96b6b'], ['#7fd6c0', '#3fa892'],
+            ['#f6c177', '#dd9440'], ['#b3a1f0', '#7f66d1'], ['#8fc3ea', '#4f92c9'],
+            ['#eda9cf', '#c96fa4'], ['#a8cf8f', '#6ba556']
+        ];
+
+        function paletteFor(text) {
+            let hash = 0;
+            const str = String(text || '');
+            for (let i = 0; i < str.length; i++) {
+                hash = (hash * 31 + str.charCodeAt(i)) & 0x7fffffff;
+            }
+            return COVER_PALETTE[hash % COVER_PALETTE.length];
+        }
+
+        const ICON_NOTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>';
+        const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="8 12.5 11 15.5 16 9"></polyline></svg>';
+
+        function baseName(path) {
+            const raw = String(path || '');
+            const idx = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
+            return idx >= 0 ? raw.slice(idx + 1) : raw;
+        }
+
+        // 最近处理的文件：单行横向滚动的封面缩略图
+        // 封面优先走 /api/cover?rgid=（直接命中封面缓存，文件移走也不受影响），
+        // 没有 Release Group ID 的旧记录才回退到按路径读内嵌封面，都拿不到则显示渐变占位图。
+        function renderRecentFiles(files) {
+            const strip = document.getElementById('recentFiles');
+            strip.innerHTML = '';
+
+            if (!files || files.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'empty';
+                empty.style.flex = '1';
+                empty.textContent = t('web.no.records');
+                strip.appendChild(empty);
+                updateStripOverflow();
+                return;
+            }
+
+            files.forEach(file => {
+                const name = baseName(file.path) || file.title || t('file.unknown');
+                const [c1, c2] = paletteFor(name);
+
+                const tile = document.createElement('div');
+                tile.className = 'file-tile';
+                tile.title = (file.title || t('file.unknown')) + ' · '
+                    + (file.artist || t('file.unknown.artist')) + ' · '
+                    + (file.album || t('file.unknown.album'))
+                    + (file.time ? '\n' + file.time : '');
+
+                const cover = document.createElement('div');
+                cover.className = 'file-cover';
+                cover.style.background = 'linear-gradient(135deg, ' + c1 + ', ' + c2 + ')';
+
+                const ph = document.createElement('div');
+                ph.className = 'ph';
+                ph.innerHTML = ICON_NOTE;
+                cover.appendChild(ph);
+
+                const query = [];
+                if (file.releaseGroupId) query.push('rgid=' + encodeURIComponent(file.releaseGroupId));
+                if (file.path) query.push('path=' + encodeURIComponent(file.path));
+                if (query.length) {
+                    const img = document.createElement('img');
+                    img.loading = 'lazy';
+                    img.alt = '';
+                    img.style.display = 'none';
+                    img.onload = () => { img.style.display = 'block'; ph.style.display = 'none'; };
+                    img.onerror = () => { img.remove(); };
+                    img.src = '/api/cover?' + query.join('&');
+                    cover.appendChild(img);
+                }
+
+                const nameEl = document.createElement('div');
+                nameEl.className = 'file-name';
+                nameEl.textContent = name;
+
+                const subEl = document.createElement('div');
+                subEl.className = 'file-sub';
+                subEl.textContent = file.artist || t('file.unknown.artist');
+
+                const status = document.createElement('div');
+                status.className = 'file-status';
+                status.innerHTML = ICON_CHECK;
+                status.appendChild(document.createTextNode(t('file.done', '已完成')));
+
+                tile.appendChild(cover);
+                tile.appendChild(nameEl);
+                tile.appendChild(subEl);
+                tile.appendChild(status);
+                strip.appendChild(tile);
+            });
+
+            updateStripOverflow();
+        }
+
+        // 右侧渐隐遮罩：只在真的滑不到头时显示
+        function updateStripOverflow() {
+            const strip = document.getElementById('recentFiles');
+            const viewport = document.getElementById('recentFilesViewport');
+            if (!strip || !viewport) return;
+            const more = strip.scrollWidth - strip.clientWidth - strip.scrollLeft > 8;
+            viewport.classList.toggle('has-overflow', more);
         }
 
         function formatLabel(key) {
@@ -1975,11 +1856,11 @@
             if (!box) return;
             box.style.display = 'block';
             box.innerHTML = `
-                <div style="background: #fef9c3; border: 1px solid #fde047; border-radius: 4px; padding: 8px; font-size: 0.85em;">
-                    当前 API URL 不是完整的调用地址，拉取模型能成功但实际调用会失败。
+                <div class="llm-warn">
+                    当前 API URL 不是完整的调用地址，拉取模型能成功但实际调用会失败。<br>
                     探测到的地址：<code>${escapeHtml(suggested)}</code>
-                    <button type="button" onclick="applyLlmApiUrl(${index}, '${escapeHtml(suggested)}')"
-                        style="margin-left: 8px; padding: 3px 10px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">使用它</button>
+                    <button type="button" class="btn primary sm" style="margin-left: 8px;"
+                        onclick="applyLlmApiUrl(${index}, '${escapeHtml(suggested)}')">使用它</button>
                 </div>`;
         }
 
@@ -1994,18 +1875,17 @@
             const container = document.getElementById(`llmModelPicker${index}`);
             container.style.display = 'block';
             container.innerHTML = `
-                <input type="text" placeholder="过滤模型..." oninput="filterLlmModelPicker(${index}, this.value)"
-                    style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
-                <div id="llmModelPickerList${index}" style="max-height: 200px; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; padding: 6px;">
+                <input type="text" class="input" placeholder="过滤模型..." style="margin-bottom: 8px;"
+                    oninput="filterLlmModelPicker(${index}, this.value)">
+                <div id="llmModelPickerList${index}" class="llm-picker-list">
                     ${models.map(id => `
-                        <label class="llm-model-option" data-model="${escapeHtml(id)}"
-                            style="display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 0.88em;">
+                        <label class="llm-model-option" data-model="${escapeHtml(id)}">
                             <input type="checkbox" value="${escapeHtml(id)}" ${selected.has(id) ? 'checked' : ''}>
                             <span>${escapeHtml(id)}</span>
                         </label>`).join('')}
                 </div>
-                <button type="button" onclick="applyLlmModelPicker(${index})"
-                    style="margin-top: 6px; padding: 6px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">使用选中的模型</button>`;
+                <button type="button" class="btn primary sm" style="margin-top: 8px;"
+                    onclick="applyLlmModelPicker(${index})">使用选中的模型</button>`;
         }
 
         function filterLlmModelPicker(index, keyword) {
@@ -2030,59 +1910,55 @@
             const container = document.getElementById('llmProvidersList');
             if (!container) return;
             if (llmProviders.length === 0) {
-                container.innerHTML = '<div style="color: #888; font-size: 0.9em;">尚未配置任何供应商</div>';
+                container.innerHTML = '<div class="empty" style="padding: 18px;">尚未配置任何供应商</div>';
                 return;
             }
             container.innerHTML = llmProviders.map((p, i) => `
-                <div style="border: 1px solid #ddd; padding: 12px; border-radius: 4px; background: #f9fafb;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <label style="display: flex; align-items: center; gap: 6px;">
+                <div class="llm-provider-card">
+                    <div class="llm-head">
+                        <label class="llm-inline">
                             <input type="checkbox" ${p.enabled !== false ? 'checked' : ''}
                                 onchange="llmProviders[${i}].enabled = this.checked">
                             <strong>供应商 #${i + 1}</strong>
                         </label>
-                        <button type="button" onclick="removeLlmProvider(${i})" style="padding: 4px 8px; background: #ef4444; color: white; border: none; border-radius: 4px; cursor: pointer;">删除</button>
+                        <button type="button" class="btn danger-soft sm" onclick="removeLlmProvider(${i})">删除</button>
                     </div>
-                    <input type="text" placeholder="名称（如 OpenAI 官方）" value="${escapeHtml(p.name || '')}"
-                        onchange="llmProviders[${i}].name = this.value"
-                        style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
-                    <input type="text" placeholder="API URL（完整路径，如 https://api.openai.com/v1/chat/completions）"
-                        value="${escapeHtml(p.apiUrl || '')}" onchange="llmProviders[${i}].apiUrl = this.value"
-                        style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
-                    <input type="password" placeholder="API Key" value="${escapeHtml(p.apiKey || '')}"
-                        onchange="llmProviders[${i}].apiKey = this.value" autocomplete="off"
-                        style="width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
-                    <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-                        <select onchange="llmProviders[${i}].format = this.value"
-                            style="padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                    <div class="llm-fields">
+                        <input type="text" class="input" placeholder="名称（如 OpenAI 官方）" value="${escapeHtml(p.name || '')}"
+                            onchange="llmProviders[${i}].name = this.value">
+                        <input type="text" class="input" placeholder="API URL（完整路径，如 https://api.openai.com/v1/chat/completions）"
+                            value="${escapeHtml(p.apiUrl || '')}" onchange="llmProviders[${i}].apiUrl = this.value">
+                        <input type="password" class="input" placeholder="API Key" value="${escapeHtml(p.apiKey || '')}"
+                            onchange="llmProviders[${i}].apiKey = this.value" autocomplete="off">
+                    </div>
+                    <div class="llm-toolbar">
+                        <select class="input" style="width: auto;" onchange="llmProviders[${i}].format = this.value">
                             <option value="openai" ${p.format !== 'anthropic' ? 'selected' : ''}>OpenAI 格式</option>
                             <option value="anthropic" ${p.format === 'anthropic' ? 'selected' : ''}>Claude 格式</option>
                         </select>
-                        <button type="button" onclick="fetchLlmModels(${i})"
-                            style="padding: 6px 12px; background: #6366f1; color: white; border: none; border-radius: 4px; cursor: pointer;">拉取模型</button>
-                        <button type="button" onclick="addLlmModelManually(${i})"
-                            style="padding: 6px 12px; background: #9ca3af; color: white; border: none; border-radius: 4px; cursor: pointer;">手动添加</button>
-                        <span id="llmProviderStatus${i}" style="font-size: 0.85em; color: #666;"></span>
+                        <button type="button" class="btn soft sm" onclick="fetchLlmModels(${i})">拉取模型</button>
+                        <button type="button" class="btn ghost sm" onclick="addLlmModelManually(${i})">手动添加</button>
+                        <span id="llmProviderStatus${i}" class="hint"></span>
                     </div>
                     <div id="llmUrlSuggestion${i}" style="display: none; margin-bottom: 8px;"></div>
                     <div id="llmModelPicker${i}" style="display: none; margin-bottom: 8px;"></div>
-                    <div style="font-size: 0.88em; color: #444;">
+                    <div class="llm-models">
                         ${(p.models || []).length === 0
-                            ? '<div style="color: #888;">尚未选择模型（未选模型的供应商不会被调用）</div>'
+                            ? '<div class="hint">尚未选择模型（未选模型的供应商不会被调用）</div>'
                             : (p.models || []).map((m, j) => `
-                            <div style="display: flex; align-items: center; gap: 10px; padding: 4px 0; border-top: 1px solid #eee;">
-                                <label style="display: flex; align-items: center; gap: 4px;">
+                            <div class="llm-model-row">
+                                <label class="llm-inline">
                                     <input type="checkbox" ${m.enabled !== false ? 'checked' : ''}
                                         onchange="llmProviders[${i}].models[${j}].enabled = this.checked">
                                     <span>${escapeHtml(m.id || '')}</span>
                                 </label>
-                                <label style="display: flex; align-items: center; gap: 4px; color: #666;">
+                                <label class="llm-inline muted">
                                     <input type="checkbox" ${m.webSearch ? 'checked' : ''}
                                         onchange="llmProviders[${i}].models[${j}].webSearch = this.checked">
                                     <span>参与原生联网搜索</span>
                                 </label>
-                                <button type="button" onclick="removeLlmModel(${i}, ${j})"
-                                    style="margin-left: auto; padding: 2px 8px; background: #e5e7eb; border: none; border-radius: 4px; cursor: pointer;">移除</button>
+                                <button type="button" class="btn ghost sm" style="margin-left: auto;"
+                                    onclick="removeLlmModel(${i}, ${j})">移除</button>
                             </div>`).join('')}
                     </div>
                 </div>
@@ -2355,32 +2231,28 @@
                 if (data.logs && data.logs.length > 0) {
                     const fragment = document.createDocumentFragment();
 
+                    const levelColors = {
+                        'ERROR': '#f87171',
+                        'SUCCESS': '#4ade80',
+                        'WARN': '#fbbf24',
+                        'INFO': '#60a5fa'
+                    };
+
                     data.logs.forEach(log => {
                         const logEntry = document.createElement('div');
-                        logEntry.style.cssText = 'padding: 8px 0; border-bottom: 1px solid #333; line-height: 1.5;';
+                        logEntry.className = 'log-line';
 
-                        // 根据日志级别设置颜色
-                        const levelConfig = {
-                            'ERROR': { color: '#f87171', icon: '✗' },
-                            'SUCCESS': { color: '#4ade80', icon: '✓' },
-                            'WARN': { color: '#fbbf24', icon: '!' },
-                            'INFO': { color: '#60a5fa', icon: 'i' }
-                        };
-                        const config = levelConfig[log.level] || { color: '#9ca3af', icon: '·' };
-
-                        // 时间戳
                         const timestamp = document.createElement('span');
-                        timestamp.style.cssText = 'color: #6b7280; margin-right: 10px;';
+                        timestamp.className = 'log-time';
                         timestamp.textContent = log.timestamp || '';
 
-                        // 级别标签
                         const levelBadge = document.createElement('span');
-                        levelBadge.style.cssText = `color: ${config.color}; font-weight: bold; margin-right: 10px; padding: 1px 6px; border: 1px solid ${config.color}; border-radius: 3px; font-size: 0.8em;`;
+                        levelBadge.className = 'log-level';
+                        levelBadge.style.color = levelColors[log.level] || '#9ca3af';
                         levelBadge.textContent = log.level || 'LOG';
 
-                        // 消息内容
                         const message = document.createElement('span');
-                        message.style.color = '#e5e5e5';
+                        message.className = 'log-msg';
                         message.textContent = log.message || '';
 
                         logEntry.appendChild(timestamp);
@@ -2396,14 +2268,24 @@
                         logContainer.scrollTop = logContainer.scrollHeight;
                     }
                 } else {
-                    const empty = document.createElement('div');
-                    empty.style.cssText = 'text-align: center; color: #6b7280; padding: 30px;';
-                    empty.textContent = t('web.no.logs');
-                    logContainer.appendChild(empty);
+                    logContainer.appendChild(buildLogEmpty(t('web.no.logs')));
                 }
             } catch (err) {
                 console.error('加载日志失败:', err);
             }
+        }
+
+        // 日志区的空状态（带图标）
+        function buildLogEmpty(text) {
+            const empty = document.createElement('div');
+            empty.className = 'log-empty';
+            const icon = document.createElement('div');
+            icon.innerHTML = '<svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>';
+            const label = document.createElement('div');
+            label.textContent = text;
+            empty.appendChild(icon);
+            empty.appendChild(label);
+            return empty;
         }
 
         // 清空日志（仅前端清空显示）
@@ -2411,10 +2293,7 @@
             if (confirm(t('web.confirm.clear'))) {
                 const logContainer = document.getElementById('logContainer');
                 logContainer.innerHTML = '';
-                const empty = document.createElement('div');
-                empty.style.cssText = 'text-align: center; color: #6b7280; padding: 30px;';
-                empty.textContent = t('web.log.cleared');
-                logContainer.appendChild(empty);
+                logContainer.appendChild(buildLogEmpty(t('web.log.cleared')));
             }
         }
 
@@ -2439,13 +2318,8 @@
             const content = document.getElementById('recentFilesContent');
             const toggle = document.getElementById('recentFilesToggle');
 
-            if (content.classList.contains('expanded')) {
-                content.classList.remove('expanded');
-                toggle.classList.add('collapsed');
-            } else {
-                content.classList.add('expanded');
-                toggle.classList.remove('collapsed');
-            }
+            const expanded = content.classList.toggle('expanded');
+            toggle.classList.toggle('expanded', expanded);
         }
 
         // 页面加载时自动获取数据和日志
@@ -2454,6 +2328,18 @@
             await loadI18n();
             // 应用国际化
             applyI18n();
+            buildWave();
+            document.getElementById('recentFiles').addEventListener('scroll', updateStripOverflow, { passive: true });
+            window.addEventListener('resize', updateStripOverflow);
+
+            // 点菜单外部 / 按 ESC 关闭下拉
+            document.addEventListener('click', (event) => {
+                if (!event.target.closest('#authBar')) closeUserMenu();
+            });
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') closeUserMenu();
+            });
+
             const authed = await checkAuth();
             document.getElementById('loginPassword').addEventListener('keydown', (event) => {
                 if (event.key === 'Enter') {
@@ -2480,6 +2366,9 @@
 
         // 每30秒自动刷新统计数据
         setInterval(loadData, 30000);
+
+        // 待确认积压数：接口很轻，30 秒一次足够
+        setInterval(loadReviewStats, 30000);
 
         // 每5秒自动刷新日志
         setInterval(loadLogs, 5000);

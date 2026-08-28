@@ -123,8 +123,13 @@ public class DashboardServlet extends HttpServlet {
         if ("mysql".equalsIgnoreCase(config.getDbType())) {
             // MySQL 模式：从数据库读取
             if (databaseService != null) {
-                String sql = "SELECT file_path, artist, title, album, processed_time " +
-                            "FROM processed_files ORDER BY processed_time DESC LIMIT ?";
+                // release_group_id 是后加列，老库可能还没补上，没有就走不带该列的语句
+                boolean withRgid = processedLogger != null && processedLogger.isReleaseGroupIdColumnAvailable();
+                String sql = withRgid
+                    ? "SELECT file_path, artist, title, album, release_group_id, processed_time " +
+                      "FROM processed_files ORDER BY processed_time DESC LIMIT ?"
+                    : "SELECT file_path, artist, title, album, processed_time " +
+                      "FROM processed_files ORDER BY processed_time DESC LIMIT ?";
                 try (Connection conn = databaseService.getConnection();
                      PreparedStatement pstmt = conn.prepareStatement(sql)) {
                     pstmt.setInt(1, limit);
@@ -135,6 +140,9 @@ public class DashboardServlet extends HttpServlet {
                             file.put("artist", rs.getString("artist"));
                             file.put("title", rs.getString("title"));
                             file.put("album", rs.getString("album"));
+                            if (withRgid) {
+                                file.put("releaseGroupId", rs.getString("release_group_id"));
+                            }
                             if (rs.getTimestamp("processed_time") != null) {
                                 file.put("time", rs.getTimestamp("processed_time")
                                         .toLocalDateTime().format(dateFormatter));
@@ -160,7 +168,8 @@ public class DashboardServlet extends HttpServlet {
                     // 倒序获取最后N条
                     int start = Math.max(0, lines.size() - limit);
                     for (int i = lines.size() - 1; i >= start; i--) {
-                        String[] parts = lines.get(i).split("\\|");
+                        // 格式: filePath|recordingId|artist|title|album|time[|releaseGroupId]
+                        String[] parts = lines.get(i).split("\\|", -1);
                         if (parts.length >= 6) {
                             Map<String, String> file = new HashMap<>();
                             file.put("path", parts[0]);
@@ -168,6 +177,9 @@ public class DashboardServlet extends HttpServlet {
                             file.put("title", parts[3]);
                             file.put("album", parts[4]);
                             file.put("time", parts[5]);
+                            if (parts.length >= 7 && !parts[6].isBlank()) {
+                                file.put("releaseGroupId", parts[6]);
+                            }
                             files.add(file);
                         }
                     }

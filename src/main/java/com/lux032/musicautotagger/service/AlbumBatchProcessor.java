@@ -76,7 +76,9 @@ public class AlbumBatchProcessor {
                     metadata.getRecordingId(),
                     metadata.getArtist(),
                     metadata.getTitle(),
-                    metadata.getAlbum()
+                    metadata.getAlbum(),
+                    // 封面缓存以 Release Group ID 为 key，记下来仪表板才能直接从缓存取缩略图
+                    metadata.getReleaseGroupId()
                 );
                 return true;
             } else {
@@ -256,7 +258,8 @@ public class AlbumBatchProcessor {
                         metadata.getRecordingId() != null ? metadata.getRecordingId() : "UNKNOWN",
                         metadata.getArtist() != null ? metadata.getArtist() : "Unknown Artist",
                         metadata.getTitle() != null ? metadata.getTitle() : pending.getAudioFile().getName(),
-                        albumInfo.getAlbumTitle()
+                        albumInfo.getAlbumTitle(),
+                        metadata.getReleaseGroupId()
                     );
                     log.info("已记录失败文件到数据库: {}", pending.getAudioFile().getName());
                 } catch (Exception recordError) {

@@ -73,6 +73,9 @@ public class ReviewServlet extends HttpServlet {
                     respond(resp, 200, Map.of(
                         "pending", reviewQueue.countPending(),
                         "total", reviewQueue.list(null).size(),
+                        // 面板靠这个开关决定要不要显示「待确认」入口：
+                        // 关闭且队列为空时隐藏，但队列里还有遗留条目就必须继续显示，否则那些条目无法处置
+                        "enabled", resolutionService.getConfig().isReviewEnabled(),
                         "llmEnabled", resolutionService.getConfig().isLlmAlbumJudgeEnabled()));
                     return;
                 default:

@@ -94,6 +94,9 @@ public class WebServer {
             processedLogger, coverArtCache, folderAlbumCache, config, databaseService);
         servletHandler.addServlet(new ServletHolder(dashboardServlet), "/api/dashboard");
         
+        // 注册封面缩略图 API（仪表板「最近处理的文件」用）
+        servletHandler.addServlet(new ServletHolder(new CoverServlet(config)), "/api/cover");
+
         // 注册日志 API
         LogServlet logServlet = new LogServlet();
         servletHandler.addServlet(new ServletHolder(logServlet), "/api/logs");

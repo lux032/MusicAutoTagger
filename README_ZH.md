@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="src/main/resources/static/MusicAutoTagger_icon.png" alt="Music Auto Tagger Logo" width="160" />
+<img src="docs/images/MusicAutoTagger_icon.png" alt="Music Auto Tagger Logo" width="160" />
 
 [![Java](https://img.shields.io/badge/Java-17%2B-orange.svg)](https://www.java.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
@@ -20,7 +20,7 @@
 
 ## 📊 Web 监控面板
 
-![Web 监控面板](src/main/resources/static/webCN.png)
+![Web 监控面板](docs/images/webCN.png)
 
 内置实时监控面板提供：
 - 📊 实时统计信息和处理进度

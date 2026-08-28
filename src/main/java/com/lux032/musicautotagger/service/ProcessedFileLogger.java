@@ -33,6 +33,13 @@ public class ProcessedFileLogger {
     private final boolean isDbMode;
     // 关键修复：添加文件写入锁，解决并发写入日志文件的线程安全问题
     private final Object fileWriteLock = new Object();
+    // processed_files.release_group_id 是后加列，老库可能没有
+    private volatile boolean releaseGroupIdColumnAvailable = false;
+
+    /** 外部（如 DashboardServlet）查询前先问一下这个列能不能用。 */
+    public boolean isReleaseGroupIdColumnAvailable() {
+        return releaseGroupIdColumnAvailable;
+    }
 
     /**
      * 构造函数
@@ -47,9 +54,40 @@ public class ProcessedFileLogger {
 
         if (isDbMode) {
             log.info(I18nUtil.getMessage("logger.init.mysql"));
+            ensureReleaseGroupIdColumn();
         } else {
             log.info(I18nUtil.getMessage("logger.init.file"), config.getProcessedFileLogPath());
             initLogFile();
+        }
+    }
+
+    /**
+     * 老库里没有 release_group_id 这一列（它是后加的，用于把已处理文件关联到封面缓存）。
+     * 这里做一次幂等的在线补列，避免用户必须手动重跑 schema.sql。
+     * 补列失败不致命：写入时会自动退回到不带该列的语句。
+     */
+    private void ensureReleaseGroupIdColumn() {
+        if (databaseService == null) {
+            return;
+        }
+        try (Connection conn = databaseService.getConnection()) {
+            try (ResultSet rs = conn.getMetaData().getColumns(
+                    conn.getCatalog(), null, "processed_files", "release_group_id")) {
+                if (rs.next()) {
+                    releaseGroupIdColumnAvailable = true;
+                    return;
+                }
+            }
+            try (Statement stmt = conn.createStatement()) {
+                stmt.executeUpdate("ALTER TABLE processed_files "
+                    + "ADD COLUMN release_group_id VARCHAR(100) NULL COMMENT 'MusicBrainz Release Group ID'");
+                releaseGroupIdColumnAvailable = true;
+                log.info("已为 processed_files 补充 release_group_id 列");
+            }
+        } catch (SQLException e) {
+            releaseGroupIdColumnAvailable = false;
+            log.warn("processed_files 缺少 release_group_id 列且自动补列失败，仪表板封面将回退到内嵌封面: {}",
+                e.getMessage());
         }
     }
 
@@ -137,13 +175,37 @@ public class ProcessedFileLogger {
      * @param album 专辑
      */
     public void markFileAsProcessed(File file, String recordingId, String artist, String title, String album) {
+        markFileAsProcessed(file, recordingId, artist, title, album, null);
+    }
+
+    /**
+     * 记录文件已处理（带 Release Group ID）
+     * releaseGroupId 是封面缓存的 key，仪表板靠它把已处理文件映射到缓存里的封面图。
+     */
+    public void markFileAsProcessed(File file, String recordingId, String artist, String title,
+                                    String album, String releaseGroupId) {
         String filePath = file.getAbsolutePath();
         LocalDateTime now = LocalDateTime.now();
 
         if (isDbMode) {
             try {
                 String fileHash = calculateFileHash(file);
-                String sql = "INSERT INTO processed_files " +
+                boolean withRgid = releaseGroupIdColumnAvailable;
+                String sql = withRgid
+                    ? "INSERT INTO processed_files " +
+                        "(file_hash, file_name, file_path, file_size, processed_time, recording_id, artist, title, album, release_group_id) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                        "ON DUPLICATE KEY UPDATE " +
+                        "file_hash = VALUES(file_hash), " +
+                        "file_name = VALUES(file_name), " +
+                        "file_size = VALUES(file_size), " +
+                        "processed_time = VALUES(processed_time), " +
+                        "recording_id = VALUES(recording_id), " +
+                        "artist = VALUES(artist), " +
+                        "title = VALUES(title), " +
+                        "album = VALUES(album), " +
+                        "release_group_id = VALUES(release_group_id)"
+                    : "INSERT INTO processed_files " +
                         "(file_hash, file_name, file_path, file_size, processed_time, recording_id, artist, title, album) " +
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
                         "ON DUPLICATE KEY UPDATE " +
@@ -168,6 +230,9 @@ public class ProcessedFileLogger {
                     pstmt.setString(7, artist);
                     pstmt.setString(8, title);
                     pstmt.setString(9, album);
+                    if (withRgid) {
+                        pstmt.setString(10, releaseGroupId);
+                    }
 
                     pstmt.executeUpdate();
                 }
@@ -179,9 +244,11 @@ public class ProcessedFileLogger {
             synchronized (fileWriteLock) {
                 try (BufferedWriter writer = new BufferedWriter(new FileWriter(config.getProcessedFileLogPath(), true))) {
                     String timeStr = now.format(dateFormatter);
-                    // 格式: filePath|recordingId|artist|title|album|time
-                    String line = String.format("%s|%s|%s|%s|%s|%s",
-                            filePath, recordingId, artist, title, album, timeStr);
+                    // 格式: filePath|recordingId|artist|title|album|time|releaseGroupId
+                    // 第 7 列是后加的，老日志没有；读取方按固定下标取值，向后兼容。
+                    String line = String.format("%s|%s|%s|%s|%s|%s|%s",
+                            filePath, recordingId, artist, title, album, timeStr,
+                            releaseGroupId == null ? "" : releaseGroupId);
                     writer.write(line);
                     writer.newLine();
                 } catch (IOException e) {
