@@ -61,6 +61,9 @@
 
         .monitor-actions { display: flex; gap: 10px; margin-top: 18px; }
         .monitor-actions .btn { flex: 1; }
+        /* 图标包裹 span 默认是 inline，svg 会按基线对齐导致图标偏移 */
+        .monitor-actions .btn > span { display: inline-flex; align-items: center; }
+        .monitor-actions .btn > span > svg { display: block; }
         .monitor-actions .btn.light { background: #fff; color: var(--primary); }
         .monitor-actions .btn.light:hover { background: #f0f5ff; }
         .monitor-actions .btn.translucent { background: rgba(255, 255, 255, .18); color: #fff; border-color: rgba(255, 255, 255, .35); }
