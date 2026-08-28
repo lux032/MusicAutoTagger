@@ -260,6 +260,190 @@ public class ProcessedFileLogger {
         log.info(I18nUtil.getMessage("logger.history.recorded"), artist, title, isDbMode ? I18nUtil.getMessage("logger.db.mode") : I18nUtil.getMessage("logger.file.mode"));
     }
 
+    // ==================== 封面回填支持 ====================
+
+    /**
+     * 记录里这些 recording_id 不是真正的 MusicBrainz 录音 ID，而是失败/特殊流程的占位值，
+     * 这些条目本来就没有认出专辑，回填时直接跳过。
+     */
+    private static final java.util.Set<String> NON_MB_RECORDING_IDS = java.util.Set.of(
+        "FAILED", "UNKNOWN", "WRITE_FAILED", "EXCEPTION", "CUE_SPLIT", "REVIEW_REJECTED", "ONLINE_SEARCH");
+
+    /** 一个待回填的专辑分组。 */
+    public static class AlbumGroup {
+        public final String album;
+        /** 整张专辑只有单一艺术家时才有值；合辑类的为 null，搜索时不限定艺术家。 */
+        public final String artist;
+        public final int fileCount;
+
+        public AlbumGroup(String album, String artist, int fileCount) {
+            this.album = album;
+            this.artist = artist;
+            this.fileCount = fileCount;
+        }
+    }
+
+    private static boolean isBackfillable(String recordingId, String album) {
+        if (album == null || album.isBlank() || "Unknown Album".equalsIgnoreCase(album.trim())) {
+            return false;
+        }
+        return recordingId == null || !NON_MB_RECORDING_IDS.contains(recordingId.trim());
+    }
+
+    /**
+     * 找出所有还没有 release_group_id 的历史记录，按专辑名分组。
+     * 按专辑而不是按文件分组，是为了把 MusicBrainz 请求数从「文件数」降到「专辑数」。
+     */
+    public java.util.List<AlbumGroup> findAlbumsMissingReleaseGroupId() {
+        java.util.List<AlbumGroup> groups = new java.util.ArrayList<>();
+
+        if (isDbMode) {
+            if (databaseService == null || !releaseGroupIdColumnAvailable) {
+                return groups;
+            }
+            String sql = "SELECT album, MIN(artist) AS one_artist, COUNT(*) AS file_count, "
+                + "COUNT(DISTINCT artist) AS artist_count, MIN(recording_id) AS one_recording "
+                + "FROM processed_files "
+                + "WHERE (release_group_id IS NULL OR release_group_id = '') "
+                + "AND album IS NOT NULL AND album <> '' "
+                + "GROUP BY album";
+            try (Connection conn = databaseService.getConnection();
+                 PreparedStatement pstmt = conn.prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    String album = rs.getString("album");
+                    if (!isBackfillable(rs.getString("one_recording"), album)) {
+                        continue;
+                    }
+                    String artist = rs.getInt("artist_count") == 1 ? rs.getString("one_artist") : null;
+                    groups.add(new AlbumGroup(album, artist, rs.getInt("file_count")));
+                }
+            } catch (SQLException e) {
+                log.error("查询待回填专辑失败", e);
+            }
+            return groups;
+        }
+
+        // 文件模式：扫一遍日志自己分组
+        java.util.Map<String, int[]> counts = new java.util.LinkedHashMap<>();
+        java.util.Map<String, java.util.Set<String>> artists = new java.util.HashMap<>();
+        for (String[] parts : readLogRows()) {
+            if (parts.length >= 7 && !parts[6].isBlank()) {
+                continue; // 已有 rgid
+            }
+            String album = parts[4];
+            if (!isBackfillable(parts[1], album)) {
+                continue;
+            }
+            counts.computeIfAbsent(album, k -> new int[1])[0]++;
+            artists.computeIfAbsent(album, k -> new java.util.HashSet<>()).add(parts[2]);
+        }
+        for (java.util.Map.Entry<String, int[]> entry : counts.entrySet()) {
+            java.util.Set<String> albumArtists = artists.get(entry.getKey());
+            String artist = albumArtists != null && albumArtists.size() == 1
+                ? albumArtists.iterator().next() : null;
+            groups.add(new AlbumGroup(entry.getKey(), artist, entry.getValue()[0]));
+        }
+        return groups;
+    }
+
+    /**
+     * 把某张专辑下所有缺失 release_group_id 的记录补上。
+     * @return 实际更新的行数
+     */
+    public int applyReleaseGroupId(String album, String releaseGroupId) {
+        if (album == null || album.isBlank() || releaseGroupId == null || releaseGroupId.isBlank()) {
+            return 0;
+        }
+
+        if (isDbMode) {
+            if (databaseService == null || !releaseGroupIdColumnAvailable) {
+                return 0;
+            }
+            // 占位值 recording_id 的行本来就没认出专辑，不给它们贴 ID（与文件模式保持一致）
+            String placeholders = NON_MB_RECORDING_IDS.stream()
+                .map(x -> "?").collect(java.util.stream.Collectors.joining(", "));
+            String sql = "UPDATE processed_files SET release_group_id = ? "
+                + "WHERE album = ? AND (release_group_id IS NULL OR release_group_id = '') "
+                + "AND (recording_id IS NULL OR recording_id NOT IN (" + placeholders + "))";
+            try (Connection conn = databaseService.getConnection();
+                 PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setString(1, releaseGroupId);
+                pstmt.setString(2, album);
+                int index = 3;
+                for (String sentinel : NON_MB_RECORDING_IDS) {
+                    pstmt.setString(index++, sentinel);
+                }
+                return pstmt.executeUpdate();
+            } catch (SQLException e) {
+                log.error("回填 release_group_id 失败 (album={})", album, e);
+                return 0;
+            }
+        }
+
+        // 文件模式：原子式重写整个日志
+        synchronized (fileWriteLock) {
+            File logFile = new File(config.getProcessedFileLogPath());
+            if (!logFile.exists()) {
+                return 0;
+            }
+            File tempFile = new File(logFile.getAbsolutePath() + ".backfill.tmp");
+            int updated = 0;
+            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
+                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] parts = line.split("\\|", -1);
+                    boolean needsFill = parts.length >= 6
+                        && album.equals(parts[4])
+                        && (parts.length < 7 || parts[6].isBlank())
+                        && isBackfillable(parts[1], parts[4]);
+                    if (needsFill) {
+                        writer.write(String.format("%s|%s|%s|%s|%s|%s|%s",
+                            parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], releaseGroupId));
+                        updated++;
+                    } else {
+                        writer.write(line);
+                    }
+                    writer.newLine();
+                }
+            } catch (IOException e) {
+                log.error("重写已处理日志失败", e);
+                tempFile.delete();
+                return 0;
+            }
+            try {
+                java.nio.file.Files.move(tempFile.toPath(), logFile.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                log.error("替换已处理日志失败", e);
+                return 0;
+            }
+            return updated;
+        }
+    }
+
+    /** 读取文件模式日志的所有行（已拆列）。 */
+    private java.util.List<String[]> readLogRows() {
+        java.util.List<String[]> rows = new java.util.ArrayList<>();
+        File logFile = new File(config.getProcessedFileLogPath());
+        if (!logFile.exists()) {
+            return rows;
+        }
+        try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] parts = line.split("\\|", -1);
+                if (parts.length >= 6) {
+                    rows.add(parts);
+                }
+            }
+        } catch (IOException e) {
+            log.error(I18nUtil.getMessage("logger.read.log.failed"), e);
+        }
+        return rows;
+    }
+
     /**
      * 删除指定路径的已处理记录，供用户主动重新识别时使用。
      * 文件模式会原子式重写日志；MySQL 模式按 file_path 删除。

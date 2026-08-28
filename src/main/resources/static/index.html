@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>音乐自动标签器 - 仪表板</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=4">
+    <link rel="stylesheet" href="app.css?v=7">
     <style>
         /* ---- 仪表板专用布局 ---- */
         .dash-grid {
@@ -160,7 +160,22 @@
             align-items: center;
             justify-content: center;
         }
-        .file-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        /*
+         * 封面图绝对定位盖在占位图上方，用 opacity 而不是 display 控制显隐。
+         * 关键：display:none 的图片没有布局盒，loading="lazy" 的交叉观察永远不会触发，
+         * 于是图片永远不加载、onload 永远不触发、也就永远不会被显示——死锁。
+         */
+        .file-cover img {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            opacity: 0;
+            transition: opacity .25s ease;
+        }
+        .file-cover img.loaded { opacity: 1; }
         .file-cover .ph { color: rgba(255, 255, 255, .85); }
         .file-cover .ph svg { width: 34px; height: 34px; }
 
@@ -253,6 +268,43 @@
             padding: 14px;
             background: var(--bg-soft);
         }
+
+        /* 设置面板里的维护工具卡 */
+        .tool-card {
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px;
+            background: var(--bg-soft);
+        }
+        .tool-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+        .tool-head > div:first-child { flex: 1 1 320px; min-width: 0; }
+        .tool-title { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+        .tool-desc { font-size: 12.5px; color: var(--text-soft); line-height: 1.6; }
+        .tool-hint {
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: var(--radius-sm);
+            background: #fff;
+            border: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--text-mute);
+            line-height: 1.7;
+        }
+        .tool-progress { margin-top: 14px; }
+        .progress-bar {
+            height: 6px;
+            border-radius: 999px;
+            background: #dfe5ee;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            width: 0;
+            border-radius: 999px;
+            background: var(--primary);
+            transition: width .3s ease;
+        }
+        .tool-status { margin-top: 8px; font-size: 12.5px; color: var(--text-soft); }
         .llm-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
         .llm-fields { display: grid; gap: 8px; margin-bottom: 10px; }
         .llm-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
@@ -842,6 +894,29 @@
                             <input id="cfgReleaseCountryPriority" type="text" placeholder="JP,US,GB">
                         </div>
                     </div>
+
+                    <div class="form-section-title">维护工具</div>
+                    <div class="tool-card">
+                        <div class="tool-head">
+                            <div>
+                                <div class="tool-title">回填历史记录的封面</div>
+                                <div class="tool-desc">
+                                    早期处理的文件没有记录专辑 ID，仪表板只能显示占位图。
+                                    该工具按专辑名去 MusicBrainz 重新匹配并补写 ID，同时预热封面缓存。
+                                </div>
+                            </div>
+                            <button type="button" class="btn primary" id="backfillBtn" onclick="startBackfill()">开始回填</button>
+                        </div>
+                        <div class="tool-hint">
+                            只写入缺失的专辑 ID 字段，<strong>不会修改任何音频文件，也不会覆盖已有值</strong>。
+                            按专辑（非文件）发请求，MusicBrainz 限速约每秒 1 次，可随时中断，重跑只处理剩下的。
+                            匹配不确定的专辑会直接跳过，宁可不补也不贴错封面。
+                        </div>
+                        <div class="tool-progress" id="backfillProgress" style="display: none;">
+                            <div class="progress-bar"><div class="progress-fill" id="backfillBar"></div></div>
+                            <div class="tool-status" id="backfillStatus"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -1044,7 +1119,7 @@
                                 <span class="card-icon">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
                                 </span>
-                                <span data-i18n="card.recent.files">最近处理的文件</span>
+                                <span data-i18n="card.recent.albums">最近整理的专辑</span>
                             </div>
                             <button class="collapse-toggle expanded" id="recentFilesToggle" onclick="toggleRecentFiles()" aria-label="toggle">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
@@ -1633,7 +1708,7 @@
                     }
                 }
 
-                renderRecentFiles(data.recentFiles);
+                renderRecentAlbums(data.recentAlbums);
 
                 loading.style.display = 'none';
                 content.style.display = 'block';
@@ -1672,39 +1747,36 @@
         const ICON_NOTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>';
         const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="8 12.5 11 15.5 16 9"></polyline></svg>';
 
-        function baseName(path) {
-            const raw = String(path || '');
-            const idx = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
-            return idx >= 0 ? raw.slice(idx + 1) : raw;
-        }
-
-        // 最近处理的文件：单行横向滚动的封面缩略图
+        // 最近整理的专辑：单行横向滚动的封面墙
+        //
+        // 后端已经滤掉了识别失败的记录并按专辑聚合，这里一个 tile 就是一张专辑。
         // 封面优先走 /api/cover?rgid=（直接命中封面缓存，文件移走也不受影响），
-        // 没有 Release Group ID 的旧记录才回退到按路径读内嵌封面，都拿不到则显示渐变占位图。
-        function renderRecentFiles(files) {
+        // 没有 Release Group ID 的旧记录回退到按路径读内嵌封面，都拿不到则显示渐变占位图。
+        function renderRecentAlbums(albums) {
             const strip = document.getElementById('recentFiles');
             strip.innerHTML = '';
 
-            if (!files || files.length === 0) {
+            if (!albums || albums.length === 0) {
                 const empty = document.createElement('div');
                 empty.className = 'empty';
                 empty.style.flex = '1';
-                empty.textContent = t('web.no.records');
+                empty.textContent = t('web.no.albums');
                 strip.appendChild(empty);
                 updateStripOverflow();
                 return;
             }
 
-            files.forEach(file => {
-                const name = baseName(file.path) || file.title || t('file.unknown');
-                const [c1, c2] = paletteFor(name);
+            albums.forEach(album => {
+                const title = album.album || t('file.unknown.album');
+                const artist = album.artist || t('file.unknown.artist');
+                const tracks = Number(album.trackCount) || 0;
+                const [c1, c2] = paletteFor(title);
 
                 const tile = document.createElement('div');
                 tile.className = 'file-tile';
-                tile.title = (file.title || t('file.unknown')) + ' · '
-                    + (file.artist || t('file.unknown.artist')) + ' · '
-                    + (file.album || t('file.unknown.album'))
-                    + (file.time ? '\n' + file.time : '');
+                tile.title = title + ' · ' + artist
+                    + '\n' + tracks + ' ' + t('unit.tracks', '首')
+                    + (album.time ? '\n' + album.time : '');
 
                 const cover = document.createElement('div');
                 cover.className = 'file-cover';
@@ -1716,14 +1788,14 @@
                 cover.appendChild(ph);
 
                 const query = [];
-                if (file.releaseGroupId) query.push('rgid=' + encodeURIComponent(file.releaseGroupId));
-                if (file.path) query.push('path=' + encodeURIComponent(file.path));
+                if (album.releaseGroupId) query.push('rgid=' + encodeURIComponent(album.releaseGroupId));
+                if (album.path) query.push('path=' + encodeURIComponent(album.path));
                 if (query.length) {
                     const img = document.createElement('img');
                     img.loading = 'lazy';
                     img.alt = '';
-                    img.style.display = 'none';
-                    img.onload = () => { img.style.display = 'block'; ph.style.display = 'none'; };
+                    // 不能用 display:none 预隐藏，否则 lazy 加载不会触发（见上方 CSS 注释）
+                    img.onload = () => { img.classList.add('loaded'); };
                     img.onerror = () => { img.remove(); };
                     img.src = '/api/cover?' + query.join('&');
                     cover.appendChild(img);
@@ -1731,16 +1803,16 @@
 
                 const nameEl = document.createElement('div');
                 nameEl.className = 'file-name';
-                nameEl.textContent = name;
+                nameEl.textContent = title;
 
                 const subEl = document.createElement('div');
                 subEl.className = 'file-sub';
-                subEl.textContent = file.artist || t('file.unknown.artist');
+                subEl.textContent = artist;
 
                 const status = document.createElement('div');
                 status.className = 'file-status';
                 status.innerHTML = ICON_CHECK;
-                status.appendChild(document.createTextNode(t('file.done', '已完成')));
+                status.appendChild(document.createTextNode(tracks + ' ' + t('unit.tracks', '首')));
 
                 tile.appendChild(cover);
                 tile.appendChild(nameEl);
@@ -2197,10 +2269,115 @@
             document.getElementById('settingsOverlay').style.display = 'flex';
             switchTab('tab-basic');
             loadConfig();
+            loadBackfillStatus();
         }
 
         function closeSettings() {
             document.getElementById('settingsOverlay').style.display = 'none';
+            stopBackfillPolling();
+        }
+
+        // ==================== 历史封面回填 ====================
+        // 只在设置面板打开期间轮询，关面板就停，不占后台请求
+        let backfillTimer = null;
+
+        function stopBackfillPolling() {
+            if (backfillTimer) {
+                clearInterval(backfillTimer);
+                backfillTimer = null;
+            }
+        }
+
+        function ensureBackfillPolling(running) {
+            if (running && !backfillTimer) {
+                backfillTimer = setInterval(loadBackfillStatus, 2000);
+            } else if (!running) {
+                stopBackfillPolling();
+            }
+        }
+
+        async function loadBackfillStatus() {
+            const btn = document.getElementById('backfillBtn');
+            const box = document.getElementById('backfillProgress');
+            const bar = document.getElementById('backfillBar');
+            const statusEl = document.getElementById('backfillStatus');
+            if (!btn) return;
+
+            try {
+                const response = await authFetch('/api/backfill/status');
+                if (!response.ok) throw new Error('unavailable');
+                const data = await response.json();
+                renderBackfill(data, btn, box, bar, statusEl);
+                ensureBackfillPolling(!!data.running);
+            } catch (err) {
+                // 接口不可用时直接禁用按钮，不报错弹窗
+                btn.disabled = true;
+                btn.textContent = '不可用';
+                stopBackfillPolling();
+            }
+        }
+
+        function renderBackfill(data, btn, box, bar, statusEl) {
+            if (data.running) {
+                btn.disabled = false;
+                btn.textContent = '停止';
+                btn.className = 'btn danger-soft';
+                btn.onclick = cancelBackfill;
+
+                const total = data.totalAlbums || 0;
+                const done = data.processedAlbums || 0;
+                const percent = total > 0 ? Math.round(done / total * 100) : 0;
+                box.style.display = 'block';
+                bar.style.width = percent + '%';
+                statusEl.textContent = `处理中 ${done}/${total}（${percent}%）`
+                    + `· 已匹配 ${data.matchedAlbums || 0} 张 · 已补全 ${data.updatedFiles || 0} 条`
+                    + (data.currentAlbum ? ` · 当前：${data.currentAlbum}` : '');
+                return;
+            }
+
+            btn.className = 'btn primary';
+            btn.onclick = startBackfill;
+
+            const pending = data.pendingAlbums;
+            if (pending === 0) {
+                btn.disabled = true;
+                btn.textContent = '无需回填';
+            } else {
+                btn.disabled = false;
+                btn.textContent = pending > 0 ? `开始回填（${pending} 张）` : '开始回填';
+            }
+
+            if (data.message) {
+                box.style.display = 'block';
+                const total = data.totalAlbums || 0;
+                bar.style.width = total > 0 ? '100%' : '0';
+                statusEl.textContent = data.message;
+            } else {
+                box.style.display = 'none';
+            }
+        }
+
+        async function startBackfill() {
+            try {
+                const response = await authFetch('/api/backfill/start', { method: 'POST' });
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    throw new Error(data.error === 'backfill.already.running' ? '回填已在进行中' : '启动失败');
+                }
+                ensureBackfillPolling(true);
+                loadBackfillStatus();
+            } catch (err) {
+                alert(err.message);
+            }
+        }
+
+        async function cancelBackfill() {
+            try {
+                await authFetch('/api/backfill/cancel', { method: 'POST' });
+                loadBackfillStatus();
+            } catch (err) {
+                alert('停止失败: ' + err.message);
+            }
         }
 
         function switchTab(tabId) {

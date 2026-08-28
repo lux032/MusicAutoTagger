@@ -38,6 +38,7 @@ public class ApplicationLifecycleManager {
     
     // 新增的服务实例
     private CoverArtService coverArtService;
+    private CoverBackfillService coverBackfillService;
     private FileSystemUtils fileSystemUtils;
     private FailedFileHandler failedFileHandler;
     private AlbumBatchProcessor albumBatchProcessor;
@@ -160,6 +161,9 @@ public class ApplicationLifecycleManager {
         );
         audioFileProcessorService.setReviewQueueService(reviewQueueService);
 
+        // 历史记录的封面回填（设置面板里手动触发，不自动跑）
+        coverBackfillService = new CoverBackfillService(processedLogger, musicBrainzClient, coverArtService);
+
         // 部分识别 / 失败目录的人工重新识别入口
         recoveryService = new RecoveryService(
             config, audioFileProcessorService, processedLogger, reviewQueueService,
@@ -180,7 +184,7 @@ public class ApplicationLifecycleManager {
         try {
             webServer = new WebServer(8080);
             webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this,
-                reviewQueueService, reviewResolutionService, recoveryService);
+                reviewQueueService, reviewResolutionService, recoveryService, coverBackfillService);
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.web.start.error"), e);
             log.warn(I18nUtil.getMessage("main.web.unavailable"));

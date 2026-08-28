@@ -12,6 +12,7 @@ import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.service.CoverArtCache;
+import com.lux032.musicautotagger.service.CoverBackfillService;
 import com.lux032.musicautotagger.service.DatabaseService;
 import com.lux032.musicautotagger.service.FolderAlbumCache;
 import com.lux032.musicautotagger.service.ProcessedFileLogger;
@@ -49,7 +50,20 @@ public class WebServer {
                      DatabaseService databaseService,
                      ApplicationLifecycleManager lifecycleManager) throws Exception {
         start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService,
-            lifecycleManager, null, null, null);
+            lifecycleManager, null, null, null, null);
+    }
+
+    public void start(ProcessedFileLogger processedLogger,
+                     CoverArtCache coverArtCache,
+                     FolderAlbumCache folderAlbumCache,
+                     MusicConfig config,
+                     DatabaseService databaseService,
+                     ApplicationLifecycleManager lifecycleManager,
+                     ReviewQueueService reviewQueueService,
+                     ReviewResolutionService reviewResolutionService,
+                     RecoveryService recoveryService) throws Exception {
+        start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService,
+            lifecycleManager, reviewQueueService, reviewResolutionService, recoveryService, null);
     }
 
     /**
@@ -63,7 +77,8 @@ public class WebServer {
                      ApplicationLifecycleManager lifecycleManager,
                      ReviewQueueService reviewQueueService,
                      ReviewResolutionService reviewResolutionService,
-                     RecoveryService recoveryService) throws Exception {
+                     RecoveryService recoveryService,
+                     CoverBackfillService coverBackfillService) throws Exception {
         
         server = new Server();
         
@@ -124,6 +139,12 @@ public class WebServer {
         if (reviewQueueService != null && reviewResolutionService != null) {
             ReviewServlet reviewServlet = new ReviewServlet(reviewQueueService, reviewResolutionService, recoveryService);
             servletHandler.addServlet(new ServletHolder(reviewServlet), "/api/review/*");
+        }
+
+        // 注册历史封面回填 API
+        if (coverBackfillService != null) {
+            servletHandler.addServlet(new ServletHolder(new BackfillServlet(coverBackfillService)),
+                "/api/backfill/*");
         }
 
         // 注册部分识别 / 识别失败恢复 API

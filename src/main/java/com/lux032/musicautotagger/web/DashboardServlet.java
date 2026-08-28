@@ -101,9 +101,8 @@ public class DashboardServlet extends HttpServlet {
             stats.put("folderCache", folderInfo);
         }
         
-        // 最近处理的文件（最多10条）
-        List<Map<String, String>> recentFiles = getRecentProcessedFiles(10);
-        stats.put("recentFiles", recentFiles);
+        // 最近成功整理的专辑（最多 12 张）
+        stats.put("recentAlbums", getRecentAlbums(12));
         
         // 系统信息
         Map<String, String> systemInfo = new LinkedHashMap<>();
@@ -117,78 +116,142 @@ public class DashboardServlet extends HttpServlet {
         return stats;
     }
     
-    private List<Map<String, String>> getRecentProcessedFiles(int limit) {
-        List<Map<String, String>> files = new ArrayList<>();
+    /**
+     * 这些 recording_id 不是真正的 MusicBrainz 录音 ID，而是失败/特殊流程的占位值。
+     * 这类行的 artist 字段存的是「处理异常: XXX」这种诊断文本，不能当成成果展示。
+     */
+    private static final Set<String> NON_MB_RECORDING_IDS = Set.of(
+        "FAILED", "UNKNOWN", "WRITE_FAILED", "EXCEPTION", "CUE_SPLIT", "REVIEW_REJECTED", "ONLINE_SEARCH");
 
+    private static boolean isSuccessfulRecord(String recordingId, String album) {
+        if (album == null || album.isBlank() || "Unknown Album".equalsIgnoreCase(album.trim())) {
+            return false;
+        }
+        return recordingId != null && !recordingId.isBlank()
+            && !NON_MB_RECORDING_IDS.contains(recordingId.trim());
+    }
+
+    /**
+     * 最近成功整理的专辑。
+     *
+     * 两个语义上的考虑：
+     *  1. 只算成功识别的记录 —— 失败行的 artist 存的是错误描述，混在成果里既难看也误导；
+     *  2. 按专辑聚合而不是按文件 —— 封面本来就是专辑级的，
+     *     按文件列会让同一张专辑的 12 首歌铺出 12 个一模一样的封面。
+     */
+    private List<Map<String, Object>> getRecentAlbums(int limit) {
         if ("mysql".equalsIgnoreCase(config.getDbType())) {
-            // MySQL 模式：从数据库读取
-            if (databaseService != null) {
-                // release_group_id 是后加列，老库可能还没补上，没有就走不带该列的语句
-                boolean withRgid = processedLogger != null && processedLogger.isReleaseGroupIdColumnAvailable();
-                String sql = withRgid
-                    ? "SELECT file_path, artist, title, album, release_group_id, processed_time " +
-                      "FROM processed_files ORDER BY processed_time DESC LIMIT ?"
-                    : "SELECT file_path, artist, title, album, processed_time " +
-                      "FROM processed_files ORDER BY processed_time DESC LIMIT ?";
-                try (Connection conn = databaseService.getConnection();
-                     PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                    pstmt.setInt(1, limit);
-                    try (ResultSet rs = pstmt.executeQuery()) {
-                        while (rs.next()) {
-                            Map<String, String> file = new HashMap<>();
-                            file.put("path", rs.getString("file_path"));
-                            file.put("artist", rs.getString("artist"));
-                            file.put("title", rs.getString("title"));
-                            file.put("album", rs.getString("album"));
-                            if (withRgid) {
-                                file.put("releaseGroupId", rs.getString("release_group_id"));
-                            }
-                            if (rs.getTimestamp("processed_time") != null) {
-                                file.put("time", rs.getTimestamp("processed_time")
-                                        .toLocalDateTime().format(dateFormatter));
-                            }
-                            files.add(file);
-                        }
-                    }
-                } catch (SQLException e) {
-                    log.error("从数据库读取最近处理文件失败", e);
-                }
-            }
-        } else {
-            // 文件模式：从文本日志读取
-            File logFile = new File(config.getProcessedFileLogPath());
-            if (logFile.exists()) {
-                try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
-                    List<String> lines = new ArrayList<>();
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        lines.add(line);
-                    }
+            return getRecentAlbumsFromDb(limit);
+        }
+        return getRecentAlbumsFromLog(limit);
+    }
 
-                    // 倒序获取最后N条
-                    int start = Math.max(0, lines.size() - limit);
-                    for (int i = lines.size() - 1; i >= start; i--) {
-                        // 格式: filePath|recordingId|artist|title|album|time[|releaseGroupId]
-                        String[] parts = lines.get(i).split("\\|", -1);
-                        if (parts.length >= 6) {
-                            Map<String, String> file = new HashMap<>();
-                            file.put("path", parts[0]);
-                            file.put("artist", parts[2]);
-                            file.put("title", parts[3]);
-                            file.put("album", parts[4]);
-                            file.put("time", parts[5]);
-                            if (parts.length >= 7 && !parts[6].isBlank()) {
-                                file.put("releaseGroupId", parts[6]);
-                            }
-                            files.add(file);
-                        }
-                    }
-                } catch (IOException e) {
-                    log.error("读取日志文件失败", e);
-                }
-            }
+    private List<Map<String, Object>> getRecentAlbumsFromDb(int limit) {
+        List<Map<String, Object>> albums = new ArrayList<>();
+        if (databaseService == null) {
+            return albums;
         }
 
-        return files;
+        // release_group_id 是后加列，老库可能还没补上
+        boolean withRgid = processedLogger != null && processedLogger.isReleaseGroupIdColumnAvailable();
+        String rgidSelect = withRgid ? "MAX(release_group_id) AS rgid, " : "";
+        String placeholders = NON_MB_RECORDING_IDS.stream()
+            .map(x -> "?").collect(java.util.stream.Collectors.joining(", "));
+
+        String sql = "SELECT album, " + rgidSelect
+            + "MIN(artist) AS one_artist, COUNT(DISTINCT artist) AS artist_count, "
+            + "COUNT(*) AS track_count, MAX(processed_time) AS last_time, MIN(file_path) AS sample_path "
+            + "FROM processed_files "
+            + "WHERE album IS NOT NULL AND album <> '' AND album <> 'Unknown Album' "
+            + "AND recording_id IS NOT NULL AND recording_id <> '' "
+            + "AND recording_id NOT IN (" + placeholders + ") "
+            + "GROUP BY album ORDER BY last_time DESC LIMIT ?";
+
+        try (Connection conn = databaseService.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            int index = 1;
+            for (String sentinel : NON_MB_RECORDING_IDS) {
+                pstmt.setString(index++, sentinel);
+            }
+            pstmt.setInt(index, limit);
+
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> album = new HashMap<>();
+                    album.put("album", rs.getString("album"));
+                    album.put("artist", rs.getInt("artist_count") == 1
+                        ? rs.getString("one_artist") : "Various Artists");
+                    album.put("trackCount", rs.getInt("track_count"));
+                    album.put("path", rs.getString("sample_path"));
+                    if (withRgid) {
+                        album.put("releaseGroupId", rs.getString("rgid"));
+                    }
+                    if (rs.getTimestamp("last_time") != null) {
+                        album.put("time", rs.getTimestamp("last_time")
+                            .toLocalDateTime().format(dateFormatter));
+                    }
+                    albums.add(album);
+                }
+            }
+        } catch (SQLException e) {
+            log.error("从数据库读取最近专辑失败", e);
+        }
+        return albums;
+    }
+
+    private List<Map<String, Object>> getRecentAlbumsFromLog(int limit) {
+        File logFile = new File(config.getProcessedFileLogPath());
+        if (!logFile.exists()) {
+            return new ArrayList<>();
+        }
+
+        // album -> 聚合结果（LinkedHashMap 保持首次出现顺序，排序在后面做）
+        Map<String, Map<String, Object>> grouped = new LinkedHashMap<>();
+        Map<String, Set<String>> artistsByAlbum = new HashMap<>();
+
+        try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                // 格式: filePath|recordingId|artist|title|album|time[|releaseGroupId]
+                String[] parts = line.split("\\|", -1);
+                if (parts.length < 6 || !isSuccessfulRecord(parts[1], parts[4])) {
+                    continue;
+                }
+                String album = parts[4];
+                String time = parts[5];
+
+                artistsByAlbum.computeIfAbsent(album, k -> new HashSet<>()).add(parts[2]);
+
+                Map<String, Object> entry = grouped.computeIfAbsent(album, k -> {
+                    Map<String, Object> created = new HashMap<>();
+                    created.put("album", k);
+                    created.put("trackCount", 0);
+                    created.put("path", parts[0]);
+                    return created;
+                });
+                entry.put("trackCount", (Integer) entry.get("trackCount") + 1);
+                // 时间是 yyyy-MM-dd HH:mm:ss，字典序即时间序，直接比字符串就行
+                String known = (String) entry.get("time");
+                if (known == null || time.compareTo(known) > 0) {
+                    entry.put("time", time);
+                }
+                if (parts.length >= 7 && !parts[6].isBlank()) {
+                    entry.put("releaseGroupId", parts[6]);
+                }
+            }
+        } catch (IOException e) {
+            log.error("读取日志文件失败", e);
+            return new ArrayList<>();
+        }
+
+        for (Map.Entry<String, Map<String, Object>> entry : grouped.entrySet()) {
+            Set<String> artists = artistsByAlbum.get(entry.getKey());
+            entry.getValue().put("artist", artists != null && artists.size() == 1
+                ? artists.iterator().next() : "Various Artists");
+        }
+
+        List<Map<String, Object>> albums = new ArrayList<>(grouped.values());
+        albums.sort((a, b) -> String.valueOf(b.get("time")).compareTo(String.valueOf(a.get("time"))));
+        return albums.size() > limit ? new ArrayList<>(albums.subList(0, limit)) : albums;
     }
 }

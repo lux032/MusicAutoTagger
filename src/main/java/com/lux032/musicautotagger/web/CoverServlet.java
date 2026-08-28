@@ -11,6 +11,12 @@ import org.jaudiotagger.tag.images.Artwork;
 
 import com.lux032.musicautotagger.config.MusicConfig;
 
+import javax.imageio.ImageIO;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -20,7 +26,10 @@ import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 封面缩略图接口，供仪表板「最近处理的文件」使用。
@@ -39,6 +48,30 @@ public class CoverServlet extends HttpServlet {
     /** 与 CoverArtCache 保持一致的缓存 key 前缀，改这里必须同步改那边。 */
     private static final String CACHE_KEY_PREFIX = "release-group:";
 
+    /**
+     * 缩略图边长。卡片实际只有 132px，给两倍多一点应付高分屏就够了。
+     * 缓存里的原图动辄 1~5MB，直接发给前端一排 12 张就是几十 MB。
+     */
+    private static final int THUMB_SIZE = 320;
+
+    /** 缩略图内存缓存，避免每次刷新面板都重新解码一遍大图。 */
+    private static final int THUMB_CACHE_MAX = 64;
+
+    /**
+     * 超过这个大小的结果不进内存缓存。
+     * 有些封面是算术编码 JPEG，Java 的 ImageIO 拒绝解码（“legal restrictions on
+     * arithmetic coding”），只能退回原图。若把这种几 MB 的原图也塞进缓存，
+     * 64 条 × 几 MB 就是百兆级堆内存；它们本来也不需要缓存（跳过了解码，读盘很便宜）。
+     */
+    private static final int THUMB_CACHE_MAX_BYTES = 512 * 1024;
+    private final Map<String, byte[]> thumbCache = Collections.synchronizedMap(
+        new LinkedHashMap<>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+                return size() > THUMB_CACHE_MAX;
+            }
+        });
+
     private final MusicConfig config;
 
     public CoverServlet(MusicConfig config) {
@@ -49,9 +82,18 @@ public class CoverServlet extends HttpServlet {
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         String rgid = trimToNull(req.getParameter("rgid"));
         if (rgid != null) {
-            byte[] cached = readFromCoverCache(rgid);
-            if (cached != null) {
-                writeImage(resp, cached, "image/jpeg");
+            byte[] thumb = thumbCache.get(rgid);
+            if (thumb == null) {
+                byte[] cached = readFromCoverCache(rgid);
+                if (cached != null) {
+                    thumb = toThumbnail(cached);
+                    if (thumb.length <= THUMB_CACHE_MAX_BYTES) {
+                        thumbCache.put(rgid, thumb);
+                    }
+                }
+            }
+            if (thumb != null) {
+                writeImage(resp, thumb, "image/jpeg");
                 return;
             }
         }
@@ -60,7 +102,8 @@ public class CoverServlet extends HttpServlet {
         if (rawPath != null) {
             Image embedded = readEmbedded(rawPath);
             if (embedded != null) {
-                writeImage(resp, embedded.data, embedded.mime);
+                // 内嵌封面同样可能很大，一并缩小
+                writeImage(resp, toThumbnail(embedded.data), "image/jpeg");
                 return;
             }
         }
@@ -132,6 +175,53 @@ public class CoverServlet extends HttpServlet {
         } catch (Exception e) {
             log.debug("读取内嵌封面失败: {} ({})", rawPath, e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * 缩成最长边 THUMB_SIZE 的 JPEG。任何环节出问题都退回原图，
+     * 宁可发得大一点，不能因为缩图失败就不显示封面。
+     */
+    private byte[] toThumbnail(byte[] original) {
+        if (original == null || original.length == 0) {
+            return original;
+        }
+        try {
+            BufferedImage source = ImageIO.read(new ByteArrayInputStream(original));
+            if (source == null) {
+                return original;
+            }
+            int width = source.getWidth();
+            int height = source.getHeight();
+            if (width <= THUMB_SIZE && height <= THUMB_SIZE) {
+                return original;
+            }
+
+            double scale = (double) THUMB_SIZE / Math.max(width, height);
+            int targetWidth = Math.max(1, (int) Math.round(width * scale));
+            int targetHeight = Math.max(1, (int) Math.round(height * scale));
+
+            BufferedImage thumb = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_RGB);
+            Graphics2D g = thumb.createGraphics();
+            try {
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                    RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                g.setRenderingHint(RenderingHints.KEY_RENDERING,
+                    RenderingHints.VALUE_RENDER_QUALITY);
+                g.drawImage(source.getScaledInstance(targetWidth, targetHeight, java.awt.Image.SCALE_SMOOTH),
+                    0, 0, null);
+            } finally {
+                g.dispose();
+            }
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            if (!ImageIO.write(thumb, "jpg", out) || out.size() == 0) {
+                return original;
+            }
+            return out.toByteArray();
+        } catch (Exception e) {
+            log.debug("生成封面缩略图失败，退回原图: {}", e.getMessage());
+            return original;
         }
     }
 
