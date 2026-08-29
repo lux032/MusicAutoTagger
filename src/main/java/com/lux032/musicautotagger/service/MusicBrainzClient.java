@@ -254,7 +254,9 @@ public class MusicBrainzClient {
         List<AlbumDurationResult> results = new ArrayList<>();
         
         // 查询 release-group 获取所有 releases
-        String url = String.format("%s/release-group/%s?fmt=json&inc=releases+media",
+        // inc 必须带 artist-credits：候选专辑的艺术家要从 MusicBrainz 本身来，
+        // 否则上层拿不到艺术家只能退化成 "Various Artists"（单一艺术家专辑会被误判为合辑）。
+        String url = String.format("%s/release-group/%s?fmt=json&inc=releases+media+artist-credits",
             config.getMusicBrainzApiUrl(), releaseGroupId);
         
         try {
@@ -262,6 +264,8 @@ public class MusicBrainzClient {
             JsonNode root = objectMapper.readTree(response);
             String releaseType = normalizeReleaseType(root.path("primary-type").asText(""));
             boolean compilation = hasCompilationSecondaryType(root);
+            // Release Group 层的艺术家，作为各 Release 缺失 artist-credit 时的兜底
+            String groupArtist = resolveAlbumArtistFromCredits(root.path("artist-credit"));
             
             // 获取所有 releases
             JsonNode releases = root.path("releases");
@@ -303,6 +307,12 @@ public class MusicBrainzClient {
             // 获取媒体格式
             String mediaFormat = extractMediaFormat(release);
             
+            // 该 Release 的专辑艺术家（多人/未知才是 Various Artists）
+            String releaseArtist = resolveAlbumArtistFromCredits(release.path("artist-credit"));
+            if (releaseArtist == null) {
+                releaseArtist = groupArtist;
+            }
+            
             log.debug("尝试获取 release {} 的时长序列 (ID: {}, 曲目数: {}, 格式: {})",
                 releaseTitle, releaseId, trackCount, mediaFormat);
             
@@ -311,7 +321,7 @@ public class MusicBrainzClient {
             // 如果获取到有效的时长序列
             if (!durations.isEmpty()) {
                 results.add(new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount, mediaFormat,
-                    releaseType, compilation));
+                    releaseType, compilation, releaseArtist));
                 successCount++;
                 log.info("✓ 成功获取 release {} 的时长序列 ({} 首曲目, 格式: {})",
                     releaseTitle, durations.size(), mediaFormat);
@@ -328,6 +338,28 @@ public class MusicBrainzClient {
     }
     
     /**
+     * 从 artist-credit 节点解析专辑艺术家。
+     * 多人或 Unknown Artist 返回 "Various Artists"；无法解析时返回 null（交由调用方兜底）。
+     */
+    private String resolveAlbumArtistFromCredits(JsonNode artistCredits) {
+        if (artistCredits == null || !artistCredits.isArray() || artistCredits.size() == 0) {
+            return null;
+        }
+        if (artistCredits.size() > 1) {
+            return "Various Artists";
+        }
+        String artistName = artistCredits.get(0).path("artist").path("name").asText("");
+        if (artistName.isEmpty()) {
+            return null;
+        }
+        if (artistName.contains(", ") || artistName.contains("\u3001")
+            || "Unknown Artist".equalsIgnoreCase(artistName)) {
+            return "Various Artists";
+        }
+        return artistName;
+    }
+
+    /**
      * 专辑时长序列结果（包含 Release ID 和媒体格式）
      */
     @Data
@@ -339,6 +371,8 @@ public class MusicBrainzClient {
         private final String mediaFormat;  // 新增：媒体格式（如 "CD", "Digital Media" 等）
         private final String releaseType;
         private final boolean compilation;
+        /** 该 Release 的专辑艺术家（来自 MusicBrainz artist-credit）；未知时为 null */
+        private final String albumArtist;
         
         public AlbumDurationResult(List<Integer> durations, String releaseId) {
             this(durations, releaseId, null, durations != null ? durations.size() : 0, null);
@@ -354,6 +388,12 @@ public class MusicBrainzClient {
 
         public AlbumDurationResult(List<Integer> durations, String releaseId, String releaseTitle, int trackCount,
                                    String mediaFormat, String releaseType, boolean compilation) {
+            this(durations, releaseId, releaseTitle, trackCount, mediaFormat, releaseType, compilation, null);
+        }
+
+        public AlbumDurationResult(List<Integer> durations, String releaseId, String releaseTitle, int trackCount,
+                                   String mediaFormat, String releaseType, boolean compilation, String albumArtist) {
+            this.albumArtist = albumArtist;
             this.durations = durations;
             this.releaseId = releaseId;
             this.releaseTitle = releaseTitle;

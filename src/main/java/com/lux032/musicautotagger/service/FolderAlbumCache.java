@@ -763,19 +763,24 @@ public class FolderAlbumCache {
                         }
                     }
 
-                    // 规范化专辑艺术家（null、空、Unknown Artist 会被转换为 "Various Artists"）
-                    albumArtist = MusicMetadata.normalizeAlbumArtist(albumArtist);
-                    
                     // 为每个 Release 创建候选项
                     for (MusicBrainzClient.AlbumDurationResult releaseResult : allReleaseResults) {
                         String releaseTitle = releaseResult.getReleaseTitle() != null ?
                             releaseResult.getReleaseTitle() : albumTitle;
                         
+                        // 优先用样本里的艺术家，其次用 MusicBrainz Release 自身的 artist-credit；
+                        // 都拿不到才规范化为 "Various Artists"
+                        String candidateArtist = albumArtist;
+                        if (candidateArtist == null || candidateArtist.isEmpty()) {
+                            candidateArtist = releaseResult.getAlbumArtist();
+                        }
+                        candidateArtist = MusicMetadata.normalizeAlbumArtist(candidateArtist);
+                        
                         candidates.add(new DurationSequenceService.AlbumDurationInfo(
                             releaseGroupId,
                             releaseResult.getReleaseId(),
                             releaseTitle,
-                            albumArtist,
+                            candidateArtist,
                             releaseResult.getDurations(),
                             releaseResult.getMediaFormat(),
                             releaseResult.getReleaseType(),
@@ -783,7 +788,7 @@ public class FolderAlbumCache {
                         ));
 
                         log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 格式: {})",
-                            albumArtist, releaseTitle, releaseResult.getDurations().size(),
+                            candidateArtist, releaseTitle, releaseResult.getDurations().size(),
                             releaseResult.getReleaseId(), releaseResult.getMediaFormat());
                     }
                 } catch (Exception e) {
@@ -940,13 +945,15 @@ public class FolderAlbumCache {
                         continue;
                     }
                     
-                    // 规范化专辑艺术家（null、空、Unknown Artist 会被转换为 "Various Artists"）
-                    String normalizedArtist = MusicMetadata.normalizeAlbumArtist(null);
-                    
                     // 为每个 Release 创建候选项
                     for (MusicBrainzClient.AlbumDurationResult releaseResult : allReleaseResults) {
                         String releaseTitle = releaseResult.getReleaseTitle() != null ?
                             releaseResult.getReleaseTitle() : albumTitle;
+                        
+                        // 关键修复：这里以前恒定传 null，导致单一艺术家专辑也被写成 "Various Artists"。
+                        // 现在使用 MusicBrainz Release 的 artist-credit，只有真正多人/未知才退化为 VA。
+                        String normalizedArtist =
+                            MusicMetadata.normalizeAlbumArtist(releaseResult.getAlbumArtist());
                         
                         candidates.add(new DurationSequenceService.AlbumDurationInfo(
                             releaseGroupId,
@@ -959,8 +966,8 @@ public class FolderAlbumCache {
                             releaseResult.isCompilation()
                         ));
                         
-                        log.info("候选版本: {} ({}首曲目, Release ID: {}, 格式: {})",
-                            releaseTitle, releaseResult.getDurations().size(),
+                        log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 格式: {})",
+                            normalizedArtist, releaseTitle, releaseResult.getDurations().size(),
                             releaseResult.getReleaseId(), releaseResult.getMediaFormat());
                     }
                 } catch (Exception e) {
