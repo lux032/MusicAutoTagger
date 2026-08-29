@@ -225,6 +225,11 @@ public class AlbumBatchProcessor {
                 metadata.setAlbum(albumInfo.getAlbumTitle());
                 metadata.setAlbumArtist(albumInfo.getAlbumArtist());
                 metadata.setReleaseGroupId(albumInfo.getReleaseGroupId());
+                metadata.setReleaseId(albumInfo.getReleaseId());
+                metadata.setReleaseType(albumInfo.getReleaseType());
+                metadata.setCompilation(albumInfo.isCompilation());
+                // 整专锁定后先清掉源文件可能遗留的旧类型/合辑标志，再写入当前专辑值。
+                metadata.setClearReleaseType(true);
                 if (unresolvedAlbum) {
                     // 专辑未确定：宁可没有年份，也不能保留旧专辑的年份。
                     // 注意：releaseDate 置空只会让写入逻辑「跳过不写」，原文件的 YEAR 仍会残留，

@@ -693,6 +693,8 @@ public class DurationSequenceService {
         private String albumArtist;
         private List<Integer> durations; // 曲目时长列表(秒)
         private String mediaFormat;  // 新增：媒体格式（如 "CD", "Digital Media" 等）
+        private String releaseType;
+        private boolean compilation;
         
         public AlbumDurationInfo(String releaseGroupId, String releaseId, String albumTitle,
                                 String albumArtist, List<Integer> durations) {
@@ -701,12 +703,20 @@ public class DurationSequenceService {
         
         public AlbumDurationInfo(String releaseGroupId, String releaseId, String albumTitle,
                                 String albumArtist, List<Integer> durations, String mediaFormat) {
+            this(releaseGroupId, releaseId, albumTitle, albumArtist, durations, mediaFormat, null, false);
+        }
+
+        public AlbumDurationInfo(String releaseGroupId, String releaseId, String albumTitle,
+                                String albumArtist, List<Integer> durations, String mediaFormat,
+                                String releaseType, boolean compilation) {
             this.releaseGroupId = releaseGroupId;
             this.releaseId = releaseId;
             this.albumTitle = albumTitle;
             this.albumArtist = albumArtist;
             this.durations = durations != null ? new ArrayList<>(durations) : new ArrayList<>();
             this.mediaFormat = mediaFormat;
+            this.releaseType = releaseType;
+            this.compilation = compilation;
         }
     }
     

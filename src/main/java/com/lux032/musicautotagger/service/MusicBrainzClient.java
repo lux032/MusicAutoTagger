@@ -260,6 +260,8 @@ public class MusicBrainzClient {
         try {
             String response = executeRequest(url);
             JsonNode root = objectMapper.readTree(response);
+            String releaseType = normalizeReleaseType(root.path("primary-type").asText(""));
+            boolean compilation = hasCompilationSecondaryType(root);
             
             // 获取所有 releases
             JsonNode releases = root.path("releases");
@@ -308,7 +310,8 @@ public class MusicBrainzClient {
             
             // 如果获取到有效的时长序列
             if (!durations.isEmpty()) {
-                results.add(new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount, mediaFormat));
+                results.add(new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount, mediaFormat,
+                    releaseType, compilation));
                 successCount++;
                 log.info("✓ 成功获取 release {} 的时长序列 ({} 首曲目, 格式: {})",
                     releaseTitle, durations.size(), mediaFormat);
@@ -334,6 +337,8 @@ public class MusicBrainzClient {
         private final String releaseTitle;
         private final int trackCount;
         private final String mediaFormat;  // 新增：媒体格式（如 "CD", "Digital Media" 等）
+        private final String releaseType;
+        private final boolean compilation;
         
         public AlbumDurationResult(List<Integer> durations, String releaseId) {
             this(durations, releaseId, null, durations != null ? durations.size() : 0, null);
@@ -344,11 +349,18 @@ public class MusicBrainzClient {
         }
         
         public AlbumDurationResult(List<Integer> durations, String releaseId, String releaseTitle, int trackCount, String mediaFormat) {
+            this(durations, releaseId, releaseTitle, trackCount, mediaFormat, null, false);
+        }
+
+        public AlbumDurationResult(List<Integer> durations, String releaseId, String releaseTitle, int trackCount,
+                                   String mediaFormat, String releaseType, boolean compilation) {
             this.durations = durations;
             this.releaseId = releaseId;
             this.releaseTitle = releaseTitle;
             this.trackCount = trackCount;
             this.mediaFormat = mediaFormat;
+            this.releaseType = releaseType;
+            this.compilation = compilation;
         }
     }
     
@@ -1031,6 +1043,39 @@ public class MusicBrainzClient {
         }
     }
     
+    private String normalizeReleaseType(String value) {
+        return value == null || value.trim().isEmpty()
+            ? null : value.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private boolean hasCompilationSecondaryType(JsonNode releaseGroup) {
+        JsonNode secondaryTypes = releaseGroup.path("secondary-types");
+        if (secondaryTypes.isArray()) {
+            for (JsonNode secondaryType : secondaryTypes) {
+                if ("compilation".equalsIgnoreCase(secondaryType.asText(""))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 将 MusicBrainz Release Group 类型写入统一元数据模型。 */
+    private void applyReleaseGroupMetadata(MusicMetadata metadata, JsonNode releaseGroup) {
+        if (metadata == null || releaseGroup == null || releaseGroup.isMissingNode()) {
+            return;
+        }
+        String releaseGroupId = releaseGroup.path("id").asText("").trim();
+        if (!releaseGroupId.isEmpty()) {
+            metadata.setReleaseGroupId(releaseGroupId);
+        }
+        String primaryType = normalizeReleaseType(releaseGroup.path("primary-type").asText(""));
+        if (primaryType != null) {
+            metadata.setReleaseType(primaryType);
+        }
+        metadata.setCompilation(hasCompilationSecondaryType(releaseGroup));
+    }
+
     /**
      * 解析专辑搜索响应
      */
@@ -1049,13 +1094,11 @@ public class MusicBrainzClient {
             // 基本信息
             metadata.setAlbum(release.path("title").asText());
             metadata.setReleaseDate(release.path("date").asText());
+            metadata.setReleaseId(release.path("id").asText(""));
             metadata.setScore(release.path("score").asInt(0));
             
-            // Release Group ID
-            JsonNode releaseGroup = release.path("release-group");
-            if (!releaseGroup.isMissingNode()) {
-                metadata.setReleaseGroupId(releaseGroup.path("id").asText());
-            }
+            // Release Group ID 与类型；helper 会安全忽略缺失节点
+            applyReleaseGroupMetadata(metadata, release.path("release-group"));
             
             // 艺术家信息
             JsonNode artistCredits = release.path("artist-credit");
@@ -1205,7 +1248,7 @@ public class MusicBrainzClient {
         if (bestRelease != null) {
             metadata.setAlbum(bestRelease.path("title").asText());
             metadata.setReleaseDate(bestRelease.path("date").asText());
-            metadata.setReleaseGroupId(bestRelease.path("release-group").path("id").asText());
+            applyReleaseGroupMetadata(metadata, bestRelease.path("release-group"));
             metadata.setReleaseId(bestRelease.path("id").asText());  // 设置 Release ID，用于版本一致性检查
             
             // 设置曲目数
@@ -1830,6 +1873,8 @@ public class MusicBrainzClient {
             if (releases.isArray() && releases.size() > 0) {
                 JsonNode firstRelease = releases.get(0);
                 metadata.setAlbum(firstRelease.path("title").asText());
+                metadata.setReleaseId(firstRelease.path("id").asText(""));
+                applyReleaseGroupMetadata(metadata, firstRelease.path("release-group"));
             }
             
             results.add(metadata);
@@ -1955,7 +2000,7 @@ public class MusicBrainzClient {
         
         // 获取完整的 Release 信息（包含 recordings）
         rateLimit();
-        String url = String.format("%s/release/%s?fmt=json&inc=recordings+artist-credits",
+        String url = String.format("%s/release/%s?fmt=json&inc=recordings+artist-credits+release-groups",
             config.getMusicBrainzApiUrl(), releaseId);
         
         try {
@@ -2016,6 +2061,8 @@ public class MusicBrainzClient {
                 metadata.setAlbum(lockedAlbumTitle);
                 metadata.setAlbumArtist(lockedAlbumArtist);
                 metadata.setReleaseGroupId(releaseGroupId);
+                metadata.setReleaseId(releaseId);
+                applyReleaseGroupMetadata(metadata, release.path("release-group"));
                 
                 // 设置碟号和曲目号
                 String discNumber = bestMatchMedium.path("position").asText("");
@@ -2197,13 +2244,19 @@ public class MusicBrainzClient {
                 bestReleaseTitle, bestReleaseId, bestTrackCount);
             
             // 3. 使用选定的 Release ID 调用现有的时长匹配方法
-            return getTrackFromLockedAlbumByDuration(
+            MusicMetadata metadata = getTrackFromLockedAlbumByDuration(
                 bestReleaseId,
                 releaseGroupId,
                 fileDurationSeconds,
                 lockedAlbumTitle,
                 lockedAlbumArtist
             );
+            if (metadata != null) {
+                applyReleaseGroupMetadata(metadata, rgRoot);
+                metadata.setReleaseGroupId(releaseGroupId);
+                metadata.setReleaseId(bestReleaseId);
+            }
+            return metadata;
             
         } catch (ParseException e) {
             log.error("解析 Release Group 响应失败", e);

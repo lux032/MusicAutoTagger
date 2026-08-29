@@ -15,6 +15,12 @@ public class MusicMetadata {
     private String albumArtist;
     private String album;
     private String releaseDate;
+    /** MusicBrainz Release Group 主类型，统一使用小写值（album、single、ep 等）。 */
+    private String releaseType;
+    /** 显式删除源文件中遗留的专辑类型与合辑标志。 */
+    private boolean clearReleaseType;
+    /** MusicBrainz Release Group 的 secondary-types 是否包含 Compilation。 */
+    private boolean compilation;
     /**
      * 显式「清空年份」标志。
      * releaseDate 为空只表示「不更新」，无法表达「删除原有年份」。

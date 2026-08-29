@@ -407,6 +407,9 @@ public class ReviewQueueService {
         copy.setAlbum(source.getAlbum());
         copy.setReleaseDate(source.getReleaseDate());
         copy.setClearReleaseDate(source.isClearReleaseDate());
+        copy.setReleaseType(source.getReleaseType());
+        copy.setClearReleaseType(source.isClearReleaseType());
+        copy.setCompilation(source.isCompilation());
         copy.setGenres(source.getGenres());
         copy.setComposer(source.getComposer());
         copy.setLyricist(source.getLyricist());
@@ -487,6 +490,8 @@ public class ReviewQueueService {
                 item.getResolvedAlbumArtist(),
                 item.getResolvedTrackCount(),
                 item.getResolvedReleaseDate() != null ? item.getResolvedReleaseDate() : "",
+                item.getResolvedReleaseType(),
+                item.isResolvedCompilation(),
                 1.0,
                 FolderAlbumCache.CacheSource.MANUAL_CONFIRMED
             );

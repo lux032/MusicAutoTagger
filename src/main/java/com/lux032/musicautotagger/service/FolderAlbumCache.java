@@ -777,7 +777,9 @@ public class FolderAlbumCache {
                             releaseTitle,
                             albumArtist,
                             releaseResult.getDurations(),
-                            releaseResult.getMediaFormat()  // 传递媒体格式
+                            releaseResult.getMediaFormat(),
+                            releaseResult.getReleaseType(),
+                            releaseResult.isCompilation()
                         ));
 
                         log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 格式: {})",
@@ -815,6 +817,8 @@ public class FolderAlbumCache {
                     bestAlbum.getAlbumArtist(),
                     bestAlbum.getDurations().size(),
                     "", // releaseDate 从样本中获取
+                    bestAlbum.getReleaseType(),
+                    bestAlbum.isCompilation(),
                     similarity,
                     CacheSource.DURATION_SEQUENCE  // 标记来源为时长序列匹配
                 );
@@ -950,7 +954,9 @@ public class FolderAlbumCache {
                             releaseTitle,
                             normalizedArtist,
                             releaseResult.getDurations(),
-                            releaseResult.getMediaFormat()  // 传递媒体格式
+                            releaseResult.getMediaFormat(),
+                            releaseResult.getReleaseType(),
+                            releaseResult.isCompilation()
                         ));
                         
                         log.info("候选版本: {} ({}首曲目, Release ID: {}, 格式: {})",
@@ -1031,6 +1037,8 @@ public class FolderAlbumCache {
                     bestAlbum.getAlbumArtist(),
                     bestAlbum.getDurations().size(),
                     "",
+                    bestAlbum.getReleaseType(),
+                    bestAlbum.isCompilation(),
                     similarity,
                     CacheSource.DURATION_SEQUENCE  // 标记来源为时长序列匹配
                 );
@@ -1191,6 +1199,8 @@ public class FolderAlbumCache {
                     bestAlbum.getAlbumArtist(),
                     bestAlbum.getTrackCount(),
                     bestAlbum.getReleaseDate(),
+                    bestAlbum.getReleaseType(),
+                    bestAlbum.isCompilation(),
                     confidence,
                     CacheSource.VOTING  // 标记来源为投票方法
                 );
@@ -1345,6 +1355,8 @@ public class FolderAlbumCache {
         private String albumArtist;
         private int trackCount;
         private String releaseDate;
+        private String releaseType;
+        private boolean compilation;
         private List<CandidateReleaseGroup> allCandidateReleaseGroups; // 新增：存储 AcoustID 返回的所有候选专辑
         
         public AlbumIdentificationInfo(String releaseGroupId, String albumTitle, String albumArtist,
@@ -1360,11 +1372,21 @@ public class FolderAlbumCache {
         public AlbumIdentificationInfo(String releaseGroupId, String albumTitle, String albumArtist,
                                       int trackCount, String releaseDate,
                                       List<CandidateReleaseGroup> allCandidateReleaseGroups) {
+            this(releaseGroupId, albumTitle, albumArtist, trackCount, releaseDate, null, false,
+                allCandidateReleaseGroups);
+        }
+
+        public AlbumIdentificationInfo(String releaseGroupId, String albumTitle, String albumArtist,
+                                      int trackCount, String releaseDate, String releaseType,
+                                      boolean compilation,
+                                      List<CandidateReleaseGroup> allCandidateReleaseGroups) {
             this.releaseGroupId = releaseGroupId;
             this.albumTitle = albumTitle;
             this.albumArtist = albumArtist;
             this.trackCount = trackCount;
             this.releaseDate = releaseDate;
+            this.releaseType = releaseType;
+            this.compilation = compilation;
             this.allCandidateReleaseGroups = allCandidateReleaseGroups != null ?
                 allCandidateReleaseGroups : new ArrayList<>();
         }
@@ -1461,6 +1483,8 @@ public class FolderAlbumCache {
         private final String albumArtist;
         private final int trackCount;
         private final String releaseDate;
+        private final String releaseType;
+        private final boolean compilation;
         private final double confidence; // 置信度（该链路自己的原始分数，量纲不统一）
         private final CacheSource source; // 新增：缓存来源，用于优先级判断
         /**
@@ -1473,11 +1497,19 @@ public class FolderAlbumCache {
         
         public CachedAlbumInfo(String releaseGroupId, String releaseId, String albumTitle, String albumArtist,
                               int trackCount, String releaseDate, double confidence) {
-            this(releaseGroupId, releaseId, albumTitle, albumArtist, trackCount, releaseDate, confidence, CacheSource.UNKNOWN);
+            this(releaseGroupId, releaseId, albumTitle, albumArtist, trackCount, releaseDate,
+                null, false, confidence, CacheSource.UNKNOWN);
         }
         
         public CachedAlbumInfo(String releaseGroupId, String releaseId, String albumTitle, String albumArtist,
                               int trackCount, String releaseDate, double confidence, CacheSource source) {
+            this(releaseGroupId, releaseId, albumTitle, albumArtist, trackCount, releaseDate,
+                null, false, confidence, source);
+        }
+
+        public CachedAlbumInfo(String releaseGroupId, String releaseId, String albumTitle, String albumArtist,
+                              int trackCount, String releaseDate, String releaseType, boolean compilation,
+                              double confidence, CacheSource source) {
             this.releaseGroupId = releaseGroupId;
             this.releaseId = releaseId;
             this.albumTitle = albumTitle;
@@ -1485,6 +1517,8 @@ public class FolderAlbumCache {
             this.albumArtist = MusicMetadata.normalizeAlbumArtist(albumArtist);
             this.trackCount = trackCount;
             this.releaseDate = releaseDate;
+            this.releaseType = releaseType;
+            this.compilation = compilation;
             this.confidence = confidence;
             this.source = source;
             this.unifiedConfidence = com.lux032.musicautotagger.util.ConfidenceModel.unify(source, confidence);

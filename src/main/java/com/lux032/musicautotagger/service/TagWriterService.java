@@ -345,6 +345,59 @@ public class TagWriterService {
         if (metadata.getRecordingId() != null && !metadata.getRecordingId().isEmpty()) {
             tag.setField(FieldKey.MUSICBRAINZ_TRACK_ID, metadata.getRecordingId());
         }
+
+        if (metadata.isClearReleaseType()) {
+            try {
+                tag.deleteField(FieldKey.MUSICBRAINZ_RELEASE_TYPE);
+            } catch (Exception e) {
+                log.debug("当前音频容器不支持清空 MusicBrainz 专辑类型: {}", e.getMessage());
+            }
+            try {
+                tag.deleteField(FieldKey.IS_COMPILATION);
+            } catch (Exception e) {
+                log.debug("当前音频容器不支持清空合辑标志: {}", e.getMessage());
+            }
+            try {
+                tag.deleteField(FieldKey.MUSICBRAINZ_RELEASE_GROUP_ID);
+            } catch (Exception e) {
+                log.debug("当前音频容器不支持清空 MusicBrainz Release Group ID: {}", e.getMessage());
+            }
+            try {
+                tag.deleteField(FieldKey.MUSICBRAINZ_RELEASEID);
+            } catch (Exception e) {
+                log.debug("当前音频容器不支持清空 MusicBrainz Release ID: {}", e.getMessage());
+            }
+        } else {
+            if (metadata.getReleaseGroupId() != null && !metadata.getReleaseGroupId().isEmpty()) {
+                try {
+                    tag.setField(FieldKey.MUSICBRAINZ_RELEASE_GROUP_ID, metadata.getReleaseGroupId());
+                } catch (Exception e) {
+                    log.debug("当前音频容器不支持 MusicBrainz Release Group ID: {}", e.getMessage());
+                }
+            }
+            if (metadata.getReleaseId() != null && !metadata.getReleaseId().isEmpty()) {
+                try {
+                    tag.setField(FieldKey.MUSICBRAINZ_RELEASEID, metadata.getReleaseId());
+                } catch (Exception e) {
+                    log.debug("当前音频容器不支持 MusicBrainz Release ID: {}", e.getMessage());
+                }
+            }
+            if (metadata.getReleaseType() != null && !metadata.getReleaseType().isEmpty()) {
+                try {
+                    tag.setField(FieldKey.MUSICBRAINZ_RELEASE_TYPE,
+                        metadata.getReleaseType().toLowerCase(java.util.Locale.ROOT));
+                } catch (Exception e) {
+                    log.debug("当前音频容器不支持 MusicBrainz 专辑类型: {}", e.getMessage());
+                }
+            }
+            if (metadata.isCompilation()) {
+                try {
+                    tag.setField(FieldKey.IS_COMPILATION, "1");
+                } catch (Exception e) {
+                    log.debug("当前音频容器不支持合辑标志: {}", e.getMessage());
+                }
+            }
+        }
         
         // 写入碟号和曲目号
         if (metadata.getDiscNo() != null && !metadata.getDiscNo().isEmpty()) {
@@ -559,6 +612,30 @@ public class TagWriterService {
             metadata.setAlbumArtist(tag.getFirst(FieldKey.ALBUM_ARTIST));
             metadata.setAlbum(tag.getFirst(FieldKey.ALBUM));
             metadata.setReleaseDate(tag.getFirst(FieldKey.YEAR));
+
+            // 新增 MusicBrainz 字段必须逐项隔离：部分容器不支持这些键，
+            // 读取失败不能让已有的标题/艺术家等基础标签整体丢失。
+            try {
+                metadata.setReleaseType(tag.getFirst(FieldKey.MUSICBRAINZ_RELEASE_TYPE));
+            } catch (Exception e) {
+                log.debug("读取 MusicBrainz 专辑类型失败: {}", e.getMessage());
+            }
+            try {
+                metadata.setReleaseGroupId(tag.getFirst(FieldKey.MUSICBRAINZ_RELEASE_GROUP_ID));
+            } catch (Exception e) {
+                log.debug("读取 MusicBrainz Release Group ID 失败: {}", e.getMessage());
+            }
+            try {
+                metadata.setReleaseId(tag.getFirst(FieldKey.MUSICBRAINZ_RELEASEID));
+            } catch (Exception e) {
+                log.debug("读取 MusicBrainz Release ID 失败: {}", e.getMessage());
+            }
+            try {
+                String compilation = tag.getFirst(FieldKey.IS_COMPILATION);
+                metadata.setCompilation("1".equals(compilation) || "true".equalsIgnoreCase(compilation));
+            } catch (Exception e) {
+                log.debug("读取合辑标志失败: {}", e.getMessage());
+            }
 
             // 读取风格
             String genre = tag.getFirst(FieldKey.GENRE);

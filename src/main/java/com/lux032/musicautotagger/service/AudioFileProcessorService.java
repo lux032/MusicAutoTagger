@@ -281,6 +281,8 @@ public class AudioFileProcessorService {
                         lockedAlbumArtist,
                         quickMetadata.getTrackCount(),
                         lockedReleaseDate,
+                        quickMetadata.getReleaseType(),
+                        quickMetadata.isCompilation(),
                         quickResult.getSimilarity(),
                         FolderAlbumCache.CacheSource.DURATION_SEQUENCE
                     );
@@ -684,6 +686,8 @@ public class AudioFileProcessorService {
                     detailedMetadata.getAlbumArtist() != null ? detailedMetadata.getAlbumArtist() : detailedMetadata.getArtist(),
                     trackCount,
                     detailedMetadata.getReleaseDate(),
+                    detailedMetadata.getReleaseType(),
+                    detailedMetadata.isCompilation(),
                     allCandidates
                 );
 

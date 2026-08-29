@@ -124,6 +124,8 @@ public class ReviewItem {
     private String resolvedAlbumTitle;
     private String resolvedAlbumArtist;
     private String resolvedReleaseDate;
+    private String resolvedReleaseType;
+    private boolean resolvedCompilation;
     private int resolvedTrackCount;
 
     /**
@@ -228,6 +230,8 @@ public class ReviewItem {
     public static class CandidateSnapshot {
         private String releaseGroupId;
         private String releaseId;
+        private String releaseType;
+        private boolean compilation;
         private String title;
         private String artist;
         private String date;

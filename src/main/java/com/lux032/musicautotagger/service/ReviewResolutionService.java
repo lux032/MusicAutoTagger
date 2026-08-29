@@ -148,6 +148,9 @@ public class ReviewResolutionService {
                     ReviewItem.CandidateSnapshot snapshot = new ReviewItem.CandidateSnapshot();
                     snapshot.setReleaseGroupId(rgId);
                     snapshot.setReleaseId(release.getReleaseId());
+                    snapshot.setReleaseType(release.getReleaseType() != null
+                        ? release.getReleaseType() : candidate.getReleaseType());
+                    snapshot.setCompilation(release.isCompilation() || candidate.isCompilation());
                     snapshot.setTitle(release.getReleaseTitle() != null
                         ? release.getReleaseTitle() : candidate.getTitle());
                     snapshot.setArtist(item.getSynthesizedAlbumArtist());
@@ -276,6 +279,8 @@ public class ReviewResolutionService {
             albumArtist,
             chosen.getTrackCount(),
             chosen.getDate() != null ? chosen.getDate() : "",
+            chosen.getReleaseType(),
+            chosen.isCompilation(),
             1.0,
             FolderAlbumCache.CacheSource.MANUAL_CONFIRMED
         );
@@ -303,6 +308,8 @@ public class ReviewResolutionService {
         item.setResolvedAlbumTitle(albumTitle);
         item.setResolvedAlbumArtist(albumArtist);
         item.setResolvedReleaseDate(chosen.getDate());
+        item.setResolvedReleaseType(chosen.getReleaseType());
+        item.setResolvedCompilation(chosen.isCompilation());
         item.setResolvedTrackCount(chosen.getTrackCount());
 
         finish(item, result, ReviewItem.Status.CONFIRMED, "人工确认: " + albumTitle);
@@ -603,6 +610,10 @@ public class ReviewResolutionService {
                 fromRelease.setGenres(metadata.getGenres());
             }
             fromRelease.setReleaseId(lockedRelease.getReleaseId());
+            if (lockedRelease.getReleaseType() != null && !lockedRelease.getReleaseType().isEmpty()) {
+                fromRelease.setReleaseType(lockedRelease.getReleaseType());
+            }
+            fromRelease.setCompilation(lockedRelease.isCompilation() || fromRelease.isCompilation());
             fromRelease.setDuration(duration);
 
             // 人工确认/LLM 自动确认也会走这里。伴奏和原唱通常等长，
