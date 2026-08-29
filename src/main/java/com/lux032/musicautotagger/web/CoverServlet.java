@@ -45,8 +45,15 @@ import java.util.Map;
 @Slf4j
 public class CoverServlet extends HttpServlet {
 
-    /** 与 CoverArtCache 保持一致的缓存 key 前缀，改这里必须同步改那边。 */
+    /**
+     * 与 CoverArtCache.releaseGroupCacheKey() 保持一致的缓存 key 前缀，改这里必须同步改那边。
+     *
+     * 注意有两个命名空间：开启「优先动画版封面」时写入 anime 前缀，否则写普通前缀。
+     * 这里必须两个都查：开关打开前后处理的专辑会分布在两个命名空间，
+     * 只查一个会让另一半专辑在仪表盘上变成占位图。
+     */
     private static final String CACHE_KEY_PREFIX = "release-group:";
+    private static final String ANIME_CACHE_KEY_PREFIX = "release-group:anime:";
 
     /**
      * 缩略图边长。卡片实际只有 132px，给两倍多一点应付高分屏就够了。
@@ -82,13 +89,16 @@ public class CoverServlet extends HttpServlet {
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         String rgid = trimToNull(req.getParameter("rgid"));
         if (rgid != null) {
-            byte[] thumb = thumbCache.get(rgid);
+            // 内存缓存 key 带上封面偏好：切换「优先动画版」后同一 rgid 对应的图会变，
+            // 不区分的话仪表盘会继续显示旧版本
+            String cacheKey = ((config != null && config.isPreferAnimeCover()) ? "anime:" : "") + rgid;
+            byte[] thumb = thumbCache.get(cacheKey);
             if (thumb == null) {
                 byte[] cached = readFromCoverCache(rgid);
                 if (cached != null) {
                     thumb = toThumbnail(cached);
                     if (thumb.length <= THUMB_CACHE_MAX_BYTES) {
-                        thumbCache.put(rgid, thumb);
+                        thumbCache.put(cacheKey, thumb);
                     }
                 }
             }
@@ -139,19 +149,28 @@ public class CoverServlet extends HttpServlet {
         return (output == null || output.isBlank()) ? null : output + "/.cover_cache";
     }
 
-    /** 从封面缓存目录读 <md5(release-group:<id>)>.jpg。 */
+    /** 从封面缓存目录读 <md5(<命名空间><id>)>.jpg，两个命名空间都试。 */
     private byte[] readFromCoverCache(String releaseGroupId) {
         String dir = resolveCacheDirectory();
         if (dir == null) {
             return null;
         }
-        try {
-            Path file = Paths.get(dir, md5(CACHE_KEY_PREFIX + releaseGroupId) + ".jpg");
-            if (Files.isRegularFile(file)) {
-                return Files.readAllBytes(file);
+        // 按当前偏好排序：开启动画版时优先拿 anime 命名空间的图，否则优先拿普通的，
+        // 两边互为兜底，避免切换开关后旧专辑封面全部消失。
+        boolean animeFirst = config != null && config.isPreferAnimeCover();
+        String[] prefixes = animeFirst
+            ? new String[]{ANIME_CACHE_KEY_PREFIX, CACHE_KEY_PREFIX}
+            : new String[]{CACHE_KEY_PREFIX, ANIME_CACHE_KEY_PREFIX};
+
+        for (String prefix : prefixes) {
+            try {
+                Path file = Paths.get(dir, md5(prefix + releaseGroupId) + ".jpg");
+                if (Files.isRegularFile(file)) {
+                    return Files.readAllBytes(file);
+                }
+            } catch (Exception e) {
+                log.debug("读取封面缓存失败 (key={}{}): {}", prefix, releaseGroupId, e.getMessage());
             }
-        } catch (Exception e) {
-            log.debug("读取封面缓存失败 (rgid={}): {}", releaseGroupId, e.getMessage());
         }
         return null;
     }
