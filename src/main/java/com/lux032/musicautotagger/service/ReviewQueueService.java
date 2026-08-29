@@ -399,30 +399,7 @@ public class ReviewQueueService {
      * 封面在人工确认之后会按最终锁定的专辑重新获取，没必要把几百 KB 写进 JSON。
      */
     private MusicMetadata stripHeavyFields(MusicMetadata source) {
-        MusicMetadata copy = new MusicMetadata();
-        copy.setRecordingId(source.getRecordingId());
-        copy.setTitle(source.getTitle());
-        copy.setArtist(source.getArtist());
-        copy.setAlbumArtist(source.getAlbumArtist());
-        copy.setAlbum(source.getAlbum());
-        copy.setReleaseDate(source.getReleaseDate());
-        copy.setClearReleaseDate(source.isClearReleaseDate());
-        copy.setReleaseType(source.getReleaseType());
-        copy.setClearReleaseType(source.isClearReleaseType());
-        copy.setCompilation(source.isCompilation());
-        copy.setGenres(source.getGenres());
-        copy.setComposer(source.getComposer());
-        copy.setLyricist(source.getLyricist());
-        copy.setLyrics(source.getLyrics());
-        copy.setDiscNo(source.getDiscNo());
-        copy.setTrackNo(source.getTrackNo());
-        copy.setDuration(source.getDuration());
-        copy.setReleaseGroupId(source.getReleaseGroupId());
-        copy.setReleaseId(source.getReleaseId());
-        copy.setCoverArtUrl(source.getCoverArtUrl());
-        copy.setScore(source.getScore());
-        copy.setTrackCount(source.getTrackCount());
-        return copy;
+        return source.copyWithoutHeavyFields();
     }
 
     // ==================== 状态变更 ====================

@@ -115,6 +115,7 @@ public class ApplicationLifecycleManager {
         
         log.info(I18nUtil.getMessage("app.init.album.batch.processor"));
         albumBatchProcessor = new AlbumBatchProcessor(config, folderAlbumCache, tagWriter, processedLogger, coverArtService);
+        albumBatchProcessor.setMusicBrainzClient(musicBrainzClient);
 
         // 待人工确认队列（阶段六 #18/#19）
         // 队列本身总是初始化（否则重启后已有条目永远无人能处理），

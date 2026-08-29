@@ -9,6 +9,17 @@ import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.tag.FieldKey;
 import org.jaudiotagger.tag.Tag;
+import org.jaudiotagger.tag.TagField;
+import org.jaudiotagger.tag.flac.FlacTag;
+import org.jaudiotagger.tag.id3.AbstractID3v2Frame;
+import org.jaudiotagger.tag.id3.AbstractID3v2Tag;
+import org.jaudiotagger.tag.id3.ID3v24Frames;
+import org.jaudiotagger.tag.id3.framebody.AbstractFrameBodyTextInfo;
+import org.jaudiotagger.tag.id3.framebody.FrameBodyTXXX;
+import org.jaudiotagger.tag.id3.valuepair.TextEncoding;
+import org.jaudiotagger.tag.mp4.Mp4Tag;
+import org.jaudiotagger.tag.mp4.field.Mp4TagReverseDnsField;
+import org.jaudiotagger.tag.vorbiscomment.VorbisCommentTag;
 import org.jaudiotagger.tag.images.Artwork;
 import org.jaudiotagger.tag.images.StandardArtwork;
 
@@ -23,7 +34,9 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -32,7 +45,7 @@ import java.util.Set;
  */
 @Slf4j
 public class TagWriterService {
-    
+
     private final MusicConfig config;
     /**
      * 恢复任务线程专用输出根目录，不影响并发运行的常规监控线程。
@@ -43,7 +56,7 @@ public class TagWriterService {
      * RecoveryService.commitWorkspace 的文件数校验是针对这种情况的运行时兵库。
      */
     private final ThreadLocal<Path> outputRootOverride = new ThreadLocal<>();
-    
+
     public TagWriterService(MusicConfig config) {
         this.config = config;
     }
@@ -60,7 +73,7 @@ public class TagWriterService {
         Path override = outputRootOverride.get();
         return override != null ? override : Paths.get(config.getOutputDirectory());
     }
-    
+
     /**
      * 处理音频文件（复制到新目录并更新标签）
      */
@@ -73,7 +86,7 @@ public class TagWriterService {
         try {
             // 1. 确定目标文件路径
             File targetFile = determineTargetFile(sourceFile, metadata);
-            
+
             // 2. 创建目标目录
             if (!targetFile.getParentFile().exists()) {
                 targetFile.getParentFile().mkdirs();
@@ -138,15 +151,15 @@ public class TagWriterService {
         if (config.isAutoRename() && metadata.getArtist() != null && metadata.getTitle() != null) {
             // 优先使用 metadata 中的碟号和曲目号构建前缀（来自 MusicBrainz）
             String trackPrefix = buildTrackPrefixFromMetadata(metadata);
-            
+
             // 如果 metadata 没有碟号曲目号，尝试从原始文件名提取
             if (trackPrefix.isEmpty()) {
                 trackPrefix = extractTrackPrefix(fileName);
             }
-            
+
             String artist = sanitizeFileName(metadata.getArtist());
             String title = sanitizeFileName(metadata.getTitle());
-            
+
             // 如果有曲目编号前缀，保留它
             if (trackPrefix != null && !trackPrefix.isEmpty()) {
                 newFileName = trackPrefix + artist + " - " + title + extension;
@@ -161,16 +174,16 @@ public class TagWriterService {
         // 构建目录结构: 输出目录/专辑艺术家/专辑/文件名
         // 关键改动: 使用 albumArtist 而不是 artist 来创建文件夹
         Path targetPath;
-        
+
         // 优先使用专辑艺术家,如果没有则回退到单曲艺术家
         String folderArtist = metadata.getAlbumArtist();
         if (folderArtist == null || folderArtist.isEmpty()) {
             folderArtist = metadata.getArtist();
         }
-        
+
         if (folderArtist != null && !folderArtist.isEmpty()) {
             String artistDir = sanitizeFileName(folderArtist);
-            
+
             if (metadata.getAlbum() != null && !metadata.getAlbum().isEmpty()) {
                 // 有专辑艺术家和专辑信息: 输出目录/专辑艺术家/专辑/文件名
                 String albumDir = sanitizeFileName(metadata.getAlbum());
@@ -220,14 +233,14 @@ public class TagWriterService {
     private String buildTrackPrefixFromMetadata(MusicMetadata metadata) {
         String discNo = metadata.getDiscNo();
         String trackNo = metadata.getTrackNo();
-        
+
         if (trackNo == null || trackNo.isEmpty()) {
             return "";
         }
-        
+
         try {
             int track = Integer.parseInt(trackNo.split("/")[0].trim()); // 处理 "5/49" 格式
-            
+
             if (discNo != null && !discNo.isEmpty()) {
                 int disc = Integer.parseInt(discNo.split("/")[0].trim()); // 处理 "2/2" 格式
                 // 多碟专辑: "碟号.曲目号 " 格式 (曲目号补零到2位)
@@ -245,7 +258,7 @@ public class TagWriterService {
             return "";
         }
     }
-    
+
     /**
      * 从文件名中提取曲目编号前缀（备选方案）
      * 支持多种格式:
@@ -262,7 +275,7 @@ public class TagWriterService {
                 return fileName.substring(0, spaceIndex + 1);
             }
         }
-        
+
         // 匹配格式: 数字 + 点 + 空格 (可能有多个空格)
         if (fileName.matches("^\\d+\\.\\s+.*")) {
             // 有空格的情况
@@ -298,9 +311,41 @@ public class TagWriterService {
                 }
             }
         }
-        
+
         log.debug("无法从文件名提取曲目编号: {}", fileName);
         return "";
+    }
+
+    static String[] splitPosition(String value, String explicitTotal) {
+        String number = value == null ? null : value.trim();
+        String total = explicitTotal == null ? null : explicitTotal.trim();
+        if (number != null && number.contains("/")) {
+            String[] parts = number.split("/", 2);
+            number = parts[0].trim();
+            if ((total == null || total.isEmpty()) && parts.length > 1) total = parts[1].trim();
+        }
+        return new String[] { emptyToNull(number), emptyToNull(total) };
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    private void setFieldSafely(Tag tag, FieldKey key, String value) {
+        if (value == null || value.isEmpty()) return;
+        try {
+            tag.setField(key, value);
+        } catch (Exception e) {
+            log.debug("当前音频容器不支持标签 {}: {}", key, e.getMessage());
+        }
+    }
+
+    private void deleteFieldSafely(Tag tag, FieldKey key) {
+        try {
+            tag.deleteField(key);
+        } catch (Exception e) {
+            log.debug("当前音频容器不支持删除标签 {}: {}", key, e.getMessage());
+        }
     }
 
     /**
@@ -310,20 +355,20 @@ public class TagWriterService {
         if (metadata.getTitle() != null && !metadata.getTitle().isEmpty()) {
             tag.setField(FieldKey.TITLE, metadata.getTitle());
         }
-        
+
         if (metadata.getArtist() != null && !metadata.getArtist().isEmpty()) {
             tag.setField(FieldKey.ARTIST, metadata.getArtist());
         }
-        
+
         // 写入专辑艺术家标签
         if (metadata.getAlbumArtist() != null && !metadata.getAlbumArtist().isEmpty()) {
             tag.setField(FieldKey.ALBUM_ARTIST, metadata.getAlbumArtist());
         }
-        
+
         if (metadata.getAlbum() != null && !metadata.getAlbum().isEmpty()) {
             tag.setField(FieldKey.ALBUM, metadata.getAlbum());
         }
-        
+
         if (metadata.isClearReleaseDate()) {
             // 专辑未确定：必须显式删除原文件中可能残留的旧专辑年份，
             // 否则会出现「专辑名已更新、年份还是旧专辑」的矛盾结果。
@@ -337,11 +382,11 @@ public class TagWriterService {
             // 直接写入完整日期,不再只提取年份
             tag.setField(FieldKey.YEAR, metadata.getReleaseDate());
         }
-        
+
         if (metadata.getGenres() != null && !metadata.getGenres().isEmpty()) {
             tag.setField(FieldKey.GENRE, String.join(", ", metadata.getGenres()));
         }
-        
+
         if (metadata.getRecordingId() != null && !metadata.getRecordingId().isEmpty()) {
             tag.setField(FieldKey.MUSICBRAINZ_TRACK_ID, metadata.getRecordingId());
         }
@@ -367,59 +412,141 @@ public class TagWriterService {
             } catch (Exception e) {
                 log.debug("当前音频容器不支持清空 MusicBrainz Release ID: {}", e.getMessage());
             }
-        } else {
-            if (metadata.getReleaseGroupId() != null && !metadata.getReleaseGroupId().isEmpty()) {
-                try {
-                    tag.setField(FieldKey.MUSICBRAINZ_RELEASE_GROUP_ID, metadata.getReleaseGroupId());
-                } catch (Exception e) {
-                    log.debug("当前音频容器不支持 MusicBrainz Release Group ID: {}", e.getMessage());
-                }
-            }
-            if (metadata.getReleaseId() != null && !metadata.getReleaseId().isEmpty()) {
-                try {
-                    tag.setField(FieldKey.MUSICBRAINZ_RELEASEID, metadata.getReleaseId());
-                } catch (Exception e) {
-                    log.debug("当前音频容器不支持 MusicBrainz Release ID: {}", e.getMessage());
-                }
-            }
-            if (metadata.getReleaseType() != null && !metadata.getReleaseType().isEmpty()) {
-                try {
-                    tag.setField(FieldKey.MUSICBRAINZ_RELEASE_TYPE,
-                        metadata.getReleaseType().toLowerCase(java.util.Locale.ROOT));
-                } catch (Exception e) {
-                    log.debug("当前音频容器不支持 MusicBrainz 专辑类型: {}", e.getMessage());
-                }
-            }
-            if (metadata.isCompilation()) {
-                try {
-                    tag.setField(FieldKey.IS_COMPILATION, "1");
-                } catch (Exception e) {
-                    log.debug("当前音频容器不支持合辑标志: {}", e.getMessage());
-                }
-            }
         }
-        
-        // 写入碟号和曲目号
-        if (metadata.getDiscNo() != null && !metadata.getDiscNo().isEmpty()) {
-            tag.setField(FieldKey.DISC_NO, metadata.getDiscNo());
+        // clearReleaseType 表示“先清旧值”，不是禁止写入当前已确定的值。
+        setFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASE_GROUP_ID, metadata.getReleaseGroupId());
+        setFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASEID, metadata.getReleaseId());
+        if (metadata.getReleaseType() != null && !metadata.getReleaseType().isEmpty()) {
+            setFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASE_TYPE,
+                metadata.getReleaseType().toLowerCase(java.util.Locale.ROOT));
         }
-        if (metadata.getTrackNo() != null && !metadata.getTrackNo().isEmpty()) {
-            tag.setField(FieldKey.TRACK, metadata.getTrackNo());
+        if (metadata.isCompilation()) setFieldSafely(tag, FieldKey.IS_COMPILATION, "1");
+
+        if (metadata.isClearAlbumLevelTags()) {
+            FieldKey[] albumKeys = {
+                FieldKey.MUSICBRAINZ_RELEASEARTISTID, FieldKey.MUSICBRAINZ_RELEASE_STATUS,
+                FieldKey.MUSICBRAINZ_RELEASE_COUNTRY, FieldKey.ALBUM_ARTIST_SORT, FieldKey.BARCODE,
+                FieldKey.CATALOG_NO, FieldKey.RECORD_LABEL, FieldKey.SCRIPT, FieldKey.DISC_TOTAL
+            };
+            for (FieldKey key : albumKeys) deleteFieldSafely(tag, key);
+            clearOriginalReleaseTags(tag);
         }
-        
+        setFieldSafely(tag, FieldKey.MUSICBRAINZ_ARTISTID, metadata.getArtistId());
+        setFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASEARTISTID, metadata.getAlbumArtistId());
+        setFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASE_TRACK_ID, metadata.getReleaseTrackId());
+        setFieldSafely(tag, FieldKey.ARTIST_SORT, metadata.getArtistSort());
+        setFieldSafely(tag, FieldKey.ALBUM_ARTIST_SORT, metadata.getAlbumArtistSort());
+        setFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASE_STATUS, metadata.getReleaseStatus());
+        setFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASE_COUNTRY, metadata.getReleaseCountry());
+        setFieldSafely(tag, FieldKey.MEDIA, metadata.getMediaFormat());
+        setFieldSafely(tag, FieldKey.SCRIPT, metadata.getScript());
+        setFieldSafely(tag, FieldKey.BARCODE, metadata.getBarcode());
+        setFieldSafely(tag, FieldKey.CATALOG_NO, metadata.getCatalogNumber());
+        setFieldSafely(tag, FieldKey.RECORD_LABEL, metadata.getRecordLabel());
+        writeOriginalReleaseTags(tag, metadata.getOriginalReleaseDate(), metadata.getOriginalYear());
+
+        // MP4 的 TRACK/DISC 字段不能接收 "1/6"；统一拆成位置与总数。
+        String[] disc = splitPosition(metadata.getDiscNo(), metadata.getDiscTotal());
+        String[] track = splitPosition(metadata.getTrackNo(), metadata.getTrackTotal());
+        setFieldSafely(tag, FieldKey.DISC_NO, disc[0]);
+        setFieldSafely(tag, FieldKey.DISC_TOTAL, disc[1]);
+        setFieldSafely(tag, FieldKey.TRACK, track[0]);
+        setFieldSafely(tag, FieldKey.TRACK_TOTAL, track[1]);
+
         // 写入作曲家
         if (metadata.getComposer() != null && !metadata.getComposer().isEmpty()) {
             tag.setField(FieldKey.COMPOSER, metadata.getComposer());
         }
-        
+
         // 写入作词家 (使用 LYRICIST 字段)
         if (metadata.getLyricist() != null && !metadata.getLyricist().isEmpty()) {
             tag.setField(FieldKey.LYRICIST, metadata.getLyricist());
         }
-        
+
         // 写入歌词
         if (metadata.getLyrics() != null && !metadata.getLyrics().isEmpty()) {
             tag.setField(FieldKey.LYRICS, metadata.getLyrics());
+        }
+    }
+
+    private void clearOriginalReleaseTags(Tag tag) {
+        try {
+            if (tag instanceof FlacTag flac) {
+                flac.deleteField("ORIGINALDATE");
+                flac.deleteField("ORIGINALYEAR");
+            } else if (tag instanceof VorbisCommentTag vorbis) {
+                vorbis.deleteField("ORIGINALDATE");
+                vorbis.deleteField("ORIGINALYEAR");
+            } else if (tag instanceof AbstractID3v2Tag id3) {
+                id3.removeFrame("TDOR");
+                id3.removeFrame("TORY");
+                removeTxxxByDescription(id3, "originalyear");
+            } else if (tag instanceof Mp4Tag mp4) {
+                mp4.deleteField("----:com.apple.iTunes:ORIGINALDATE");
+                mp4.deleteField("----:com.apple.iTunes:ORIGINALYEAR");
+            }
+        } catch (Exception e) {
+            log.debug("清空原始发行日期标签失败: {}", e.getMessage());
+        }
+    }
+
+    private void writeOriginalReleaseTags(Tag tag, String date, String year) {
+        try {
+            if (tag instanceof FlacTag flac) {
+                if (date != null) flac.setField("ORIGINALDATE", date);
+                if (year != null) flac.setField("ORIGINALYEAR", year);
+            } else if (tag instanceof VorbisCommentTag vorbis) {
+                if (date != null) vorbis.setField("ORIGINALDATE", date);
+                if (year != null) vorbis.setField("ORIGINALYEAR", year);
+            } else if (tag instanceof AbstractID3v2Tag id3) {
+                if (date != null) {
+                    boolean id3v24 = id3.getMajorVersion() >= 4;
+                    String frameId = id3v24 ? ID3v24Frames.FRAME_ID_ORIGINAL_RELEASE_TIME : "TORY";
+                    String frameValue = id3v24 ? date : extractYear(date);
+                    if (frameValue != null) {
+                        AbstractID3v2Frame frame = id3.createFrame(frameId);
+                        ((AbstractFrameBodyTextInfo) frame.getBody()).setText(frameValue);
+                        id3.setField(frame);
+                    }
+                }
+                if (year != null) {
+                    removeTxxxByDescription(id3, "originalyear");
+                    AbstractID3v2Frame frame = id3.createFrame("TXXX");
+                    byte encoding = id3.getMajorVersion() >= 4 ? TextEncoding.UTF_8 : TextEncoding.UTF_16;
+                    frame.setBody(new FrameBodyTXXX(encoding, "originalyear", year));
+                    // setField merges TXXX frames by description; setFrame would wipe every other TXXX value.
+                    id3.setField(frame);
+                }
+            } else if (tag instanceof Mp4Tag mp4) {
+                if (date != null) mp4.setField(new Mp4TagReverseDnsField(
+                    "----:com.apple.iTunes:ORIGINALDATE", "com.apple.iTunes", "ORIGINALDATE", date));
+                if (year != null) mp4.setField(new Mp4TagReverseDnsField(
+                    "----:com.apple.iTunes:ORIGINALYEAR", "com.apple.iTunes", "ORIGINALYEAR", year));
+            }
+        } catch (Exception e) {
+            log.warn("写入原始发行日期标签失败（容器: {}）: {}", tag.getClass().getSimpleName(), e.getMessage());
+            log.debug("原始发行日期标签写入异常", e);
+        }
+    }
+
+    private void removeTxxxByDescription(AbstractID3v2Tag id3, String description) {
+        List<TagField> frames = id3.getFrame("TXXX");
+        if (frames == null || frames.isEmpty()) {
+            return;
+        }
+        List<TagField> retained = new ArrayList<>();
+        for (TagField field : frames) {
+            if (field instanceof AbstractID3v2Frame frame
+                && frame.getBody() instanceof FrameBodyTXXX body
+                && description.equalsIgnoreCase(body.getDescription())) {
+                continue;
+            }
+            retained.add(field);
+        }
+        if (retained.isEmpty()) {
+            id3.removeFrame("TXXX");
+        } else {
+            id3.setFrame("TXXX", retained);
         }
     }
 
@@ -464,10 +591,10 @@ public class TagWriterService {
             String audioFilePath = audioFile.getAbsolutePath();
             int lastDotIndex = audioFilePath.lastIndexOf('.');
             String baseFilePath = lastDotIndex > 0 ? audioFilePath.substring(0, lastDotIndex) : audioFilePath;
-            
+
             // 创建歌词文件路径（.lrc扩展名）
             File lyricsFile = new File(baseFilePath + ".lrc");
-            
+
             // 写入歌词内容
             try (java.io.BufferedWriter writer = new java.io.BufferedWriter(
                     new java.io.OutputStreamWriter(
@@ -476,14 +603,14 @@ public class TagWriterService {
                 writer.write(lyrics);
             }
             ensureWritablePermissions(lyricsFile.toPath(), false);
-            
+
             log.info("歌词文件已导出: {}", lyricsFile.getName());
-            
+
         } catch (IOException e) {
             log.error("导出歌词文件失败: {}", audioFile.getName(), e);
         }
     }
-    
+
     /**
      * 从日期字符串中提取年份
      */
@@ -491,10 +618,10 @@ public class TagWriterService {
         if (date == null || date.isEmpty()) {
             return null;
         }
-        
+
         // 尝试多种日期格式
         String[] patterns = {"yyyy-MM-dd", "yyyy-MM", "yyyy"};
-        
+
         for (String pattern : patterns) {
             try {
                 if (date.length() >= pattern.replace("-", "").length()) {
@@ -508,10 +635,10 @@ public class TagWriterService {
                 // 继续尝试下一个格式
             }
         }
-        
+
         return null;
     }
-    
+
     /**
      * 创建备份文件
      */
@@ -520,21 +647,21 @@ public class TagWriterService {
             String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
             String backupFileName = originalFile.getName() + ".backup_" + timestamp;
             File backupFile = new File(originalFile.getParent(), backupFileName);
-            
-            Files.copy(originalFile.toPath(), backupFile.toPath(), 
+
+            Files.copy(originalFile.toPath(), backupFile.toPath(),
                 StandardCopyOption.REPLACE_EXISTING);
             ensureWritablePermissions(backupFile.toPath(), false);
-            
+
             log.info("已创建备份: {}", backupFile.getName());
             return backupFile;
-            
+
         } catch (IOException e) {
             log.error("创建备份失败", e);
             return null;
         }
     }
-    
-    
+
+
     /**
      * 清理文件名中的非法字符
      * 具体规则(非法字符、长度上限、Windows 保留设备名等)见 {@link FileNameSanitizer}
@@ -593,7 +720,7 @@ public class TagWriterService {
             permissions.add(execute);
         }
     }
-    
+
     /**
      * 读取现有标签（完整版本，包含作曲、作词、歌词等）
      */
@@ -679,7 +806,7 @@ public class TagWriterService {
             return null;
         }
     }
-    
+
     /**
      * 检查音频文件是否有**可用的**标签信息（阶段八 #23 加固）。
      *
@@ -717,7 +844,7 @@ public class TagWriterService {
             return false;
         }
     }
-    
+
     /**
      * 检查音频文件是否已内嵌封面
      */
@@ -725,20 +852,20 @@ public class TagWriterService {
         try {
             AudioFile audioFileObj = AudioFileIO.read(audioFile);
             Tag tag = audioFileObj.getTag();
-            
+
             if (tag != null) {
                 Artwork artwork = tag.getFirstArtwork();
                 return artwork != null && artwork.getBinaryData() != null && artwork.getBinaryData().length > 0;
             }
-            
+
             return false;
-            
+
         } catch (Exception e) {
             log.debug("检查内嵌封面失败: {}", audioFile.getName());
             return false;
         }
     }
-    
+
     /**
      * 将文件夹中的封面图片内嵌到音频文件
      * @param audioFile 音频文件
@@ -749,31 +876,31 @@ public class TagWriterService {
         if (folderCoverData == null || folderCoverData.length == 0) {
             return false;
         }
-        
+
         try {
             log.info("内嵌文件夹封面到: {}", audioFile.getName());
             AudioFile audioFileObj = AudioFileIO.read(audioFile);
             Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
-            
+
             // 创建封面对象
             Artwork artwork = new StandardArtwork();
             artwork.setBinaryData(folderCoverData);
             artwork.setMimeType("image/jpeg");
-            
+
             // 删除现有封面并设置新封面
             tag.deleteArtworkField();
             tag.setField(artwork);
-            
+
             // 保存更改
             audioFileObj.commit();
             log.info("封面内嵌成功: {}", audioFile.getName());
             return true;
-            
+
         } catch (Exception e) {
             log.error("内嵌封面失败: {}", audioFile.getName(), e);
             return false;
         }
     }
-    
+
 }
 

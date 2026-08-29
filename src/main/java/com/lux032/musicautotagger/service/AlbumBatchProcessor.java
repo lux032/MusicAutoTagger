@@ -25,6 +25,8 @@ public class AlbumBatchProcessor {
     private final TagWriterService tagWriter;
     private final ProcessedFileLogger processedLogger;
     private final CoverArtService coverArtService;
+    /** 用于按锁定 Release 获取唯一权威的专辑级标签。 */
+    private MusicBrainzClient musicBrainzClient;
     /** 人工确认队列（阶段六，可选） */
     private ReviewQueueService reviewQueueService;
     
@@ -44,6 +46,10 @@ public class AlbumBatchProcessor {
      */
     public void setReviewQueueService(ReviewQueueService reviewQueueService) {
         this.reviewQueueService = reviewQueueService;
+    }
+
+    public void setMusicBrainzClient(MusicBrainzClient musicBrainzClient) {
+        this.musicBrainzClient = musicBrainzClient;
     }
 
     /**
@@ -202,6 +208,16 @@ public class AlbumBatchProcessor {
             }
         }
         
+        MusicBrainzClient.ReleaseTagBundle releaseTags = null;
+        if (!unresolvedAlbum && musicBrainzClient != null
+            && albumInfo.getReleaseId() != null && !albumInfo.getReleaseId().isEmpty()) {
+            try {
+                releaseTags = musicBrainzClient.fetchReleaseTagBundle(albumInfo.getReleaseId());
+            } catch (Exception e) {
+                log.warn("获取锁定 Release 的专辑级标签失败，将保留文件现有专辑级标签: {}", e.getMessage());
+            }
+        }
+
         int successCount = 0;
         int failCount = 0;
         List<File> failedFiles = new ArrayList<>();
@@ -228,14 +244,19 @@ public class AlbumBatchProcessor {
                 metadata.setReleaseId(albumInfo.getReleaseId());
                 metadata.setReleaseType(albumInfo.getReleaseType());
                 metadata.setCompilation(albumInfo.isCompilation());
-                // 整专锁定后先清掉源文件可能遗留的旧类型/合辑标志，再写入当前专辑值。
-                metadata.setClearReleaseType(true);
+                // 选项 A 仅在成功取得 MusicBrainz 权威快照时执行；网络故障不能触发误清空。
+                if (releaseTags != null) {
+                    metadata.setClearAlbumLevelTags(true);
+                    releaseTags.applyTo(metadata);
+                }
                 if (unresolvedAlbum) {
                     // 专辑未确定：宁可没有年份，也不能保留旧专辑的年份。
                     // 注意：releaseDate 置空只会让写入逻辑「跳过不写」，原文件的 YEAR 仍会残留，
                     // 因此必须同时置 clearReleaseDate 标志，让 TagWriter 显式删除该字段。
                     metadata.setReleaseDate(null);
                     metadata.setClearReleaseDate(true);
+                    metadata.setClearAlbumLevelTags(true);
+                    metadata.setClearReleaseType(true);
                 } else if (albumInfo.getReleaseDate() != null && !albumInfo.getReleaseDate().isEmpty()) {
                     metadata.setReleaseDate(albumInfo.getReleaseDate());
                 }

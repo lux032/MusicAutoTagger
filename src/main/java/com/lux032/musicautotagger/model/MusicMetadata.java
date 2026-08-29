@@ -15,6 +15,24 @@ public class MusicMetadata {
     private String albumArtist;
     private String album;
     private String releaseDate;
+    private String originalReleaseDate;
+    private String originalYear;
+    private String artistId;
+    private String albumArtistId;
+    private String releaseTrackId;
+    private String artistSort;
+    private String albumArtistSort;
+    private String releaseStatus;
+    private String releaseCountry;
+    private String mediaFormat;
+    private String script;
+    private String barcode;
+    private String catalogNumber;
+    private String recordLabel;
+    private String discTotal;
+    private String trackTotal;
+    /** 专辑已锁定或明确未确定时，先删除所有专辑级标签，再写入当前非空值。 */
+    private boolean clearAlbumLevelTags;
     /** MusicBrainz Release Group 主类型，统一使用小写值（album、single、ep 等）。 */
     private String releaseType;
     /** 显式删除源文件中遗留的专辑类型与合辑标志。 */
@@ -45,6 +63,53 @@ public class MusicMetadata {
 
     // Fields specific to TagWriterService
     private byte[] coverArtData;
+
+    /**
+     * 复制除封面二进制之外的全部字段，供人工审核队列安全持久化。
+     */
+    public MusicMetadata copyWithoutHeavyFields() {
+        MusicMetadata copy = new MusicMetadata();
+        copy.recordingId = recordingId;
+        copy.title = title;
+        copy.artist = artist;
+        copy.albumArtist = albumArtist;
+        copy.album = album;
+        copy.releaseDate = releaseDate;
+        copy.originalReleaseDate = originalReleaseDate;
+        copy.originalYear = originalYear;
+        copy.artistId = artistId;
+        copy.albumArtistId = albumArtistId;
+        copy.releaseTrackId = releaseTrackId;
+        copy.artistSort = artistSort;
+        copy.albumArtistSort = albumArtistSort;
+        copy.releaseStatus = releaseStatus;
+        copy.releaseCountry = releaseCountry;
+        copy.mediaFormat = mediaFormat;
+        copy.script = script;
+        copy.barcode = barcode;
+        copy.catalogNumber = catalogNumber;
+        copy.recordLabel = recordLabel;
+        copy.discTotal = discTotal;
+        copy.trackTotal = trackTotal;
+        copy.clearAlbumLevelTags = clearAlbumLevelTags;
+        copy.releaseType = releaseType;
+        copy.clearReleaseType = clearReleaseType;
+        copy.compilation = compilation;
+        copy.clearReleaseDate = clearReleaseDate;
+        copy.genres = genres == null ? null : List.copyOf(genres);
+        copy.composer = composer;
+        copy.lyricist = lyricist;
+        copy.lyrics = lyrics;
+        copy.discNo = discNo;
+        copy.trackNo = trackNo;
+        copy.duration = duration;
+        copy.releaseGroupId = releaseGroupId;
+        copy.releaseId = releaseId;
+        copy.coverArtUrl = coverArtUrl;
+        copy.score = score;
+        copy.trackCount = trackCount;
+        return copy;
+    }
 
     /**
      * 设置专辑艺术家，自动检测多人情况并规范化为 "Various Artists"
