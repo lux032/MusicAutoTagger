@@ -9,6 +9,7 @@
 [![MusicBrainz](https://img.shields.io/badge/Data-MusicBrainz-purple.svg)](https://musicbrainz.org/)
 [![LrcLib](https://img.shields.io/badge/Lyrics-LrcLib-green.svg)](https://lrclib.net/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/Version-1.4.0-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
 
 [English](README.md) | [简体中文](README_ZH.md)
 
@@ -27,6 +28,23 @@ The built-in real-time monitoring dashboard provides:
 - 📝 Recently processed files with detailed metadata
 - 📋 Live system logs with auto-scroll
 - ⚙️ System configuration and status overview
+- ✅ Pending review queue and manual re-identification pages, sharing one design system
+
+## 🆕 What's New in 1.4.0
+
+- 🖥️ **Redesigned Web UI**: A shared design system across the dashboard, review, and recovery pages — two-column dashboard layout, cover-art wall for recent albums, unified dialogs/toasts, collapsible navigation on narrow screens, and a fully localized (CN/EN) interface.
+- ✅ **Manual Review Queue** (`review.enabled`): When tracks are recognized but the album cannot be determined, the folder is queued instead of being archived by guesswork. Original files keep their tags, names, and locations until you confirm a release, archive it as “not in MusicBrainz”, or reject it.
+- 🛠️ **Re-identification & Recovery**: A dedicated page for the `partial_files` / `failed_files` quarantine folders. Retry jobs run in an atomic workspace (rollback on failure, cross-filesystem safe), and a **recycle bin** with a retention policy keeps the quarantined copies restorable.
+- 🌐 **Online-assisted Identification**: Optional web search to build album candidates for hard cases, with two backends — native model web search or **Tavily** (`llm.webSearch.provider`). Candidates require at least one HIGH or two independent MEDIUM sources, and they always end up in the review queue for human confirmation, never auto-archived.
+- 🤖 **New LLM Configuration Model**: Providers are first-class (name / URL / key / explicit OpenAI or Claude protocol / multiple models), stored in `data/llm-providers.json`. **Pull models** from a provider to fill a dropdown and self-test connectivity in one click. Old comma-separated settings are migrated automatically on first start. Server-side SSRF guards only allow public HTTPS endpoints unless `llm.allowPrivateEndpoints` is enabled.
+- 🧠 **LLM Album Judging**: Optional LLM arbitration for ambiguous album matches, with an auto-apply confidence threshold.
+- 🎨 **Anime-edition Cover Preference** (`cover.preferAnimeEdition`): For Japanese OP/ED singles that ship both an anime jacket and a regular artist jacket, candidate releases are scored by keyword so the anime cover wins, with fallback to the default cover.
+- 🏷️ **Release-type Tags for Plex**: Writes EP / Single / Album release types and MusicBrainz IDs so Plex and similar players can distinguish them properly.
+- 🕘 **Historical Cover Backfill**: A maintenance tool (Settings → Advanced) that backfills `release_group_id` for already-processed records album-by-album and warms the cover cache. Resumable, never touches audio files, and only accepts exact title matches with score ≥ 80.
+- ⚡ **Matching & Performance Fixes**: Cache priority reordered (manual > duration sequence > quick scan > voting), multi-disc track counting fixed, release-group–level margin comparison, cached tag scanning, and album-artist resolution from artist credits (no more single-artist albums landing in `Various Artists`).
+- 🔒 **Security Hardening**: `audio.normalize.ffmpegPath` is read-only via the API (command-execution vector), secrets are returned masked from `GET /api/config`, write APIs validate CSRF, and filenames are sanitized for length, reserved device names, and traversal-unsafe components.
+
+Upgrading from an earlier version? Read [UPGRADE_NOTES.md](UPGRADE_NOTES.md) first.
 
 ## ✨ Key Features
 
@@ -48,7 +66,8 @@ The built-in real-time monitoring dashboard provides:
 - 🔄 **Smart Retry**: Automatically handles network failures with retry logic and isolates failed files for later inspection.
 - 📊 **Web Monitoring Dashboard**: 🆕 Built-in real-time monitoring dashboard to visualize processing progress, system status, and runtime logs.
 - 🌐 **Multi-language Support**: 🆕 Supports both Chinese and English interfaces, easily switchable via configuration file, providing localized experience for global users.
-- 🤖 **LLM Artist Matching**: 🆕 Optional LLM-assisted matching for partial recognition scenarios. When files have tags and covers but fingerprint recognition fails, uses LLM to fuzzy match artist names (supports romanization, aliases, translations, etc.) and automatically archives to the correct artist folder. Supports multiple LLM endpoints with automatic retry.
+- 🤖 **LLM Artist Matching**: Optional LLM-assisted matching for partial recognition scenarios. When files have tags and covers but fingerprint recognition fails, uses LLM to fuzzy match artist names (supports romanization, aliases, translations, etc.) and automatically archives to the correct artist folder. Supports multiple providers/models with automatic failover.
+- ✅ **Human-in-the-loop**: 🆕 Ambiguous albums go to a review queue instead of being archived incorrectly; quarantined files can be retried, confirmed with online evidence, or restored from the recycle bin.
 
 ## ⚠️ Best Practice: How to Get the Most Accurate Results
 
@@ -82,7 +101,11 @@ The easiest way to run the application. Configuration is done in the web UI afte
         volumes:
           - /path/to/downloads:/music
           - /path/to/music_library:/app/tagged_music
+          # admin account, review queue, LLM providers, recovery trash
           - ./data:/app/data
+          # quarantine dirs used by the recovery page (otherwise lost on recreate)
+          - ./partial_files:/app/partial_files
+          - ./failed_files:/app/failed_files
           - ./config.properties:/app/config.properties
         restart: unless-stopped
     ```
@@ -131,6 +154,9 @@ All settings (API keys, database, proxy, paths, language) are managed in the web
 - **QNAP NAS Users**: See [QNAP Deployment Guide](docs/QNAP_DEPLOYMENT_GUIDE.md) (Chinese)
 - **Database Setup**: Default is file-based. For MySQL setup, see [Database Setup](docs/DATABASE_SETUP.md)
 - **Windows Guide**: [Windows Build & Test](docs/WINDOWS_BUILD_GUIDE.md)
+- **Upgrade Notes**: [UPGRADE_NOTES.md](UPGRADE_NOTES.md) (behaviour changes and operational caveats)
+- **Album Matching**: [ALBUM_MATCHING_FIXES.md](ALBUM_MATCHING_FIXES.md), [FOLDER_ALBUM_CACHE.md](FOLDER_ALBUM_CACHE.md)
+- **All Settings**: see [config.properties.example](config.properties.example); every documented key is also editable in the web settings panel (except the read-only `audio.normalize.ffmpegPath`).
 
 ## 🤝 Contribution
 

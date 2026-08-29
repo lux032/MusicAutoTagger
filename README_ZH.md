@@ -9,6 +9,7 @@
 [![MusicBrainz](https://img.shields.io/badge/Data-MusicBrainz-purple.svg)](https://musicbrainz.org/)
 [![LrcLib](https://img.shields.io/badge/Lyrics-LrcLib-green.svg)](https://lrclib.net/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/Version-1.4.0-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
 
 [简体中文](README_ZH.md) | [English](README.md)
 
@@ -27,6 +28,23 @@
 - 📝 最近处理的文件及详细元数据
 - 📋 实时系统日志，支持自动滚动
 - ⚙️ 系统配置和状态概览
+- ✅ 「待确认」与「重新识别」页面，与仪表盘共用一套设计系统
+
+## 🆕 1.4.0 新增内容
+
+- 🖥️ **前端界面重做**：仪表盘 / 待确认 / 重新识别 三个页面共用统一设计系统 —— 仪表盘左右分栏布局、「最近整理的专辑」封面墙、统一的弹层与 Toast、窄屏折叠导航，中英文文案已全部补齐。
+- ✅ **人工待确认队列**（`review.enabled`）：当单曲能识别但无法确定专辑时，整个文件夹进待确认队列而不是“猜一个”直接归档。原文件保持原标签、原文件名、原位置，由你选择确认发行版、标记为“MusicBrainz 中没有”或驳回。
+- 🛠️ **重新识别与恢复**：为 `partial_files` / `failed_files` 隔离目录提供人工重试入口。重试在独立工作区原子提交（失败回滚、支持跨文件系统移动），并新增带保留天数的**回收站**，隔离副本可随时还原。
+- 🌐 **联网辅助识别**：面向难例的可选联网搜索，支持两种实现 —— 模型原生 Web Search 或 **Tavily**（`llm.webSearch.provider`）。候选需满足「1 个 HIGH 或 2 个独立 MEDIUM 来源」，且**只产出候选**，必须经待确认页人工确认后才会归档。
+- 🤖 **LLM 配置模型重构**：以「供应商」为一等公民（名称 / URL / Key / 显式选择 OpenAI 或 Claude 协议 / 多个模型），存于 `data/llm-providers.json`。支持**一键拉取模型**填充下拉框，同时充当连通性自检；首次启动自动从旧的逗号列表配置迁移。服务端默认只放行公网 HTTPS 以防 SSRF，自建 Ollama 等场景需显式开启 `llm.allowPrivateEndpoints`。
+- 🧠 **LLM 专辑判定**：对模棱两可的专辑匹配可选由 LLM 仲裁，并可设置自动应用的置信度阀值。
+- 🎨 **优先刮刷动画版封面**（`cover.preferAnimeEdition`）：日系 OP/ED 单曲常同时存在アニメ盤与通常盤，开启后会列出同一 Release Group 下的全部发行版并按关键词打分选出动画版，找不到时回退默认封面。
+- 🏷️ **写入专辑类型标签**：支持写入 EP / Single / Album 等发行类型与 MusicBrainz ID，以适配 Plex 等播放器的区分逻辑。
+- 🕘 **历史封面回填**：设置 → 高级 → 维护工具中手动触发，按专辑（而非按文件）请求 MusicBrainz 补全已处理记录的 `release_group_id` 并预热封面缓存。可中断、可重跑、不改音频文件，且只接受 score ≥ 80 且标题完全相等的匹配。
+- ⚡ **匹配与性能修复**：重排缓存优先级（人工确认 > 时长序列 > 快速扫描 > 投票），修复多碟专辑曲目数误算、按 Release Group 比较得分差距、标签扫描结果缓存，并从 artist-credit 解析专辑艺术家（不再把单一艺术家专辑归入 `Various Artists`）。
+- 🔒 **安全加固**：`audio.normalize.ffmpegPath` 改为只读（避免任意命令执行），`GET /api/config` 对密钥做掩码返回，写接口校验 CSRF，文件名补齐长度、Windows 保留设备名与路径穿越清洗。
+
+从旧版本升级前，请先阅读 [UPGRADE_NOTES.md](UPGRADE_NOTES.md)。
 
 ## ✨ 核心特性
 
@@ -48,7 +66,8 @@
 - 🔄 **智能重试机制**：自动处理网络波动导致的识别失败，并提供失败文件隔离。
 - 📊 **Web 监控面板**：🆕 内置实时监控面板，可视化查看处理进度、系统状态和运行日志。
 - 🌐 **多语言支持**：🆕 支持中文和英文界面，可通过配置文件轻松切换语言，为全球用户提供本地化体验。
-- 🤖 **LLM 艺术家匹配**：🆕 可选的 LLM 辅助匹配功能，用于部分识别场景。当文件有标签和封面但指纹识别失败时，使用 LLM 模糊匹配艺术家名称（支持罗马音、别名、翻译等），自动归档到正确的艺术家文件夹。支持配置多个 LLM 端点实现自动重试。
+- 🤖 **LLM 艺术家匹配**：可选的 LLM 辅助匹配功能，用于部分识别场景。当文件有标签和封面但指纹识别失败时，使用 LLM 模糊匹配艺术家名称（支持罗马音、别名、翻译等），自动归档到正确的艺术家文件夹。支持配置多个供应商与模型实现自动故障转移。
+- ✅ **人工介入闭环**：🆕 无法确定的专辑进入待确认队列而不是被错误归档；隔离文件可手动重试、借助联网证据确认，或从回收站还原。
 
 ## ⚠️ 最佳实践：如何获得最精准的整理效果
 
@@ -83,7 +102,11 @@
         volumes:
           - /path/to/downloads:/music
           - /path/to/music_library:/app/tagged_music
+          # 管理员账号、待确认队列、LLM 供应商配置、回收站
           - ./data:/app/data
+          # 恢复页面操作的隔离目录（不挂载则容器重建即丢失）
+          - ./partial_files:/app/partial_files
+          - ./failed_files:/app/failed_files
           - ./config.properties:/app/config.properties
         restart: unless-stopped
     ```
@@ -104,9 +127,10 @@
 
     面板功能包括：
     - 📊 **实时统计**：已处理文件数、封面缓存、文件夹缓存等
-    - 📝 **最近处理**：查看最近处理的音乐文件详情
+    - 📝 **最近整理的专辑**：按专辑聚合展示最近成功归档的封面墙
     - 📋 **运行日志**：实时查看系统运行日志，支持自动滚动
-    - ⚙️ **系统信息**：查看配置参数和系统状态
+    - ⚙️ **设置与系统信息**：在面板内完成全部配置（API Key / 数据库 / 代理 / LLM 供应商 / 联网搜索 / 恢复等）
+    - ✅ **待确认 / 重新识别**：人工确认专辑、重试隔离文件、管理回收站
 
 ## 💻 本地运行
 
@@ -138,6 +162,9 @@ API Key/数据库/代理/路径/语言等在登录后设置面板中配置。
 - **QNAP NAS 用户**：请参阅 [QNAP 部署指南](docs/QNAP_DEPLOYMENT_GUIDE.md)
 - **数据库配置**：默认使用文件记录处理状态，如需使用 MySQL 请参阅 [数据库设置](docs/DATABASE_SETUP.md)
 - **Windows 指南**：[Windows 构建与测试](docs/WINDOWS_BUILD_GUIDE.md)
+- **升级注意事项**：[UPGRADE_NOTES.md](UPGRADE_NOTES.md)（行为变化与运维注意点）
+- **专辑匹配机制**：[ALBUM_MATCHING_FIXES.md](ALBUM_MATCHING_FIXES.md)、[FOLDER_ALBUM_CACHE.md](FOLDER_ALBUM_CACHE.md)
+- **全部配置项**：参见 [config.properties.example.zh](config.properties.example.zh)；除只读的 `audio.normalize.ffmpegPath` 外，均可在 Web 设置面板中修改。
 
 ## 贡献与支持
 
