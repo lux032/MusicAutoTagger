@@ -529,6 +529,23 @@
                             <label for="cfgCoverArtApiUrl" data-i18n="config.coverart.api">Cover Art API</label>
                             <input id="cfgCoverArtApiUrl" type="text">
                         </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgPreferAnimeCover" type="checkbox">
+                            <label for="cfgPreferAnimeCover" class="label-with-tip">
+                                <span data-i18n="config.cover.preferAnime">优先动画版封面</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text" data-i18n="config.cover.preferAnime.hint">动画 OP/ED 单曲常有「アニメ盤（动画封面）」与「通常盘（歌手真人封面）」两个版本。开启后会在同一专辑的所有发行版中优先挑选动画封面版本，找不到时回退到默认封面。</span>
+                                </span>
+                            </label>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgAnimeCoverKeywords" data-i18n="config.cover.animeKeywords">动画版关键词(逗号分隔)</label>
+                            <input id="cfgAnimeCoverKeywords" type="text" placeholder="アニメ盤,アニメ版,anime edition,期間生産限定盤">
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgAnimeCoverMaxCandidates" data-i18n="config.cover.animeMaxCandidates">动画版候选尝试数</label>
+                            <input id="cfgAnimeCoverMaxCandidates" type="number" min="1" max="20">
+                        </div>
                         <div class="form-row">
                             <label for="cfgUserAgent" data-i18n="config.musicbrainz.useragent">User Agent</label>
                             <input id="cfgUserAgent" type="text">
@@ -2108,6 +2125,9 @@
                 document.getElementById('cfgCoverCacheDirectory').value = cfg.coverArtCacheDirectory || '';
                 document.getElementById('cfgMusicBrainzApiUrl').value = cfg.musicBrainzApiUrl || '';
                 document.getElementById('cfgCoverArtApiUrl').value = cfg.coverArtApiUrl || '';
+                document.getElementById('cfgPreferAnimeCover').checked = !!cfg.preferAnimeCover;
+                document.getElementById('cfgAnimeCoverKeywords').value = cfg.animeCoverKeywords || '';
+                document.getElementById('cfgAnimeCoverMaxCandidates').value = cfg.animeCoverMaxCandidates ?? 5;
                 document.getElementById('cfgUserAgent').value = cfg.userAgent || '';
                 document.getElementById('cfgAcoustIdApiKey').value = cfg.acoustIdApiKey || '';
                 document.getElementById('cfgAcoustIdApiUrl').value = cfg.acoustIdApiUrl || '';
@@ -2183,6 +2203,9 @@
                 coverArtCacheDirectory: getValue('cfgCoverCacheDirectory'),
                 musicBrainzApiUrl: getValue('cfgMusicBrainzApiUrl'),
                 coverArtApiUrl: getValue('cfgCoverArtApiUrl'),
+                preferAnimeCover: document.getElementById('cfgPreferAnimeCover').checked,
+                animeCoverKeywords: getValue('cfgAnimeCoverKeywords'),
+                animeCoverMaxCandidates: parseInt(getValue('cfgAnimeCoverMaxCandidates'), 10) || 5,
                 userAgent: getValue('cfgUserAgent'),
                 acoustIdApiKey: getValue('cfgAcoustIdApiKey'),
                 acoustIdApiUrl: getValue('cfgAcoustIdApiUrl'),

@@ -36,6 +36,8 @@ public class MusicBrainzClient {
     private final MusicConfig config;
     private final CloseableHttpClient httpClient;
     private final ObjectMapper objectMapper;
+    /** Release Group ID -> 动画版封面 URL（空串 = 确认没有动画版），避免同一专辑逐曲重复请求 */
+    private final java.util.Map<String, String> animeCoverUrlMemo = new java.util.concurrent.ConcurrentHashMap<>();
     private long lastRequestTime = 0;
     private static final long REQUEST_INTERVAL = 1000; // MusicBrainz 要求至少1秒间隔
     private static final int MAX_RETRIES = 3; // 最大重试次数
@@ -499,15 +501,303 @@ public class MusicBrainzClient {
     }
 
     /**
+     * 获取封面 URL，并告知调用方「动画版偏好是否完整生效」。
+     * 限流/网络失败导致回退到默认封面时 degraded=true，
+     * 调用方应该避免把这张封面写进持久化的专辑缓存，否则一次限流会把真人封面永久钉在动画命名空间里。
+     */
+    public CoverArtResolution resolveCoverArtByReleaseGroupId(String releaseGroupId) {
+        if (releaseGroupId == null || releaseGroupId.isEmpty()) {
+            return new CoverArtResolution(null, false);
+        }
+        if (!config.isPreferAnimeCover()) {
+            return new CoverArtResolution(fetchFrontCoverUrl("release-group/" + releaseGroupId, releaseGroupId), false);
+        }
+
+        AnimeCoverLookup lookup = resolvePreferredEdition(releaseGroupId);
+        if (lookup.coverUrl != null) {
+            return new CoverArtResolution(lookup.coverUrl, false);
+        }
+        log.debug("未找到动画版封面，回退到 Release Group 默认封面: {}", releaseGroupId);
+        return new CoverArtResolution(
+            fetchFrontCoverUrl("release-group/" + releaseGroupId, releaseGroupId),
+            !lookup.completed);
+    }
+
+    /**
+     * 封面解析结果
+     */
+    public static class CoverArtResolution {
+        private final String coverArtUrl;
+        private final boolean animePreferenceDegraded;
+
+        public CoverArtResolution(String coverArtUrl, boolean animePreferenceDegraded) {
+            this.coverArtUrl = coverArtUrl;
+            this.animePreferenceDegraded = animePreferenceDegraded;
+        }
+
+        public String getCoverArtUrl() {
+            return coverArtUrl;
+        }
+
+        /** true = 本次回退到默认封面是因为查询失败，而不是确定没有动画版 */
+        public boolean isAnimePreferenceDegraded() {
+            return animePreferenceDegraded;
+        }
+    }
+
+    /**
      * 获取封面图片 URL(带重试机制) - 内部方法
+     *
+     * 若开启 cover.preferAnimeEdition，会先在该 Release Group 的所有发行版中
+     * 找出「动画盘 / アニメ盤 / 期間生産限定盤」等动画封面版本，优先使用其封面；
+     * 找不到时再回退到 Release Group 默认封面（通常是歌手真人封面）。
      */
     private String getCoverArtUrl(String releaseGroupId) {
+        if (releaseGroupId == null || releaseGroupId.isEmpty()) {
+            return null;
+        }
+
+        return resolveCoverArtByReleaseGroupId(releaseGroupId).getCoverArtUrl();
+    }
+
+    /**
+     * 动画版封面解析（带进程内记忆）
+     * 同一张专辑的每首曲都会走到这里，没有记忆的话会把 MB/CAA 请求数放大数倍。
+     * 为避免把一次限流失败永久地记成「没有动画版」，只在枚举流程正常完成时才记录负结果。
+     * 记忆 key 包含关键词签名，以便运行中从 Web 面板改关键词后立即生效。
+     */
+    private AnimeCoverLookup resolvePreferredEdition(String releaseGroupId) {
+        String memoKey = keywordSignature() + "|" + releaseGroupId;
+        String memo = animeCoverUrlMemo.get(memoKey);
+        if (memo != null) {
+            return new AnimeCoverLookup(memo.isEmpty() ? null : memo, true);
+        }
+
+        AnimeCoverLookup lookup = findPreferredEditionCoverUrl(releaseGroupId);
+        if (lookup.completed) {
+            animeCoverUrlMemo.put(memoKey, lookup.coverUrl == null ? "" : lookup.coverUrl);
+        }
+        return lookup;
+    }
+
+    /**
+     * 当前关键词配置的签名，用于记忆 key（关键词变了旧结果就不再命中）
+     */
+    private String keywordSignature() {
+        List<String> keywords = config.getAnimeCoverKeywords();
+        return keywords == null ? "0" : Integer.toHexString(keywords.hashCode());
+    }
+
+    /**
+     * 在 Release Group 的发行版列表中挑选「动画封面版本」，并返回其正面封面 URL
+     */
+    private AnimeCoverLookup findPreferredEditionCoverUrl(String releaseGroupId) {
+        List<String> keywords = config.getAnimeCoverKeywords();
+        if (keywords == null || keywords.isEmpty()) {
+            return new AnimeCoverLookup(null, true);
+        }
+
+        try {
+            rateLimit();
+            // 用 browse 端点而不是 release-group?inc=releases：
+            // 后者子查询默认只返回 25 条，大专辑会截断；前者还能拿到 status/country
+            String url = String.format("%s/release?release-group=%s&limit=100&fmt=json",
+                config.getMusicBrainzApiUrl(), releaseGroupId);
+            JsonNode root = objectMapper.readTree(executeRequest(url));
+            JsonNode releases = root.path("releases");
+            if (!releases.isArray() || releases.size() == 0) {
+                return new AnimeCoverLookup(null, true);
+            }
+            // browse 单页最多 100 条。超过一页时本次枚举并不完整，
+            // 不能把「没找到」当作确定结论记下来
+            int totalCount = root.path("release-count").asInt(releases.size());
+            boolean fullyEnumerated = totalCount <= releases.size();
+            if (!fullyEnumerated) {
+                log.debug("Release Group {} 共 {} 个发行版，本次只枚举了前 {} 个",
+                    releaseGroupId, totalCount, releases.size());
+            }
+
+            List<AnimeCoverCandidate> candidates = new ArrayList<>();
+            for (JsonNode release : releases) {
+                String releaseId = release.path("id").asText("");
+                if (releaseId.isEmpty()) {
+                    continue;
+                }
+                // 非正式发行（bootleg/promotion）的扫图质量不可控，不作为动画版候选
+                String status = release.path("status").asText("");
+                if (!status.isEmpty() && !"Official".equalsIgnoreCase(status)) {
+                    continue;
+                }
+                // browse 结果自带 cover-art-archive.front，先用它筛掉没有正面封面的发行版，
+                // 避免为没封面的候选白白打一轮 CAA 请求
+                JsonNode caa = release.path("cover-art-archive");
+                if (caa.isObject() && caa.has("front") && !caa.path("front").asBoolean(true)) {
+                    continue;
+                }
+                String title = release.path("title").asText("");
+                String disambiguation = release.path("disambiguation").asText("");
+                AnimeEditionScore score = scoreAnimeEdition(title + " " + disambiguation, keywords);
+                if (score.matched()) {
+                    candidates.add(new AnimeCoverCandidate(releaseId, title, disambiguation,
+                        score, release.path("date").asText("")));
+                }
+            }
+
+            if (candidates.isEmpty()) {
+                log.debug("Release Group {} 下没有命中动画版关键词的发行版", releaseGroupId);
+                return new AnimeCoverLookup(null, fullyEnumerated);
+            }
+
+            // 排序：先看命中的最强关键词（避免多个弱词累加压过一个强词），
+            // 再看命中数量，最后发行日期早的优先（初版动画盘通常最早）
+            candidates.sort((a, b) -> {
+                if (a.score.bestWeight != b.score.bestWeight) {
+                    return Integer.compare(b.score.bestWeight, a.score.bestWeight);
+                }
+                if (a.score.matchCount != b.score.matchCount) {
+                    return Integer.compare(b.score.matchCount, a.score.matchCount);
+                }
+                String dateA = a.date == null || a.date.isEmpty() ? "9999" : a.date;
+                String dateB = b.date == null || b.date.isEmpty() ? "9999" : b.date;
+                return dateA.compareTo(dateB);
+            });
+
+            int maxCandidates = Math.max(1, config.getAnimeCoverMaxCandidates());
+            int tried = 0;
+            boolean allCandidatesDefinitive = true;
+            for (AnimeCoverCandidate candidate : candidates) {
+                if (tried >= maxCandidates) {
+                    break;
+                }
+                tried++;
+                log.debug("尝试动画版封面候选: {}{} 命中关键词={} (Release ID: {})",
+                    candidate.title, candidate.describeDisambiguation(),
+                    candidate.score.matchedKeywords, candidate.releaseId);
+                CoverFetchResult result = fetchFrontCover("release/" + candidate.releaseId, candidate.releaseId);
+                if (result.url != null) {
+                    log.info("✓ 使用动画版封面: {}{} (命中关键词: {})", candidate.title,
+                        candidate.describeDisambiguation(), candidate.score.matchedKeywords);
+                    return new AnimeCoverLookup(result.url, true);
+                }
+                if (!result.definitive) {
+                    // 限流/超时导致的失败，不能当作「这个候选没封面」
+                    allCandidatesDefinitive = false;
+                }
+            }
+            // 候选都没有封面：只有全部试完、且每一次都是确定性结果时，才能当作「确定没有」记下来
+            return new AnimeCoverLookup(null,
+                fullyEnumerated && allCandidatesDefinitive && tried >= candidates.size());
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.warn("查找动画版封面被中断: {}", releaseGroupId);
+            return new AnimeCoverLookup(null, false);
+        } catch (Exception e) {
+            log.warn("查找动画版封面失败，将回退到默认封面: {} - {}", releaseGroupId, e.getMessage());
+            return new AnimeCoverLookup(null, false);
+        }
+    }
+
+    /**
+     * 根据关键词给发行版打分，关键词列表越靠前权重越高
+     */
+    private AnimeEditionScore scoreAnimeEdition(String text, List<String> keywords) {
+        AnimeEditionScore result = new AnimeEditionScore();
+        if (text == null || text.isBlank()) {
+            return result;
+        }
+        String normalized = text.toLowerCase(java.util.Locale.ROOT);
+        int size = keywords.size();
+        for (int i = 0; i < size; i++) {
+            String keyword = keywords.get(i);
+            if (keyword == null || keyword.isBlank()) {
+                continue;
+            }
+            if (normalized.contains(keyword.trim().toLowerCase(java.util.Locale.ROOT))) {
+                result.add(keyword.trim(), size - i);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 动画版关键词命中情况
+     */
+    private static class AnimeEditionScore {
+        int bestWeight = 0;
+        int matchCount = 0;
+        final List<String> matchedKeywords = new ArrayList<>();
+
+        void add(String keyword, int weight) {
+            matchCount++;
+            matchedKeywords.add(keyword);
+            if (weight > bestWeight) {
+                bestWeight = weight;
+            }
+        }
+
+        boolean matched() {
+            return matchCount > 0;
+        }
+    }
+
+    /**
+     * 动画版封面查找结果
+     * @param completed 枚举流程是否正常跑完（决定能否把负结果记忆下来）
+     */
+    private static class AnimeCoverLookup {
+        final String coverUrl;
+        final boolean completed;
+
+        AnimeCoverLookup(String coverUrl, boolean completed) {
+            this.coverUrl = coverUrl;
+            this.completed = completed;
+        }
+    }
+
+    /**
+     * 动画封面候选发行版
+     */
+    private static class AnimeCoverCandidate {
+        final String releaseId;
+        final String title;
+        final String disambiguation;
+        final AnimeEditionScore score;
+        final String date;
+
+        AnimeCoverCandidate(String releaseId, String title, String disambiguation,
+                            AnimeEditionScore score, String date) {
+            this.releaseId = releaseId;
+            this.title = title == null ? "" : title;
+            this.disambiguation = disambiguation == null ? "" : disambiguation;
+            this.score = score;
+            this.date = date;
+        }
+
+        String describeDisambiguation() {
+            return disambiguation.isEmpty() ? "" : " (" + disambiguation + ")";
+        }
+    }
+
+    /**
+     * 从 Cover Art Archive 获取正面封面 URL(带重试机制)
+     * @param caaPath CAA 资源路径，如 "release-group/{id}" 或 "release/{id}"
+     * @param logId 日志中显示的实体 ID
+     */
+    private String fetchFrontCoverUrl(String caaPath, String logId) {
+        return fetchFrontCover(caaPath, logId).url;
+    }
+
+    /**
+     * 从 Cover Art Archive 获取正面封面（区分「确实没有封面」与「本次请求失败」）
+     * 两者必须分开: 把限流失败当成「没有封面」会让错误结果被永久缓存
+     */
+    private CoverFetchResult fetchFrontCover(String caaPath, String logId) {
         int retryCount = 0;
         
         while (retryCount <= MAX_RETRIES) {
             try {
                 rateLimit();
-                String url = String.format("%s/release-group/%s", config.getCoverArtApiUrl(), releaseGroupId);
+                String url = String.format("%s/%s", config.getCoverArtApiUrl(), caaPath);
                 
                 HttpGet httpGet = new HttpGet(url);
                 httpGet.setHeader("User-Agent", config.getUserAgent());
@@ -524,18 +814,18 @@ public class MusicBrainzClient {
                         if (images.isArray()) {
                             for (JsonNode image : images) {
                                 if (image.path("front").asBoolean()) {
-                                    return image.path("image").asText();
+                                    return CoverFetchResult.found(image.path("image").asText());
                                 }
                             }
                         }
                         // 查询成功,该专辑确实没有正面封面
-                        return null;
+                        return CoverFetchResult.notFound();
                     }
 
                     if (statusCode == 404) {
                         // Cover Art Archive 没有这张专辑的记录,重试也不会有
-                        log.debug("Cover Art Archive 无此专辑封面: {}", releaseGroupId);
-                        return null;
+                        log.debug("Cover Art Archive 无此专辑封面: {}", logId);
+                        return CoverFetchResult.notFound();
                     }
 
                     if (isRetryableStatus(statusCode)) {
@@ -546,17 +836,22 @@ public class MusicBrainzClient {
                         throw new RetryableHttpException(statusCode, retryAfterMillis(response));
                     }
 
-                    log.warn("获取封面失败,状态码 {}: {}", statusCode, releaseGroupId);
+                    log.warn("获取封面失败,状态码 {}: {}", statusCode, logId);
                     EntityUtils.consumeQuietly(response.getEntity());
-                    return null;
+                    return CoverFetchResult.failed();
                 }
-                
+
+            } catch (InterruptedException ie) {
+                // 中断不能被当成「没有封面」，也不该继续重试
+                Thread.currentThread().interrupt();
+                log.warn("获取封面被中断: {}", logId);
+                return CoverFetchResult.failed();
             } catch (Exception e) {
                 retryCount++;
                 
                 if (retryCount > MAX_RETRIES) {
                     log.error("获取封面失败,已达最大重试次数({}/{}): {} - {}",
-                        MAX_RETRIES, MAX_RETRIES, releaseGroupId, e.getMessage());
+                        MAX_RETRIES, MAX_RETRIES, logId, e.getMessage());
                     break;
                 }
 
@@ -569,11 +864,37 @@ public class MusicBrainzClient {
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     log.error("重试等待被中断");
-                    return null;
+                    return CoverFetchResult.failed();
                 }
             }
         }
-        return null;
+        return CoverFetchResult.failed();
+    }
+
+    /**
+     * CAA 封面查询结果
+     * @param definitive true = 服务端给出了确定答案（有封面 / 确实没有）；false = 本次请求失败
+     */
+    private static class CoverFetchResult {
+        final String url;
+        final boolean definitive;
+
+        private CoverFetchResult(String url, boolean definitive) {
+            this.url = url;
+            this.definitive = definitive;
+        }
+
+        static CoverFetchResult found(String url) {
+            return new CoverFetchResult(url, true);
+        }
+
+        static CoverFetchResult notFound() {
+            return new CoverFetchResult(null, true);
+        }
+
+        static CoverFetchResult failed() {
+            return new CoverFetchResult(null, false);
+        }
     }
 
     /**

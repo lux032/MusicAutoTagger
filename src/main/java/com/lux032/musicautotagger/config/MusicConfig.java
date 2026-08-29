@@ -46,6 +46,14 @@ public class MusicConfig {
     
     // 缓存配置
     private String coverArtCacheDirectory; // 封面缓存目录
+
+    // 封面偏好配置
+    /** 是否优先选择「动画版/动画盘」封面（日系动画 OP/ED 单曲常有动画封面与歌手真人封面两个版本） */
+    private boolean preferAnimeCover;
+    /** 判定「动画版」发行版的关键词（按优先级从高到低，命中越靠前的关键词权重越高） */
+    private List<String> animeCoverKeywords;
+    /** 每张专辑最多尝试多少个候选发行版的封面，避免过多 Cover Art Archive 请求 */
+    private int animeCoverMaxCandidates;
     
     // 数据库配置
     private String dbType; // file (默认) 或 mysql
@@ -199,6 +207,13 @@ public class MusicConfig {
         this.enableDetailedLogging = true;
         this.processedFileLogPath = System.getProperty("user.home") + "/.musicdemo/processed_files.log";
         this.coverArtCacheDirectory = null; // 默认为null,后续会设置为 outputDirectory + "/.cover_cache"
+        this.preferAnimeCover = false;
+        // 只放「能标识封面版本」的词。
+        // 切勿加入「アニメ」「tvアニメ」这类通用词：
+        // MB 上的 disambiguation 常写成「TVアニメ「〇〇」オープニングテーマ」，
+        // 那是曲目的 tie-in 说明，通常盘也有，会把真人封面误判为动画盘。
+        this.animeCoverKeywords = defaultAnimeCoverKeywords();
+        this.animeCoverMaxCandidates = 5;
         
         // 数据库默认配置
         this.dbType = "file";
@@ -277,6 +292,18 @@ public class MusicConfig {
     }
     
     /**
+     * 动画版封面关键词默认值
+     */
+    public static List<String> defaultAnimeCoverKeywords() {
+        return new ArrayList<>(Arrays.asList(
+            "アニメ盤", "アニメ版", "アニメ・ジャケット", "アニメジャケット", "アニメイラスト",
+            "アニメ ver", "アニメver", "アニメイト盤",
+            "anime edition", "anime version", "anime cover", "anime jacket", "anime ver",
+            "期間生産限定盤"
+        ));
+    }
+
+    /**
      * 获取配置单例
      */
     public static synchronized MusicConfig getInstance() {
@@ -292,8 +319,13 @@ public class MusicConfig {
      */
     private void loadFromFile() {
         Properties props = new Properties();
-        try (FileInputStream fis = new FileInputStream("config.properties")) {
-            props.load(fis);
+        // 必须按 UTF-8 读取: Properties.load(InputStream) 规范上按 ISO-8859-1 解码，
+        // 会把配置里的日文关键词(如 cover.animeEditionKeywords)读成乱码。
+        // props.store 写出的是纯 ASCII + Unicode 转义序列，
+        // 因此对 ASCII 配置和本程序自己写出的旧配置完全兼容（手写的 ISO-8859-1 高位字符除外）。
+        try (java.io.Reader reader = new java.io.InputStreamReader(
+                new FileInputStream("config.properties"), java.nio.charset.StandardCharsets.UTF_8)) {
+            props.load(reader);
             
             // 加载配置项
             if (props.containsKey("monitor.directory")) {
@@ -356,6 +388,26 @@ public class MusicConfig {
             }
             
             // 加载缓存配置
+            if (props.containsKey("cover.preferAnimeEdition")) {
+                this.preferAnimeCover = Boolean.parseBoolean(props.getProperty("cover.preferAnimeEdition").trim());
+            }
+            if (props.containsKey("cover.animeEditionKeywords")) {
+                List<String> keywords = new ArrayList<>();
+                for (String keyword : props.getProperty("cover.animeEditionKeywords").split(",")) {
+                    String trimmed = keyword.trim();
+                    if (!trimmed.isEmpty()) {
+                        keywords.add(trimmed);
+                    }
+                }
+                if (!keywords.isEmpty()) {
+                    this.animeCoverKeywords = keywords;
+                }
+            }
+            if (props.containsKey("cover.animeEditionMaxCandidates")) {
+                this.animeCoverMaxCandidates = parseIntInRange(
+                    props.getProperty("cover.animeEditionMaxCandidates"),
+                    this.animeCoverMaxCandidates, 1, 20, "cover.animeEditionMaxCandidates");
+            }
             if (props.containsKey("cache.coverArtDirectory")) {
                 this.coverArtCacheDirectory = props.getProperty("cache.coverArtDirectory");
             }
@@ -794,6 +846,11 @@ public class MusicConfig {
         if (coverArtCacheDirectory != null) {
             props.setProperty("cache.coverArtDirectory", coverArtCacheDirectory);
         }
+        props.setProperty("cover.preferAnimeEdition", String.valueOf(preferAnimeCover));
+        if (animeCoverKeywords != null && !animeCoverKeywords.isEmpty()) {
+            props.setProperty("cover.animeEditionKeywords", String.join(",", animeCoverKeywords));
+        }
+        props.setProperty("cover.animeEditionMaxCandidates", String.valueOf(animeCoverMaxCandidates));
         props.setProperty("db.type", dbType);
         props.setProperty("db.mysql.host", dbHost);
         props.setProperty("db.mysql.port", String.valueOf(dbPort));

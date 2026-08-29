@@ -76,7 +76,7 @@ public class ApplicationLifecycleManager {
             cacheDir = config.getOutputDirectory() + "/.cover_cache";
         }
         // 在文件模式下, databaseService 为 null, CoverArtCache 会自动降级为文件系统缓存
-        coverArtCache = new CoverArtCache(databaseService, cacheDir);
+        coverArtCache = new CoverArtCache(databaseService, cacheDir, config);
         
         // Level 2: 初始化其他服务
         log.info(I18nUtil.getMessage("app.init.other.services"));

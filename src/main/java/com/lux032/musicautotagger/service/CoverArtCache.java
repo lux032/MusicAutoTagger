@@ -1,6 +1,7 @@
 package com.lux032.musicautotagger.service;
 
 import lombok.extern.slf4j.Slf4j;
+import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.util.I18nUtil;
 
 import java.io.File;
@@ -20,15 +21,18 @@ public class CoverArtCache {
     
     private final DatabaseService databaseService;
     private final String cacheDirectory;
+    private final MusicConfig config;
     
     /**
      * 构造函数 - 依赖注入DatabaseService
      * @param databaseService 数据库服务
      * @param cacheDirectory 缓存目录路径
+     * @param config 全局配置（用于封面偏好影响缓存命名空间）
      */
-    public CoverArtCache(DatabaseService databaseService, String cacheDirectory) {
+    public CoverArtCache(DatabaseService databaseService, String cacheDirectory, MusicConfig config) {
         this.databaseService = databaseService;
         this.cacheDirectory = cacheDirectory;
+        this.config = config;
         
         // 确保缓存目录存在
         File cacheDir = new File(cacheDirectory);
@@ -49,8 +53,7 @@ public class CoverArtCache {
         if (releaseGroupId == null || releaseGroupId.isEmpty()) {
             return null;
         }
-        // 使用固定前缀 + Release Group ID 作为缓存 key
-        return getCachedCover("release-group:" + releaseGroupId);
+        return getCachedCover(releaseGroupCacheKey(releaseGroupId));
     }
 
     /**
@@ -63,8 +66,18 @@ public class CoverArtCache {
         if (releaseGroupId == null || releaseGroupId.isEmpty()) {
             return false;
         }
-        // 使用固定前缀 + Release Group ID 作为缓存 key
-        return cacheCover("release-group:" + releaseGroupId, coverData);
+        return cacheCover(releaseGroupCacheKey(releaseGroupId), coverData);
+    }
+
+    /**
+     * Release Group 级别的缓存 key
+     * 开启「优先动画版封面」时使用不同命名空间，
+     * 否则开关打开前缓存的真人封面会被直接复用，新偏好永远不生效。
+     */
+    private String releaseGroupCacheKey(String releaseGroupId) {
+        return config != null && config.isPreferAnimeCover()
+            ? "release-group:anime:" + releaseGroupId
+            : "release-group:" + releaseGroupId;
     }
 
     /**

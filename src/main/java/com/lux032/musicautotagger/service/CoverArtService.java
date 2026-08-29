@@ -78,11 +78,17 @@ public class CoverArtService {
         // 策略1: 尝试从网络下载
         String coverArtUrl = null;
 
+        // 如果本次封面是因为查询失败而回退得来的，就不能写进持久化的专辑缓存
+        boolean degradedCover = false;
+
         // 如果有锁定的专辑ID，只使用锁定专辑的封面
         if (lockedReleaseGroupId != null) {
             log.info("使用锁定专辑的封面 (Release Group ID: {})", lockedReleaseGroupId);
             try {
-                coverArtUrl = musicBrainzClient.getCoverArtUrlByReleaseGroupId(lockedReleaseGroupId);
+                MusicBrainzClient.CoverArtResolution resolution =
+                    musicBrainzClient.resolveCoverArtByReleaseGroupId(lockedReleaseGroupId);
+                coverArtUrl = resolution.getCoverArtUrl();
+                degradedCover = resolution.isAnimePreferenceDegraded();
                 if (coverArtUrl != null) {
                     log.info("获取到锁定专辑的封面URL: {}", coverArtUrl);
                 } else {
@@ -111,9 +117,11 @@ public class CoverArtService {
                 }
 
                 // 如果有锁定的专辑ID，同时缓存到 Release Group ID 级别，供其他文件夹复用
-                if (lockedReleaseGroupId != null) {
+                if (lockedReleaseGroupId != null && !degradedCover) {
                     coverArtCache.cacheCoverByReleaseGroupId(lockedReleaseGroupId, coverArtData);
                     log.info("已将封面缓存到专辑级别 (Release Group ID: {})", lockedReleaseGroupId);
+                } else if (degradedCover) {
+                    log.warn("动画版封面查询未能完成，本次使用默认封面但不写入专辑级缓存，下次会重试");
                 }
 
                 return coverArtData;
@@ -297,10 +305,16 @@ public class CoverArtService {
             return coverArtData;
         }
         
+        // 本次动画版查询是否因失败而降级（降级时不写持久化的专辑缓存，以免把错封面钉死）
+        boolean degradedCover = false;
+
         // 策略2: 从网络下载
         try {
             log.info("策略2: 从网络获取锁定专辑封面 (Release Group ID: {})", releaseGroupId);
-            String coverArtUrl = musicBrainzClient.getCoverArtUrlByReleaseGroupId(releaseGroupId);
+            MusicBrainzClient.CoverArtResolution resolution =
+                musicBrainzClient.resolveCoverArtByReleaseGroupId(releaseGroupId);
+            String coverArtUrl = resolution.getCoverArtUrl();
+            degradedCover = resolution.isAnimePreferenceDegraded();
             
             if (coverArtUrl != null) {
                 coverArtData = downloadCoverFromNetwork(coverArtUrl);
@@ -308,9 +322,13 @@ public class CoverArtService {
                 if (coverArtData != null && coverArtData.length > 0) {
                     log.info("✓ 成功从网络获取锁定专辑封面");
                     
-                    // 缓存到 Release Group ID 级别
-                    coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, coverArtData);
-                    log.info("已缓存到专辑级别 (Release Group ID: {})", releaseGroupId);
+                    // 缓存到 Release Group ID 级别（降级得来的封面不写，下次重试）
+                    if (!degradedCover) {
+                        coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, coverArtData);
+                        log.info("已缓存到专辑级别 (Release Group ID: {})", releaseGroupId);
+                    } else {
+                        log.warn("动画版封面查询未能完成，本次不写入专辑级缓存，下次会重试");
+                    }
                     
                     // 更新文件夹级别缓存
                     if (folderPath != null) {
@@ -338,8 +356,10 @@ public class CoverArtService {
                 log.info("✓ 成功从文件夹内音频文件提取封面");
                 
                 // 缓存到 Release Group ID 级别
-                coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, coverArtData);
-                log.info("已缓存到专辑级别 (Release Group ID: {})", releaseGroupId);
+                if (!degradedCover) {
+                    coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, coverArtData);
+                    log.info("已缓存到专辑级别 (Release Group ID: {})", releaseGroupId);
+                }
                 
                 // 更新文件夹级别缓存
                 folderCoverCache.put(folderPath, coverArtData);
@@ -360,8 +380,10 @@ public class CoverArtService {
                 log.info("✓ 成功从专辑根目录找到封面图片");
                 
                 // 缓存到 Release Group ID 级别
-                coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, coverArtData);
-                log.info("已缓存到专辑级别 (Release Group ID: {})", releaseGroupId);
+                if (!degradedCover) {
+                    coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, coverArtData);
+                    log.info("已缓存到专辑级别 (Release Group ID: {})", releaseGroupId);
+                }
                 
                 // 更新文件夹级别缓存
                 folderCoverCache.put(folderPath, coverArtData);

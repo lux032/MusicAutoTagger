@@ -34,6 +34,18 @@ monitor.scanInterval=30
 musicbrainz.apiUrl=https://musicbrainz.org/ws/2
 musicbrainz.coverArtApiUrl=https://coverartarchive.org
 
+# Prefer the anime-jacket edition cover for anime OP/ED tie-in songs.
+# Many J-Pop anime singles have two covers: the anime artwork edition and the
+# regular edition with the artist's photo. With this on, all releases in the same
+# release group are scanned and the anime edition cover is used when available;
+# otherwise it falls back to the default release-group cover.
+cover.preferAnimeEdition=false
+# Keywords used to detect the anime edition (matched against release title +
+# disambiguation, case-insensitive). Earlier keywords have higher weight.
+cover.animeEditionKeywords=\u30a2\u30cb\u30e1\u76e4,\u30a2\u30cb\u30e1\u7248,\u30a2\u30cb\u30e1\u30fb\u30b8\u30e3\u30b1\u30c3\u30c8,\u30a2\u30cb\u30e1\u30b8\u30e3\u30b1\u30c3\u30c8,\u30a2\u30cb\u30e1\u30a4\u30e9\u30b9\u30c8,\u30a2\u30cb\u30e1 ver,\u30a2\u30cb\u30e1ver,\u30a2\u30cb\u30e1\u30a4\u30c8\u76e4,anime edition,anime version,anime cover,anime jacket,anime ver,\u671f\u9593\u751f\u7523\u9650\u5b9a\u76e4
+# Max number of candidate releases whose cover will be queried (1-20)
+cover.animeEditionMaxCandidates=5
+
 # User Agent (MUST modify to your email)
 # Format: ApplicationName/Version ( contact@email.com )
 musicbrainz.userAgent=MusicDemo/1.0 ( your-email@example.com )

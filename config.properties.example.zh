@@ -34,6 +34,16 @@ monitor.scanInterval=30
 musicbrainz.apiUrl=https://musicbrainz.org/ws/2
 musicbrainz.coverArtApiUrl=https://coverartarchive.org
 
+# 优先刷取「动画版封面」
+# 日系动画 OP/ED 单曲常常同时存在两个版本：アニメ盤（动画封面）与通常盘（歌手真人封面）。
+# 开启后会遍历同一专辑（Release Group）下的所有发行版，优先使用动画版的封面；
+# 若没有动画版或动画版无封面，则回退到原来的默认封面。
+cover.preferAnimeEdition=false
+# 判定动画版的关键词（匹配发行版标题 + 消歧义说明，忽略大小写），越靠前权重越高
+cover.animeEditionKeywords=\u30a2\u30cb\u30e1\u76e4,\u30a2\u30cb\u30e1\u7248,\u30a2\u30cb\u30e1\u30fb\u30b8\u30e3\u30b1\u30c3\u30c8,\u30a2\u30cb\u30e1\u30b8\u30e3\u30b1\u30c3\u30c8,\u30a2\u30cb\u30e1\u30a4\u30e9\u30b9\u30c8,\u30a2\u30cb\u30e1 ver,\u30a2\u30cb\u30e1ver,\u30a2\u30cb\u30e1\u30a4\u30c8\u76e4,anime edition,anime version,anime cover,anime jacket,anime ver,\u671f\u9593\u751f\u7523\u9650\u5b9a\u76e4
+# 最多尝试多少个候选发行版的封面（1-20），避免请求过多
+cover.animeEditionMaxCandidates=5
+
 # User Agent（必须修改为你的邮箱）
 # 格式：ApplicationName/Version ( contact@email.com )
 musicbrainz.userAgent=MusicDemo/1.0 ( your-email@example.com )

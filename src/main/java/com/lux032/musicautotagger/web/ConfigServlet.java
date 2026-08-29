@@ -75,6 +75,9 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("enableDetailedLogging", "logging.detailed"),
             Map.entry("processedFileLogPath", "logging.processedFileLogPath"),
             Map.entry("coverArtCacheDirectory", "cache.coverArtDirectory"),
+            Map.entry("preferAnimeCover", "cover.preferAnimeEdition"),
+            Map.entry("animeCoverKeywords", "cover.animeEditionKeywords"),
+            Map.entry("animeCoverMaxCandidates", "cover.animeEditionMaxCandidates"),
             Map.entry("dbType", "db.type"),
             Map.entry("dbHost", "db.mysql.host"),
             Map.entry("dbPort", "db.mysql.port"),
@@ -186,6 +189,9 @@ public class ConfigServlet extends HttpServlet {
         handleBoolean(body, updates, propertyUpdates, "enableDetailedLogging");
         handleString(body, updates, propertyUpdates, "processedFileLogPath", false);
         handleString(body, updates, propertyUpdates, "coverArtCacheDirectory", false);
+        handleBoolean(body, updates, propertyUpdates, "preferAnimeCover");
+        handleString(body, updates, propertyUpdates, "animeCoverKeywords", false);
+        handleIntegerInRange(body, updates, propertyUpdates, "animeCoverMaxCandidates", 1, 20);
         handleString(body, updates, propertyUpdates, "dbType", false);
         handleString(body, updates, propertyUpdates, "dbHost", false);
         handleInteger(body, updates, propertyUpdates, "dbPort");
@@ -285,6 +291,10 @@ public class ConfigServlet extends HttpServlet {
         data.put("enableDetailedLogging", config.isEnableDetailedLogging());
         data.put("processedFileLogPath", config.getProcessedFileLogPath());
         data.put("coverArtCacheDirectory", config.getCoverArtCacheDirectory());
+        data.put("preferAnimeCover", config.isPreferAnimeCover());
+        data.put("animeCoverKeywords", config.getAnimeCoverKeywords() == null ? ""
+            : String.join(",", config.getAnimeCoverKeywords()));
+        data.put("animeCoverMaxCandidates", config.getAnimeCoverMaxCandidates());
         data.put("dbType", config.getDbType());
         data.put("dbHost", config.getDbHost());
         data.put("dbPort", config.getDbPort());
@@ -343,8 +353,11 @@ public class ConfigServlet extends HttpServlet {
     private void persistUpdates(Map<String, String> updates) throws IOException {
         java.util.Properties props = new java.util.Properties();
         if (Files.exists(configPath)) {
-            try (FileInputStream fis = new FileInputStream(configPath.toFile())) {
-                props.load(fis);
+            // 与 MusicConfig.loadFromFile 保持一致: 按 UTF-8 读，否则回写时会把
+            // 配置里的日文关键词读成乱码并持久化
+            try (java.io.Reader reader = new java.io.InputStreamReader(
+                    new FileInputStream(configPath.toFile()), java.nio.charset.StandardCharsets.UTF_8)) {
+                props.load(reader);
             }
         }
 
@@ -459,6 +472,24 @@ public class ConfigServlet extends HttpServlet {
         }
         if (updates.containsKey("coverArtCacheDirectory")) {
             config.setCoverArtCacheDirectory((String) updates.get("coverArtCacheDirectory"));
+        }
+        if (updates.containsKey("preferAnimeCover")) {
+            config.setPreferAnimeCover((Boolean) updates.get("preferAnimeCover"));
+        }
+        if (updates.containsKey("animeCoverKeywords")) {
+            String keywords = (String) updates.get("animeCoverKeywords");
+            if (keywords == null || keywords.isBlank()) {
+                // handleString 会把空值当作「删除该配置项」写回文件，
+                // 内存里也必须同步回默认值，否则重启前后行为不一致
+                config.setAnimeCoverKeywords(MusicConfig.defaultAnimeCoverKeywords());
+            } else {
+                config.setAnimeCoverKeywords(java.util.Arrays.stream(keywords.split(","))
+                    .map(String::trim).filter(s -> !s.isEmpty())
+                    .collect(java.util.stream.Collectors.toList()));
+            }
+        }
+        if (updates.containsKey("animeCoverMaxCandidates")) {
+            config.setAnimeCoverMaxCandidates((Integer) updates.get("animeCoverMaxCandidates"));
         }
         if (updates.containsKey("dbType")) {
             config.setDbType((String) updates.get("dbType"));
@@ -735,6 +766,25 @@ public class ConfigServlet extends HttpServlet {
             throwValidation("number.invalid", null);
             return null;
         }
+    }
+
+    /**
+     * 与 handleInteger 相同，但先 clamp 再写回文件，
+     * 避免「文件里是非法值、内存里是 clamp 值、重启后又变默认值」的不幂等行为
+     */
+    private void handleIntegerInRange(Map<String, Object> body, Map<String, Object> updates,
+                                      Map<String, String> propertyUpdates, String field,
+                                      int min, int max) throws IOException {
+        if (!body.containsKey(field)) {
+            return;
+        }
+        Integer value = asInteger(body.get(field));
+        if (value == null) {
+            return;
+        }
+        int clamped = clamp(value, min, max);
+        updates.put(field, clamped);
+        setPropertyUpdate(propertyUpdates, field, String.valueOf(clamped));
     }
 
     private void handleInteger(Map<String, Object> body, Map<String, Object> updates,
