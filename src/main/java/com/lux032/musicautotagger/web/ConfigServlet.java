@@ -69,6 +69,7 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("supportedFormats", "file.supportedFormats"),
             Map.entry("autoRename", "file.autoRename"),
             Map.entry("createBackup", "file.createBackup"),
+            Map.entry("collapseAlbumArtistToVariousArtists", "tag.albumArtist.collapseToVariousArtists"),
             Map.entry("failedDirectory", "file.failedDirectory"),
             Map.entry("partialDirectory", "file.partialDirectory"),
             Map.entry("maxRetries", "file.maxRetries"),
@@ -183,6 +184,7 @@ public class ConfigServlet extends HttpServlet {
         handleString(body, updates, propertyUpdates, "supportedFormats", false);
         handleBoolean(body, updates, propertyUpdates, "autoRename");
         handleBoolean(body, updates, propertyUpdates, "createBackup");
+        handleBoolean(body, updates, propertyUpdates, "collapseAlbumArtistToVariousArtists");
         handleString(body, updates, propertyUpdates, "failedDirectory", false);
         handleString(body, updates, propertyUpdates, "partialDirectory", false);
         handleInteger(body, updates, propertyUpdates, "maxRetries");
@@ -285,6 +287,7 @@ public class ConfigServlet extends HttpServlet {
         data.put("supportedFormats", config.getSupportedFormats() == null ? null : String.join(",", config.getSupportedFormats()));
         data.put("autoRename", config.isAutoRename());
         data.put("createBackup", config.isCreateBackup());
+        data.put("collapseAlbumArtistToVariousArtists", config.isCollapseAlbumArtistToVariousArtists());
         data.put("failedDirectory", config.getFailedDirectory());
         data.put("partialDirectory", config.getPartialDirectory());
         data.put("maxRetries", config.getMaxRetries());
@@ -454,6 +457,10 @@ public class ConfigServlet extends HttpServlet {
         }
         if (updates.containsKey("createBackup")) {
             config.setCreateBackup((Boolean) updates.get("createBackup"));
+        }
+        if (updates.containsKey("collapseAlbumArtistToVariousArtists")) {
+            config.setCollapseAlbumArtistToVariousArtists(
+                (Boolean) updates.get("collapseAlbumArtistToVariousArtists"));
         }
         if (updates.containsKey("failedDirectory")) {
             config.setFailedDirectory((String) updates.get("failedDirectory"));

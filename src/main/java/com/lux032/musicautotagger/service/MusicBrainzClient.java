@@ -39,6 +39,7 @@ import java.util.Set;
 public class MusicBrainzClient {
     
     private final MusicConfig config;
+    private final AlbumArtistPolicy albumArtistPolicy;
     private final CloseableHttpClient httpClient;
     private final ObjectMapper objectMapper;
     /** Release Group ID -> 动画版封面 URL（空串 = 确认没有动画版），避免同一专辑逐曲重复请求 */
@@ -69,6 +70,7 @@ public class MusicBrainzClient {
     
     public MusicBrainzClient(MusicConfig config) {
         this.config = config;
+        this.albumArtistPolicy = new AlbumArtistPolicy(config);
         this.httpClient = createHttpClient(config);
         this.objectMapper = new ObjectMapper();
     }
@@ -350,26 +352,9 @@ public class MusicBrainzClient {
         }
     }
     
-    /**
-     * 从 artist-credit 节点解析专辑艺术家。
-     * 多人或 Unknown Artist 返回 "Various Artists"；无法解析时返回 null（交由调用方兜底）。
-     */
+    /** 从 artist-credit 节点按配置解析专辑艺术家。 */
     private String resolveAlbumArtistFromCredits(JsonNode artistCredits) {
-        if (artistCredits == null || !artistCredits.isArray() || artistCredits.size() == 0) {
-            return null;
-        }
-        if (artistCredits.size() > 1) {
-            return "Various Artists";
-        }
-        String artistName = artistCredits.get(0).path("artist").path("name").asText("");
-        if (artistName.isEmpty()) {
-            return null;
-        }
-        if (artistName.contains(", ") || artistName.contains("\u3001")
-            || "Unknown Artist".equalsIgnoreCase(artistName)) {
-            return "Various Artists";
-        }
-        return artistName;
+        return albumArtistPolicy.resolveFromCredits(artistCredits);
     }
 
     /**
@@ -1156,29 +1141,8 @@ public class MusicBrainzClient {
             // 艺术家信息
             JsonNode artistCredits = release.path("artist-credit");
             if (artistCredits.isArray() && artistCredits.size() > 0) {
-                // 如果有多个艺术家，专辑艺术家使用 "Various Artists"
-                if (artistCredits.size() > 1) {
-                    metadata.setAlbumArtist("Various Artists");
-                    // artist 字段保留完整列表
-                    StringBuilder artists = new StringBuilder();
-                    for (JsonNode credit : artistCredits) {
-                        if (artists.length() > 0) {
-                            artists.append(", ");
-                        }
-                        artists.append(credit.path("artist").path("name").asText());
-                    }
-                    metadata.setArtist(artists.toString());
-                } else {
-                    String artistName = artistCredits.get(0).path("artist").path("name").asText();
-                    // 检查单个艺术家名称是否包含多人，或者是 Unknown Artist
-                    if (artistName.contains(", ") || artistName.contains("、") ||
-                        "Unknown Artist".equalsIgnoreCase(artistName)) {
-                        metadata.setAlbumArtist("Various Artists");
-                    } else {
-                        metadata.setAlbumArtist(artistName);
-                    }
-                    metadata.setArtist(artistName);
-                }
+                metadata.setAlbumArtist(albumArtistPolicy.resolveFromCredits(artistCredits));
+                metadata.setArtist(resolveCreditedArtistText(artistCredits));
             }
             
             // 曲目数
@@ -1322,27 +1286,9 @@ public class MusicBrainzClient {
             }
 
             // 获取专辑艺术家(Album Artist)
-            JsonNode releaseArtistCredits = bestRelease.path("artist-credit");
-            if (releaseArtistCredits.isArray() && releaseArtistCredits.size() > 0) {
-                // 如果有多个艺术家，使用 "Various Artists"
-                if (releaseArtistCredits.size() > 1) {
-                    metadata.setAlbumArtist("Various Artists");
-                    log.info("专辑艺术家为多人({}人)，使用 Various Artists", releaseArtistCredits.size());
-                } else {
-                    // 单个艺术家，检查是否包含逗号分隔的多人，或者是 Unknown Artist
-                    String artistName = releaseArtistCredits.get(0).path("artist").path("name").asText();
-                    if (artistName.contains(", ") || artistName.contains("、") ||
-                        "Unknown Artist".equalsIgnoreCase(artistName)) {
-                        metadata.setAlbumArtist("Various Artists");
-                        log.info("专辑艺术家为多人或未知({})，使用 Various Artists", artistName);
-                    } else {
-                        metadata.setAlbumArtist(artistName);
-                    }
-                }
-            } else {
-                // 如果专辑没有艺术家信息,使用单曲的艺术家
-                metadata.setAlbumArtist(metadata.getArtist());
-            }
+            String resolvedAlbumArtist = albumArtistPolicy.resolveFromCredits(bestRelease.path("artist-credit"));
+            metadata.setAlbumArtist(resolvedAlbumArtist != null
+                ? resolvedAlbumArtist : albumArtistPolicy.fallbackUnknown(metadata.getArtist()));
             
             // 解析流派标签
             JsonNode tags = root.path("tags");
@@ -1711,6 +1657,22 @@ public class MusicBrainzClient {
         bundle.setOriginalReleaseDate(blankToNull(originalDate));
         bundle.setOriginalYear(originalDate != null && originalDate.matches("^\\d{4}.*") ? originalDate.substring(0, 4) : null);
         return bundle;
+    }
+
+    private static String resolveCreditedArtistText(JsonNode credits) {
+        StringBuilder value = new StringBuilder();
+        if (credits != null && credits.isArray()) {
+            for (int i = 0; i < credits.size(); i++) {
+                JsonNode credit = credits.get(i);
+                String name = credit.path("name").asText("");
+                if (name.isEmpty()) name = credit.path("artist").path("name").asText("");
+                value.append(name);
+                String joinPhrase = credit.path("joinphrase").asText("");
+                if (!joinPhrase.isEmpty()) value.append(joinPhrase);
+                else if (i < credits.size() - 1) value.append(", ");
+            }
+        }
+        return value.toString();
     }
 
     private static String joinArtistValues(JsonNode credits, String key) {

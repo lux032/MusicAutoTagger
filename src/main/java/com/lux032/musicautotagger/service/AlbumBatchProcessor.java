@@ -25,6 +25,7 @@ public class AlbumBatchProcessor {
     private final TagWriterService tagWriter;
     private final ProcessedFileLogger processedLogger;
     private final CoverArtService coverArtService;
+    private final AlbumArtistPolicy albumArtistPolicy;
     /** 用于按锁定 Release 获取唯一权威的专辑级标签。 */
     private MusicBrainzClient musicBrainzClient;
     /** 人工确认队列（阶段六，可选） */
@@ -38,6 +39,7 @@ public class AlbumBatchProcessor {
         this.tagWriter = tagWriter;
         this.processedLogger = processedLogger;
         this.coverArtService = coverArtService;
+        this.albumArtistPolicy = new AlbumArtistPolicy(config);
     }
 
     /**
@@ -500,21 +502,11 @@ public class AlbumBatchProcessor {
         //    注意：不能只看「不同艺术家的个数是否为 1」——
         //    如果 10 个文件里只有 1 个识别出了艺术家，其余 9 个缺失，
         //    artistVotes.size() 也是 1，会被误判为「全专辑艺术家一致」。
-        String albumArtist;
         boolean allFilesHaveArtist = (filesWithRecognizedArtist == pendingFiles.size());
-        if (artistVotes.size() == 1 && allFilesHaveArtist) {
-            albumArtist = artistVotes.keySet().iterator().next();
-            log.info("全部 {} 个文件艺术家一致，专辑艺术家使用: {}", pendingFiles.size(), albumArtist);
-        } else if (artistVotes.size() == 1) {
-            albumArtist = "Various Artists";
-            log.info("艺术家虽只有 1 种，但仅 {}/{} 个文件识别出艺术家，保守起见写入 Various Artists",
-                filesWithRecognizedArtist, pendingFiles.size());
-        } else {
-            albumArtist = "Various Artists";
-            log.info("检测到 {} 个不同艺术家，专辑艺术家写入 Various Artists（避免 Plex/Emby 拆分专辑）",
-                artistVotes.size());
-        }
-        albumArtist = MusicMetadata.normalizeAlbumArtist(albumArtist);
+        String albumArtist = albumArtistPolicy.collapseOrJoin(
+            new ArrayList<>(artistVotes.keySet()), allFilesHaveArtist);
+        log.info("合成未收录专辑艺术家: {}（识别 {}/{}，不同艺术家 {}）",
+            albumArtist, filesWithRecognizedArtist, pendingFiles.size(), artistVotes.size());
 
         return new FolderAlbumCache.CachedAlbumInfo(
             null,   // releaseGroupId - MusicBrainz 没有这张专辑

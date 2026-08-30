@@ -111,41 +111,22 @@ public class MusicMetadata {
         return copy;
     }
 
-    /**
-     * 设置专辑艺术家，自动检测多人情况并规范化为 "Various Artists"
-     * @param albumArtist 专辑艺术家
-     */
+    /** 专辑艺术家模型字段只做赋值；业务归一化由 AlbumArtistPolicy 负责。 */
     public void setAlbumArtist(String albumArtist) {
-        this.albumArtist = normalizeAlbumArtist(albumArtist);
+        this.albumArtist = albumArtist;
     }
 
     /**
-     * 规范化专辑艺术家：如果是多人、未知或空则返回 "Various Artists"
-     * @param albumArtist 原始专辑艺术家
-     * @return 规范化后的专辑艺术家
+     * @deprecated 使用 AlbumArtistPolicy.fallbackUnknown；此方法仅保留空值兼容兜底。
      */
+    @Deprecated
     public static String normalizeAlbumArtist(String albumArtist) {
-        // 如果是 null、空字符串或 "Unknown Artist"，返回 "Various Artists"
-        if (albumArtist == null || albumArtist.isEmpty() ||
-            "Unknown Artist".equalsIgnoreCase(albumArtist) ||
-            "Unknown".equalsIgnoreCase(albumArtist)) {
+        if (albumArtist == null || albumArtist.trim().isEmpty()
+            || "Unknown Artist".equalsIgnoreCase(albumArtist.trim())
+            || "Unknown".equalsIgnoreCase(albumArtist.trim())) {
             return "Various Artists";
         }
-
-        // 已经是 Various Artists，直接返回
-        if ("Various Artists".equalsIgnoreCase(albumArtist)) {
-            return "Various Artists";
-        }
-
-        // 检测多人情况：包含逗号、顿号、&、and 等分隔符
-        if (albumArtist.contains(", ") ||
-            albumArtist.contains("、") ||
-            albumArtist.contains(" & ") ||
-            albumArtist.contains("; ")) {
-            return "Various Artists";
-        }
-
-        return albumArtist;
+        return albumArtist.trim();
     }
 
     @Override

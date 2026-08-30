@@ -721,6 +721,10 @@ public class TagWriterService {
         }
     }
 
+    static String albumArtistFromTag(String value) {
+        return value == null || value.trim().isEmpty() ? null : value;
+    }
+
     /**
      * 读取现有标签（完整版本，包含作曲、作词、歌词等）
      */
@@ -736,7 +740,8 @@ public class TagWriterService {
             MusicMetadata metadata = new MusicMetadata();
             metadata.setTitle(tag.getFirst(FieldKey.TITLE));
             metadata.setArtist(tag.getFirst(FieldKey.ARTIST));
-            metadata.setAlbumArtist(tag.getFirst(FieldKey.ALBUM_ARTIST));
+            String albumArtist = tag.getFirst(FieldKey.ALBUM_ARTIST);
+            metadata.setAlbumArtist(albumArtistFromTag(albumArtist));
             metadata.setAlbum(tag.getFirst(FieldKey.ALBUM));
             metadata.setReleaseDate(tag.getFirst(FieldKey.YEAR));
 

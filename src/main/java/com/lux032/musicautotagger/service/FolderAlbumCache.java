@@ -1256,8 +1256,8 @@ public class FolderAlbumCache {
         }
         
         // 回退到专辑名+艺术家匹配
-        return identified.getAlbumTitle().equals(cached.getAlbumTitle()) &&
-               identified.getAlbumArtist().equals(cached.getAlbumArtist());
+        return Objects.equals(identified.getAlbumTitle(), cached.getAlbumTitle()) &&
+               Objects.equals(identified.getAlbumArtist(), cached.getAlbumArtist());
     }
     
     /**
@@ -1520,7 +1520,7 @@ public class FolderAlbumCache {
             this.releaseGroupId = releaseGroupId;
             this.releaseId = releaseId;
             this.albumTitle = albumTitle;
-            // 规范化专辑艺术家（null、空、Unknown Artist 会被转换为 "Various Artists"）
+            // 缓存只做空值安全兜底，不改写已经解析好的多艺术家名称。
             this.albumArtist = MusicMetadata.normalizeAlbumArtist(albumArtist);
             this.trackCount = trackCount;
             this.releaseDate = releaseDate;

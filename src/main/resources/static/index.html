@@ -884,6 +884,10 @@
                             <label for="cfgExportLyricsToFile" data-i18n="config.lyrics.export">导出歌词文件</label>
                         </div>
                         <div class="form-row checkbox-row">
+                            <input id="cfgCollapseAlbumArtistToVariousArtists" type="checkbox">
+                            <label for="cfgCollapseAlbumArtistToVariousArtists" data-i18n="config.album.artist.collapse">多艺术家专辑自动规范为 Various Artists</label>
+                        </div>
+                        <div class="form-row checkbox-row">
                             <input id="cfgAudioNormalizeEnabled" type="checkbox">
                             <label for="cfgAudioNormalizeEnabled" class="label-with-tip">
                                 <span data-i18n="config.audio.normalize.enabled">启用高规格音频降级</span>
@@ -2174,6 +2178,7 @@
                 document.getElementById('cfgProxyPassword').value = cfg.proxyPassword || '';
                 document.getElementById('cfgLanguage').value = cfg.language || 'en_US';
                 document.getElementById('cfgExportLyricsToFile').checked = !!cfg.exportLyricsToFile;
+                document.getElementById('cfgCollapseAlbumArtistToVariousArtists').checked = cfg.collapseAlbumArtistToVariousArtists !== false;
                 document.getElementById('cfgAudioNormalizeEnabled').checked = !!cfg.audioNormalizeEnabled;
                 document.getElementById('cfgAudioNormalizeFfmpegPath').value = cfg.audioNormalizeFfmpegPath || '';
                 document.getElementById('cfgCueSplitEnabled').checked = !!cfg.cueSplitEnabled;
@@ -2251,6 +2256,7 @@
                 proxyPassword: getValue('cfgProxyPassword'),
                 language: getValue('cfgLanguage'),
                 exportLyricsToFile: document.getElementById('cfgExportLyricsToFile').checked,
+                collapseAlbumArtistToVariousArtists: document.getElementById('cfgCollapseAlbumArtistToVariousArtists').checked,
                 audioNormalizeEnabled: document.getElementById('cfgAudioNormalizeEnabled').checked,
                 audioNormalizeFfmpegPath: getValue('cfgAudioNormalizeFfmpegPath'),
                 cueSplitEnabled: document.getElementById('cfgCueSplitEnabled').checked,

@@ -72,6 +72,10 @@ acoustid.apiUrl=https://api.acoustid.org/v2/lookup
 # false：保持原文件名
 file.autoRename=true
 
+# 多艺术家专辑的专辑艺术家写入方式。
+# true：写为 "Various Artists"；false：保留 MusicBrainz 原始署名。
+tag.albumArtist.collapseToVariousArtists=true
+
 # 是否创建备份文件（已废弃，现在使用复制模式）
 # 程序会将处理后的文件复制到输出目录，原文件保持不变
 file.createBackup=false

@@ -78,6 +78,7 @@ public class MusicConfig {
 
     // 歌词配置
     private boolean exportLyricsToFile; // 是否将歌词导出为独立文件
+    private volatile boolean collapseAlbumArtistToVariousArtists = true; // 多艺术家专辑是否折叠为 VA
 
     // 音频规格规范化配置
     private boolean audioNormalizeEnabled; // 是否将高规格音频转换为24/48
@@ -201,6 +202,7 @@ public class MusicConfig {
         this.supportedFormats = new String[]{"mp3", "flac", "m4a", "ogg", "wav"};
         this.autoRename = true;
         this.createBackup = true;
+        this.collapseAlbumArtistToVariousArtists = true;
         this.failedDirectory = null; // 默认不移动失败文件
         this.partialDirectory = null; // 默认不移动部分识别文件
         this.maxRetries = 3; // 默认重试3次
@@ -357,6 +359,10 @@ public class MusicConfig {
             }
             if (props.containsKey("file.createBackup")) {
                 this.createBackup = Boolean.parseBoolean(props.getProperty("file.createBackup"));
+            }
+            if (props.containsKey("tag.albumArtist.collapseToVariousArtists")) {
+                this.collapseAlbumArtistToVariousArtists = Boolean.parseBoolean(
+                    props.getProperty("tag.albumArtist.collapseToVariousArtists"));
             }
             if (props.containsKey("file.supportedFormats")) {
                 String formats = props.getProperty("file.supportedFormats", "").trim();
@@ -829,6 +835,8 @@ public class MusicConfig {
         props.setProperty("acoustid.apiUrl", acoustIdApiUrl);
         props.setProperty("file.autoRename", String.valueOf(autoRename));
         props.setProperty("file.createBackup", String.valueOf(createBackup));
+        props.setProperty("tag.albumArtist.collapseToVariousArtists",
+            String.valueOf(collapseAlbumArtistToVariousArtists));
         if (supportedFormats != null && supportedFormats.length > 0) {
             props.setProperty("file.supportedFormats", String.join(",", supportedFormats));
         }

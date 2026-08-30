@@ -41,6 +41,7 @@ public class FailedFileHandler {
     private final FileSystemUtils fileSystemUtils;
     private final AudioFormatNormalizer audioFormatNormalizer;
     private final ArtistMatchingService artistMatchingService;
+    private final AlbumArtistPolicy albumArtistPolicy;
     
     public FailedFileHandler(MusicConfig config, TagWriterService tagWriter,
                              CoverArtService coverArtService, ProcessedFileLogger processedLogger,
@@ -52,6 +53,7 @@ public class FailedFileHandler {
         this.fileSystemUtils = fileSystemUtils;
         this.audioFormatNormalizer = new AudioFormatNormalizer(config);
         this.artistMatchingService = new ArtistMatchingService(config);
+        this.albumArtistPolicy = new AlbumArtistPolicy(config);
     }
 
     /**
@@ -536,23 +538,22 @@ public class FailedFileHandler {
             }
 
             // 检查是否有多个不同的艺术家
-            String finalArtist = checkMultipleArtists(audioFiles);
+            ArtistSummary artistSummary = summarizeArtists(audioFiles);
 
-            if (finalArtist == null) {
+            if (artistSummary == null) {
                 // 没有艺术家标签，跳过
                 log.debug("源文件没有艺术家标签，跳过 LLM 匹配");
                 return false;
             }
 
             String matchedArtist;
-            if (finalArtist.equals("Various Artists")) {
-                // 多艺术家专辑，直接使用 Various Artists
-                matchedArtist = "Various Artists";
-                log.info("检测到多艺术家专辑，使用 Various Artists");
+            if (artistSummary.multiple()) {
+                matchedArtist = artistSummary.albumArtist();
+                log.info("检测到多艺术家专辑，专辑艺术家使用: {}", matchedArtist);
             } else {
                 // 单一艺术家，进行 LLM 匹配
-                log.info("检测到源文件艺术家标签: {}", finalArtist);
-                ArtistMatchingService.MatchResult matchResult = artistMatchingService.matchArtist(finalArtist);
+                log.info("检测到源文件艺术家标签: {}", artistSummary.albumArtist());
+                ArtistMatchingService.MatchResult matchResult = artistMatchingService.matchArtist(artistSummary.albumArtist());
                 if (matchResult == null) {
                     log.info("LLM 未找到匹配的艺术家");
                     return false;
@@ -574,9 +575,9 @@ public class FailedFileHandler {
             fileSystemUtils.copyDirectoryRecursively(partialFolder.toPath(), finalFolder.toPath());
 
             // 更新标签
-            if (matchedArtist.equals("Various Artists")) {
-                // 多艺术家：只设置专辑艺术家为 Various Artists
-                updateAlbumArtistInFolder(finalFolder, "Various Artists");
+            if (artistSummary.multiple()) {
+                // 多艺术家：只更新专辑艺术家，保留逐曲艺术家。
+                updateAlbumArtistInFolder(finalFolder, matchedArtist);
             } else {
                 // 单艺术家：更新所有文件的艺术家标签
                 updateArtistTagsInFolder(finalFolder, matchedArtist);
@@ -607,38 +608,26 @@ public class FailedFileHandler {
         dir.delete();
     }
 
-    /**
-     * 检查专辑中是否有多个不同的艺术家
-     * @return 艺术家名称，如果是多艺术家返回 "Various Artists"，如果没有艺术家返回 null
-     */
-    private String checkMultipleArtists(List<File> audioFiles) {
-        String firstArtist = null;
-        boolean hasMultipleArtists = false;
-
+    /** 汇总专辑中的逐曲艺术家，并按配置生成专辑艺术家。 */
+    private ArtistSummary summarizeArtists(List<File> audioFiles) {
+        java.util.LinkedHashSet<String> artists = new java.util.LinkedHashSet<>();
         for (File file : audioFiles) {
             try {
                 com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(file);
-                if (metadata == null || metadata.getArtist() == null || metadata.getArtist().trim().isEmpty()) {
-                    continue;
-                }
-
-                String artist = metadata.getArtist().trim();
-                if (firstArtist == null) {
-                    firstArtist = artist;
-                } else if (!firstArtist.equals(artist)) {
-                    hasMultipleArtists = true;
-                    break;
+                if (metadata != null && metadata.getArtist() != null && !metadata.getArtist().trim().isEmpty()) {
+                    artists.add(metadata.getArtist().trim());
                 }
             } catch (Exception e) {
                 log.debug("读取标签失败: {}", file.getName());
             }
         }
-
-        if (firstArtist == null) {
-            return null;
-        }
-        return hasMultipleArtists ? "Various Artists" : firstArtist;
+        if (artists.isEmpty()) return null;
+        boolean multiple = artists.size() > 1;
+        String albumArtist = albumArtistPolicy.collapseOrJoin(new ArrayList<>(artists), true);
+        return new ArtistSummary(albumArtist, multiple);
     }
+
+    private record ArtistSummary(String albumArtist, boolean multiple) { }
 
     /**
      * 递归收集文件夹中的所有音频文件

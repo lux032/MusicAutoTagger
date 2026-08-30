@@ -27,6 +27,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 class TagWriterServiceTest {
     @Test
+    void missingAlbumArtistTagRemainsNullInsteadOfBecomingVariousArtists() {
+        assertNull(TagWriterService.albumArtistFromTag(""));
+        assertNull(TagWriterService.albumArtistFromTag("   "));
+        assertNull(TagWriterService.albumArtistFromTag(null));
+        assertEquals("Earth, Wind & Fire", TagWriterService.albumArtistFromTag("Earth, Wind & Fire"));
+    }
+
+    @Test
     void splitPositionSeparatesSlashTotalForMp4Safety() {
         assertArrayEquals(new String[] {"1", "6"}, TagWriterService.splitPosition("1/6", null));
         assertArrayEquals(new String[] {"2", "2"}, TagWriterService.splitPosition("2/2", null));
