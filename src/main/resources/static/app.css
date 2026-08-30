@@ -464,10 +464,11 @@ a { color: var(--primary); }
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 9px 11px;
-    align-self: start;
+    align-self: stretch;
+    min-height: 44px;
 }
 .checkbox-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; flex: 0 0 auto; }
-.checkbox-row label { cursor: pointer; font-weight: 600; font-size: 13px; }
+.checkbox-row label { cursor: pointer; font-weight: 600; font-size: 13px; line-height: 1.45; }
 
 /* 提示气泡 */
 .info-tip {
@@ -704,7 +705,23 @@ a { color: var(--primary); }
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
     align-items: start;
 }
+.switch-grid {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    align-items: stretch;
+}
+.field-group {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-soft);
+    padding: 14px;
+    display: grid;
+    gap: 10px;
+    align-content: start;
+    min-width: 0;
+}
+.field-group > .checkbox-row { background: #fff; }
 .form-grid .span-2 { grid-column: span 2; }
+@media (max-width: 760px) { .form-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 620px) { .form-grid .span-2 { grid-column: auto; } }
 
 .modal-footer {

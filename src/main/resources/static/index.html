@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>音乐自动标签器 - 仪表板</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=8">
+    <link rel="stylesheet" href="app.css?v=9">
     <style>
         /* ---- 仪表板专用布局 ---- */
         .dash-grid {
@@ -879,6 +879,18 @@
                                 <option value="zh_CN">中文</option>
                             </select>
                         </div>
+                        <div class="form-row">
+                            <label for="cfgReleaseCountryPriority" class="label-with-tip">
+                                <span data-i18n="config.release.country.priority">发行地区优先级</span>
+                                <span class="info-tip" aria-label="说明">!
+                                    <span class="tip-text" data-i18n="config.release.country.priority.hint">按逗号分隔国家或地区代码，例如 JP,US,GB。越靠前优先级越高。</span>
+                                </span>
+                            </label>
+                            <input id="cfgReleaseCountryPriority" type="text" placeholder="JP,US,GB">
+                        </div>
+                    </div>
+
+                    <div class="form-grid switch-grid">
                         <div class="form-row checkbox-row">
                             <input id="cfgExportLyricsToFile" type="checkbox">
                             <label for="cfgExportLyricsToFile" data-i18n="config.lyrics.export">导出歌词文件</label>
@@ -888,43 +900,41 @@
                             <label for="cfgCollapseAlbumArtistToVariousArtists" data-i18n="config.album.artist.collapse">多艺术家专辑自动规范为 Various Artists</label>
                         </div>
                         <div class="form-row checkbox-row">
-                            <input id="cfgAudioNormalizeEnabled" type="checkbox">
-                            <label for="cfgAudioNormalizeEnabled" class="label-with-tip">
-                                <span data-i18n="config.audio.normalize.enabled">启用高规格音频降级</span>
-                                <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text" data-i18n="config.audio.normalize.hint">将 &gt;24bit 或 &gt;48kHz 的音频降级为 24bit/48kHz 再处理</span>
-                                </span>
-                            </label>
-                        </div>
-                        <div class="form-row">
-                            <label for="cfgAudioNormalizeFfmpegPath" class="label-with-tip">
-                                <span data-i18n="config.audio.normalize.ffmpeg">FFmpeg 路径</span>
-                                <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text" data-i18n="config.audio.normalize.ffmpeg.readonly.hint">出于安全考虑此项只读：该路径会被直接执行，只能在 config.properties 中修改，改后需重启</span>
-                                </span>
-                            </label>
-                            <input id="cfgAudioNormalizeFfmpegPath" type="text" readonly disabled>
-                        </div>
-                        <div class="form-row checkbox-row">
-                            <input id="cfgCueSplitEnabled" type="checkbox">
-                            <label for="cfgCueSplitEnabled" data-i18n="config.cue.split.enabled">启用 CUE 分割</label>
-                        </div>
-                        <div class="form-row">
-                            <label for="cfgCueSplitOutputDirectory" data-i18n="config.cue.output.directory">CUE 分割输出目录</label>
-                            <input id="cfgCueSplitOutputDirectory" type="text">
-                        </div>
-                        <div class="form-row checkbox-row">
                             <input id="cfgReviewEnabled" type="checkbox">
                             <label for="cfgReviewEnabled" data-i18n="config.review.enabled">启用待人工确认（专辑无法确定时不写标签，等待确认）</label>
                         </div>
-                        <div class="form-row">
-                            <label for="cfgReleaseCountryPriority" class="label-with-tip">
-                                <span data-i18n="config.release.country.priority">发行地区优先级</span>
-                                <span class="info-tip" aria-label="说明">!
-                                    <span class="tip-text" data-i18n="config.release.country.priority.hint">按逗号分隔国家或地区代码，例如 JP,US,GB。越靠前优先级越高。</span>
-                                </span>
-                            </label>
-                            <input id="cfgReleaseCountryPriority" type="text" placeholder="JP,US,GB">
+                    </div>
+
+                    <div class="form-grid">
+                        <div class="field-group">
+                            <div class="form-row checkbox-row">
+                                <input id="cfgAudioNormalizeEnabled" type="checkbox">
+                                <label for="cfgAudioNormalizeEnabled" class="label-with-tip">
+                                    <span data-i18n="config.audio.normalize.enabled">启用高规格音频降级</span>
+                                    <span class="info-tip" aria-label="说明">!
+                                        <span class="tip-text" data-i18n="config.audio.normalize.hint">将 &gt;24bit 或 &gt;48kHz 的音频降级为 24bit/48kHz 再处理</span>
+                                    </span>
+                                </label>
+                            </div>
+                            <div class="form-row">
+                                <label for="cfgAudioNormalizeFfmpegPath" class="label-with-tip">
+                                    <span data-i18n="config.audio.normalize.ffmpeg">FFmpeg 路径</span>
+                                    <span class="info-tip" aria-label="说明">!
+                                        <span class="tip-text" data-i18n="config.audio.normalize.ffmpeg.readonly.hint">出于安全考虑此项只读：该路径会被直接执行，只能在 config.properties 中修改，改后需重启</span>
+                                    </span>
+                                </label>
+                                <input id="cfgAudioNormalizeFfmpegPath" type="text" readonly disabled>
+                            </div>
+                        </div>
+                        <div class="field-group">
+                            <div class="form-row checkbox-row">
+                                <input id="cfgCueSplitEnabled" type="checkbox">
+                                <label for="cfgCueSplitEnabled" data-i18n="config.cue.split.enabled">启用 CUE 分割</label>
+                            </div>
+                            <div class="form-row">
+                                <label for="cfgCueSplitOutputDirectory" data-i18n="config.cue.output.directory">CUE 分割输出目录</label>
+                                <input id="cfgCueSplitOutputDirectory" type="text">
+                            </div>
                         </div>
                     </div>
 
