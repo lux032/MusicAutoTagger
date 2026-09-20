@@ -265,9 +265,12 @@ public class ProcessedFileLogger {
     /**
      * 记录里这些 recording_id 不是真正的 MusicBrainz 录音 ID，而是失败/特殊流程的占位值，
      * 这些条目本来就没有认出专辑，回填时直接跳过。
+     *
+     * 注意：ONLINE_SEARCH 不在此列——它是联网搜索确认成功的正常产物（专辑名/艺术家均已确定，
+     * 只是没有 MusicBrainz recording_id），理应可以按专辑名回填 release_group_id 来获取封面。
      */
     private static final java.util.Set<String> NON_MB_RECORDING_IDS = java.util.Set.of(
-        "FAILED", "UNKNOWN", "WRITE_FAILED", "EXCEPTION", "CUE_SPLIT", "REVIEW_REJECTED", "ONLINE_SEARCH");
+        "FAILED", "UNKNOWN", "WRITE_FAILED", "EXCEPTION", "CUE_SPLIT", "REVIEW_REJECTED");
 
     /** 一个待回填的专辑分组。 */
     public static class AlbumGroup {

@@ -119,9 +119,12 @@ public class DashboardServlet extends HttpServlet {
     /**
      * 这些 recording_id 不是真正的 MusicBrainz 录音 ID，而是失败/特殊流程的占位值。
      * 这类行的 artist 字段存的是「处理异常: XXX」这种诊断文本，不能当成成果展示。
+     *
+     * 注意：ONLINE_SEARCH 不在此列——联网搜索确认后的专辑是正常整理成果（专辑名/艺术家均已写入标签），
+     * 只是没有 MusicBrainz recording_id，不能和失败记录一起被排除在「最近整理的专辑」之外。
      */
     private static final Set<String> NON_MB_RECORDING_IDS = Set.of(
-        "FAILED", "UNKNOWN", "WRITE_FAILED", "EXCEPTION", "CUE_SPLIT", "REVIEW_REJECTED", "ONLINE_SEARCH");
+        "FAILED", "UNKNOWN", "WRITE_FAILED", "EXCEPTION", "CUE_SPLIT", "REVIEW_REJECTED");
 
     private static boolean isSuccessfulRecord(String recordingId, String album) {
         if (album == null || album.isBlank() || "Unknown Album".equalsIgnoreCase(album.trim())) {
