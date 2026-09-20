@@ -122,11 +122,21 @@ public class CoverServlet extends HttpServlet {
 
         String rawPath = trimToNull(req.getParameter("path"));
         if (rawPath != null) {
-            Image embedded = readEmbedded(rawPath);
-            if (embedded != null) {
-                // 内嵌封面同样可能很大，一并缩小
-                writeImage(resp, toThumbnail(embedded.data), "image/jpeg");
-                return;
+            File source = allowedFile(rawPath);
+            if (source != null) {
+                String cacheKey = "path:" + source.getAbsolutePath() + ":" + source.lastModified();
+                byte[] thumb = thumbCache.get(cacheKey);
+                if (thumb == null) {
+                    Image embedded = readEmbedded(source);
+                    if (embedded != null) {
+                        thumb = toThumbnail(embedded.data);
+                        if (thumb.length <= THUMB_CACHE_MAX_BYTES) thumbCache.put(cacheKey, thumb);
+                    }
+                }
+                if (thumb != null) {
+                    writeImage(resp, thumb, "image/jpeg");
+                    return;
+                }
             }
         }
 
@@ -188,12 +198,17 @@ public class CoverServlet extends HttpServlet {
     }
 
     /** 从音频文件读内嵌封面，路径必须落在配置声明过的目录内。 */
-    private Image readEmbedded(String rawPath) {
+    private File allowedFile(String rawPath) {
         try {
             File file = new File(rawPath).getCanonicalFile();
-            if (!isAllowed(file) || !file.isFile()) {
-                return null;
-            }
+            return isAllowed(file) && file.isFile() ? file : null;
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    private Image readEmbedded(File file) {
+        try {
             AudioFile audioFile = AudioFileIO.read(file);
             Tag tag = audioFile.getTag();
             Artwork artwork = tag == null ? null : tag.getFirstArtwork();
@@ -204,7 +219,7 @@ public class CoverServlet extends HttpServlet {
             return new Image(artwork.getBinaryData(),
                 (mime == null || mime.isBlank()) ? "image/jpeg" : mime);
         } catch (Exception e) {
-            log.debug("读取内嵌封面失败: {} ({})", rawPath, e.getMessage());
+            log.debug("读取内嵌封面失败: {} ({})", file, e.getMessage());
             return null;
         }
     }

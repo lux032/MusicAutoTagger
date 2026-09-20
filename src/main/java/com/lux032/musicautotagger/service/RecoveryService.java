@@ -425,9 +425,21 @@ public class RecoveryService implements AutoCloseable {
         item.setCommittedOutputPaths(committed.stream().map(Path::toString).toList());
         reviewQueue.update(item);
 
-        for (File file : originalFiles) {
+        List<Path> committedAudio = new ArrayList<>();
+        for (Path unit : committed) {
+            if (Files.isDirectory(unit)) {
+                committedAudio.addAll(listFiles(unit).stream()
+                    .filter(p -> fileSystemUtils.isMusicFile(p.toFile())).toList());
+            } else if (fileSystemUtils.isMusicFile(unit.toFile())) {
+                committedAudio.add(unit);
+            }
+        }
+        committedAudio.sort(Path::compareTo);
+        for (int i = 0; i < originalFiles.size(); i++) {
+            File file = originalFiles.get(i);
+            String targetPath = i < committedAudio.size() ? committedAudio.get(i).toFile().getAbsolutePath() : null;
             processedLogger.markFileAsProcessed(file, "ONLINE_SEARCH", finalArtist,
-                file.getName(), finalAlbum);
+                file.getName(), finalAlbum, null, targetPath);
         }
 
         if (selectedCover != null) {
@@ -473,7 +485,9 @@ public class RecoveryService implements AutoCloseable {
             for (Path unit : units) {
                 Path destination = outputRoot.resolve(unit);
                 Files.createDirectories(destination.getParent());
-                commitUnit(workspace.resolve(unit), destination, taskId);
+                Path source = workspace.resolve(unit);
+                commitUnit(source, destination, taskId);
+                processedLogger.rebaseTargetPaths(source.toString(), destination.toString());
                 committed.add(destination);
             }
         } catch (IOException failure) {
@@ -533,7 +547,9 @@ public class RecoveryService implements AutoCloseable {
                 Path back = workspace.resolve(outputRoot.relativize(destination));
                 Files.createDirectories(back.getParent());
                 Files.move(destination, back);
+                processedLogger.clearTargetPathsUnder(destination.toString());
             } catch (IOException e) {
+                processedLogger.clearTargetPathsUnder(destination.toString());
                 log.error("提交失败后回滚受阻，输出目录可能残留部分内容，需人工清理: {}（原因: {}）",
                     destination, cause.getMessage(), e);
             }

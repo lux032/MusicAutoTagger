@@ -158,12 +158,14 @@ public class DashboardServlet extends HttpServlet {
         // release_group_id 是后加列，老库可能还没补上
         boolean withRgid = processedLogger != null && processedLogger.isReleaseGroupIdColumnAvailable();
         String rgidSelect = withRgid ? "MAX(release_group_id) AS rgid, " : "";
+        boolean withTarget = processedLogger != null && processedLogger.isTargetFilePathColumnAvailable();
+        String targetSelect = withTarget ? "MIN(target_file_path) AS target_sample, " : "";
         String placeholders = NON_MB_RECORDING_IDS.stream()
             .map(x -> "?").collect(java.util.stream.Collectors.joining(", "));
 
-        String sql = "SELECT album, " + rgidSelect
+        String sql = "SELECT album, " + rgidSelect + targetSelect
             + "MIN(artist) AS one_artist, COUNT(DISTINCT artist) AS artist_count, "
-            + "COUNT(*) AS track_count, MAX(processed_time) AS last_time, MIN(file_path) AS sample_path "
+            + "COUNT(*) AS track_count, MAX(processed_time) AS last_time, MIN(file_path) AS source_sample "
             + "FROM processed_files "
             + "WHERE album IS NOT NULL AND album <> '' AND album <> 'Unknown Album' "
             + "AND recording_id IS NOT NULL AND recording_id <> '' "
@@ -185,7 +187,8 @@ public class DashboardServlet extends HttpServlet {
                     album.put("artist", rs.getInt("artist_count") == 1
                         ? rs.getString("one_artist") : "Various Artists");
                     album.put("trackCount", rs.getInt("track_count"));
-                    album.put("path", rs.getString("sample_path"));
+                    String target = withTarget ? rs.getString("target_sample") : null;
+                    album.put("path", target != null ? target : rs.getString("source_sample"));
                     if (withRgid) {
                         album.put("releaseGroupId", rs.getString("rgid"));
                     }
@@ -215,7 +218,7 @@ public class DashboardServlet extends HttpServlet {
         try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
             String line;
             while ((line = reader.readLine()) != null) {
-                // 格式: filePath|recordingId|artist|title|album|time[|releaseGroupId]
+                // 格式: filePath|recordingId|artist|title|album|time[|releaseGroupId|targetFilePath]
                 String[] parts = line.split("\\|", -1);
                 if (parts.length < 6 || !isSuccessfulRecord(parts[1], parts[4])) {
                     continue;
@@ -229,9 +232,15 @@ public class DashboardServlet extends HttpServlet {
                     Map<String, Object> created = new HashMap<>();
                     created.put("album", k);
                     created.put("trackCount", 0);
-                    created.put("path", parts[0]);
+                    created.put("path", parts.length >= 8 && !parts[7].isBlank() ? parts[7] : parts[0]);
+                    created.put("hasTargetPath", parts.length >= 8 && !parts[7].isBlank());
                     return created;
                 });
+                if (parts.length >= 8 && !parts[7].isBlank()
+                        && !Boolean.TRUE.equals(entry.get("hasTargetPath"))) {
+                    entry.put("path", parts[7]);
+                    entry.put("hasTargetPath", true);
+                }
                 entry.put("trackCount", (Integer) entry.get("trackCount") + 1);
                 // 时间是 yyyy-MM-dd HH:mm:ss，字典序即时间序，直接比字符串就行
                 String known = (String) entry.get("time");
@@ -251,6 +260,7 @@ public class DashboardServlet extends HttpServlet {
             Set<String> artists = artistsByAlbum.get(entry.getKey());
             entry.getValue().put("artist", artists != null && artists.size() == 1
                 ? artists.iterator().next() : "Various Artists");
+            entry.getValue().remove("hasTargetPath");
         }
 
         List<Map<String, Object>> albums = new ArrayList<>(grouped.values());

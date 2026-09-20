@@ -75,18 +75,36 @@ public class TagWriterService {
         return override != null ? override : Paths.get(config.getOutputDirectory());
     }
 
-    /**
-     * 处理音频文件（复制到新目录并更新标签）
-     */
-    public boolean processFile(File sourceFile, MusicMetadata metadata, byte[] coverArtData) {
-        if (!sourceFile.exists()) {
-            log.error("源文件不存在: {}", sourceFile.getAbsolutePath());
-            return false;
+    /** 标签写入结果，同时暴露实际归档文件供处理历史记录。 */
+    public static final class TagProcessResult {
+        private final boolean success;
+        private final File targetFile;
+
+        private TagProcessResult(boolean success, File targetFile) {
+            this.success = success;
+            this.targetFile = targetFile;
         }
 
+        public boolean isSuccess() { return success; }
+        public File getTargetFile() { return targetFile; }
+    }
+
+    /** 兼容旧调用；新调用需要目标路径时应使用 {@link #processFileWithResult}. */
+    public boolean processFile(File sourceFile, MusicMetadata metadata, byte[] coverArtData) {
+        return processFileWithResult(sourceFile, metadata, coverArtData).isSuccess();
+    }
+
+    /** 处理音频文件，并返回实际写入的目标文件。 */
+    public TagProcessResult processFileWithResult(File sourceFile, MusicMetadata metadata, byte[] coverArtData) {
+        if (!sourceFile.exists()) {
+            log.error("源文件不存在: {}", sourceFile.getAbsolutePath());
+            return new TagProcessResult(false, null);
+        }
+
+        File targetFile = null;
         try {
             // 1. 确定目标文件路径
-            File targetFile = determineTargetFile(sourceFile, metadata);
+            targetFile = determineTargetFile(sourceFile, metadata);
 
             // 2. 创建目标目录
             if (!targetFile.getParentFile().exists()) {
@@ -122,11 +140,11 @@ public class TagWriterService {
                 exportLyricsToFile(targetFile, metadata.getLyrics());
             }
 
-            return true;
+            return new TagProcessResult(true, targetFile.getAbsoluteFile());
 
         } catch (Exception e) {
             log.error("处理文件失败: {}", sourceFile.getName(), e);
-            return false;
+            return new TagProcessResult(false, targetFile == null ? null : targetFile.getAbsoluteFile());
         }
     }
 

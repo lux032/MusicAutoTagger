@@ -17,6 +17,13 @@ import java.io.BufferedWriter;
 import java.io.FileInputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
 
 import com.lux032.musicautotagger.config.MusicConfig;
 
@@ -33,13 +40,13 @@ public class ProcessedFileLogger {
     private final boolean isDbMode;
     // 关键修复：添加文件写入锁，解决并发写入日志文件的线程安全问题
     private final Object fileWriteLock = new Object();
-    // processed_files.release_group_id 是后加列，老库可能没有
+    // 两个后加列必须独立探测：任一 ALTER 失败都不能误判另一列。
     private volatile boolean releaseGroupIdColumnAvailable = false;
+    private volatile boolean targetFilePathColumnAvailable = false;
 
     /** 外部（如 DashboardServlet）查询前先问一下这个列能不能用。 */
-    public boolean isReleaseGroupIdColumnAvailable() {
-        return releaseGroupIdColumnAvailable;
-    }
+    public boolean isReleaseGroupIdColumnAvailable() { return releaseGroupIdColumnAvailable; }
+    public boolean isTargetFilePathColumnAvailable() { return targetFilePathColumnAvailable; }
 
     /**
      * 构造函数
@@ -55,10 +62,14 @@ public class ProcessedFileLogger {
         if (isDbMode) {
             log.info(I18nUtil.getMessage("logger.init.mysql"));
             ensureReleaseGroupIdColumn();
+            ensureTargetFilePathColumn();
         } else {
             log.info(I18nUtil.getMessage("logger.init.file"), config.getProcessedFileLogPath());
             initLogFile();
         }
+        // 历史记录的全量目录扫描回填暂不在启动时执行；
+        // 新处理的专辑仍会在正常写入链路中持久化 target_file_path。
+        // backfillMissingTargetPaths();
     }
 
     /**
@@ -88,6 +99,28 @@ public class ProcessedFileLogger {
             releaseGroupIdColumnAvailable = false;
             log.warn("processed_files 缺少 release_group_id 列且自动补列失败，仪表板封面将回退到内嵌封面: {}",
                 e.getMessage());
+        }
+    }
+
+    private void ensureTargetFilePathColumn() {
+        if (databaseService == null) return;
+        try (Connection conn = databaseService.getConnection()) {
+            try (ResultSet rs = conn.getMetaData().getColumns(
+                    conn.getCatalog(), null, "processed_files", "target_file_path")) {
+                if (rs.next()) {
+                    targetFilePathColumnAvailable = true;
+                    return;
+                }
+            }
+            try (Statement stmt = conn.createStatement()) {
+                stmt.executeUpdate("ALTER TABLE processed_files "
+                    + "ADD COLUMN target_file_path VARCHAR(1000) NULL COMMENT '归档目标文件绝对路径'");
+                targetFilePathColumnAvailable = true;
+                log.info("已为 processed_files 补充 target_file_path 列");
+            }
+        } catch (SQLException e) {
+            targetFilePathColumnAvailable = false;
+            log.warn("processed_files 缺少 target_file_path 列且自动补列失败: {}", e.getMessage());
         }
     }
 
@@ -175,7 +208,7 @@ public class ProcessedFileLogger {
      * @param album 专辑
      */
     public void markFileAsProcessed(File file, String recordingId, String artist, String title, String album) {
-        markFileAsProcessed(file, recordingId, artist, title, album, null);
+        markFileAsProcessed(file, recordingId, artist, title, album, null, null);
     }
 
     /**
@@ -184,39 +217,41 @@ public class ProcessedFileLogger {
      */
     public void markFileAsProcessed(File file, String recordingId, String artist, String title,
                                     String album, String releaseGroupId) {
+        markFileAsProcessed(file, recordingId, artist, title, album, releaseGroupId, null);
+    }
+
+    /**
+     * 记录源文件处理历史以及归档目标路径。
+     * targetFilePath 仅存目标路径，绝不参与 file_hash、file_name、file_size、file_path
+     * 去重键的计算；这些字段始终来自监控目录中的源文件 file。
+     */
+    public void markFileAsProcessed(File file, String recordingId, String artist, String title,
+                                    String album, String releaseGroupId, String targetFilePath) {
         String filePath = file.getAbsolutePath();
+        String absoluteTargetPath = targetFilePath == null || targetFilePath.isBlank()
+            ? null : new File(targetFilePath).getAbsolutePath();
         LocalDateTime now = LocalDateTime.now();
 
         if (isDbMode) {
             try {
                 String fileHash = calculateFileHash(file);
                 boolean withRgid = releaseGroupIdColumnAvailable;
-                String sql = withRgid
-                    ? "INSERT INTO processed_files " +
-                        "(file_hash, file_name, file_path, file_size, processed_time, recording_id, artist, title, album, release_group_id) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-                        "ON DUPLICATE KEY UPDATE " +
-                        "file_hash = VALUES(file_hash), " +
-                        "file_name = VALUES(file_name), " +
-                        "file_size = VALUES(file_size), " +
-                        "processed_time = VALUES(processed_time), " +
-                        "recording_id = VALUES(recording_id), " +
-                        "artist = VALUES(artist), " +
-                        "title = VALUES(title), " +
-                        "album = VALUES(album), " +
-                        "release_group_id = VALUES(release_group_id)"
-                    : "INSERT INTO processed_files " +
-                        "(file_hash, file_name, file_path, file_size, processed_time, recording_id, artist, title, album) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-                        "ON DUPLICATE KEY UPDATE " +
-                        "file_hash = VALUES(file_hash), " +
-                        "file_name = VALUES(file_name), " +
-                        "file_size = VALUES(file_size), " +
-                        "processed_time = VALUES(processed_time), " +
-                        "recording_id = VALUES(recording_id), " +
-                        "artist = VALUES(artist), " +
-                        "title = VALUES(title), " +
-                        "album = VALUES(album)";
+                boolean withTarget = targetFilePathColumnAvailable;
+                List<String> columns = new ArrayList<>(Arrays.asList(
+                    "file_hash", "file_name", "file_path", "file_size", "processed_time",
+                    "recording_id", "artist", "title", "album"));
+                if (withRgid) columns.add("release_group_id");
+                if (withTarget) columns.add("target_file_path");
+                String values = String.join(", ", java.util.Collections.nCopies(columns.size(), "?"));
+                StringBuilder update = new StringBuilder(
+                    "file_hash = VALUES(file_hash), file_name = VALUES(file_name), "
+                    + "file_size = VALUES(file_size), processed_time = VALUES(processed_time), "
+                    + "recording_id = VALUES(recording_id), artist = VALUES(artist), "
+                    + "title = VALUES(title), album = VALUES(album)");
+                if (withRgid) update.append(", release_group_id = VALUES(release_group_id)");
+                if (withTarget) update.append(", target_file_path = COALESCE(VALUES(target_file_path), target_file_path)");
+                String sql = "INSERT INTO processed_files (" + String.join(", ", columns) + ") VALUES ("
+                    + values + ") ON DUPLICATE KEY UPDATE " + update;
 
                 try (Connection conn = databaseService.getConnection();
                      PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -230,9 +265,9 @@ public class ProcessedFileLogger {
                     pstmt.setString(7, artist);
                     pstmt.setString(8, title);
                     pstmt.setString(9, album);
-                    if (withRgid) {
-                        pstmt.setString(10, releaseGroupId);
-                    }
+                    int index = 10;
+                    if (withRgid) pstmt.setString(index++, releaseGroupId);
+                    if (withTarget) pstmt.setString(index, absoluteTargetPath);
 
                     pstmt.executeUpdate();
                 }
@@ -244,11 +279,11 @@ public class ProcessedFileLogger {
             synchronized (fileWriteLock) {
                 try (BufferedWriter writer = new BufferedWriter(new FileWriter(config.getProcessedFileLogPath(), true))) {
                     String timeStr = now.format(dateFormatter);
-                    // 格式: filePath|recordingId|artist|title|album|time|releaseGroupId
-                    // 第 7 列是后加的，老日志没有；读取方按固定下标取值，向后兼容。
-                    String line = String.format("%s|%s|%s|%s|%s|%s|%s",
-                            filePath, recordingId, artist, title, album, timeStr,
-                            releaseGroupId == null ? "" : releaseGroupId);
+                    // 格式: filePath|recordingId|artist|title|album|time|releaseGroupId|targetFilePath
+                    // 第 7、8 列均为后加字段，读取方按长度向后兼容。
+                    String line = String.join("|", filePath, nullToEmpty(recordingId), nullToEmpty(artist),
+                        nullToEmpty(title), nullToEmpty(album), timeStr, nullToEmpty(releaseGroupId),
+                        nullToEmpty(absoluteTargetPath));
                     writer.write(line);
                     writer.newLine();
                 } catch (IOException e) {
@@ -402,8 +437,9 @@ public class ProcessedFileLogger {
                         && (parts.length < 7 || parts[6].isBlank())
                         && isBackfillable(parts[1], parts[4]);
                     if (needsFill) {
-                        writer.write(String.format("%s|%s|%s|%s|%s|%s|%s",
-                            parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], releaseGroupId));
+                        String[] updatedParts = Arrays.copyOf(parts, Math.max(parts.length, 7));
+                        updatedParts[6] = releaseGroupId;
+                        writer.write(String.join("|", updatedParts));
                         updated++;
                     } else {
                         writer.write(line);
@@ -425,6 +461,197 @@ public class ProcessedFileLogger {
             return updated;
         }
     }
+
+    /**
+     * 恢复工作区原子提交后，把临时目标路径批量换成最终输出路径。
+     * 文件模式按纯前缀处理；MySQL 使用 LEFT 精确比较，避免 LIKE 中 %, _, \\ 的转义陷阱。
+     */
+    public void rebaseTargetPaths(String oldPrefix, String newPrefix) {
+        if (oldPrefix == null || newPrefix == null) return;
+        String oldAbsolute = new File(oldPrefix).getAbsolutePath();
+        String newAbsolute = new File(newPrefix).getAbsolutePath();
+        if (isDbMode) {
+            if (!targetFilePathColumnAvailable) return;
+            String sql = "UPDATE processed_files SET target_file_path = CONCAT(?, SUBSTRING(target_file_path, ?)) "
+                + "WHERE target_file_path IS NOT NULL AND LEFT(target_file_path, ?) = ?";
+            try (Connection conn = databaseService.getConnection();
+                 PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setString(1, newAbsolute);
+                pstmt.setInt(2, oldAbsolute.length() + 1);
+                pstmt.setInt(3, oldAbsolute.length());
+                pstmt.setString(4, oldAbsolute);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                log.error("重定向归档目标路径失败: {} -> {}", oldAbsolute, newAbsolute, e);
+            }
+            return;
+        }
+        rewriteTargetPaths(path -> path.startsWith(oldAbsolute)
+            ? newAbsolute + path.substring(oldAbsolute.length()) : path);
+    }
+
+    /** 清除已不存在的临时目标路径，供恢复提交失败回滚使用。 */
+    public void clearTargetPathsUnder(String prefix) {
+        if (prefix == null) return;
+        String absolute = new File(prefix).getAbsolutePath();
+        if (isDbMode) {
+            if (!targetFilePathColumnAvailable) return;
+            String sql = "UPDATE processed_files SET target_file_path = NULL "
+                + "WHERE target_file_path IS NOT NULL AND LEFT(target_file_path, ?) = ?";
+            try (Connection conn = databaseService.getConnection();
+                 PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setInt(1, absolute.length());
+                pstmt.setString(2, absolute);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                log.error("清除无效归档目标路径失败: {}", absolute, e);
+            }
+            return;
+        }
+        rewriteTargetPaths(path -> path.startsWith(absolute) ? "" : path);
+    }
+
+    private void rewriteTargetPaths(java.util.function.UnaryOperator<String> mapper) {
+        synchronized (fileWriteLock) {
+            File logFile = new File(config.getProcessedFileLogPath());
+            if (!logFile.exists()) return;
+            File tempFile = new File(logFile.getAbsolutePath() + ".targets.tmp");
+            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
+                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] parts = line.split("\\|", -1);
+                    if (parts.length >= 8 && !parts[7].isBlank()) parts[7] = mapper.apply(parts[7]);
+                    writer.write(String.join("|", parts));
+                    writer.newLine();
+                }
+            } catch (IOException e) {
+                tempFile.delete();
+                log.error("重写目标路径失败", e);
+                return;
+            }
+            try {
+                Files.move(tempFile.toPath(), logFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                tempFile.delete();
+                log.error("替换目标路径日志失败", e);
+            }
+        }
+    }
+
+    /** 启动时为历史记录寻找输出目录中已归档的音频文件并持久化目标路径。 */
+    private void backfillMissingTargetPaths() {
+        String output = config.getOutputDirectory();
+        if (output == null || output.isBlank()) return;
+        Path outputRoot = Path.of(output).toAbsolutePath();
+        if (!Files.isDirectory(outputRoot)) return;
+        if (isDbMode) backfillDbTargetPaths(outputRoot); else backfillFileTargetPaths(outputRoot);
+    }
+
+    private void backfillDbTargetPaths(Path outputRoot) {
+        if (!targetFilePathColumnAvailable) return;
+        String placeholders = NON_MB_RECORDING_IDS.stream().map(x -> "?")
+            .collect(java.util.stream.Collectors.joining(", "));
+        String sql = "SELECT file_path, album, title FROM processed_files WHERE target_file_path IS NULL "
+            + "AND (recording_id IS NULL OR recording_id NOT IN (" + placeholders + "))";
+        try (Connection conn = databaseService.getConnection();
+             PreparedStatement query = conn.prepareStatement(sql)) {
+            int index = 1;
+            for (String sentinel : NON_MB_RECORDING_IDS) query.setString(index++, sentinel);
+            List<String[]> updates = new ArrayList<>();
+            try (ResultSet rs = query.executeQuery()) {
+                while (rs.next()) {
+                    String target = findArchivedAudio(outputRoot, rs.getString("album"),
+                        rs.getString("file_path"), rs.getString("title"));
+                    if (target != null) updates.add(new String[]{target, rs.getString("file_path")});
+                }
+            }
+            try (PreparedStatement update = conn.prepareStatement(
+                    "UPDATE processed_files SET target_file_path = ? WHERE file_path = ?")) {
+                for (String[] row : updates) {
+                    update.setString(1, row[0]); update.setString(2, row[1]); update.addBatch();
+                }
+                if (!updates.isEmpty()) update.executeBatch();
+            }
+        } catch (SQLException e) {
+            log.warn("历史目标路径自愈回填失败: {}", e.getMessage());
+        }
+    }
+
+    private void backfillFileTargetPaths(Path outputRoot) {
+        synchronized (fileWriteLock) {
+            File logFile = new File(config.getProcessedFileLogPath());
+            File tempFile = new File(logFile.getAbsolutePath() + ".backfill-target.tmp");
+            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
+                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] parts = line.split("\\|", -1);
+                    parts = Arrays.copyOf(parts, Math.max(parts.length, 8));
+                    for (int i = 0; i < parts.length; i++) if (parts[i] == null) parts[i] = "";
+                    if (parts[7].isBlank() && isBackfillable(parts[1], parts[4])) {
+                        String target = findArchivedAudio(outputRoot, parts[4], parts[0], parts[3]);
+                        if (target != null) parts[7] = target;
+                    }
+                    writer.write(String.join("|", parts)); writer.newLine();
+                }
+            } catch (IOException e) {
+                tempFile.delete();
+                log.warn("文件日志历史目标路径自愈回填失败: {}", e.getMessage());
+                return;
+            }
+            try {
+                Files.move(tempFile.toPath(), logFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                tempFile.delete();
+                log.warn("替换历史目标路径日志失败: {}", e.getMessage());
+            }
+        }
+    }
+
+    private String findArchivedAudio(Path outputRoot, String album, String sourcePath, String title) {
+        if (album == null || album.isBlank()) return null;
+        String albumDir = com.lux032.musicautotagger.util.FileNameSanitizer.sanitize(album);
+        String sourceName = sourcePath == null ? "" : new File(sourcePath).getName();
+        String safeTitle = title == null ? "" : com.lux032.musicautotagger.util.FileNameSanitizer.sanitize(title);
+        try (java.util.stream.Stream<Path> artists = Files.list(outputRoot)) {
+            for (Path artist : artists.filter(Files::isDirectory).toList()) {
+                Path directory = artist.resolve(albumDir);
+                if (!Files.isDirectory(directory)) continue;
+                List<Path> candidates;
+                try (java.util.stream.Stream<Path> files = Files.list(directory)) {
+                    candidates = files.filter(Files::isRegularFile)
+                        .filter(p -> isAudioExtension(p.getFileName().toString())).sorted().toList();
+                }
+                Path exact = candidates.stream()
+                    .filter(p -> p.getFileName().toString().equalsIgnoreCase(sourceName)).findFirst().orElse(null);
+                if (exact != null) return exact.toFile().getAbsolutePath();
+                if (!safeTitle.isBlank()) {
+                    Path byTitle = candidates.stream().filter(p ->
+                        p.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
+                            .contains(safeTitle.toLowerCase(java.util.Locale.ROOT)))
+                        .findFirst().orElse(null);
+                    if (byTitle != null) return byTitle.toFile().getAbsolutePath();
+                }
+                // 单曲专辑无歧义；多曲专辑不能把所有历史行错误指向同一首。
+                if (candidates.size() == 1) return candidates.get(0).toFile().getAbsolutePath();
+            }
+        } catch (IOException e) {
+            log.debug("探测历史归档文件失败 (album={}): {}", album, e.getMessage());
+        }
+        return null;
+    }
+
+    private boolean isAudioExtension(String name) {
+        int dot = name.lastIndexOf('.');
+        if (dot < 0) return false;
+        String extension = name.substring(dot + 1);
+        String[] supported = config.getSupportedFormats();
+        if (supported == null || supported.length == 0) return true;
+        return Arrays.stream(supported).anyMatch(x -> extension.equalsIgnoreCase(x.replace(".", "")));
+    }
+
+    private static String nullToEmpty(String value) { return value == null ? "" : value; }
 
     /** 读取文件模式日志的所有行（已拆列）。 */
     private java.util.List<String[]> readLogRows() {

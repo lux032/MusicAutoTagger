@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS processed_files (
     title VARCHAR(500) COMMENT '曲目标题',
     album VARCHAR(500) COMMENT '专辑名称',
     release_group_id VARCHAR(100) COMMENT 'MusicBrainz Release Group ID（封面缓存的 key，仪表板缩略图用）',
+    target_file_path VARCHAR(1000) NULL COMMENT '归档目标文件绝对路径（仪表板内嵌封面兜底用）',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
     INDEX idx_file_hash (file_hash),
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS processed_files (
 
 -- 老库补列（程序启动时也会自动尝试执行一次，这里只是手动补执行的备份方案）
 -- ALTER TABLE processed_files ADD COLUMN release_group_id VARCHAR(100) NULL COMMENT 'MusicBrainz Release Group ID';
+-- ALTER TABLE processed_files ADD COLUMN target_file_path VARCHAR(1000) NULL COMMENT '归档目标文件绝对路径';
 
 -- 创建视图：最近24小时处理的文件
 CREATE OR REPLACE VIEW recent_processed_files AS

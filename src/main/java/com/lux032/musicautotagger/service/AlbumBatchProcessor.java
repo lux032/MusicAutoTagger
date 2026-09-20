@@ -67,7 +67,9 @@ public class AlbumBatchProcessor {
         File displayFile = originalFile != null ? originalFile : audioFile;
         try {
             log.info("正在写入文件标签: {}", displayFile.getName());
-            boolean success = tagWriter.processFile(audioFile, metadata, coverArtData);
+            TagWriterService.TagProcessResult writeResult =
+                tagWriter.processFileWithResult(audioFile, metadata, coverArtData);
+            boolean success = writeResult.isSuccess();
             
             if (success) {
                 if (isQuickScanMode) {
@@ -86,7 +88,8 @@ public class AlbumBatchProcessor {
                     metadata.getTitle(),
                     metadata.getAlbum(),
                     // 封面缓存以 Release Group ID 为 key，记下来仪表板才能直接从缓存取缩略图
-                    metadata.getReleaseGroupId()
+                    metadata.getReleaseGroupId(),
+                    writeResult.getTargetFile() == null ? null : writeResult.getTargetFile().getAbsolutePath()
                 );
                 return true;
             } else {
