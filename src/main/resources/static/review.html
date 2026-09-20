@@ -88,7 +88,18 @@
         }
         .panel.accent { background: #f7faff; border-color: #dbe6fb; }
 
-        .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+        .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; align-items: center; }
+        .suggestion-card { margin-top: 14px; padding: 16px; border: 1px solid #cbdcf8; border-left: 4px solid var(--primary); border-radius: var(--radius); background: #f7faff; }
+        .suggestion-card.conflict { border-left-color: var(--warn); background: #fffbea; }
+        .suggestion-card.archive { border-left-color: var(--danger); background: #fff7f7; }
+        .suggestion-title { font-size: 12px; color: var(--text-mute); font-weight: 700; }
+        .suggestion-conclusion { margin-top: 5px; font-size: 15px; font-weight: 700; }
+        .suggestion-signals { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+        .suggestion-primary { margin-top: 12px; }
+        .online-search-recommended { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); font-weight: 700; }
+        .more-actions { width: 100%; margin-top: 4px; padding-top: 8px; border-top: 1px dashed var(--border); }
+        .more-actions summary { font-weight: 600; }
+        .more-actions-body { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
         .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .rejected-shortcut { cursor: pointer; border: 0; }
 
@@ -236,6 +247,7 @@
 <script>
     let csrfToken = null;
     let currentId = null;
+    let currentItem = null;
     let onlineSearchRunning = false;
     const t = (k, d) => I18n.t(k, d);
     const tf = (k, ...a) => I18n.tf(k, ...a);
@@ -385,7 +397,11 @@
     }
 
     function renderDetail(item) {
+        currentItem = item;
         const pending = item.status === 'PENDING_REVIEW';
+        const suggestion = item.systemSuggestion || {};
+        const primaryAction = suggestion.primaryAction || 'NONE';
+        const searchRecommended = suggestion.level === 'TRY_ONLINE_SEARCH';
         const candidateRows = (item.candidates || []).map(c => {
             const sim = c.durationSimilarity == null ? '-' : (c.durationSimilarity * 100).toFixed(1) + '%';
             const key = c.releaseId || '';
@@ -447,7 +463,7 @@
             ${trackRows ? `<details class="track-match"><summary>${escapeHtml(t('review.track.match.detail'))}</summary>${trackRows}</details>` : ''}
             ${(c.sources||[]).map(s=>`<div class="hint">[${escapeHtml(s.reliability||'')}] ${linkOrText(s.url, s.title||s.domain||s.url)}${s.snippet?' — '+escapeHtml(s.snippet):''}</div>`).join('')}
             ${safeUrl(c.coverUrl)?`<div class="hint">${escapeHtml(t('review.online.cover'))}${linkOrText(c.coverUrl, t('review.online.cover.preview'))} ${escapeHtml(t('review.online.cover.note'))}</div>`:''}
-            ${pending && !item.onlineEvidenceStale ? `<button class="btn primary sm" style="margin-top:10px" onclick='confirmOnline(${JSON.stringify(c.id)},${JSON.stringify(c.title||'')},${JSON.stringify(c.albumArtist||c.artist||'')},${JSON.stringify(c.releaseDate||'')},${JSON.stringify(c.edition||'')})'>${escapeHtml(t('review.online.confirm.btn'))}</button>` : ''}
+            ${pending && !item.onlineEvidenceStale ? `<button class="btn primary sm" style="margin-top:10px" onclick='confirmOnline(${escapeHtml(JSON.stringify(c.id))},${escapeHtml(JSON.stringify(c.title||''))},${escapeHtml(JSON.stringify(c.albumArtist||c.artist||''))},${escapeHtml(JSON.stringify(c.releaseDate||''))},${escapeHtml(JSON.stringify(c.edition||''))})'>${escapeHtml(t('review.online.confirm.btn'))}</button>` : ''}
         </div>`;
         }).join('');
 
@@ -464,6 +480,7 @@
             </div>
             <div class="hint">${escapeHtml(item.folderPath || '')}</div>
             <div class="hint">${escapeHtml(item.reason || '')}</div>
+            ${pending ? renderSystemSuggestion(item) : ''}
             <div class="detail-facts">
                 <div class="fact">
                     <div class="fact-label">${escapeHtml(t('review.fact.synth.title'))}</div>
@@ -515,18 +532,21 @@
                 ${item.status === 'REJECTED' ? `<button class="btn primary" onclick="unrejectItem()">
                     ${escapeHtml(t('review.action.unreject'))}
                 </button>` : ''}
-                ${item.llmJudgeEnabled ? `<button class="btn ghost" ${pending ? '' : 'disabled'} onclick="llmJudge()">
-                    ${escapeHtml(t('review.action.llm.judge'))}
-                </button>` : ''}
-                <button class="btn ghost" id="onlineSearchBtn" ${pending && !onlineSearchRunning ? '' : 'disabled'} onclick="onlineSearch()">
+                ${pending ? `<button class="btn ghost ${searchRecommended ? 'online-search-recommended' : ''}" id="onlineSearchBtn" ${onlineSearchRunning ? 'disabled' : ''} onclick="onlineSearch()">
                     ${escapeHtml(t('review.action.online.search'))}
-                </button>
-                <button class="btn info" ${pending ? '' : 'disabled'} onclick="archiveItem()">
-                    ${escapeHtml(t('review.action.archive'))}
-                </button>
-                <button class="btn danger" ${pending ? '' : 'disabled'} onclick="rejectItem()">
-                    ${escapeHtml(t('review.action.reject'))}
-                </button>
+                </button>` : ''}
+                ${pending ? `<details class="more-actions">
+                    <summary>${escapeHtml(t('review.action.more'))}</summary>
+                    <div class="more-actions-body">
+                        ${item.llmJudgeEnabled ? `<button class="btn ghost" ${suggestion.hasReleaseLevelCandidate ? '' : 'disabled'} onclick="llmJudge()">
+                            ${escapeHtml(t('review.action.llm.choose'))}
+                        </button>` : ''}
+                        ${primaryAction === 'ARCHIVE' ? '' : `<button class="btn ghost" onclick="archiveItem(false)">
+                            ${escapeHtml(t('review.action.archive'))}
+                        </button>`}
+                        <button class="btn danger" onclick="rejectItem()">${escapeHtml(t('review.action.reject'))}</button>
+                    </div>
+                </details>` : ''}
             </div>
             <div class="hint" style="margin-top: 12px;">
                 ${escapeHtml(t('review.action.hint.confirm'))}<br>
@@ -535,6 +555,56 @@
             </div>
             ${item.resolutionNote ? `<div class="hint">${escapeHtml(tf('review.resolution', item.resolutionNote))}</div>` : ''}
         `;
+    }
+
+    function renderSystemSuggestion(item) {
+        const suggestion = item.systemSuggestion;
+        if (!suggestion) return '';
+        const level = suggestion.level || 'WEAK_ALL';
+        const params = suggestion.primaryActionParams || {};
+        const localScore = validScore(suggestion.localScore) ? percent(suggestion.localScore) : null;
+        const onlineScore = validScore(suggestion.onlineScore) ? percent(suggestion.onlineScore) : null;
+        const llmScore = validScore(suggestion.llmScore) ? percent(suggestion.llmScore) : null;
+        const signals = [];
+        if (localScore) signals.push(`<span class="signal">${escapeHtml(tf('review.suggestion.signal.local', localScore))}</span>`);
+        if (onlineScore) signals.push(`<span class="signal online">${escapeHtml(tf('review.suggestion.signal.online', onlineScore))}</span>`);
+        if (llmScore) signals.push(`<span class="signal llm">${escapeHtml(tf('review.suggestion.signal.llm', llmScore))}</span>`);
+        if (suggestion.onlineEvidenceStale) signals.push(`<span class="signal stale">${escapeHtml(t('review.signal.stale'))}</span>`);
+
+        let note = '';
+        if (suggestion.llmDirection) {
+            note = `<div class="hint">${escapeHtml(t('review.suggestion.llm.' + suggestion.llmDirection))}</div>`;
+        }
+        let button = '';
+        if (suggestion.primaryAction === 'CONFIRM_LOCAL') {
+            const current = (item.candidates || []).find(c => c.releaseId && c.releaseId === params.releaseId);
+            if (current) {
+                button = `<button class="btn primary" onclick='confirmCandidate(${JSON.stringify(current.releaseId)},${JSON.stringify(current.releaseGroupId || '')})'>${escapeHtml(t('review.suggestion.action.confirm'))}</button>`;
+            } else {
+                note += `<div class="hint">${escapeHtml(t('review.suggestion.action.unavailable'))}</div>`;
+            }
+        } else if (suggestion.primaryAction === 'EXPAND') {
+            button = `<button class="btn primary" onclick="openItem('${item.id}', true)">${escapeHtml(t('review.suggestion.action.expand'))}</button>`;
+        } else if (suggestion.primaryAction === 'ONLINE_SEARCH') {
+            button = `<button class="btn primary" ${onlineSearchRunning ? 'disabled' : ''} onclick="onlineSearch()">${escapeHtml(t('review.suggestion.action.search'))}</button>`;
+        } else if (suggestion.primaryAction === 'CONFIRM_ONLINE') {
+            const current = (item.onlineCandidates || []).find(c => c.id && c.id === params.onlineCandidateId);
+            if (current && !suggestion.onlineEvidenceStale) {
+                button = `<button class="btn primary" onclick='confirmOnline(${escapeHtml(JSON.stringify(current.id))},${escapeHtml(JSON.stringify(current.title || ''))},${escapeHtml(JSON.stringify(current.albumArtist || current.artist || ''))},${escapeHtml(JSON.stringify(current.releaseDate || ''))},${escapeHtml(JSON.stringify(current.edition || ''))})'>${escapeHtml(t('review.suggestion.action.confirm.online'))}</button>`;
+            } else {
+                note += `<div class="hint">${escapeHtml(t('review.suggestion.action.unavailable'))}</div>`;
+            }
+        } else if (suggestion.primaryAction === 'ARCHIVE') {
+            button = `<button class="btn danger" onclick="archiveItem(true)">${escapeHtml(t('review.action.archive.recommended'))}</button>`;
+        }
+        const cardClass = level === 'CONFLICT' ? ' conflict' : (level === 'SUGGEST_ARCHIVE_UNVERIFIED' ? ' archive' : '');
+        return `<div class="suggestion-card${cardClass}">
+            <div class="suggestion-title">${escapeHtml(t('review.suggestion.title'))}</div>
+            <div class="suggestion-conclusion">${escapeHtml(t('review.suggestion.level.' + level))}</div>
+            ${note}
+            ${signals.length ? `<div class="suggestion-signals">${signals.join('')}</div>` : ''}
+            ${button ? `<div class="suggestion-primary">${button}</div>` : ''}
+        </div>`;
     }
 
     let pendingOnlineCandidateId = null;
@@ -602,9 +672,15 @@
         }
     }
 
-    async function archiveItem() {
+    async function archiveItem(recommended) {
         if (!currentId) return;
-        if (!confirm(t('review.archive.confirm'))) return;
+        const suggestion = currentItem && currentItem.systemSuggestion ? currentItem.systemSuggestion : {};
+        let message = recommended || suggestion.primaryAction === 'ARCHIVE'
+            ? t('review.archive.confirm.recommended') : t('review.archive.confirm');
+        if (suggestion.neverSearchedOnline === true) {
+            message += '\n\n' + t('review.archive.confirm.never.searched');
+        }
+        if (!confirm(message)) return;
         await runAction('/api/review/archive', { id: currentId });
     }
 
