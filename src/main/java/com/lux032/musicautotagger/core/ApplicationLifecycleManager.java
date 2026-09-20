@@ -167,7 +167,7 @@ public class ApplicationLifecycleManager {
 
         // 部分识别 / 失败目录的人工重新识别入口
         recoveryService = new RecoveryService(
-            config, audioFileProcessorService, processedLogger, reviewQueueService,
+            config, audioFileProcessorService, processedLogger, reviewQueueService, folderAlbumCache,
             failedFileHandler, fileSystemUtils, tagWriter, fingerprintService);
         
         // Level 4: 初始化文件监控服务

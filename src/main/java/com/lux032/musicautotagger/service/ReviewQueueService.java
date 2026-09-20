@@ -107,11 +107,12 @@ public class ReviewQueueService {
                                                          String evidenceHash) {
         ReviewItem existing = findPendingByFolder(folderPath);
         ReviewItem item = existing != null ? existing : new ReviewItem();
+        boolean isNewItem = existing == null;
 
         // 只有新建条目、或本来就由恢复流程创建的条目，才归恢复流程所有
-        boolean recoveryOwned = existing == null || existing.getRecoverySourceType() != null;
+        boolean recoveryOwned = isNewItem || existing.getRecoverySourceType() != null;
 
-        if (existing == null) {
+        if (isNewItem) {
             item.setId(UUID.randomUUID().toString());
             item.setCreatedAt(System.currentTimeMillis());
             item.setFolderPath(folderPath);
@@ -131,10 +132,15 @@ public class ReviewQueueService {
         item.setOnlineEvidenceStale(false);
         item.setUpdatedAt(System.currentTimeMillis());
 
-        if (recoveryOwned) {
+        // 普通 review 条目触发的联网搜索不归属 recovery 流程，不能被 SourceType.valueOf
+        // 误判，也不能被回收站逻辑当成物理恢复副本处理。
+        if (recoveryOwned && sourceType != null) {
             item.setRecoverySourceType(sourceType);
             item.setRecoverySourcePath(folderPath);
+        }
 
+        // 新条目仍需建立文件快照；已有条目必须保留原有 files（其中可能包含 stagedPath）。
+        if (isNewItem) {
             List<ReviewItem.FileEntry> entries = new ArrayList<>();
             for (File audio : audioFiles) {
                 ReviewItem.FileEntry entry = new ReviewItem.FileEntry();

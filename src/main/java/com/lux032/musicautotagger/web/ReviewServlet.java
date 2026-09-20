@@ -12,6 +12,7 @@ import jakarta.servlet.http.HttpSession;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -44,6 +45,7 @@ public class ReviewServlet extends HttpServlet {
     private final ReviewQueueService reviewQueue;
     private final ReviewResolutionService resolutionService;
     private final com.lux032.musicautotagger.service.RecoveryService recoveryService;
+    private final java.util.Set<String> onlineSearchInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     public ReviewServlet(ReviewQueueService reviewQueue, ReviewResolutionService resolutionService) {
@@ -126,6 +128,38 @@ public class ReviewServlet extends HttpServlet {
                 case "expand": {
                     ReviewItem item = resolutionService.expandCandidates(id);
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
+                    return;
+                }
+                case "online-search": {
+                    if (recoveryService == null) {
+                        respond(resp, 501, Map.of("error", "recovery.unavailable"));
+                        return;
+                    }
+                    ReviewItem item = reviewQueue.get(id);
+                    if (item == null) {
+                        respond(resp, 404, Map.of("error", "item.not.found"));
+                        return;
+                    }
+                    if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) {
+                        respond(resp, 409, Map.of("error", "item.already.resolved"));
+                        return;
+                    }
+                    if (!recoveryService.isOnlineSearchAvailable()) {
+                        respond(resp, 503, Map.of("error", "llm.web.search.unavailable"));
+                        return;
+                    }
+                    if (!onlineSearchInFlight.add(id)) {
+                        respond(resp, 409, Map.of("error", "recovery.already.running"));
+                        return;
+                    }
+                    try {
+                        boolean analyzeCover = Boolean.TRUE.equals(body.get("analyzeCover"));
+                        ReviewItem result = recoveryService.triggerOnlineSearchForReviewFolder(
+                            new File(item.getFolderPath()), analyzeCover);
+                        respond(resp, 200, Map.of("success", true, "item", toDetail(result)));
+                    } finally {
+                        onlineSearchInFlight.remove(id);
+                    }
                     return;
                 }
                 case "online-confirm": {

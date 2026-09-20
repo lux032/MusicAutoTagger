@@ -79,9 +79,14 @@ public class OnlineIdentificationService {
             files, tagWriter, evidenceHash);
 
         List<Integer> durations = fingerprintService.extractDurationSequence(files);
-        item.setDurationSequence(durations == null ? new ArrayList<>() : durations);
+        if (durations != null) {
+            item.setDurationSequence(durations);
+        }
         if (analyzeCover) {
-            item.setResolutionNote("已申请封面视觉分析；当前原生搜索适配器未检测到可移植的图片+搜索联合协议，已明确降级为文本联网搜索");
+            String existingNote = item.getResolutionNote();
+            String appended = "已申请封面视觉分析；当前原生搜索适配器未检测到可移植的图片+搜索联合协议，已明确降级为文本联网搜索";
+            item.setResolutionNote(existingNote == null || existingNote.isBlank()
+                ? appended : existingNote + " | " + appended);
             reviewQueue.update(item);
         }
         String prompt = buildPrompt(albumRoot, files, durations, analyzeCover);
@@ -106,7 +111,7 @@ public class OnlineIdentificationService {
                 matchAll(parsed, files, durations);
                 save(item, second, parsed, evidenceHash);
             } catch (LlmClient.LlmException e) {
-                item.setResolutionNote("第二轮联网搜索失败；已保留第一轮结果，可人工使用或重新搜索");
+                appendResolutionNote(item, "第二轮联网搜索失败；已保留第一轮结果，可人工使用或重新搜索");
                 reviewQueue.update(item);
             }
         }
@@ -187,8 +192,13 @@ public class OnlineIdentificationService {
     private void save(ReviewItem item,WebSearchClient.SearchResponse response,Parsed parsed,String hash){
         item.setOnlineCandidates(parsed.candidates);item.setOnlineClues(parsed.clues);item.setOnlineSearchedAt(System.currentTimeMillis());
         item.setOnlineSearchProvider(response.getProvider());item.setOnlineSearchModel(response.getModel());item.setEvidenceHash(hash);item.setOnlineEvidenceStale(false);
-        item.setResolutionNote(parsed.candidates.isEmpty()?"联网搜索未找到满足来源门槛的正式候选，已保存线索":"联网搜索完成，等待人工确认");reviewQueue.update(item);
+        String note=parsed.candidates.isEmpty()?"联网搜索未找到满足来源门槛的正式候选，已保存线索":"联网搜索完成，等待人工确认";
+        String existing=item.getResolutionNote();
+        if(existing==null||existing.isBlank()||isOnlineSearchTemplate(existing))item.setResolutionNote(note);else appendResolutionNote(item,note);
+        reviewQueue.update(item);
     }
+    private boolean isOnlineSearchTemplate(String note){return note.startsWith("联网搜索完成")||note.startsWith("联网搜索未找到满足来源门槛");}
+    private void appendResolutionNote(ReviewItem item,String note){String existing=item.getResolutionNote();item.setResolutionNote(existing==null||existing.isBlank()?note:existing+" | "+note);}
     private void merge(Parsed a,Parsed b){Set<String> keys=new HashSet<>();for(ReviewItem.OnlineCandidate c:a.candidates)keys.add(key(c));for(ReviewItem.OnlineCandidate c:b.candidates)if(keys.add(key(c))&&a.candidates.size()<5)a.candidates.add(c);}
     private String key(ReviewItem.OnlineCandidate c){return (nz(c.getArtist())+"|"+nz(c.getTitle())+"|"+nz(c.getReleaseDate())+"|"+nz(c.getEdition())).toLowerCase(Locale.ROOT);}
     private void mergeEvidence(List<ReviewItem.OnlineEvidence> target,List<WebSearchClient.Citation> citations){Set<String> urls=new HashSet<>();for(ReviewItem.OnlineEvidence e:target)urls.add(e.getUrl());for(ReviewItem.OnlineEvidence e:toEvidence(citations))if(urls.add(e.getUrl()))target.add(e);}

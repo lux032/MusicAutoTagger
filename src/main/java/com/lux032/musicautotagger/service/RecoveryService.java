@@ -44,6 +44,7 @@ public class RecoveryService implements AutoCloseable {
     private final AudioFileProcessorService processor;
     private final ProcessedFileLogger processedLogger;
     private final ReviewQueueService reviewQueue;
+    private final FolderAlbumCache folderAlbumCache;
     private final FailedFileHandler failedFileHandler;
     private final FileSystemUtils fileSystemUtils;
     private final OnlineIdentificationService onlineIdentificationService;
@@ -63,6 +64,7 @@ public class RecoveryService implements AutoCloseable {
                            AudioFileProcessorService processor,
                            ProcessedFileLogger processedLogger,
                            ReviewQueueService reviewQueue,
+                           FolderAlbumCache folderAlbumCache,
                            FailedFileHandler failedFileHandler,
                            FileSystemUtils fileSystemUtils,
                            TagWriterService tagWriter,
@@ -71,6 +73,7 @@ public class RecoveryService implements AutoCloseable {
         this.processor = processor;
         this.processedLogger = processedLogger;
         this.reviewQueue = reviewQueue;
+        this.folderAlbumCache = folderAlbumCache;
         this.failedFileHandler = failedFileHandler;
         this.fileSystemUtils = fileSystemUtils;
         this.tagWriter = tagWriter;
@@ -131,6 +134,16 @@ public class RecoveryService implements AutoCloseable {
             trashJob.relativePath = source.getName();
             moveToTrash(source, trashJob);
         }
+        if (item.getRecoverySourceType() == null) {
+            // 普通 review 条目的原目录仍在 monitor 树下，确认后必须解除 unresolved 守卫，
+            // 否则后续新文件永远无法再走专辑匹配（对齐 ReviewResolutionService.confirmCandidate 的既有行为）。
+            FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
+                null, null, item.getResolvedAlbumTitle(), item.getResolvedAlbumArtist(),
+                item.getResolvedTrackCount(), item.getResolvedReleaseDate(),
+                null, false, 1.0, FolderAlbumCache.CacheSource.MANUAL_CONFIRMED);
+            folderAlbumCache.clearFolderUnresolved(item.getFolderPath());
+            folderAlbumCache.forceSetFolderAlbum(item.getFolderPath(), albumInfo);
+        }
         item.setRecoveryCommitState(ReviewItem.RecoveryCommitState.COMPLETED);
         reviewQueue.markResolved(item, ReviewItem.Status.CONFIRMED,
             "人工确认联网候选: " + (item.getResolvedAlbumTitle() == null ? "" : item.getResolvedAlbumTitle()));
@@ -156,6 +169,11 @@ public class RecoveryService implements AutoCloseable {
 
     public boolean isOnlineSearchAvailable() {
         return onlineIdentificationService.isAvailable();
+    }
+
+    /** 普通待确认条目直接触发联网搜索，不将原始监控目录标记为 recovery 隔离副本。 */
+    public ReviewItem triggerOnlineSearchForReviewFolder(File folder, boolean analyzeCover) throws Exception {
+        return onlineIdentificationService.search(folder, null, analyzeCover);
     }
 
     /** 回收站条目列表，按入站时间倒序。 */
@@ -260,7 +278,8 @@ public class RecoveryService implements AutoCloseable {
             finishCommittedRecovery(item);
             return item;
         }
-        if (item.getRecoverySourceType() == null) throw new IOException("recovery.not.owned.by.recovery.flow");
+        // 普通 review 条目没有物理隔离副本；确认联网候选时可以正常写入输出，
+        // 但收尾阶段不能把它的原始 folderPath 当成 recovery 副本移进回收站。
         if (item.isOnlineEvidenceStale()) throw new IOException("online.evidence.stale");
         ReviewItem.OnlineCandidate chosen = item.getOnlineCandidates().stream()
             .filter(c -> candidateId != null && candidateId.equals(c.getId())).findFirst()
@@ -273,10 +292,10 @@ public class RecoveryService implements AutoCloseable {
         if (!meaningful(finalAlbum) || !meaningful(finalArtist)) throw new IOException("online.metadata.incomplete");
 
         File source = new File(item.getRecoverySourcePath() != null ? item.getRecoverySourcePath() : item.getFolderPath());
-        List<File> files = collectAudioFiles(source);
-        if (files.isEmpty()) throw new IOException("recovery.no.audio.files");
+        List<File> originalFiles = collectAudioFiles(source);
+        if (originalFiles.isEmpty()) throw new IOException("recovery.no.audio.files");
 
-        // 证据新鲜度：搜索之后文件若被改动，旧候选一律作废，避免按陈旧结论归档。
+        // 证据新鲜度始终按搜索时的原始目录计算；转码暂存副本只参与最终写入。
         String currentHash;
         try {
             currentHash = onlineIdentificationService.evidenceHashForFolder(source);
@@ -289,16 +308,41 @@ public class RecoveryService implements AutoCloseable {
             throw new IOException("online.evidence.stale");
         }
 
+        List<File> files = originalFiles;
+        java.util.Map<String, String> originalPathByProcessingPath = new java.util.HashMap<>();
+        if (item.getRecoverySourceType() == null && item.getFiles() != null && !item.getFiles().isEmpty()) {
+            files = new ArrayList<>();
+            originalFiles = new ArrayList<>();
+            for (ReviewItem.FileEntry entry : item.getFiles()) {
+                File original = new File(entry.getOriginalPath());
+                File processing = original;
+                if (entry.getStagedPath() != null) {
+                    File staged = new File(entry.getStagedPath());
+                    if (staged.exists()) {
+                        processing = staged;
+                    } else {
+                        log.warn("暂存的转码文件已丢失，回退使用原始文件（归档结果可能不再满足格式规范化配置）: {}",
+                            entry.getStagedPath());
+                        LogCollector.addLog("WARN", "暂存转码文件丢失，已回退原始文件: " + entry.getFileName());
+                    }
+                }
+                if (!original.isFile()) throw new IOException("files.missing");
+                files.add(processing);
+                originalFiles.add(original);
+                originalPathByProcessingPath.put(processing.getAbsolutePath(), original.getAbsolutePath());
+            }
+        }
+
         // 重算逐曲匹配：不依赖下标，且覆盖率按「可靠匹配数 / 本地文件数」计算，
         // 而不是只看联网候选列了多少行曲目。
         List<Integer> localDurations;
         try {
-            localDurations = fingerprintService.extractDurationSequence(files);
+            localDurations = fingerprintService.extractDurationSequence(originalFiles);
         } catch (Exception e) {
             log.debug("无法提取时长序列，逐曲匹配将不使用时长证据: {}", e.getMessage());
             localDurations = null;
         }
-        int confidentMatches = trackMatcher.match(chosen, files, localDurations);
+        int confidentMatches = trackMatcher.match(chosen, originalFiles, localDurations);
         reviewQueue.update(item);
         if (!meetsCoverage(files.size(), confidentMatches)) {
             throw new IOException("online.track.coverage.insufficient:" + confidentMatches + "/" + files.size());
@@ -329,7 +373,9 @@ public class RecoveryService implements AutoCloseable {
                 md.setAlbum(finalAlbum);
                 md.setAlbumArtist(finalArtist);
                 md.setReleaseDate(finalDate);
-                ReviewItem.OnlineTrack track = trackByFile.get(file.getAbsolutePath());
+                String matchedPath = originalPathByProcessingPath.getOrDefault(
+                    file.getAbsolutePath(), file.getAbsolutePath());
+                ReviewItem.OnlineTrack track = trackByFile.get(matchedPath);
                 if (track != null) {
                     if (meaningful(track.getTitle())) md.setTitle(track.getTitle());
                     if (meaningful(track.getArtist())) md.setArtist(track.getArtist());
@@ -358,14 +404,16 @@ public class RecoveryService implements AutoCloseable {
         item.setResolvedAlbumTitle(finalAlbum);
         item.setResolvedAlbumArtist(finalArtist);
         item.setResolvedReleaseDate(finalDate);
+        item.setResolvedTrackCount(files.size());
         item.setRecoveryCommitState(ReviewItem.RecoveryCommitState.COMMITTED);
         item.setCommittedOutputPaths(committed.stream().map(Path::toString).toList());
         reviewQueue.update(item);
 
-        for (File file : files) {
+        for (File file : originalFiles) {
             processedLogger.markFileAsProcessed(file, "ONLINE_SEARCH", finalArtist,
                 file.getName(), finalAlbum);
         }
+
         finishCommittedRecovery(item);
         return item;
     }

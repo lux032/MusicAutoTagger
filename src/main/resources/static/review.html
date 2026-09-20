@@ -231,6 +231,7 @@
 <script>
     let csrfToken = null;
     let currentId = null;
+    let onlineSearchRunning = false;
     const t = (k, d) => I18n.t(k, d);
     const tf = (k, ...a) => I18n.tf(k, ...a);
 
@@ -284,7 +285,12 @@
         'candidates.expand.failed': 'review.error.expand.failed',
         'llm.judge.disabled': 'review.error.llm.disabled',
         'llm.not.configured': 'review.error.llm.not.configured',
-        'llm.call.failed': 'review.error.llm.call.failed'
+        'llm.call.failed': 'review.error.llm.call.failed',
+        'llm.web.search.unavailable': 'review.error.web.search.unavailable',
+        'recovery.unavailable': 'review.error.recovery.unavailable',
+        'recovery.already.running': 'review.error.online.already.running',
+        'item.not.found': 'review.error.item.not.found',
+        'recovery.no.audio.files': 'review.error.no.audio.files'
     };
 
     function humanError(message) {
@@ -485,6 +491,9 @@
                 ${item.llmJudgeEnabled ? `<button class="btn ghost" ${pending ? '' : 'disabled'} onclick="llmJudge()">
                     ${escapeHtml(t('review.action.llm.judge'))}
                 </button>` : ''}
+                <button class="btn ghost" id="onlineSearchBtn" ${pending && !onlineSearchRunning ? '' : 'disabled'} onclick="onlineSearch()">
+                    ${escapeHtml(t('review.action.online.search'))}
+                </button>
                 <button class="btn info" ${pending ? '' : 'disabled'} onclick="archiveItem()">
                     ${escapeHtml(t('review.action.archive'))}
                 </button>
@@ -549,6 +558,21 @@
         // 会先从 MusicBrainz 展开版本明细再调用模型，可能需要十几秒
         toast(t('review.llm.running'));
         await runAction('/api/review/llm', { id: currentId });
+    }
+
+    async function onlineSearch() {
+        if (!currentId || onlineSearchRunning) return;
+        onlineSearchRunning = true;
+        const button = document.getElementById('onlineSearchBtn');
+        if (button) button.disabled = true;
+        toast(t('review.online.search.running'));
+        try {
+            await runAction('/api/review/online-search', { id: currentId, analyzeCover: false });
+        } finally {
+            onlineSearchRunning = false;
+            const currentButton = document.getElementById('onlineSearchBtn');
+            if (currentButton) currentButton.disabled = false;
+        }
     }
 
     async function archiveItem() {
