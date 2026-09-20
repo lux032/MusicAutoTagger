@@ -534,6 +534,51 @@ public class ReviewResolutionService {
         return item;
     }
 
+    // ==================== 撤销忽略 ====================
+
+    /**
+     * 撤销人工忽略：只恢复队列状态并删除 processed 记录，原始文件始终保持原位。
+     *
+     * 删除记录与 reject 时的写入必须使用同一个原始绝对路径，否则扫描入口仍会把文件视为已处理。
+     * 全部删除失败通常意味着数据库或日志不可用，此时不能把界面状态伪装成已恢复；部分失败则保留
+     * 可操作性，并明确告警，用户仍可在待确认页继续人工处置。
+     */
+    public synchronized ReviewItem unreject(String id) throws ResolutionException {
+        ReviewItem item = requireItem(id);
+        if (item.getStatus() != ReviewItem.Status.REJECTED) {
+            throw new ResolutionException(409, "item.not.rejected");
+        }
+        if (reviewQueue.hasOtherPendingForFolder(item.getFolderPath(), id)) {
+            throw new ResolutionException(409, "folder.already.pending");
+        }
+
+        List<ReviewItem.FileEntry> files = item.getFiles() != null ? item.getFiles() : java.util.Collections.emptyList();
+        int failures = 0;
+        for (ReviewItem.FileEntry entry : files) {
+            try {
+                processedLogger.removeProcessedRecord(new File(entry.getOriginalPath()));
+            } catch (Exception e) {
+                failures++;
+                log.warn("撤销被拒绝文件的已处理记录失败: {} - {}", entry.getFileName(), e.getMessage());
+            }
+        }
+        if (!files.isEmpty() && failures == files.size()) {
+            throw new ResolutionException(503, "unreject.log.failed");
+        }
+        if (failures > 0) {
+            log.warn("撤销忽略时有部分已处理记录删除失败: {} (失败 {}/{} 个)",
+                item.getFolderName(), failures, files.size());
+        }
+
+        item.setStatus(ReviewItem.Status.PENDING_REVIEW);
+        item.setResolutionNote(null);
+        reviewQueue.update(item);
+
+        log.info("已撤销人工忽略，条目恢复待确认: {} ({} 个文件)", item.getFolderName(), files.size());
+        LogCollector.addLog("INFO", "已撤销忽略并恢复待确认: " + item.getFolderName());
+        return item;
+    }
+
     // ==================== 内部工具 ====================
 
     /**

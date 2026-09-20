@@ -167,6 +167,34 @@ public class ReviewQueueService {
         return count;
     }
 
+    public synchronized int countRejected() {
+        int count = 0;
+        for (ReviewItem item : items.values()) {
+            if (item.getStatus() == ReviewItem.Status.REJECTED) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 撤销忽略前检查同一目录是否已有另一条待确认记录。
+     * REJECTED 期间目录可能因新增文件再次入队；若直接恢复旧条目，会让两个条目争用同一批原始文件。
+     */
+    public synchronized boolean hasOtherPendingForFolder(String folderPath, String excludeId) {
+        if (folderPath == null) {
+            return false;
+        }
+        for (ReviewItem item : items.values()) {
+            if (item.getStatus() == ReviewItem.Status.PENDING_REVIEW
+                && folderPath.equals(item.getFolderPath())
+                && (excludeId == null || !excludeId.equals(item.getId()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * 该文件夹是否正处于「等待人工确认」状态。
      *

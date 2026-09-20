@@ -35,6 +35,7 @@ import java.util.Map;
  *   POST /api/review/confirm    {"id":"...","releaseId":"...","releaseGroupId":"..."}
  *   POST /api/review/archive    {"id":"..."}
  *   POST /api/review/reject     {"id":"...","note":"..."}
+ *   POST /api/review/unreject   {"id":"..."}
  *   POST /api/review/llm        {"id":"..."}   -> LLM 封闭式判定（阶段七 #22）
  */
 @Slf4j
@@ -74,6 +75,7 @@ public class ReviewServlet extends HttpServlet {
                 case "stats":
                     respond(resp, 200, Map.of(
                         "pending", reviewQueue.countPending(),
+                        "rejected", reviewQueue.countRejected(),
                         "total", reviewQueue.list(null).size(),
                         // 面板靠这个开关决定要不要显示「待确认」入口：
                         // 关闭且队列为空时隐藏，但队列里还有遗留条目就必须继续显示，否则那些条目无法处置
@@ -122,6 +124,11 @@ public class ReviewServlet extends HttpServlet {
                 }
                 case "reject": {
                     ReviewItem item = resolutionService.reject(id, str(body.get("note")));
+                    respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
+                    return;
+                }
+                case "unreject": {
+                    ReviewItem item = resolutionService.unreject(id);
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
                     return;
                 }

@@ -89,6 +89,8 @@
         .panel.accent { background: #f7faff; border-color: #dbe6fb; }
 
         .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+        .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .rejected-shortcut { cursor: pointer; border: 0; }
 
         .diff-ok { color: var(--success); font-weight: 600; }
         .diff-bad { color: var(--danger); font-weight: 600; }
@@ -144,13 +146,16 @@
                 </div>
             </div>
             <div class="form-row" style="margin-bottom: 12px;">
-                <select id="statusFilter" onchange="loadList()">
-                    <option value="PENDING_REVIEW" data-i18n="review.filter.pending">待确认</option>
-                    <option value="ALL" data-i18n="review.filter.all">全部</option>
-                    <option value="CONFIRMED" data-i18n="review.filter.confirmed">已确认</option>
-                    <option value="ARCHIVED_UNVERIFIED" data-i18n="review.filter.archived">按未收录归档</option>
-                    <option value="REJECTED" data-i18n="review.filter.rejected">已忽略</option>
-                </select>
+                <div class="filter-row">
+                    <select id="statusFilter" onchange="loadList()">
+                        <option value="PENDING_REVIEW" data-i18n="review.filter.pending">待确认</option>
+                        <option value="ALL" data-i18n="review.filter.all">全部</option>
+                        <option value="CONFIRMED" data-i18n="review.filter.confirmed">已确认</option>
+                        <option value="ARCHIVED_UNVERIFIED" data-i18n="review.filter.archived">按未收录归档</option>
+                        <option value="REJECTED" data-i18n="review.filter.rejected">已忽略</option>
+                    </select>
+                    <button class="badge rejected rejected-shortcut" id="rejectedShortcut" onclick="showRejected()"></button>
+                </div>
             </div>
             <div class="queue-list" id="list"><div class="empty" data-i18n="review.loading">加载中...</div></div>
         </section>
@@ -252,6 +257,7 @@
             toast(t('review.auth.failed') + ': ' + e.message);
             return;
         }
+        document.getElementById('rejectedShortcut').textContent = tf('review.filter.rejected.count', 0);
         loadList();
     }
 
@@ -278,6 +284,9 @@
     // 后端错误码 -> 人话。GET（展开）与 POST（处置）共用。
     const ERROR_KEYS = {
         'item.already.resolved': 'review.error.already.resolved',
+        'item.not.rejected': 'review.error.item.not.rejected',
+        'folder.already.pending': 'review.error.folder.already.pending',
+        'unreject.log.failed': 'review.error.unreject.log.failed',
         'files.missing': 'review.error.files.missing',
         'candidate.not.found': 'review.error.candidate.not.found',
         'release.id.required': 'review.error.release.required',
@@ -311,7 +320,22 @@
         return `<span class="badge ${cls}">${escapeHtml(text)}</span>`;
     }
 
+    async function loadRejectedCount() {
+        try {
+            const data = await api('/api/review/stats');
+            document.getElementById('rejectedShortcut').textContent = tf('review.filter.rejected.count', data.rejected || 0);
+        } catch (e) {
+            // 列表本身仍可使用，统计快捷入口失败不覆盖主要错误信息。
+        }
+    }
+
+    function showRejected() {
+        document.getElementById('statusFilter').value = 'REJECTED';
+        loadList();
+    }
+
     async function loadList() {
+        loadRejectedCount();
         const status = document.getElementById('statusFilter').value;
         const listEl = document.getElementById('list');
         try {
@@ -488,6 +512,9 @@
             </div>
 
             <div class="actions">
+                ${item.status === 'REJECTED' ? `<button class="btn primary" onclick="unrejectItem()">
+                    ${escapeHtml(t('review.action.unreject'))}
+                </button>` : ''}
                 ${item.llmJudgeEnabled ? `<button class="btn ghost" ${pending ? '' : 'disabled'} onclick="llmJudge()">
                     ${escapeHtml(t('review.action.llm.judge'))}
                 </button>` : ''}
@@ -581,6 +608,12 @@
         await runAction('/api/review/archive', { id: currentId });
     }
 
+    async function unrejectItem() {
+        if (!currentId) return;
+        if (!confirm(t('review.unreject.confirm'))) return;
+        await runAction('/api/review/unreject', { id: currentId });
+    }
+
     function rejectItem() {
         if (!currentId) return;
         document.getElementById('rejectNote').value = '';
@@ -602,7 +635,7 @@
         try {
             const data = await api(path, { method: 'POST', body: JSON.stringify(body) });
             // 部分失败时后端会把条目保留在 PENDING_REVIEW，不能报「成功」
-            if (data.item && data.item.status === 'PENDING_REVIEW') {
+            if (data.item && data.item.status === 'PENDING_REVIEW' && path !== '/api/review/unreject') {
                 if (data.item.llmSuggestion && !data.item.llmSuggestion.applied
                     && path === '/api/review/llm') {
                     toast(t('review.llm.done.suggestion'));
