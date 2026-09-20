@@ -1,5 +1,6 @@
 package com.lux032.musicautotagger.model;
 
+import com.lux032.musicautotagger.service.CoverCandidateView;
 import lombok.Data;
 
 import java.util.ArrayList;
@@ -219,6 +220,10 @@ public class ReviewItem {
         private String reason;
         private List<OnlineTrack> tracks = new ArrayList<>();
         private List<OnlineEvidence> sources = new ArrayList<>();
+        /** Lightweight cover metadata only; image bytes are stored in the candidate cache. */
+        private List<CoverCandidateView> coverCandidates = new ArrayList<>();
+        /** null means the user explicitly chose not to embed a cover. */
+        private String selectedCoverSha256;
         /** 首期只开放专辑级编辑，逐曲覆盖字段为后续预留 */
         private List<OnlineTrack> manualTrackOverrides = new ArrayList<>();
     }

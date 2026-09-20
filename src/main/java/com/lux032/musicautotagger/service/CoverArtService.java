@@ -228,44 +228,29 @@ public class CoverArtService {
      * 支持的文件名: cover/folder/album/front/artwork/albumart/albumartsmall + jpg/jpeg/png/webp
      */
     public byte[] findCoverInDirectory(File directory) {
-        if (directory == null || !directory.exists() || !directory.isDirectory()) {
-            return null;
+        File file = findCoverFileInDirectory(directory);
+        if (file == null) return null;
+        try {
+            byte[] imageData = Files.readAllBytes(file.toPath());
+            if (imageData.length > 0) {
+                log.info("找到封面文件: {}", file.getName());
+                return ImageCompressor.compressImage(imageData);
+            }
+        } catch (Exception e) {
+            log.debug("读取封面文件失败: {} - {}", file.getName(), e.getMessage());
         }
-        
-        // 支持的封面文件名(优先级顺序)
+        return null;
+    }
+
+    public File findCoverFileInDirectory(File directory) {
+        if (directory == null || !directory.exists() || !directory.isDirectory()) return null;
         String[] coverNames = {"cover", "folder", "album", "front", "artwork", "albumart", "albumartsmall"};
         String[] extensions = {".jpg", ".jpeg", ".png", ".webp"};
-
         File[] files = directory.listFiles();
-        if (files == null) {
-            return null;
+        if (files == null) return null;
+        for (String coverName : coverNames) for (String ext : extensions) for (File file : files) {
+            if (file.isFile() && file.getName().equalsIgnoreCase(coverName + ext)) return file;
         }
-
-        // Case-insensitive match to support Linux filesystems (e.g., Cover.jpg).
-        for (String coverName : coverNames) {
-            for (String ext : extensions) {
-                String expectedName = coverName + ext;
-                for (File file : files) {
-                    if (!file.isFile()) {
-                        continue;
-                    }
-                    String fileNameLower = file.getName().toLowerCase();
-                    if (fileNameLower.equals(expectedName)) {
-                        try {
-                            byte[] imageData = Files.readAllBytes(file.toPath());
-                            if (imageData != null && imageData.length > 0) {
-                                log.info("找到封面文件: {}", file.getName());
-                                // 压缩图片到2MB以内
-                                return ImageCompressor.compressImage(imageData);
-                            }
-                        } catch (Exception e) {
-                            log.debug("读取封面文件失败: {} - {}", file.getName(), e.getMessage());
-                        }
-                    }
-                }
-            }
-        }
-        
         return null;
     }
 
@@ -458,6 +443,10 @@ public class CoverArtService {
      * 如果当前目录是 "Disc X"、"CD X" 等子目录，返回其父目录
      * 否则返回当前目录本身
      */
+    public File resolveAlbumRootDirectory(File folder) {
+        return getAlbumRootDirectory(folder);
+    }
+
     private File getAlbumRootDirectory(File folder) {
         if (folder == null || !folder.exists()) {
             return folder;

@@ -23,6 +23,7 @@ import org.jaudiotagger.tag.vorbiscomment.VorbisCommentTag;
 import org.jaudiotagger.tag.images.Artwork;
 import org.jaudiotagger.tag.images.StandardArtwork;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -109,11 +110,7 @@ public class TagWriterService {
             // 更新封面
             if (coverArtData != null && coverArtData.length > 0) {
                 log.info("写入封面图片...");
-                Artwork artwork = new StandardArtwork();
-                artwork.setBinaryData(coverArtData);
-                artwork.setMimeType("image/jpeg"); // 假设是 JPEG，实际可能需要检测
-                tag.deleteArtworkField();
-                tag.setField(artwork);
+                applyArtwork(tag, coverArtData);
             }
 
             // 保存更改
@@ -561,11 +558,7 @@ public class TagWriterService {
             updateTextTags(tag, metadata);
 
             if (coverArtData != null && coverArtData.length > 0) {
-                Artwork artwork = new StandardArtwork();
-                artwork.setBinaryData(coverArtData);
-                artwork.setMimeType("image/jpeg");
-                tag.deleteArtworkField();
-                tag.setField(artwork);
+                applyArtwork(tag, coverArtData);
             }
 
             audioFileObj.commit();
@@ -574,6 +567,37 @@ public class TagWriterService {
             log.error("更新标签失败: {}", targetFile.getName(), e);
             return false;
         }
+    }
+
+    private static void applyArtwork(Tag tag, byte[] imageData) throws Exception {
+        Artwork artwork = new StandardArtwork();
+        artwork.setBinaryData(imageData);
+        artwork.setMimeType(detectMimeType(imageData));
+        artwork.setPictureType(3);
+        artwork.setDescription("");
+        tag.deleteArtworkField();
+        tag.setField(artwork);
+    }
+
+    static String detectMimeType(byte[] imageData) {
+        if (imageData == null || imageData.length == 0) return "image/jpeg";
+        try (javax.imageio.stream.ImageInputStream input = javax.imageio.ImageIO.createImageInputStream(
+                new ByteArrayInputStream(imageData))) {
+            java.util.Iterator<javax.imageio.ImageReader> readers = javax.imageio.ImageIO.getImageReaders(input);
+            if (readers.hasNext()) {
+                javax.imageio.ImageReader reader = readers.next();
+                try {
+                    String format = reader.getFormatName().toLowerCase(java.util.Locale.ROOT);
+                    return ("jpg".equals(format) || "jpeg".equals(format))
+                        ? "image/jpeg" : "image/" + format;
+                } finally {
+                    reader.dispose();
+                }
+            }
+        } catch (Exception e) {
+            log.debug("检测封面 MIME 失败: {}", e.getMessage());
+        }
+        return "image/jpeg";
     }
 
     /**
@@ -887,14 +911,7 @@ public class TagWriterService {
             AudioFile audioFileObj = AudioFileIO.read(audioFile);
             Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
 
-            // 创建封面对象
-            Artwork artwork = new StandardArtwork();
-            artwork.setBinaryData(folderCoverData);
-            artwork.setMimeType("image/jpeg");
-
-            // 删除现有封面并设置新封面
-            tag.deleteArtworkField();
-            tag.setField(artwork);
+            applyArtwork(tag, folderCoverData);
 
             // 保存更改
             audioFileObj.commit();

@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.web;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.lux032.musicautotagger.model.ReviewItem;
+import com.lux032.musicautotagger.service.CoverCandidateService;
 import com.lux032.musicautotagger.service.ReviewQueueService;
 import com.lux032.musicautotagger.service.ReviewResolutionService;
 import jakarta.servlet.http.HttpServlet;
@@ -46,18 +47,22 @@ public class ReviewServlet extends HttpServlet {
     private final ReviewQueueService reviewQueue;
     private final ReviewResolutionService resolutionService;
     private final com.lux032.musicautotagger.service.RecoveryService recoveryService;
+    private final CoverCandidateService coverCandidateService;
     private final java.util.Set<String> onlineSearchInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final java.util.Set<String> coverCandidatesInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
     public ReviewServlet(ReviewQueueService reviewQueue, ReviewResolutionService resolutionService) {
-        this(reviewQueue, resolutionService, null);
+        this(reviewQueue, resolutionService, null, null);
     }
 
     public ReviewServlet(ReviewQueueService reviewQueue, ReviewResolutionService resolutionService,
-                         com.lux032.musicautotagger.service.RecoveryService recoveryService) {
+                         com.lux032.musicautotagger.service.RecoveryService recoveryService,
+                         CoverCandidateService coverCandidateService) {
         this.reviewQueue = reviewQueue;
         this.resolutionService = resolutionService;
         this.recoveryService = recoveryService;
+        this.coverCandidateService = coverCandidateService;
     }
 
     @Override
@@ -137,6 +142,10 @@ public class ReviewServlet extends HttpServlet {
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
                     return;
                 }
+                case "cover-candidates": {
+                    handleCoverCandidates(id, str(body.get("candidateId")), resp);
+                    return;
+                }
                 case "online-search": {
                     if (recoveryService == null) {
                         respond(resp, 501, Map.of("error", "recovery.unavailable"));
@@ -173,7 +182,8 @@ public class ReviewServlet extends HttpServlet {
                     if (recoveryService == null) throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
                     ReviewItem item = recoveryService.confirmOnlineCandidate(id, str(body.get("candidateId")),
                         str(body.get("albumTitle")), str(body.get("albumArtist")), str(body.get("releaseDate")),
-                        str(body.get("edition")), str(body.get("archiveDirectoryName")));
+                        str(body.get("edition")), str(body.get("archiveDirectoryName")),
+                        str(body.get("selectedCoverSha256")));
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
                     return;
                 }
@@ -200,6 +210,43 @@ public class ReviewServlet extends HttpServlet {
     }
 
     // ==================== handlers ====================
+
+    private void handleCoverCandidates(String id, String candidateId, HttpServletResponse resp) throws IOException {
+        if (coverCandidateService == null) {
+            respond(resp, 501, Map.of("error", "recovery.unavailable"));
+            return;
+        }
+        String inFlightKey = id + "\n" + candidateId;
+        if (!coverCandidatesInFlight.add(inFlightKey)) {
+            respond(resp, 409, Map.of("error", "recovery.already.running"));
+            return;
+        }
+        try {
+        ReviewItem item = reviewQueue.get(id);
+        if (item == null) { respond(resp, 404, Map.of("error", "item.not.found")); return; }
+        ReviewItem.OnlineCandidate candidate = item.getOnlineCandidates().stream()
+            .filter(c -> candidateId != null && candidateId.equals(c.getId())).findFirst().orElse(null);
+        if (candidate == null) { respond(resp, 404, Map.of("error", "online.candidate.not.found")); return; }
+        List<File> originals = new ArrayList<>();
+        if (item.getFiles() != null) for (ReviewItem.FileEntry entry : item.getFiles()) {
+            if (entry.getOriginalPath() != null) originals.add(new File(entry.getOriginalPath()));
+        }
+        if (originals.isEmpty()) {
+            File root = new File(item.getRecoverySourcePath() != null
+                ? item.getRecoverySourcePath() : item.getFolderPath());
+            if (root.isFile()) originals.add(root);
+            else try (var walk = java.nio.file.Files.walk(root.toPath())) {
+                walk.filter(java.nio.file.Files::isRegularFile).map(java.nio.file.Path::toFile)
+                    .filter(File::isFile).forEach(originals::add);
+            }
+        }
+        candidate.setCoverCandidates(coverCandidateService.collect(item, candidate, originals));
+        reviewQueue.update(item);
+        respond(resp, 200, Map.of("coverCandidates", candidate.getCoverCandidates()));
+        } finally {
+            coverCandidatesInFlight.remove(inFlightKey);
+        }
+    }
 
     private void handleList(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         ReviewItem.Status filter = null;

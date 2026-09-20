@@ -10,6 +10,7 @@ import org.jaudiotagger.tag.Tag;
 import org.jaudiotagger.tag.images.Artwork;
 
 import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.service.CoverCandidateCache;
 
 import javax.imageio.ImageIO;
 import java.awt.Graphics2D;
@@ -87,6 +88,17 @@ public class CoverServlet extends HttpServlet {
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String candidateSha = trimToNull(req.getParameter("candidateSha256"));
+        if (CoverCandidateCache.validSha256(candidateSha)) {
+            Path candidate = CoverCandidateCache.directory(config).resolve(candidateSha.toLowerCase());
+            candidate = candidate.resolveSibling(candidate.getFileName() + ".jpg");
+            if (Files.isRegularFile(candidate)) {
+                writeImage(resp, toThumbnail(Files.readAllBytes(candidate)), "image/jpeg");
+                return;
+            }
+            resp.sendError(HttpServletResponse.SC_NOT_FOUND);
+            return;
+        }
         String rgid = trimToNull(req.getParameter("rgid"));
         if (rgid != null) {
             // 内存缓存 key 带上封面偏好：切换「优先动画版」后同一 rgid 对应的图会变，

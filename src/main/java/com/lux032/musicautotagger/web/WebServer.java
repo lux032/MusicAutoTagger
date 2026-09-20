@@ -13,6 +13,7 @@ import org.eclipse.jetty.servlet.ServletHolder;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.service.CoverArtCache;
 import com.lux032.musicautotagger.service.CoverBackfillService;
+import com.lux032.musicautotagger.service.CoverCandidateService;
 import com.lux032.musicautotagger.service.DatabaseService;
 import com.lux032.musicautotagger.service.FolderAlbumCache;
 import com.lux032.musicautotagger.service.ProcessedFileLogger;
@@ -50,7 +51,7 @@ public class WebServer {
                      DatabaseService databaseService,
                      ApplicationLifecycleManager lifecycleManager) throws Exception {
         start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService,
-            lifecycleManager, null, null, null, null);
+            lifecycleManager, null, null, null, null, null);
     }
 
     public void start(ProcessedFileLogger processedLogger,
@@ -63,7 +64,7 @@ public class WebServer {
                      ReviewResolutionService reviewResolutionService,
                      RecoveryService recoveryService) throws Exception {
         start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService,
-            lifecycleManager, reviewQueueService, reviewResolutionService, recoveryService, null);
+            lifecycleManager, reviewQueueService, reviewResolutionService, recoveryService, null, null);
     }
 
     /**
@@ -78,7 +79,8 @@ public class WebServer {
                      ReviewQueueService reviewQueueService,
                      ReviewResolutionService reviewResolutionService,
                      RecoveryService recoveryService,
-                     CoverBackfillService coverBackfillService) throws Exception {
+                     CoverBackfillService coverBackfillService,
+                     CoverCandidateService coverCandidateService) throws Exception {
         
         server = new Server();
         
@@ -137,7 +139,8 @@ public class WebServer {
 
         // 注册待人工确认 API（写入型，会触发文件写入与移动）
         if (reviewQueueService != null && reviewResolutionService != null) {
-            ReviewServlet reviewServlet = new ReviewServlet(reviewQueueService, reviewResolutionService, recoveryService);
+            ReviewServlet reviewServlet = new ReviewServlet(reviewQueueService, reviewResolutionService,
+                recoveryService, coverCandidateService);
             servletHandler.addServlet(new ServletHolder(reviewServlet), "/api/review/*");
         }
 

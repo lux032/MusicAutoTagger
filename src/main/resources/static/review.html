@@ -62,6 +62,11 @@
         .fact-label { font-size: 11.5px; color: var(--text-mute); }
         .fact-value { font-size: 13.5px; font-weight: 600; margin-top: 2px; word-break: break-all; }
 
+        .cover-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:10px; margin-top:8px; }
+        .cover-choice { border:2px solid var(--border); border-radius:8px; padding:7px; cursor:pointer; background:#fff; }
+        .cover-choice.selected { border-color:var(--primary); box-shadow:0 0 0 2px var(--primary-soft); }
+        .cover-choice img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:5px; background:var(--bg-soft); }
+        .cover-meta { font-size:11px; color:var(--text-mute); margin-top:5px; word-break:break-word; }
         .section { margin-top: 22px; }
         .section-title {
             font-weight: 700;
@@ -218,6 +223,11 @@
                 <label for="ocDir" data-i18n="review.online.dir">归档目录名</label>
                 <input id="ocDir" type="text" placeholder="留空则自动生成" data-i18n-placeholder="review.online.dir.placeholder">
             </div>
+            <div class="form-row">
+                <label data-i18n="review.online.cover.choose">选择要嵌入的封面</label>
+                <button class="btn ghost sm" type="button" onclick="chooseNoCover()" data-i18n="review.online.cover.none">不使用封面</button>
+                <div id="coverChoices" class="cover-grid"><span class="hint" data-i18n="review.online.cover.loading">正在加载可用封面…</span></div>
+            </div>
         </div>
         <div class="dialog-actions">
             <button class="btn ghost" onclick="closeOnlineDialog()" data-i18n="web.cancel">取消</button>
@@ -311,7 +321,8 @@
         'recovery.unavailable': 'review.error.recovery.unavailable',
         'recovery.already.running': 'review.error.online.already.running',
         'item.not.found': 'review.error.item.not.found',
-        'recovery.no.audio.files': 'review.error.no.audio.files'
+        'recovery.no.audio.files': 'review.error.no.audio.files',
+        'cover.selection.expired': 'review.error.cover.expired'
     };
 
     function humanError(message) {
@@ -462,7 +473,6 @@
             <div class="hint">${escapeHtml(tf('review.tracklist.summary', (c.tracks||[]).length, (c.sources||[]).length))}</div>
             ${trackRows ? `<details class="track-match"><summary>${escapeHtml(t('review.track.match.detail'))}</summary>${trackRows}</details>` : ''}
             ${(c.sources||[]).map(s=>`<div class="hint">[${escapeHtml(s.reliability||'')}] ${linkOrText(s.url, s.title||s.domain||s.url)}${s.snippet?' — '+escapeHtml(s.snippet):''}</div>`).join('')}
-            ${safeUrl(c.coverUrl)?`<div class="hint">${escapeHtml(t('review.online.cover'))}${linkOrText(c.coverUrl, t('review.online.cover.preview'))} ${escapeHtml(t('review.online.cover.note'))}</div>`:''}
             ${pending && !item.onlineEvidenceStale ? `<button class="btn primary sm" style="margin-top:10px" onclick='confirmOnline(${escapeHtml(JSON.stringify(c.id))},${escapeHtml(JSON.stringify(c.title||''))},${escapeHtml(JSON.stringify(c.albumArtist||c.artist||''))},${escapeHtml(JSON.stringify(c.releaseDate||''))},${escapeHtml(JSON.stringify(c.edition||''))})'>${escapeHtml(t('review.online.confirm.btn'))}</button>` : ''}
         </div>`;
         }).join('');
@@ -608,21 +618,56 @@
     }
 
     let pendingOnlineCandidateId = null;
+    let pendingCoverSha256 = null;
+
+    function formatBytes(value) {
+        if (value < 1024) return value + ' B';
+        if (value < 1024 * 1024) return (value / 1024).toFixed(0) + ' KB';
+        return (value / 1024 / 1024).toFixed(1) + ' MB';
+    }
+
+    function chooseCover(sha) {
+        pendingCoverSha256 = sha || null;
+        document.querySelectorAll('#coverChoices .cover-choice').forEach(el =>
+            el.classList.toggle('selected', !!sha && el.dataset.sha === sha));
+    }
+    function chooseNoCover() { chooseCover(null); }
+
+    async function loadCoverChoices(candidateId) {
+        const box = document.getElementById('coverChoices');
+        box.innerHTML = `<span class="hint">${escapeHtml(t('review.online.cover.loading'))}</span>`;
+        try {
+            const data = await api('/api/review/cover-candidates', {
+                method: 'POST',
+                body: JSON.stringify({ id: currentId, candidateId })
+            });
+            const rows = data.coverCandidates || [];
+            box.innerHTML = rows.length ? rows.map(c => `<div class="cover-choice" data-sha="${escapeHtml(c.sha256)}" onclick="chooseCover('${escapeHtml(c.sha256)}')">
+                <img loading="lazy" src="/api/cover?candidateSha256=${encodeURIComponent(c.sha256)}" alt="">
+                <div class="cover-meta"><strong>${escapeHtml(t('review.online.cover.origin.' + c.origin))}</strong>${c.originLabel ? ' · ' + escapeHtml(c.originLabel) : ''}<br>${c.width}×${c.height} · ${formatBytes(c.bytes)}</div>
+            </div>`).join('') : `<span class="hint">${escapeHtml(t('review.online.cover.empty'))}</span>`;
+        } catch (e) {
+            box.innerHTML = `<span class="hint">${escapeHtml(humanError(e.message))}</span>`;
+        }
+    }
 
     function confirmOnline(candidateId, title, artist, releaseDate, edition) {
         if (!currentId) return;
         pendingOnlineCandidateId = candidateId;
+        pendingCoverSha256 = null;
         document.getElementById('ocTitle').value = title || '';
         document.getElementById('ocArtist').value = artist || '';
         document.getElementById('ocDate').value = releaseDate || '';
         document.getElementById('ocEdition').value = edition || '';
         document.getElementById('ocDir').value = '';
         document.getElementById('onlineDialog').classList.add('show');
+        loadCoverChoices(candidateId);
     }
 
     function closeOnlineDialog() {
         document.getElementById('onlineDialog').classList.remove('show');
         pendingOnlineCandidateId = null;
+        pendingCoverSha256 = null;
     }
 
     async function submitOnlineConfirm() {
@@ -634,7 +679,8 @@
             albumArtist: document.getElementById('ocArtist').value.trim(),
             releaseDate: document.getElementById('ocDate').value.trim(),
             edition: document.getElementById('ocEdition').value.trim(),
-            archiveDirectoryName: document.getElementById('ocDir').value.trim()
+            archiveDirectoryName: document.getElementById('ocDir').value.trim(),
+            selectedCoverSha256: pendingCoverSha256
         };
         if (!payload.albumTitle) {
             toast(t('review.album.title.required'));

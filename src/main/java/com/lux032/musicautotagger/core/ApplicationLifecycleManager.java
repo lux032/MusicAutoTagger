@@ -39,6 +39,7 @@ public class ApplicationLifecycleManager {
     // 新增的服务实例
     private CoverArtService coverArtService;
     private CoverBackfillService coverBackfillService;
+    private CoverCandidateService coverCandidateService;
     private FileSystemUtils fileSystemUtils;
     private FailedFileHandler failedFileHandler;
     private AlbumBatchProcessor albumBatchProcessor;
@@ -109,6 +110,8 @@ public class ApplicationLifecycleManager {
         // Level 3: 初始化新增的服务
         log.info(I18nUtil.getMessage("app.init.cover.art.service"));
         coverArtService = new CoverArtService(coverArtCache, musicBrainzClient);
+        coverCandidateService = new CoverCandidateService(
+            config, musicBrainzClient, coverArtService, coverArtCache);
         
         log.info(I18nUtil.getMessage("app.init.filesystem.utils"));
         fileSystemUtils = new FileSystemUtils(config);
@@ -168,7 +171,7 @@ public class ApplicationLifecycleManager {
         // 部分识别 / 失败目录的人工重新识别入口
         recoveryService = new RecoveryService(
             config, audioFileProcessorService, processedLogger, reviewQueueService, folderAlbumCache,
-            failedFileHandler, fileSystemUtils, tagWriter, fingerprintService);
+            failedFileHandler, fileSystemUtils, tagWriter, fingerprintService, coverCandidateService);
         
         // Level 4: 初始化文件监控服务
         log.info(I18nUtil.getMessage("app.init.file.monitor"));
@@ -185,7 +188,8 @@ public class ApplicationLifecycleManager {
         try {
             webServer = new WebServer(8080);
             webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this,
-                reviewQueueService, reviewResolutionService, recoveryService, coverBackfillService);
+                reviewQueueService, reviewResolutionService, recoveryService, coverBackfillService,
+                coverCandidateService);
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.web.start.error"), e);
             log.warn(I18nUtil.getMessage("main.web.unavailable"));
@@ -274,6 +278,14 @@ public class ApplicationLifecycleManager {
 
             if (fingerprintService != null) {
                 fingerprintService.close();
+            }
+
+            if (coverCandidateService != null) {
+                try {
+                    coverCandidateService.close();
+                } catch (Exception e) {
+                    log.warn("关闭封面候选服务失败", e);
+                }
             }
 
             if (musicBrainzClient != null) {

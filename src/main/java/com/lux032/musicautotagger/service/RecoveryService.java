@@ -51,6 +51,7 @@ public class RecoveryService implements AutoCloseable {
     private final TagWriterService tagWriter;
     private final AudioFingerprintService fingerprintService;
     private final OnlineTrackMatcher trackMatcher;
+    private final CoverCandidateService coverCandidateService;
     private final Gson gson = new Gson();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "manual-recovery");
@@ -68,7 +69,8 @@ public class RecoveryService implements AutoCloseable {
                            FailedFileHandler failedFileHandler,
                            FileSystemUtils fileSystemUtils,
                            TagWriterService tagWriter,
-                           AudioFingerprintService fingerprintService) {
+                           AudioFingerprintService fingerprintService,
+                           CoverCandidateService coverCandidateService) {
         this.config = config;
         this.processor = processor;
         this.processedLogger = processedLogger;
@@ -79,6 +81,7 @@ public class RecoveryService implements AutoCloseable {
         this.tagWriter = tagWriter;
         this.fingerprintService = fingerprintService;
         this.trackMatcher = new OnlineTrackMatcher(tagWriter);
+        this.coverCandidateService = coverCandidateService;
         this.onlineIdentificationService = new OnlineIdentificationService(
             config, reviewQueue, tagWriter, fingerprintService);
         cleanupExpiredTrash();
@@ -267,7 +270,8 @@ public class RecoveryService implements AutoCloseable {
     public synchronized ReviewItem confirmOnlineCandidate(String itemId, String candidateId,
                                                            String albumTitle, String albumArtist,
                                                            String releaseDate, String edition,
-                                                           String archiveDirectoryName) throws IOException {
+                                                           String archiveDirectoryName,
+                                                           String selectedCoverSha256) throws IOException {
         ReviewItem item = reviewQueue.get(itemId);
         if (item == null) throw new IOException("item.not.found");
         if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) throw new IOException("item.already.resolved");
@@ -362,6 +366,18 @@ public class RecoveryService implements AutoCloseable {
             meaningful(archiveDirectoryName) ? archiveDirectoryName.trim()
                 : (meaningful(edition) ? finalAlbum + " (" + edition.trim() + ")" : finalAlbum));
 
+        CoverCandidateService.ResolvedCover selectedCover = null;
+        byte[] cover = null;
+        if (meaningful(selectedCoverSha256)) {
+            selectedCover = coverCandidateService.resolveBySha256(
+                selectedCoverSha256, chosen.getCoverCandidates())
+                .orElseThrow(() -> new IOException("cover.selection.expired"));
+            cover = selectedCover.data();
+            chosen.setSelectedCoverSha256(selectedCoverSha256);
+        } else {
+            chosen.setSelectedCoverSha256(null);
+        }
+
         File workRoot = resolveWorkRoot().resolve("online-" + item.getId()).toFile();
         if (workRoot.exists()) deleteRecursively(workRoot.toPath());
         Files.createDirectories(workRoot.toPath());
@@ -382,7 +398,7 @@ public class RecoveryService implements AutoCloseable {
                     if (track.getDiscNo() > 0) md.setDiscNo(String.valueOf(track.getDiscNo()));
                     if (track.getTrackNo() > 0) md.setTrackNo(String.valueOf(track.getTrackNo()));
                 }
-                if (!tagWriter.processFileToRoot(file, md, null, workRoot)) {
+                if (!tagWriter.processFileToRoot(file, md, cover, workRoot)) {
                     throw new IOException("online.atomic.write.failed");
                 }
             }
@@ -414,6 +430,9 @@ public class RecoveryService implements AutoCloseable {
                 file.getName(), finalAlbum);
         }
 
+        if (selectedCover != null) {
+            coverCandidateService.promoteIfMusicBrainz(selectedCover);
+        }
         finishCommittedRecovery(item);
         return item;
     }
