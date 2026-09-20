@@ -106,8 +106,9 @@ public class ReviewResolutionService {
         // 本轮已经请求过的 RG（成功或失败）都不再重复请求；同一 RG 只保留一条待重试快照
         java.util.Set<String> attemptedGroups = new java.util.HashSet<>();
         for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
-            if (candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty()
-                && candidate.getReleaseGroupId() != null && !candidate.getReleaseGroupId().isEmpty()) {
+            if (candidate.getReleaseGroupId() != null && !candidate.getReleaseGroupId().isEmpty()
+                && ((candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty())
+                    || candidate.isConfirmedNoRelease())) {
                 alreadyExpandedGroups.add(candidate.getReleaseGroupId());
             }
         }
@@ -123,6 +124,11 @@ public class ReviewResolutionService {
                 expanded.add(candidate);
                 continue;
             }
+            if (candidate.isConfirmedNoRelease()) {
+                // 已确认为空的标记，原样保留，不重新请求
+                expanded.add(candidate);
+                continue;
+            }
             if (alreadyExpandedGroups.contains(rgId) || !attemptedGroups.add(rgId)) {
                 // 该 RG 已由旧快照展开过，或本轮已经请求过（包括失败），
                 // 丢弃重复的 RG 级快照，避免重复 API 调用与重复候选行。
@@ -130,12 +136,12 @@ public class ReviewResolutionService {
             }
             try {
                 List<MusicBrainzClient.AlbumDurationResult> releases =
-                    musicBrainzClient.getAllReleaseDurationSequences(rgId);
+                    musicBrainzClient.getReleasesForGroup(rgId);
                 if (releases.isEmpty()) {
-                    // 对一个已有 RG，展开结果为空时无法证明「它确实没有 Release」还是
-                    // MusicBrainz 临时返回了不完整数据。保守地视为未成功，保留 RG 快照供重试。
-                    log.warn("候选 RG {} 未返回任何 Release，保留为未展开状态", rgId);
-                    expansionFailed = true;
+                    // 正常响应、非异常，说明 MusicBrainz 确认该 RG 下没有 Release——这是负结果，不是失败。
+                    log.info("候选 RG {} 已确认没有可用 Release（非错误，标记为 confirmedNoRelease，不再重试）: {}",
+                        rgId, item.getFolderName());
+                    candidate.setConfirmedNoRelease(true);
                     expanded.add(candidate);
                     continue;
                 }
@@ -207,7 +213,8 @@ public class ReviewResolutionService {
         }
         for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
             if (candidate.getReleaseGroupId() != null && !candidate.getReleaseGroupId().isEmpty()
-                && (candidate.getReleaseId() == null || candidate.getReleaseId().isEmpty())) {
+                && (candidate.getReleaseId() == null || candidate.getReleaseId().isEmpty())
+                && !candidate.isConfirmedNoRelease()) {
                 return true;
             }
         }
@@ -226,7 +233,10 @@ public class ReviewResolutionService {
         boolean hadRgCandidates = false;
         boolean hasReleaseCandidates = false;
         for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
-            if (candidate.getReleaseGroupId() != null && !candidate.getReleaseGroupId().isEmpty()) {
+            boolean isRgOnly = candidate.getReleaseGroupId() != null
+                && !candidate.getReleaseGroupId().isEmpty()
+                && (candidate.getReleaseId() == null || candidate.getReleaseId().isEmpty());
+            if (isRgOnly && !candidate.isConfirmedNoRelease()) {
                 hadRgCandidates = true;
             }
             if (candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty()) {

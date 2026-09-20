@@ -241,6 +241,8 @@ public class ReviewItem {
         private int supportCount;
         private int totalSamples;
         private List<Integer> durations = new ArrayList<>();
+        /** 该 RG 已被查证确认没有可用 Release（正常结果，非展开失败） */
+        private boolean confirmedNoRelease;
         /** 与文件夹时长序列的相似度（展开后计算） */
         private Double durationSimilarity;
     }

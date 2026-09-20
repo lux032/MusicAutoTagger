@@ -352,6 +352,85 @@ public class MusicBrainzClient {
         }
     }
     
+    /**
+     * 获取 Release Group 下实际存在的 Release，供人工审核候选展开使用。
+     * 与 duration matching 不同：Release 即使没有有效时长也会保留。
+     */
+    public List<AlbumDurationResult> getReleasesForGroup(String releaseGroupId)
+            throws IOException, InterruptedException {
+        rateLimit();
+        List<AlbumDurationResult> results = new ArrayList<>();
+        String url = String.format("%s/release-group/%s?fmt=json&inc=releases+media+artist-credits",
+            config.getMusicBrainzApiUrl(), releaseGroupId);
+
+        try {
+            String response = executeRequest(url);
+            JsonNode root = objectMapper.readTree(response);
+            String releaseType = normalizeReleaseType(root.path("primary-type").asText(""));
+            boolean compilation = hasCompilationSecondaryType(root);
+            String groupArtist = resolveAlbumArtistFromCredits(root.path("artist-credit"));
+            JsonNode releases = root.path("releases");
+            if (!releases.isArray() || releases.size() == 0) {
+                log.info("Release Group {} 确认没有任何 Release（正常响应，非请求失败）", releaseGroupId);
+                return results;
+            }
+
+            List<JsonNode> sortedReleases = new ArrayList<>();
+            for (JsonNode release : releases) {
+                sortedReleases.add(release);
+            }
+            sortedReleases.sort((r1, r2) -> Integer.compare(
+                scoreReleaseForDuration(r2), scoreReleaseForDuration(r1)));
+
+            int tryCount = Math.min(10, sortedReleases.size());
+            for (int i = 0; i < tryCount; i++) {
+                JsonNode release = sortedReleases.get(i);
+                if (scoreReleaseForDuration(release) < 0) {
+                    continue;
+                }
+                String releaseId = release.path("id").asText();
+                if (releaseId.isEmpty()) {
+                    log.warn("Release Group {} 返回缺少 releaseId 的版本，已忽略", releaseGroupId);
+                    continue;
+                }
+
+                String releaseTitle = release.path("title").asText();
+                int trackCount = calculateTrackCount(release);
+                String mediaFormat = extractMediaFormat(release);
+                String releaseArtist = resolveAlbumArtistFromCredits(release.path("artist-credit"));
+                if (releaseArtist == null) {
+                    releaseArtist = groupArtist;
+                }
+
+                List<Integer> durations;
+                try {
+                    durations = getReleaseDurationSequence(releaseId);
+                } catch (IOException e) {
+                    log.warn("Release {} 存在，但获取时长数据失败，按无可用时长保留候选: {}",
+                        releaseId, e.getMessage());
+                    durations = new ArrayList<>();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+
+                if (durations.isEmpty()) {
+                    log.info("Release {} 存在，但未取得可用曲目时长（曲目缺少 length/recording.length 或为纯视频版本）",
+                        releaseTitle);
+                } else {
+                    log.info("✓ Release {} 存在且获取到 {} 首曲目时长", releaseTitle, durations.size());
+                }
+                results.add(new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount,
+                    mediaFormat, releaseType, compilation, releaseArtist));
+            }
+            log.info("Release Group {} 共展开 {} 个实际 Release 候选", releaseGroupId, results.size());
+            return results;
+        } catch (ParseException e) {
+            log.error("解析 Release Group 响应失败", e);
+            return results;
+        }
+    }
+
     /** 从 artist-credit 节点按配置解析专辑艺术家。 */
     private String resolveAlbumArtistFromCredits(JsonNode artistCredits) {
         return albumArtistPolicy.resolveFromCredits(artistCredits);
@@ -420,53 +499,8 @@ public class MusicBrainzClient {
             // DEBUG: 打印完整的响应结构
             log.debug("Release API 响应: {}", response);
             
-            List<Integer> durations = new ArrayList<>();
-            
-            // 遍历所有 media (碟片)
-            JsonNode media = root.path("media");
-            log.debug("Media 节点存在: {}, isArray: {}, size: {}",
-                !media.isMissingNode(), media.isArray(), media.size());
-            
-            if (media.isArray()) {
-                for (int i = 0; i < media.size(); i++) {
-                    JsonNode medium = media.get(i);
-                    log.debug("Medium[{}] 内容: {}", i, medium.toString());
-
-                    // 检查媒体格式，跳过视频格式
-                    String format = medium.path("format").asText("").toLowerCase();
-                    if (isVideoFormat(format)) {
-                        log.debug("跳过视频格式媒体: {} (format: {})", i, format);
-                        continue;
-                    }
-
-                    JsonNode tracks = medium.path("tracks");
-                    log.debug("Tracks 节点存在: {}, isArray: {}, size: {}",
-                        !tracks.isMissingNode(), tracks.isArray(), tracks.size());
-
-                    if (tracks.isArray()) {
-                        for (JsonNode track : tracks) {
-                            // 检查 track 的 recording 是否为视频
-                            JsonNode recording = track.path("recording");
-                            boolean isVideo = recording.path("video").asBoolean(false);
-                            if (isVideo) {
-                                log.debug("跳过视频 track: {}", track.path("title").asText(""));
-                                continue;
-                            }
-
-                            // 获取时长(毫秒),转换为秒
-                            int durationMs = track.path("length").asInt(0);
-                            log.debug("Track length: {} ms", durationMs);
-                            if (durationMs > 0) {
-                                int durationSec = (durationMs + 500) / 1000; // 四舍五入
-                                durations.add(durationSec);
-                            }
-                        }
-                    }
-                }
-            }
-            
-            log.info("获取专辑时长序列成功 - Release: {}, 曲目数: {}", releaseId, durations.size());
-            
+            List<Integer> durations = extractDurationsFromReleaseJson(root);
+            log.info("Release {} 时长解析完成，可用时长曲目数: {}", releaseId, durations.size());
             return durations;
             
         } catch (ParseException e) {
@@ -474,7 +508,53 @@ public class MusicBrainzClient {
             return new ArrayList<>();
         }
     }
-    
+
+    /** 从 Release API 的已解析响应中提取非视频音轨的有效时长（秒）。 */
+    List<Integer> extractDurationsFromReleaseJson(JsonNode root) {
+        List<Integer> durations = new ArrayList<>();
+        JsonNode media = root.path("media");
+        log.debug("Media 节点存在: {}, isArray: {}, size: {}",
+            !media.isMissingNode(), media.isArray(), media.size());
+
+        if (media.isArray()) {
+            for (int i = 0; i < media.size(); i++) {
+                JsonNode medium = media.get(i);
+                log.debug("Medium[{}] 内容: {}", i, medium.toString());
+
+                String format = medium.path("format").asText("").toLowerCase();
+                if (isVideoFormat(format)) {
+                    log.debug("跳过视频格式媒体: {} (format: {})", i, format);
+                    continue;
+                }
+
+                JsonNode tracks = medium.path("tracks");
+                log.debug("Tracks 节点存在: {}, isArray: {}, size: {}",
+                    !tracks.isMissingNode(), tracks.isArray(), tracks.size());
+                if (!tracks.isArray()) {
+                    continue;
+                }
+
+                for (JsonNode track : tracks) {
+                    JsonNode recording = track.path("recording");
+                    if (recording.path("video").asBoolean(false)) {
+                        log.debug("跳过视频 track: {}", track.path("title").asText(""));
+                        continue;
+                    }
+
+                    int durationMs = track.path("length").asInt(0);
+                    if (durationMs <= 0) {
+                        durationMs = recording.path("length").asInt(0);
+                    }
+                    log.debug("Track effective length: {} ms", durationMs);
+                    if (durationMs > 0) {
+                        durations.add((durationMs + 500) / 1000);
+                    }
+                }
+            }
+        }
+        return durations;
+    }
+
     /**
      * 为 Release 打分，用于选择最适合获取时长序列的版本
      * 优先选择 CD 或 Digital 格式
