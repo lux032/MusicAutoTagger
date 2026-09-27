@@ -122,6 +122,10 @@ public class DashboardServlet extends HttpServlet {
      *
      * 注意：ONLINE_SEARCH 不在此列——联网搜索确认后的专辑是正常整理成果（专辑名/艺术家均已写入标签），
      * 只是没有 MusicBrainz recording_id，不能和失败记录一起被排除在「最近整理的专辑」之外。
+     *
+     * 同理，recording_id 为空（NULL / 空串）也不代表失败：快速扫描按整专时长锁定专辑、
+     * 但 AcoustID 没有返回录音时，成功路径写入的 recording_id 就是 NULL。
+     * 所有失败路径都会写入下面的哨兵值，所以只按黑名单排除即可。
      */
     private static final Set<String> NON_MB_RECORDING_IDS = Set.of(
         "FAILED", "UNKNOWN", "WRITE_FAILED", "EXCEPTION", "CUE_SPLIT", "REVIEW_REJECTED");
@@ -130,8 +134,7 @@ public class DashboardServlet extends HttpServlet {
         if (album == null || album.isBlank() || "Unknown Album".equalsIgnoreCase(album.trim())) {
             return false;
         }
-        return recordingId != null && !recordingId.isBlank()
-            && !NON_MB_RECORDING_IDS.contains(recordingId.trim());
+        return recordingId == null || !NON_MB_RECORDING_IDS.contains(recordingId.trim());
     }
 
     /**
@@ -168,8 +171,8 @@ public class DashboardServlet extends HttpServlet {
             + "COUNT(*) AS track_count, MAX(processed_time) AS last_time, MIN(file_path) AS source_sample "
             + "FROM processed_files "
             + "WHERE album IS NOT NULL AND album <> '' AND album <> 'Unknown Album' "
-            + "AND recording_id IS NOT NULL AND recording_id <> '' "
-            + "AND recording_id NOT IN (" + placeholders + ") "
+            // NOT IN 遇到 NULL 结果为 UNKNOWN 会被过滤，必须显式放行 NULL
+            + "AND (recording_id IS NULL OR recording_id NOT IN (" + placeholders + ")) "
             + "GROUP BY album ORDER BY last_time DESC LIMIT ?";
 
         try (Connection conn = databaseService.getConnection();

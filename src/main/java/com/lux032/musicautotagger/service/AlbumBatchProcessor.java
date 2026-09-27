@@ -286,7 +286,8 @@ public class AlbumBatchProcessor {
                     MusicMetadata metadata = (MusicMetadata) pending.getMetadata();
                     processedLogger.markFileAsProcessed(
                         pending.getAudioFile(),
-                        metadata.getRecordingId() != null ? metadata.getRecordingId() : "UNKNOWN",
+                        // 失败行必须写哨兵值：即使已识别出真实 recordingId，也不能让它冒充成功记录
+                        "EXCEPTION",
                         metadata.getArtist() != null ? metadata.getArtist() : "Unknown Artist",
                         metadata.getTitle() != null ? metadata.getTitle() : pending.getAudioFile().getName(),
                         albumInfo.getAlbumTitle(),

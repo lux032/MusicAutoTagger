@@ -45,4 +45,30 @@ class DashboardServletRecentAlbumsTest {
         assertEquals(target.toString(), albums.get(0).get("path"));
         assertEquals(2, albums.get(0).get("trackCount"));
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void quickScanRecordWithoutRecordingIdIsShownButFailuresAreNot() throws Exception {
+        Path log = tempDir.resolve("processed-quickscan.log");
+        Files.writeString(log,
+            String.join("|", tempDir.resolve("01. SPIN.flac").toString(), "", "Kroi", "SPIN", "SPIN",
+                "2026-09-28 00:16:38", "rg-spin", "") + System.lineSeparator()
+            + String.join("|", tempDir.resolve("bad.flac").toString(), "UNKNOWN", "识别失败", "bad", "Broken",
+                "2026-09-28 00:20:00", "", "") + System.lineSeparator());
+
+        MusicConfig config = MusicConfig.getInstance();
+        config.setDbType("file");
+        config.setProcessedFileLogPath(log.toString());
+        config.setOutputDirectory(tempDir.resolve("empty-output").toString());
+        ProcessedFileLogger logger = new ProcessedFileLogger(config, null);
+        DashboardServlet servlet = new DashboardServlet(logger, null, null, config, null);
+        Method method = DashboardServlet.class.getDeclaredMethod("getRecentAlbumsFromLog", int.class);
+        method.setAccessible(true);
+
+        List<Map<String, Object>> albums = (List<Map<String, Object>>) method.invoke(servlet, 12);
+
+        assertEquals(1, albums.size());
+        assertEquals("SPIN", albums.get(0).get("album"));
+        assertEquals("Kroi", albums.get(0).get("artist"));
+    }
 }
