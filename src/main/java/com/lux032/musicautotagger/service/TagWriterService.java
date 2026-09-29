@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
+import com.lux032.musicautotagger.util.FlacId3Stripper;
 import com.lux032.musicautotagger.util.TagQualityEvaluator;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
@@ -116,6 +117,9 @@ public class TagWriterService {
             log.info("复制文件: {} -> {}", sourceFile.getName(), targetFile.getName());
             Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
             ensureWritablePermissions(targetFile.toPath(), false);
+
+            // 3.1 剥离 FLAC 头部 ID3v2 / 尾部 ID3v1，确保 jaudiotagger 读写的是以 fLaC 开头的纯净文件
+            FlacId3Stripper.stripId3FromFlac(targetFile);
 
             // 4. 更新标签
             log.info("开始更新标签: {}", targetFile.getName());
@@ -570,6 +574,7 @@ public class TagWriterService {
      */
     public boolean updateTagsOnExistingFile(File targetFile, MusicMetadata metadata, byte[] coverArtData) {
         try {
+            FlacId3Stripper.stripId3FromFlac(targetFile);
             AudioFile audioFileObj = AudioFileIO.read(targetFile);
             Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
 
@@ -926,6 +931,7 @@ public class TagWriterService {
 
         try {
             log.info("内嵌文件夹封面到: {}", audioFile.getName());
+            FlacId3Stripper.stripId3FromFlac(audioFile);
             AudioFile audioFileObj = AudioFileIO.read(audioFile);
             Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
 
