@@ -248,11 +248,11 @@ public class QuickScanService {
      *
      * 使用缓存机制，避免重复提取同一文件夹的时长序列
      *
-     * 规则：获取监控目录的第一级子目录作为专辑根目录，递归扫描其下所有音频文件
+     * 规则：音频所在目录（Disc/CD 子目录上升一级）为专辑根目录，扫描其自身及碟片子目录下的音频文件
      */
     private List<Integer> extractFolderDurations(File folder) {
         try {
-            // 获取监控目录的第一级子目录作为专辑根目录
+            // 获取专辑根目录
             File albumRootDir = getAlbumRootDirectory(folder);
             
             // 使用专辑根目录作为缓存键
@@ -329,7 +329,7 @@ public class QuickScanService {
      */
     private List<File> collectAudioFilesRecursively(File folder) {
         List<File> audioFiles = new ArrayList<>();
-        collectAudioFilesRecursively(folder, audioFiles);
+        collectAudioFilesRecursively(folder, audioFiles, false);
         
         // 优先使用标签曲序；无标签时数字感知地处理 CD1/CD10 与文件名前缀。
         AudioFileOrdering.sort(audioFiles);
@@ -340,7 +340,7 @@ public class QuickScanService {
     /**
      * 递归收集音频文件的辅助方法
      */
-    private void collectAudioFilesRecursively(File folder, List<File> result) {
+    private void collectAudioFilesRecursively(File folder, List<File> result, boolean insideDiscFolder) {
         if (!folder.isDirectory()) {
             return;
         }
@@ -352,8 +352,10 @@ public class QuickScanService {
         
         for (File file : files) {
             if (file.isDirectory()) {
-                // 递归进入子文件夹
-                collectAudioFilesRecursively(file, result);
+                // 只递归进入碟片子目录（Disc 1 / CD2 …），其他子目录是独立的专辑
+                if (insideDiscFolder || com.lux032.musicautotagger.util.FileSystemUtils.isDiscFolderName(file.getName())) {
+                    collectAudioFilesRecursively(file, result, true);
+                }
             } else if (isAudioFile(file)) {
                 // 添加音频文件
                 result.add(file);
@@ -373,35 +375,12 @@ public class QuickScanService {
     }
     
     /**
-     * 获取专辑根目录
-     * 规则：监控目录下的第一级子目录即为专辑根目录
-     * 例如：监控目录/Artist - Album/Disc 1/01.flac -> 专辑根目录为 监控目录/Artist - Album
+     * 获取专辑根目录（与 FileSystemUtils 共用同一规则，保证各处文件夹缓存键一致）。
+     * 音频所在目录即专辑根；仅 Disc/CD 子目录上升一级。
      */
     private File getAlbumRootDirectory(File folder) {
-        try {
-            String monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
-            File current = folder;
-            
-            // 向上查找，直到找到监控目录的直接子目录
-            while (current != null) {
-                File parent = current.getParentFile();
-                if (parent != null) {
-                    String parentPath = parent.getCanonicalPath();
-                    if (parentPath.equals(monitorDirPath)) {
-                        // current 是监控目录的直接子目录，即专辑根目录
-                        return current;
-                    }
-                }
-                current = parent;
-            }
-            
-            // 如果找不到，返回原文件夹（保底）
-            return folder;
-            
-        } catch (java.io.IOException e) {
-            log.warn("获取专辑根目录失败: {}", e.getMessage());
-            return folder;
-        }
+        return com.lux032.musicautotagger.util.FileSystemUtils.resolveAlbumRootForFolder(
+            folder, config.getMonitorDirectory());
     }
     
     /**

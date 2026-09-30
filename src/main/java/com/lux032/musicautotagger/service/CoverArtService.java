@@ -23,7 +23,28 @@ public class CoverArtService {
     private final MusicBrainzClient musicBrainzClient;
     
     // 文件夹级别的封面缓存: 文件夹路径 -> 封面数据
-    private final Map<String, byte[]> folderCoverCache = new ConcurrentHashMap<>();
+    /**
+     * 文件夹级封面缓存。条目记录封面所属的 Release Group，
+     * 锁定专辑后只复用同一专辑的封面，避免同目录早先被错归的文件把别的专辑封面传染给后续文件。
+     */
+    private final Map<String, FolderCover> folderCoverCache = new ConcurrentHashMap<>();
+
+    private static final class FolderCover {
+        final byte[] data;
+        /** 封面对应的 Release Group ID；来源未绑定专辑（指纹 URL / 文件内嵌 / 目录图片且未锁定）时为 null */
+        final String releaseGroupId;
+
+        FolderCover(byte[] data, String releaseGroupId) {
+            this.data = data;
+            this.releaseGroupId = releaseGroupId;
+        }
+    }
+
+    private void putFolderCover(String folderPath, byte[] data, String releaseGroupId) {
+        if (folderPath == null || data == null || data.length == 0) return;
+        folderCoverCache.put(folderPath, new FolderCover(data,
+            releaseGroupId == null || releaseGroupId.isEmpty() ? null : releaseGroupId));
+    }
     
     public CoverArtService(CoverArtCache coverArtCache, MusicBrainzClient musicBrainzClient) {
         this.coverArtCache = coverArtCache;
@@ -51,10 +72,15 @@ public class CoverArtService {
 
         // 策略0: 检查文件夹级别缓存（散落文件跳过此策略）
         if (!isLooseFile) {
-            coverArtData = folderCoverCache.get(folderPath);
-            if (coverArtData != null && coverArtData.length > 0) {
-                log.info("策略0: 使用同文件夹已获取的封面");
-                return coverArtData;
+            FolderCover cached = folderCoverCache.get(folderPath);
+            if (cached != null && cached.data != null && cached.data.length > 0) {
+                // 已锁定专辑时，只复用属于同一 Release Group 的文件夹封面
+                if (lockedReleaseGroupId == null || lockedReleaseGroupId.equals(cached.releaseGroupId)) {
+                    log.info("策略0: 使用同文件夹已获取的封面");
+                    return cached.data;
+                }
+                log.info("策略0: 同文件夹缓存封面属于其他专辑 ({})，与锁定专辑 {} 不一致，重新获取",
+                    cached.releaseGroupId, lockedReleaseGroupId);
             }
         } else {
             log.info("散落文件跳过文件夹级别缓存，独立获取封面");
@@ -68,7 +94,7 @@ public class CoverArtService {
                 log.info("策略0.5: 使用已缓存的锁定专辑封面 (Release Group ID: {})", lockedReleaseGroupId);
                 // 只有非散落文件才缓存到文件夹级别
                 if (!isLooseFile) {
-                    folderCoverCache.put(folderPath, coverArtData);
+                    putFolderCover(folderPath, coverArtData, lockedReleaseGroupId);
                     log.info("已缓存到文件夹级别");
                 }
                 return coverArtData;
@@ -112,7 +138,7 @@ public class CoverArtService {
                 
                 // 只有非散落文件才缓存到文件夹级别
                 if (!isLooseFile) {
-                    folderCoverCache.put(folderPath, coverArtData);
+                    putFolderCover(folderPath, coverArtData, lockedReleaseGroupId);
                     log.info("已缓存到文件夹级别");
                 }
 
@@ -140,7 +166,7 @@ public class CoverArtService {
             
             // 只有非散落文件才缓存到文件夹级别
             if (!isLooseFile) {
-                folderCoverCache.put(folderPath, coverArtData);
+                putFolderCover(folderPath, coverArtData, lockedReleaseGroupId);
                 log.info("已缓存到文件夹级别");
             }
             
@@ -157,7 +183,7 @@ public class CoverArtService {
             
             // 只有非散落文件才缓存到文件夹级别
             if (!isLooseFile) {
-                folderCoverCache.put(folderPath, coverArtData);
+                putFolderCover(folderPath, coverArtData, lockedReleaseGroupId);
                 log.info("已缓存到文件夹级别");
             }
             
@@ -284,7 +310,7 @@ public class CoverArtService {
             log.info("策略1: 从缓存获取锁定专辑封面 (Release Group ID: {})", releaseGroupId);
             // 更新文件夹级别缓存
             if (folderPath != null) {
-                folderCoverCache.put(folderPath, coverArtData);
+                putFolderCover(folderPath, coverArtData, releaseGroupId);
                 log.info("已更新文件夹级别缓存");
             }
             return coverArtData;
@@ -317,7 +343,7 @@ public class CoverArtService {
                     
                     // 更新文件夹级别缓存
                     if (folderPath != null) {
-                        folderCoverCache.put(folderPath, coverArtData);
+                        putFolderCover(folderPath, coverArtData, releaseGroupId);
                         log.info("已更新文件夹级别缓存");
                     }
                     
@@ -347,7 +373,7 @@ public class CoverArtService {
                 }
                 
                 // 更新文件夹级别缓存
-                folderCoverCache.put(folderPath, coverArtData);
+                putFolderCover(folderPath, coverArtData, releaseGroupId);
                 log.info("已更新文件夹级别缓存");
                 
                 return coverArtData;
@@ -371,7 +397,7 @@ public class CoverArtService {
                 }
                 
                 // 更新文件夹级别缓存
-                folderCoverCache.put(folderPath, coverArtData);
+                putFolderCover(folderPath, coverArtData, releaseGroupId);
                 log.info("已更新文件夹级别缓存");
                 
                 return coverArtData;
@@ -452,18 +478,8 @@ public class CoverArtService {
             return folder;
         }
         
-        String folderName = folder.getName().toLowerCase();
-        // 检查是否为碟片子目录（Disc 1, CD 1, Disc1, CD1 等）
-        if (folderName.matches("^(disc|cd)\\s*\\d+$") ||
-            folderName.matches("^(disc|cd)\\d+$")) {
-            File parent = folder.getParentFile();
-            if (parent != null && parent.exists()) {
-                log.debug("检测到碟片子目录 {}，使用父目录 {} 作为专辑根目录", folder.getName(), parent.getName());
-                return parent;
-            }
-        }
-        
-        return folder;
+        File root = com.lux032.musicautotagger.util.FileSystemUtils.resolveAlbumRootForFolder(folder, null);
+        return root != null && root.exists() ? root : folder;
     }
     
     /**
@@ -477,7 +493,8 @@ public class CoverArtService {
      * 获取文件夹缓存的封面
      */
     public byte[] getFolderCachedCover(String folderPath) {
-        return folderCoverCache.get(folderPath);
+        FolderCover cached = folderCoverCache.get(folderPath);
+        return cached != null ? cached.data : null;
     }
 }
 

@@ -166,7 +166,7 @@ public class AudioFileProcessorService {
                 return aggregateResult;
             }
 
-            // 0.5. 获取专辑根目录（监控目录的第一级子目录）
+            // 0.5. 获取专辑根目录（音频所在目录；Disc/CD 子目录上升一级）
             File explicitRecoveryRoot = recoveryAlbumRoot.get();
             File albumRootDir = explicitRecoveryRoot != null
                 ? explicitRecoveryRoot : fileSystemUtils.getAlbumRootDirectory(originalAudioFile);

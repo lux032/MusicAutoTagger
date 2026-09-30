@@ -325,35 +325,67 @@ public class FileSystemUtils {
     }
     
     /**
-     * 获取专辑根目录
-     * 规则：监控目录下的第一级子目录即为专辑根目录
-     * 例如：监控目录/Artist - Album/Disc 1/01.flac -> 专辑根目录为 监控目录/Artist - Album
+     * 碟片子目录命名：Disc 1 / CD2 / Disk-3 / DISC.1 / CD 1 - Bonus / Disc 2 [Live] 等。
+     */
+    private static final Pattern DISC_FOLDER = Pattern.compile(
+        "(?i)^\\s*(disc|disk|cd)[\\s._\\-#]*\\d{1,3}(\\s*([\\-:：_.]|[(\\[（【]).*)?\\s*$");
+
+    /** 目录名是否为多碟专辑的碟片子目录 */
+    public static boolean isDiscFolderName(String folderName) {
+        return folderName != null && DISC_FOLDER.matcher(folderName).matches();
+    }
+
+    /**
+     * 获取音频文件所属的专辑根目录。
+     * 规则见 {@link #resolveAlbumRootForFolder(File, String)}。
      */
     public File getAlbumRootDirectory(File audioFile) {
-        try {
-            String monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
-            File current = audioFile.getParentFile();
-            
-            // 向上查找，直到找到监控目录的直接子目录
-            while (current != null) {
-                File parent = current.getParentFile();
-                if (parent != null) {
-                    String parentPath = parent.getCanonicalPath();
-                    if (parentPath.equals(monitorDirPath)) {
-                        // current 是监控目录的直接子目录，即专辑根目录
-                        return current;
-                    }
-                }
-                current = parent;
-            }
-            
-            // 如果找不到，返回文件所在目录（保底）
-            return audioFile.getParentFile();
-            
-        } catch (IOException e) {
-            log.warn("获取专辑根目录失败: {}", e.getMessage());
-            return audioFile.getParentFile();
+        return resolveAlbumRootForFolder(audioFile.getParentFile(), config.getMonitorDirectory());
+    }
+
+    /**
+     * 由音频所在目录推导专辑根目录。
+     *
+     * <p>规则：</p>
+     * <ul>
+     *   <li>音频所在目录本身就是专辑根目录；</li>
+     *   <li>若它是碟片子目录（Disc 1 / CD2 …），上升一级到专辑目录；</li>
+     *   <li>永远不会越过监控目录（碟片目录直接位于监控目录下时，碟片目录即专辑根）。</li>
+     * </ul>
+     *
+     * <p>旧实现把「监控目录的第一级子目录」当作专辑根。对于
+     * {@code 监控目录/艺术家/专辑/xx.flac} 这种结构，会把同一艺术家下的所有专辑
+     * 视作同一文件夹，导致专辑锁定、封面缓存、时长序列在不同专辑之间串用。</p>
+     *
+     * @param folder     音频文件所在目录
+     * @param monitorDir 监控目录（可为 null，此时不做越界保护）
+     */
+    public static File resolveAlbumRootForFolder(File folder, String monitorDir) {
+        if (folder == null) {
+            return null;
         }
+        if (!isDiscFolderName(folder.getName())) {
+            return folder;
+        }
+        File parent = folder.getParentFile();
+        if (parent == null) {
+            return folder;
+        }
+        if (monitorDir != null && !monitorDir.isBlank()) {
+            try {
+                String monitorPath = new File(monitorDir).getCanonicalPath();
+                String parentPath = parent.getCanonicalPath();
+                // 父目录是监控目录本身（或在其之外）时，不能上升
+                if (parentPath.equals(monitorPath)
+                    || !parentPath.startsWith(monitorPath + File.separator)) {
+                    return folder;
+                }
+            } catch (IOException e) {
+                log.warn("获取专辑根目录失败: {}", e.getMessage());
+                return folder;
+            }
+        }
+        return parent;
     }
     
     /**
@@ -427,9 +459,18 @@ public class FileSystemUtils {
     }
     
     /**
-     * 递归收集专辑根目录下的所有音频文件
+     * 收集专辑根目录下属于这张专辑的音频文件：
+     * 根目录自身的文件 + 碟片子目录（Disc 1 / CD2 …）内的文件。
+     *
+     * <p>不会进入其他子目录：若专辑根目录下还有非碟片子目录（例如艺术家目录里
+     * 同时放着单曲和若干专辑子目录），这些子目录会被当作独立的专辑根处理，
+     * 不能混进本专辑的曲目数 / 时长序列。</p>
      */
     public void collectAudioFilesForMarking(File directory, java.util.List<File> result) {
+        collectAlbumAudioFiles(directory, result, false);
+    }
+
+    private void collectAlbumAudioFiles(File directory, java.util.List<File> result, boolean insideDiscFolder) {
         if (!directory.isDirectory()) {
             return;
         }
@@ -441,8 +482,10 @@ public class FileSystemUtils {
         
         for (File file : files) {
             if (file.isDirectory()) {
-                // 递归进入子文件夹
-                collectAudioFilesForMarking(file, result);
+                // 只进入碟片子目录；碟片目录内部则完整递归
+                if (insideDiscFolder || isDiscFolderName(file.getName())) {
+                    collectAlbumAudioFiles(file, result, true);
+                }
             } else if (isMusicFile(file)) {
                 // 添加音频文件
                 result.add(file);
