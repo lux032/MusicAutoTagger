@@ -71,4 +71,36 @@ class DashboardServletRecentAlbumsTest {
         assertEquals("SPIN", albums.get(0).get("album"));
         assertEquals("Kroi", albums.get(0).get("artist"));
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void featuredTrackDoesNotTurnSoloAlbumIntoVariousArtists() throws Exception {
+        Path out = tempDir.resolve("out");
+        Path log = tempDir.resolve("processed-feat.log");
+        Files.writeString(log,
+            String.join("|", tempDir.resolve("a.flac").toString(), "r1", "Suzuki", "One", "ULTRA FLASH",
+                "2026-09-30 17:00:00", "rg", out.resolve("Suzuki/ULTRA FLASH/1.01 a.flac").toString())
+                + System.lineSeparator()
+            + String.join("|", tempDir.resolve("b.flac").toString(), "r2", "Suzuki, Ito", "Two", "ULTRA FLASH",
+                "2026-09-30 17:01:00", "rg", out.resolve("Suzuki/ULTRA FLASH/1.12 b.flac").toString())
+                + System.lineSeparator()
+            + String.join("|", tempDir.resolve("c.flac").toString(), "r3", "X", "Three", "Comp",
+                "2026-09-30 17:02:00", "rg2", out.resolve("Various Artists/Comp/1.01 c.flac").toString())
+                + System.lineSeparator());
+
+        MusicConfig config = MusicConfig.getInstance();
+        config.setDbType("file");
+        config.setProcessedFileLogPath(log.toString());
+        config.setOutputDirectory(out.toString());
+        ProcessedFileLogger logger = new ProcessedFileLogger(config, null);
+        DashboardServlet servlet = new DashboardServlet(logger, null, null, config, null);
+        Method method = DashboardServlet.class.getDeclaredMethod("getRecentAlbumsFromLog", int.class);
+        method.setAccessible(true);
+
+        List<Map<String, Object>> albums = (List<Map<String, Object>>) method.invoke(servlet, 12);
+        Map<String, Object> ultra = albums.stream().filter(a -> "ULTRA FLASH".equals(a.get("album"))).findFirst().orElseThrow();
+        Map<String, Object> comp = albums.stream().filter(a -> "Comp".equals(a.get("album"))).findFirst().orElseThrow();
+        assertEquals("Suzuki", ultra.get("artist"));
+        assertEquals("Various Artists", comp.get("artist"));
+    }
 }

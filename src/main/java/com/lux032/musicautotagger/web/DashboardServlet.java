@@ -162,7 +162,8 @@ public class DashboardServlet extends HttpServlet {
         boolean withRgid = processedLogger != null && processedLogger.isReleaseGroupIdColumnAvailable();
         String rgidSelect = withRgid ? "MAX(release_group_id) AS rgid, " : "";
         boolean withTarget = processedLogger != null && processedLogger.isTargetFilePathColumnAvailable();
-        String targetSelect = withTarget ? "MIN(target_file_path) AS target_sample, " : "";
+        String targetSelect = withTarget
+            ? "MIN(target_file_path) AS target_sample, MAX(target_file_path) AS target_sample_max, " : "";
         String placeholders = NON_MB_RECORDING_IDS.stream()
             .map(x -> "?").collect(java.util.stream.Collectors.joining(", "));
 
@@ -187,10 +188,15 @@ public class DashboardServlet extends HttpServlet {
                 while (rs.next()) {
                     Map<String, Object> album = new HashMap<>();
                     album.put("album", rs.getString("album"));
-                    album.put("artist", rs.getInt("artist_count") == 1
-                        ? rs.getString("one_artist") : "Various Artists");
-                    album.put("trackCount", rs.getInt("track_count"));
                     String target = withTarget ? rs.getString("target_sample") : null;
+                    String albumArtist = withTarget
+                        ? albumArtistFromTargets(target, rs.getString("target_sample_max")) : null;
+                    if (albumArtist == null) {
+                        albumArtist = rs.getInt("artist_count") == 1
+                            ? rs.getString("one_artist") : "Various Artists";
+                    }
+                    album.put("artist", albumArtist);
+                    album.put("trackCount", rs.getInt("track_count"));
                     album.put("path", target != null ? target : rs.getString("source_sample"));
                     if (withRgid) {
                         album.put("releaseGroupId", rs.getString("rgid"));
@@ -208,6 +214,44 @@ public class DashboardServlet extends HttpServlet {
         return albums;
     }
 
+    /**
+     * 从归档路径推导专辑艺术家。
+     *
+     * <p>TagWriterService 的归档结构固定为 {@code 输出目录/专辑艺术家/专辑/文件}。
+     * 专辑艺术家应看 ALBUM_ARTIST，而不是曲目艺术家是否唯一——否则一张个人专辑里只要有一首
+     * feat. 合唱曲就会被显示成 Various Artists。</p>
+     *
+     * <p>传入同一专辑分组下字典序最小/最大的路径：字典序介于两者之间的路径必共享它们的公共前缀，
+     * 所以两端的艺术家目录一致即代表全组一致。</p>
+     *
+     * @return 专辑艺术家；两端不一致返回 Various Artists；无法判断返回 null
+     */
+    String albumArtistFromTargets(String minTarget, String maxTarget) {
+        String a = albumArtistFromTarget(minTarget);
+        String b = albumArtistFromTarget(maxTarget);
+        if (a == null || b == null) return null;
+        return a.equals(b) ? a : "Various Artists";
+    }
+
+    private String albumArtistFromTarget(String target) {
+        if (target == null || target.isBlank()) return null;
+        try {
+            java.nio.file.Path file = java.nio.file.Paths.get(target).normalize();
+            java.nio.file.Path albumDir = file.getParent();
+            if (albumDir == null) return null;
+            java.nio.file.Path artistDir = albumDir.getParent();
+            if (artistDir == null || artistDir.getParent() == null || artistDir.getFileName() == null) return null;
+            String outputDir = config.getOutputDirectory();
+            if (outputDir == null || outputDir.isBlank()) return null;
+            java.nio.file.Path outputRoot = java.nio.file.Paths.get(outputDir).normalize();
+            // 只有标准的三层结构才可信（无专辑时是 输出目录/艺术家/文件）
+            if (!artistDir.getParent().equals(outputRoot)) return null;
+            return artistDir.getFileName().toString();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private List<Map<String, Object>> getRecentAlbumsFromLog(int limit) {
         File logFile = new File(config.getProcessedFileLogPath());
         if (!logFile.exists()) {
@@ -217,6 +261,7 @@ public class DashboardServlet extends HttpServlet {
         // album -> 聚合结果（LinkedHashMap 保持首次出现顺序，排序在后面做）
         Map<String, Map<String, Object>> grouped = new LinkedHashMap<>();
         Map<String, Set<String>> artistsByAlbum = new HashMap<>();
+        Map<String, Set<String>> targetsByAlbum = new HashMap<>();
 
         try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
             String line;
@@ -230,6 +275,9 @@ public class DashboardServlet extends HttpServlet {
                 String time = parts[5];
 
                 artistsByAlbum.computeIfAbsent(album, k -> new HashSet<>()).add(parts[2]);
+                if (parts.length >= 8 && !parts[7].isBlank()) {
+                    targetsByAlbum.computeIfAbsent(album, k -> new HashSet<>()).add(parts[7]);
+                }
 
                 Map<String, Object> entry = grouped.computeIfAbsent(album, k -> {
                     Map<String, Object> created = new HashMap<>();
@@ -260,9 +308,15 @@ public class DashboardServlet extends HttpServlet {
         }
 
         for (Map.Entry<String, Map<String, Object>> entry : grouped.entrySet()) {
-            Set<String> artists = artistsByAlbum.get(entry.getKey());
-            entry.getValue().put("artist", artists != null && artists.size() == 1
-                ? artists.iterator().next() : "Various Artists");
+            Set<String> targets = targetsByAlbum.get(entry.getKey());
+            String albumArtist = targets != null && !targets.isEmpty()
+                ? albumArtistFromTargets(Collections.min(targets), Collections.max(targets)) : null;
+            if (albumArtist == null) {
+                Set<String> artists = artistsByAlbum.get(entry.getKey());
+                albumArtist = artists != null && artists.size() == 1
+                    ? artists.iterator().next() : "Various Artists";
+            }
+            entry.getValue().put("artist", albumArtist);
             entry.getValue().remove("hasTargetPath");
         }
 
