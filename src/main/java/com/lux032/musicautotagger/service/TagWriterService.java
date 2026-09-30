@@ -256,10 +256,11 @@ public class TagWriterService {
         String newFileName = fileName;
         if (config.isAutoRename() && metadata.getArtist() != null && metadata.getTitle() != null) {
             // 优先使用 metadata 中的碟号和曲目号构建前缀（来自 MusicBrainz）
-            String trackPrefix = buildTrackPrefixFromMetadata(metadata);
+            // 附加曲目不在所选版本中，没有真实曲目号：不编造，也不沿用源文件名里的序号
+            String trackPrefix = metadata.isExtraTrack() ? "" : buildTrackPrefixFromMetadata(metadata);
 
             // 如果 metadata 没有碟号曲目号，尝试从原始文件名提取
-            if (trackPrefix.isEmpty()) {
+            if (trackPrefix.isEmpty() && !metadata.isExtraTrack()) {
                 trackPrefix = extractTrackPrefix(fileName);
             }
 
@@ -446,6 +447,21 @@ public class TagWriterService {
         }
     }
 
+    static final String EXTRA_TRACK_COMMENT = "不在 MusicBrainz 所选版本中（附加曲目）";
+
+    /** 在注释里追加附加曲目标记，保留已有注释；重复处理不会重复追加 */
+    private void appendExtraTrackComment(Tag tag) {
+        try {
+            String existing = tag.getFirst(FieldKey.COMMENT);
+            if (existing != null && existing.contains(EXTRA_TRACK_COMMENT)) return;
+            String value = existing == null || existing.isBlank()
+                ? EXTRA_TRACK_COMMENT : existing + " | " + EXTRA_TRACK_COMMENT;
+            tag.setField(FieldKey.COMMENT, value);
+        } catch (Exception e) {
+            log.debug("写入附加曲目注释失败: {}", e.getMessage());
+        }
+    }
+
     private void deleteFieldSafely(Tag tag, FieldKey key) {
         try {
             tag.deleteField(key);
@@ -551,13 +567,25 @@ public class TagWriterService {
         setFieldSafely(tag, FieldKey.RECORD_LABEL, metadata.getRecordLabel());
         writeOriginalReleaseTags(tag, metadata.getOriginalReleaseDate(), metadata.getOriginalYear());
 
+        if (metadata.isExtraTrack()) {
+            // 附加曲目：清掉源文件残留的曲目号 / 碟号，否则播放器会把它和版本里的同号曲目排在一起
+            deleteFieldSafely(tag, FieldKey.TRACK);
+            deleteFieldSafely(tag, FieldKey.TRACK_TOTAL);
+            deleteFieldSafely(tag, FieldKey.DISC_NO);
+            deleteFieldSafely(tag, FieldKey.DISC_TOTAL);
+            deleteFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASE_TRACK_ID);
+            appendExtraTrackComment(tag);
+        }
+
         // MP4 的 TRACK/DISC 字段不能接收 "1/6"；统一拆成位置与总数。
-        String[] disc = splitPosition(metadata.getDiscNo(), metadata.getDiscTotal());
-        String[] track = splitPosition(metadata.getTrackNo(), metadata.getTrackTotal());
-        setFieldSafely(tag, FieldKey.DISC_NO, disc[0]);
-        setFieldSafely(tag, FieldKey.DISC_TOTAL, disc[1]);
-        setFieldSafely(tag, FieldKey.TRACK, track[0]);
-        setFieldSafely(tag, FieldKey.TRACK_TOTAL, track[1]);
+        if (!metadata.isExtraTrack()) {
+            String[] disc = splitPosition(metadata.getDiscNo(), metadata.getDiscTotal());
+            String[] track = splitPosition(metadata.getTrackNo(), metadata.getTrackTotal());
+            setFieldSafely(tag, FieldKey.DISC_NO, disc[0]);
+            setFieldSafely(tag, FieldKey.DISC_TOTAL, disc[1]);
+            setFieldSafely(tag, FieldKey.TRACK, track[0]);
+            setFieldSafely(tag, FieldKey.TRACK_TOTAL, track[1]);
+        }
 
         // 写入作曲家
         if (metadata.getComposer() != null && !metadata.getComposer().isEmpty()) {

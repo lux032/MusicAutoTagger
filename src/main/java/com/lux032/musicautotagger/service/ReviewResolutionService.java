@@ -591,6 +591,8 @@ public class ReviewResolutionService {
      * @return 实际恢复的文件数（调用前已由 requireAllOriginalFiles 保证全部存在）
      */
     private int restorePendingFiles(ReviewItem item, ReviewItem.CandidateSnapshot lockedRelease) {
+        // 人工处理接管文件夹：解除「已交给失败管线」终态，否则恢复的待处理文件会被拒绝
+        folderAlbumCache.clearFailureHandoff(item.getFolderPath());
         int restored = 0;
         for (ReviewItem.FileEntry entry : item.getFiles()) {
             File original = new File(entry.getOriginalPath());
@@ -636,48 +638,19 @@ public class ReviewResolutionService {
         if (lockedRelease == null || lockedRelease.getReleaseId() == null) {
             return metadata;
         }
-        Integer duration = entry.getDuration();
-        if (duration == null || duration <= 0) {
-            return metadata;
-        }
+        // 能对上的用该版本的碟号/曲目号；对不上的作为附加曲目（保留识别曲名，不写曲目号）。
+        // 旧实现只按时长硬塞，会把不在该版本里的歌改名成版本里时长相近的另一首。
         try {
-            MusicMetadata fromRelease = musicBrainzClient.getTrackFromLockedAlbumByDuration(
-                lockedRelease.getReleaseId(),
-                lockedRelease.getReleaseGroupId(),
-                duration,
-                lockedRelease.getTitle() != null ? lockedRelease.getTitle() : item.getSynthesizedAlbumTitle(),
-                lockedRelease.getArtist() != null ? lockedRelease.getArtist() : item.getSynthesizedAlbumArtist()
-            );
-            if (fromRelease == null) {
-                return metadata;
+            LockedReleaseTrackResolver.Resolution resolution = new LockedReleaseTrackResolver(musicBrainzClient)
+                .resolve(metadata, entry.getDuration(),
+                    lockedRelease.getReleaseId(), lockedRelease.getReleaseGroupId(),
+                    lockedRelease.getTitle() != null ? lockedRelease.getTitle() : item.getSynthesizedAlbumTitle(),
+                    lockedRelease.getArtist() != null ? lockedRelease.getArtist() : item.getSynthesizedAlbumArtist(),
+                    lockedRelease.getReleaseType(), lockedRelease.isCompilation());
+            if (resolution.isExtraTrack()) {
+                LogCollector.addLog("INFO", "不在所选版本中，作为附加曲目归档: " + entry.getFileName());
             }
-            // 保留原识别结果中 release 查询不会返回的字段
-            if (fromRelease.getComposer() == null) {
-                fromRelease.setComposer(metadata.getComposer());
-            }
-            if (fromRelease.getLyricist() == null) {
-                fromRelease.setLyricist(metadata.getLyricist());
-            }
-            if (fromRelease.getArranger() == null) {
-                fromRelease.setArranger(metadata.getArranger());
-            }
-            if (fromRelease.getLyrics() == null) {
-                fromRelease.setLyrics(metadata.getLyrics());
-            }
-            if (fromRelease.getGenres() == null) {
-                fromRelease.setGenres(metadata.getGenres());
-            }
-            fromRelease.setReleaseId(lockedRelease.getReleaseId());
-            if (lockedRelease.getReleaseType() != null && !lockedRelease.getReleaseType().isEmpty()) {
-                fromRelease.setReleaseType(lockedRelease.getReleaseType());
-            }
-            fromRelease.setCompilation(lockedRelease.isCompilation() || fromRelease.isCompilation());
-            fromRelease.setDuration(duration);
-
-            // 人工确认/LLM 自动确认也会走这里。伴奏和原唱通常等长，
-            // getTrackFromLockedAlbumByDuration() 在多个 0 秒差候选中会取第一首，
-            // 因此必须像正常处理链路一样保留源元数据中明确的版本标题与曲序。
-            return MetadataUtils.mergeMetadata(metadata, fromRelease);
+            return resolution.getMetadata();
         } catch (Exception e) {
             log.warn("从锁定 release 获取曲目信息失败，保留原识别结果: {} - {}",
                 entry.getFileName(), e.getMessage());

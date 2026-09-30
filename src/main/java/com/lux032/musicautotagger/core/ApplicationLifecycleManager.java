@@ -50,6 +50,7 @@ public class ApplicationLifecycleManager {
     private ReviewResolutionService reviewResolutionService;
     private RecoveryService recoveryService;
     private ProcessedRecordService processedRecordService;
+    private java.util.concurrent.ExecutorService missingTracksSearchExecutor;
     
     public ApplicationLifecycleManager(MusicConfig config) {
         this.config = config;
@@ -173,6 +174,20 @@ public class ApplicationLifecycleManager {
         recoveryService = new RecoveryService(
             config, audioFileProcessorService, processedLogger, reviewQueueService, folderAlbumCache,
             failedFileHandler, fileSystemUtils, tagWriter, fingerprintService, coverCandidateService);
+
+        // 「锁定专辑缺曲」条目入队后自动联网搜一轮（开关 + 已配置联网搜索时）。
+        // 单线程后台执行：搜索要十几秒，不能阻塞文件处理队列。
+        missingTracksSearchExecutor = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "missing-tracks-online-search");
+            t.setDaemon(true);
+            return t;
+        });
+        reviewQueueService.setMissingTracksEnqueuedListener(this::scheduleMissingTracksOnlineSearch);
+        // 上次关机前已入队、但自动搜索尚未真正执行的缺曲条目：启动时补跑
+        for (com.lux032.musicautotagger.model.ReviewItem pendingItem
+                : reviewQueueService.pendingMissingTracksWithoutAutoSearch()) {
+            scheduleMissingTracksOnlineSearch(pendingItem);
+        }
         
         // Level 4: 初始化文件监控服务
         log.info(I18nUtil.getMessage("app.init.file.monitor"));
@@ -252,6 +267,43 @@ public class ApplicationLifecycleManager {
     /**
      * 优雅关闭所有服务
      */
+    /**
+     * 为缺曲条目排一次自动联网搜索。
+     * 任务只绑定条目 ID：执行时条目已被人工处理就直接放弃，不会按文件夹新建条目。
+     * 「已触发」标记在任务真正开始时才写入，关机时还在排队的任务重启后会补跑。
+     */
+    private void scheduleMissingTracksOnlineSearch(com.lux032.musicautotagger.model.ReviewItem queued) {
+        if (queued == null || missingTracksSearchExecutor == null
+            || !config.isReviewMissingTracksAutoOnlineSearch() || !recoveryService.isOnlineSearchAvailable()) {
+            return;
+        }
+        final String itemId = queued.getId();
+        final String folderPath = queued.getFolderPath();
+        try {
+            missingTracksSearchExecutor.submit(() -> {
+                // 检查与标记在队列锁内一次完成：已处理 / 已触发 / 已搜索过的条目直接放弃
+                boolean claimed = reviewQueueService.updatePending(itemId, item -> {
+                    if (item.isAutoOnlineSearchTriggered() || item.getOnlineSearchedAt() > 0L) {
+                        return false;
+                    }
+                    item.setAutoOnlineSearchTriggered(true);
+                    return true;
+                });
+                if (!claimed) {
+                    return;
+                }
+                try {
+                    log.info("缺曲条目自动联网搜索: {}", folderPath);
+                    recoveryService.triggerOnlineSearchForReviewItem(itemId, new java.io.File(folderPath));
+                } catch (Exception e) {
+                    log.warn("缺曲条目自动联网搜索失败（可在面板上手动重试）: {} - {}", folderPath, e.getMessage());
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            log.debug("自动联网搜索已停止接收任务: {}", folderPath);
+        }
+    }
+
     public void shutdown() {
         if (!shutdownCalled.compareAndSet(false, true)) {
             return;
@@ -259,6 +311,16 @@ public class ApplicationLifecycleManager {
         log.info(I18nUtil.getMessage("app.shutting.down"));
 
         try {
+            if (missingTracksSearchExecutor != null) {
+                // 正在进行的搜索允许短暂收尾；排队中的任务丢弃，重启后按「未触发」补跑
+                missingTracksSearchExecutor.shutdownNow();
+                try {
+                    missingTracksSearchExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
             // 按依赖关系逆序关闭服务
             if (recoveryService != null) {
                 recoveryService.close();

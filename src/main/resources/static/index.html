@@ -908,6 +908,10 @@
                             <input id="cfgReviewEnabled" type="checkbox">
                             <label for="cfgReviewEnabled" data-i18n="config.review.enabled">启用待人工确认（专辑无法确定时不写标签，等待确认）</label>
                         </div>
+                        <div class="form-row checkbox-row">
+                            <input id="cfgReviewMissingTracksAutoOnlineSearch" type="checkbox">
+                            <label for="cfgReviewMissingTracksAutoOnlineSearch" data-i18n="config.review.missing.auto.search">锁定专辑缺曲时自动联网搜索完整版本（需已配置联网搜索）</label>
+                        </div>
                     </div>
 
                     <div class="form-grid">
@@ -2204,6 +2208,7 @@
                 document.getElementById('cfgCueSplitEnabled').checked = !!cfg.cueSplitEnabled;
                 document.getElementById('cfgCueSplitOutputDirectory').value = cfg.cueSplitOutputDir || '';
                 document.getElementById('cfgReviewEnabled').checked = !!cfg.reviewEnabled;
+                document.getElementById('cfgReviewMissingTracksAutoOnlineSearch').checked = cfg.reviewMissingTracksAutoOnlineSearch !== false;
                 document.getElementById('cfgReleaseCountryPriority').value = cfg.releaseCountryPriority || '';
                 document.getElementById('loginLanguage').value = cfg.language || 'en_US';
                 document.getElementById('setupLanguage').value = cfg.language || 'en_US';
@@ -2283,6 +2288,7 @@
                 cueSplitEnabled: document.getElementById('cfgCueSplitEnabled').checked,
                 cueSplitOutputDir: getValue('cfgCueSplitOutputDirectory'),
                 reviewEnabled: document.getElementById('cfgReviewEnabled').checked,
+                reviewMissingTracksAutoOnlineSearch: document.getElementById('cfgReviewMissingTracksAutoOnlineSearch').checked,
                 releaseCountryPriority: getValue('cfgReleaseCountryPriority')
             };
 

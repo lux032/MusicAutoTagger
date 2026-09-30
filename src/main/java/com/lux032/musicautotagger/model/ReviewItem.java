@@ -41,6 +41,14 @@ public class ReviewItem {
         COMPLETED
     }
 
+    /** 条目类型（决定面板上的 Tab） */
+    public enum Kind {
+        /** 专辑定不下来（如 MusicBrainz 未收录的精选集）。旧数据 kind 为 null 时按此处理 */
+        ALBUM_UNRESOLVED,
+        /** 找到了最接近的版本，但本地有曲目不在该版本中（锁定专辑缺曲） */
+        TRACKS_MISSING
+    }
+
     public enum Status {
         /** 等待人工确认 */
         PENDING_REVIEW,
@@ -61,6 +69,20 @@ public class ReviewItem {
 
     /** 进入待确认的原因（用于面板展示） */
     private String reason;
+
+    /** 条目类型；null 视为 ALBUM_UNRESOLVED（兼容旧队列文件） */
+    private Kind kind;
+
+    /** TRACKS_MISSING 条目的缺曲详情 */
+    private MissingTracks missingTracks;
+
+    /** 该条目入队时是否已自动触发过联网搜索（避免重启 / 重复入队时反复搜索） */
+    private boolean autoOnlineSearchTriggered;
+
+    /** 实际类型（把旧数据的 null 归为 ALBUM_UNRESOLVED） */
+    public Kind effectiveKind() {
+        return kind == null ? Kind.ALBUM_UNRESOLVED : kind;
+    }
 
     /** 统一置信度（阶段六 #20），0~1 */
     private double confidence;
@@ -128,6 +150,24 @@ public class ReviewItem {
     private String resolvedReleaseType;
     private boolean resolvedCompilation;
     private int resolvedTrackCount;
+
+    /**
+     * 缺曲详情：最接近的版本 + 本地对不上的曲目
+     */
+    @Data
+    public static class MissingTracks {
+        private String releaseGroupId;
+        private String releaseId;
+        private String albumTitle;
+        private String albumArtist;
+        private int releaseTrackCount;
+        private int localTrackCount;
+        private int unmatchedLocalCount;
+        /** LOCK_CHECK（锁定前时长覆盖检查）/ TRACK_CHECK（逐首检测） */
+        private String detectedBy;
+        /** 逐首检测确定不在版本中的文件：文件名 → 指纹曲名 */
+        private java.util.Map<String, String> unmatchedFiles = new java.util.LinkedHashMap<>();
+    }
 
     /**
      * 单个待确认文件

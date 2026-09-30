@@ -72,24 +72,47 @@ public class OnlineIdentificationService {
     public boolean isAvailable() { return searchClient().hasEnabledEndpoint(); }
 
     public ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover) throws Exception {
+        return search(albumRoot, sourceType, analyzeCover, null);
+    }
+
+    /**
+     * 只为指定的已有条目搜索（后台自动搜索用）。条目已不在待确认时返回 null，绝不新建条目。
+     */
+    public ReviewItem searchForExistingItem(String itemId, File albumRoot) throws Exception {
+        return search(albumRoot, null, false, itemId);
+    }
+
+    private ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover, String targetItemId) throws Exception {
         List<File> files = collect(albumRoot);
         if (files.isEmpty()) throw new IllegalArgumentException("recovery.no.audio.files");
         String evidenceHash = evidenceHash(files);
-        ReviewItem item = reviewQueue.enqueueRecoveryFolder(albumRoot.getAbsolutePath(), sourceType,
-            files, tagWriter, evidenceHash);
+        ReviewItem item = targetItemId != null
+            ? reviewQueue.prepareOnlineSearchForItem(targetItemId, albumRoot.getAbsolutePath(), evidenceHash)
+            : reviewQueue.enqueueRecoveryFolder(albumRoot.getAbsolutePath(), sourceType,
+                files, tagWriter, evidenceHash);
+        if (item == null) {
+            log.info("条目已不在待确认状态，取消联网搜索: {}", albumRoot.getName());
+            return null;
+        }
 
+        final String itemId = item.getId();
         List<Integer> durations = fingerprintService.extractDurationSequence(files);
-        if (durations != null) {
-            item.setDurationSequence(durations);
+        // 共享条目的所有修改都在队列锁内完成，且只在条目仍待确认时生效
+        if (!reviewQueue.updatePending(itemId, target -> {
+            if (durations != null) {
+                target.setDurationSequence(new ArrayList<>(durations));
+            }
+            if (analyzeCover) {
+                appendResolutionNote(target, "已申请封面视觉分析；当前原生搜索适配器未检测到可移植的图片+搜索联合协议，已明确降级为文本联网搜索");
+            }
+            return true;
+        })) {
+            log.info("条目已不在待确认状态，取消联网搜索: {}", albumRoot.getName());
+            return item;
         }
-        if (analyzeCover) {
-            String existingNote = item.getResolutionNote();
-            String appended = "已申请封面视觉分析；当前原生搜索适配器未检测到可移植的图片+搜索联合协议，已明确降级为文本联网搜索";
-            item.setResolutionNote(existingNote == null || existingNote.isBlank()
-                ? appended : existingNote + " | " + appended);
-            reviewQueue.update(item);
-        }
-        String prompt = buildPrompt(albumRoot, files, durations, analyzeCover);
+        String prompt = item.effectiveKind() == ReviewItem.Kind.TRACKS_MISSING && item.getMissingTracks() != null
+            ? buildMissingTracksPrompt(item, albumRoot, files, durations)
+            : buildPrompt(albumRoot, files, durations, analyzeCover);
 
         // 第一轮结果立即持久化；只有证据不足才执行第二轮。
         // 同一次识别的两轮搜索必须用同一个实现：中途配置变更不应让第二轮换一套证据来源
@@ -97,7 +120,9 @@ public class OnlineIdentificationService {
         WebSearchClient.SearchResponse first = client.search(SYSTEM, prompt);
         Parsed parsed = parse(first);
         matchAll(parsed, files, durations);
-        save(item, first, parsed, evidenceHash);
+        if (!save(item, first, parsed, evidenceHash)) {
+            return item;
+        }
 
         if (parsed.candidates.isEmpty() || parsed.needsSecondRound) {
             String secondPrompt = prompt + "\nFIRST ROUND FINDINGS:\n" + first.getText()
@@ -111,8 +136,10 @@ public class OnlineIdentificationService {
                 matchAll(parsed, files, durations);
                 save(item, second, parsed, evidenceHash);
             } catch (LlmClient.LlmException e) {
-                appendResolutionNote(item, "第二轮联网搜索失败；已保留第一轮结果，可人工使用或重新搜索");
-                reviewQueue.update(item);
+                reviewQueue.updatePending(itemId, target -> {
+                    appendResolutionNote(target, "第二轮联网搜索失败；已保留第一轮结果，可人工使用或重新搜索");
+                    return true;
+                });
             }
         }
         return item;
@@ -136,6 +163,62 @@ public class OnlineIdentificationService {
         sb.append("VISUAL COVER ANALYSIS REQUESTED: ").append(analyzeCover)
             .append(". This API integration currently uses cover-derived text only when available; do not claim you saw an image unless image evidence is supplied.\n");
         sb.append("Search current official and music database sources. Return strict JSON:\n")
+            .append("{\"needs_second_round\":boolean,\"candidates\":[{\"title\":string,\"artist\":string,")
+            .append("\"album_artist\":string,\"release_date\":string,\"edition\":string,\"country\":string,")
+            .append("\"label\":string,\"catalog_number\":string,\"cover_url\":string,\"confidence\":number 0..1,")
+            .append("\"reason\":string,\"tracks\":[{\"disc\":number,\"track\":number,\"title\":string,\"artist\":string,\"duration\":number}],")
+            .append("\"source_urls\":[string]}],\"clues\":[{\"url\":string,\"title\":string,\"snippet\":string}]}.");
+        return sb.toString();
+    }
+
+    /**
+     * 「锁定专辑缺曲」专用 prompt：已经知道最接近的版本，只需要找到收录了缺失曲目的完整版本
+     * （单曲的 c/w 曲、豪华版 / 数字版 bonus、更大的原声合集等）以及完整曲目表。
+     * 输出格式与普通搜索一致，复用同一套来源门槛与逐曲匹配。
+     */
+    String buildMissingTracksPrompt(ReviewItem item, File root, List<File> files, List<Integer> durations) {
+        ReviewItem.MissingTracks missing = item.getMissingTracks();
+        java.util.Map<String, ReviewItem.FileEntry> identified = new java.util.HashMap<>();
+        if (item.getFiles() != null) {
+            for (ReviewItem.FileEntry entry : item.getFiles()) {
+                if (entry.getOriginalPath() != null) identified.put(new File(entry.getOriginalPath()).getAbsolutePath(), entry);
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("A local album folder was matched to a MusicBrainz release, but that release does NOT contain\n")
+          .append("all of the local tracks. Find the exact edition that contains ALL local tracks and its full tracklist.\n\n");
+        sb.append("FOLDER: ").append(root.getName()).append("\nLOCAL FILE COUNT: ").append(files.size()).append('\n');
+        sb.append("CLOSEST MUSICBRAINZ RELEASE: title=\"").append(nz(missing.getAlbumTitle()))
+          .append("\" artist=\"").append(nz(missing.getAlbumArtist())).append("\"");
+        if (missing.getReleaseTrackCount() > 0) sb.append(" tracks=").append(missing.getReleaseTrackCount());
+        sb.append('\n');
+        if (missing.getUnmatchedFiles() != null && !missing.getUnmatchedFiles().isEmpty()) {
+            sb.append("LOCAL TRACKS CONFIRMED MISSING FROM THAT RELEASE:\n");
+            for (java.util.Map.Entry<String, String> e : missing.getUnmatchedFiles().entrySet()) {
+                sb.append("  - file=\"").append(e.getKey()).append("\" identified_title=\"").append(nz(e.getValue())).append("\"\n");
+            }
+        } else if (missing.getUnmatchedLocalCount() > 0) {
+            sb.append("At least ").append(missing.getUnmatchedLocalCount())
+              .append(" local track(s) have no duration counterpart in that release.\n");
+        }
+        sb.append("DURATIONS (seconds, local order): ").append(durations).append('\n');
+        sb.append("LOCAL TRACKS (identified by acoustic fingerprint where available):\n");
+        int i = 1;
+        for (File file : files) {
+            ReviewItem.FileEntry entry = identified.get(file.getAbsolutePath());
+            MusicMetadata md = entry != null && entry.getMetadata() != null ? entry.getMetadata() : tagWriter.readTags(file);
+            sb.append(i++).append(". file=\"").append(file.getName()).append("\"");
+            if (md != null) {
+                sb.append(" title=\"").append(nz(md.getTitle())).append("\" artist=\"").append(nz(md.getArtist())).append("\"");
+            }
+            if (entry != null && entry.getDuration() != null) sb.append(" duration=").append(entry.getDuration());
+            sb.append('\n');
+        }
+        sb.append("Typical causes: a single whose coupling (c/w) track is missing on MusicBrainz, a deluxe / digital edition\n")
+          .append("with bonus tracks, or a larger soundtrack collection. Prefer official store pages, the label site, VGMdb, Discogs.\n")
+          .append("If the closest release above is in fact the right edition and the extra local files are simply not part of it,\n")
+          .append("return it as a candidate and explain which local files do not belong to it.\n");
+        sb.append("Return strict JSON:\n")
             .append("{\"needs_second_round\":boolean,\"candidates\":[{\"title\":string,\"artist\":string,")
             .append("\"album_artist\":string,\"release_date\":string,\"edition\":string,\"country\":string,")
             .append("\"label\":string,\"catalog_number\":string,\"cover_url\":string,\"confidence\":number 0..1,")
@@ -189,13 +272,29 @@ public class OnlineIdentificationService {
         }
     }
 
-    private void save(ReviewItem item,WebSearchClient.SearchResponse response,Parsed parsed,String hash){
-        item.setOnlineCandidates(parsed.candidates);item.setOnlineClues(parsed.clues);item.setOnlineSearchedAt(System.currentTimeMillis());
-        item.setOnlineSearchProvider(response.getProvider());item.setOnlineSearchModel(response.getModel());item.setEvidenceHash(hash);item.setOnlineEvidenceStale(false);
-        String note=parsed.candidates.isEmpty()?"联网搜索未找到满足来源门槛的正式候选，已保存线索":"联网搜索完成，等待人工确认";
-        String existing=item.getResolutionNote();
-        if(existing==null||existing.isBlank()||isOnlineSearchTemplate(existing))item.setResolutionNote(note);else appendResolutionNote(item,note);
-        reviewQueue.update(item);
+    /** 搜索返回时条目可能已被人工处理：只在仍待确认时写入，返回是否写入 */
+    /** 搜索返回时条目可能已被人工处理：检查与写入在队列锁内一次完成，返回是否写入 */
+    private boolean save(ReviewItem item,WebSearchClient.SearchResponse response,Parsed parsed,String hash){
+        // 深拷贝：第二轮 merge / matchAll 会原地修改 parsed 里的候选和逐曲匹配，
+        // 挂到队列条目上的对象图必须与之完全隔离，不能在锁外被改动
+        List<ReviewItem.OnlineCandidate> candidates=deepCopy(parsed.candidates,ReviewItem.OnlineCandidate[].class);
+        List<ReviewItem.OnlineEvidence> clues=deepCopy(parsed.clues,ReviewItem.OnlineEvidence[].class);
+        String note=candidates.isEmpty()?"联网搜索未找到满足来源门槛的正式候选，已保存线索":"联网搜索完成，等待人工确认";
+        long now=System.currentTimeMillis();
+        boolean saved=reviewQueue.updatePending(item.getId(),target->{
+            target.setOnlineCandidates(candidates);target.setOnlineClues(clues);target.setOnlineSearchedAt(now);
+            target.setOnlineSearchProvider(response.getProvider());target.setOnlineSearchModel(response.getModel());target.setEvidenceHash(hash);target.setOnlineEvidenceStale(false);
+            String existing=target.getResolutionNote();
+            if(existing==null||existing.isBlank()||isOnlineSearchTemplate(existing))target.setResolutionNote(note);else appendResolutionNote(target,note);
+            return true;
+        });
+        if(!saved)log.info("条目已被处理，丢弃联网搜索结果: {}",item.getFolderName());
+        return saved;
+    }
+    static <T> List<T> deepCopy(List<T> source,Class<T[]> arrayType){
+        if(source==null)return new ArrayList<>();
+        Gson gson=new Gson();
+        return new ArrayList<>(java.util.Arrays.asList(gson.fromJson(gson.toJson(source),arrayType)));
     }
     private boolean isOnlineSearchTemplate(String note){return note.startsWith("联网搜索完成")||note.startsWith("联网搜索未找到满足来源门槛");}
     private void appendResolutionNote(ReviewItem item,String note){String existing=item.getResolutionNote();item.setResolutionNote(existing==null||existing.isBlank()?note:existing+" | "+note);}

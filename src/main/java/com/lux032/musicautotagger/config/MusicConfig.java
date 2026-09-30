@@ -101,6 +101,8 @@ public class MusicConfig {
      * 等人在 Web 面板上选定。默认关闭是为了避免无人值守部署里文件默默堆积。
      */
     private boolean reviewEnabled;
+    /** 「锁定专辑缺曲」条目入队时自动触发一轮联网搜索（需已配置联网搜索） */
+    private boolean reviewMissingTracksAutoOnlineSearch;
     private String reviewQueuePath;        // 待确认队列 JSON 路径
     private String reviewStagingDirectory; // 转码暂存目录（长期挂起时不能占用临时目录）
 
@@ -246,6 +248,7 @@ public class MusicConfig {
 
         // 人工确认队列默认配置
         this.reviewEnabled = false;
+        this.reviewMissingTracksAutoOnlineSearch = true;
         this.reviewQueuePath = "data/review-queue.json";
         this.reviewStagingDirectory = "data/review-staging";
 
@@ -534,6 +537,10 @@ public class MusicConfig {
             // 加载人工确认队列配置
             if (props.containsKey("review.enabled")) {
                 this.reviewEnabled = Boolean.parseBoolean(props.getProperty("review.enabled"));
+            }
+            if (props.containsKey("review.missingTracks.autoOnlineSearch")) {
+                this.reviewMissingTracksAutoOnlineSearch =
+                    Boolean.parseBoolean(props.getProperty("review.missingTracks.autoOnlineSearch"));
             }
             if (props.containsKey("review.queuePath")) {
                 this.reviewQueuePath = props.getProperty("review.queuePath");
@@ -902,6 +909,7 @@ public class MusicConfig {
             props.setProperty("release.countryPriority", String.join(",", releaseCountryPriority));
         }
         props.setProperty("review.enabled", String.valueOf(reviewEnabled));
+        props.setProperty("review.missingTracks.autoOnlineSearch", String.valueOf(reviewMissingTracksAutoOnlineSearch));
         if (reviewQueuePath != null) {
             props.setProperty("review.queuePath", reviewQueuePath);
         }

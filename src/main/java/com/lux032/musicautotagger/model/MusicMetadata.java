@@ -54,6 +54,12 @@ public class MusicMetadata {
     private String discNo;
     private String trackNo;
     private Integer duration; // 时长（秒）
+    /**
+     * 附加曲目：不在所选 MusicBrainz 版本中的歌（如单曲没收录的 c/w 曲）。
+     * 归入同一专辑目录、保留指纹识别的真实曲名；不写曲目号（不编造），
+     * 文件名也不加曲目号前缀，并清除源文件残留的曲目号 / 碟号标签。
+     */
+    private boolean extraTrack;
 
     // Fields specific to MusicBrainzClient
     private String releaseGroupId;
@@ -105,6 +111,7 @@ public class MusicMetadata {
         copy.discNo = discNo;
         copy.trackNo = trackNo;
         copy.duration = duration;
+        copy.extraTrack = extraTrack;
         copy.releaseGroupId = releaseGroupId;
         copy.releaseId = releaseId;
         copy.coverArtUrl = coverArtUrl;

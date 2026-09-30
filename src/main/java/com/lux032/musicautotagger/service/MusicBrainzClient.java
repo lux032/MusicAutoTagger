@@ -52,6 +52,33 @@ public class MusicBrainzClient {
                 return size() > RELEASE_CACHE_LIMIT;
             }
         });
+    /**
+     * Release Group → 时长序列缓存。快速扫描、时长序列匹配、投票后的覆盖检查会反复请求同一张专辑，
+     * 每次都要过 1 秒限流。只缓存非空结果，失败 / 无数据下次仍会重试。
+     */
+    private static final int DURATION_CACHE_LIMIT = 128;
+    private static final long DURATION_CACHE_TTL_MS = 30 * 60 * 1000L;
+    private final java.util.Map<String, TimedValue<AlbumDurationResult>> albumDurationCache =
+        lruMap(DURATION_CACHE_LIMIT);
+    private final java.util.Map<String, TimedValue<List<AlbumDurationResult>>> allReleaseDurationCache =
+        lruMap(DURATION_CACHE_LIMIT);
+
+    private static final class TimedValue<T> {
+        final T value;
+        final long at = System.currentTimeMillis();
+        TimedValue(T value) { this.value = value; }
+        boolean fresh() { return System.currentTimeMillis() - at < DURATION_CACHE_TTL_MS; }
+    }
+
+    private static <V> java.util.Map<String, V> lruMap(int limit) {
+        return Collections.synchronizedMap(new LinkedHashMap<String, V>(limit, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(java.util.Map.Entry<String, V> eldest) {
+                return size() > limit;
+            }
+        });
+    }
+
     private long lastRequestTime = 0;
     private static final long REQUEST_INTERVAL = 1000; // MusicBrainz 要求至少1秒间隔
     private static final int MAX_RETRIES = 3; // 最大重试次数
@@ -192,6 +219,20 @@ public class MusicBrainzClient {
      * @return 包含时长列表和选中的 Release ID 的结果对象
      */
     public AlbumDurationResult getAlbumDurationSequence(String releaseGroupId) throws IOException, InterruptedException {
+        TimedValue<AlbumDurationResult> cached = releaseGroupId == null ? null : albumDurationCache.get(releaseGroupId);
+        if (cached != null && cached.fresh()) {
+            log.debug("使用缓存的专辑时长序列: {}", releaseGroupId);
+            return cached.value;
+        }
+        AlbumDurationResult result = fetchAlbumDurationSequence(releaseGroupId);
+        if (releaseGroupId != null && result != null && result.getDurations() != null
+            && !result.getDurations().isEmpty()) {
+            albumDurationCache.put(releaseGroupId, new TimedValue<>(result));
+        }
+        return result;
+    }
+
+    private AlbumDurationResult fetchAlbumDurationSequence(String releaseGroupId) throws IOException, InterruptedException {
         rateLimit();
         
         // 查询 release-group 获取所有 releases
@@ -239,7 +280,9 @@ public class MusicBrainzClient {
                 if (!durations.isEmpty()) {
                     log.info("成功从 release {} 获取到 {} 首曲目的时长序列",
                         releaseTitle, durations.size());
-                    return new AlbumDurationResult(durations, releaseId);
+                    // 带上真实曲目数：部分曲目缺时长时，覆盖检查不能把缺的当成「版本里没有」
+                    return new AlbumDurationResult(durations, releaseId, releaseTitle,
+                        Math.max(calculateTrackCount(release), durations.size()));
                 } else {
                     log.debug("Release {} 没有时长数据，继续尝试下一个", releaseTitle);
                 }
@@ -264,6 +307,20 @@ public class MusicBrainzClient {
      * @return 包含所有 Release 时长序列的列表
      */
     public List<AlbumDurationResult> getAllReleaseDurationSequences(String releaseGroupId) throws IOException, InterruptedException {
+        TimedValue<List<AlbumDurationResult>> cached =
+            releaseGroupId == null ? null : allReleaseDurationCache.get(releaseGroupId);
+        if (cached != null && cached.fresh()) {
+            log.debug("使用缓存的全部版本时长序列: {}", releaseGroupId);
+            return new ArrayList<>(cached.value);
+        }
+        List<AlbumDurationResult> result = fetchAllReleaseDurationSequences(releaseGroupId);
+        if (releaseGroupId != null && result != null && !result.isEmpty()) {
+            allReleaseDurationCache.put(releaseGroupId, new TimedValue<>(new ArrayList<>(result)));
+        }
+        return result;
+    }
+
+    private List<AlbumDurationResult> fetchAllReleaseDurationSequences(String releaseGroupId) throws IOException, InterruptedException {
         rateLimit();
         
         List<AlbumDurationResult> results = new ArrayList<>();
@@ -510,6 +567,12 @@ public class MusicBrainzClient {
     }
 
     /** 从 Release API 的已解析响应中提取非视频音轨的有效时长（秒）。 */
+    /** 曲目有效时长（毫秒）：优先 track.length，缺失时用 recording.length。覆盖检查与逐首匹配必须一致 */
+    static int effectiveTrackLengthMs(JsonNode track) {
+        int ms = track.path("length").asInt(0);
+        return ms > 0 ? ms : track.path("recording").path("length").asInt(0);
+    }
+
     List<Integer> extractDurationsFromReleaseJson(JsonNode root) {
         List<Integer> durations = new ArrayList<>();
         JsonNode media = root.path("media");
@@ -541,10 +604,7 @@ public class MusicBrainzClient {
                         continue;
                     }
 
-                    int durationMs = track.path("length").asInt(0);
-                    if (durationMs <= 0) {
-                        durationMs = recording.path("length").asInt(0);
-                    }
+                    int durationMs = effectiveTrackLengthMs(track);
                     log.debug("Track effective length: {} ms", durationMs);
                     if (durationMs > 0) {
                         durations.add((durationMs + 500) / 1000);
@@ -1438,11 +1498,16 @@ public class MusicBrainzClient {
 
             log.warn("在专辑 {} 中未找到 Recording ID {} 的精确匹配", release.path("title").asText(), recordingId);
 
-            // 第二阶段：如果 Recording ID 匹配失败，且提供了文件时长，尝试时长匹配
+            // 第二阶段：如果 Recording ID 匹配失败，且提供了文件时长，尝试时长匹配。
+            // 已知曲名时必须曲名一致：只凭时长会把一首不在此版本里的歌改名成另一首。
+            String wantedTitle = normalizeTitleForMatch(metadata.getTitle());
+            boolean requireTitle = !wantedTitle.isEmpty();
             if (fileDurationSeconds > 0) {
-                log.info("尝试使用时长匹配备选方案（文件时长: {}秒）...", fileDurationSeconds);
+                log.info("尝试使用时长匹配备选方案（文件时长: {}秒{}）...", fileDurationSeconds,
+                    requireTitle ? "，要求曲名一致" : "");
 
-                final int DURATION_TOLERANCE_SECONDS = 2; // 时长容差：±2秒
+                final int DURATION_TOLERANCE_SECONDS = requireTitle
+                    ? TITLE_MATCH_DURATION_TOLERANCE_SECONDS : 2;
                 JsonNode bestMatchTrack = null;
                 JsonNode bestMatchMedium = null;
                 int bestDurationDiff = Integer.MAX_VALUE;
@@ -1452,13 +1517,17 @@ public class MusicBrainzClient {
                     JsonNode tracks = medium.path("tracks");
                     if (tracks.isArray()) {
                         for (JsonNode track : tracks) {
-                            int trackDurationMs = track.path("length").asInt(0);
+                            int trackDurationMs = effectiveTrackLengthMs(track);
                             if (trackDurationMs > 0) {
                                 int trackDurationSec = (trackDurationMs + 500) / 1000; // 四舍五入转换为秒
                                 int durationDiff = Math.abs(trackDurationSec - fileDurationSeconds);
 
+                                boolean titleOk = !requireTitle
+                                    || wantedTitle.equals(normalizeTitleForMatch(track.path("title").asText("")))
+                                    || wantedTitle.equals(normalizeTitleForMatch(
+                                        track.path("recording").path("title").asText("")));
                                 // 如果时长差异在容差范围内，且是目前最接近的
-                                if (durationDiff <= DURATION_TOLERANCE_SECONDS && durationDiff < bestDurationDiff) {
+                                if (titleOk && durationDiff <= DURATION_TOLERANCE_SECONDS && durationDiff < bestDurationDiff) {
                                     bestMatchTrack = track;
                                     bestMatchMedium = medium;
                                     bestDurationDiff = durationDiff;
@@ -1512,7 +1581,7 @@ public class MusicBrainzClient {
                         }
                     }
 
-                    int matchedDurationSec = (bestMatchTrack.path("length").asInt(0) + 500) / 1000;
+                    int matchedDurationSec = (effectiveTrackLengthMs(bestMatchTrack) + 500) / 1000;
                     log.info("✓ 通过时长匹配找到曲目位置: 碟号 {}, 曲目号 {} (文件时长: {}秒, 匹配曲目时长: {}秒, 差异: {}秒)",
                         discNumber, trackNumber, fileDurationSeconds, matchedDurationSec, bestDurationDiff);
                     return;
@@ -2200,147 +2269,202 @@ public class MusicBrainzClient {
             String lockedAlbumTitle,
             String lockedAlbumArtist) throws IOException, InterruptedException {
         
+        TrackMatch match = matchTrackInRelease(releaseId, releaseGroupId, null, null,
+            fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist);
+        return match.getMetadata();
+    }
+
+    /** 曲目在指定 Release 中的匹配方式 */
+    public enum TrackMatchType {
+        /** Recording ID 精确命中 */
+        RECORDING_ID,
+        /** 不同 recording，但曲名一致且时长相近（如重制版 / 不同发行的同一首歌） */
+        TITLE_AND_DURATION,
+        /** 指纹没有给出录音，只能按时长匹配（旧行为，仅在没有任何曲目身份信息时允许） */
+        DURATION_ONLY,
+        /** 该曲目不在此 Release 中 */
+        NOT_FOUND,
+        /** Release 数据取不到（网络 / 解析失败），无法判断 */
+        UNAVAILABLE
+    }
+
+    public static final class TrackMatch {
+        private final TrackMatchType type;
+        private final MusicMetadata metadata;
+
+        TrackMatch(TrackMatchType type, MusicMetadata metadata) {
+            this.type = type;
+            this.metadata = metadata;
+        }
+
+        public TrackMatchType getType() { return type; }
+        public MusicMetadata getMetadata() { return metadata; }
+        public boolean isFound() { return metadata != null; }
+        public boolean isNotInRelease() { return type == TrackMatchType.NOT_FOUND; }
+    }
+
+    /** 曲名一致判定所允许的时长差（秒） */
+    static final int TITLE_MATCH_DURATION_TOLERANCE_SECONDS = 5;
+    /** 纯时长匹配的容差（秒），仅在曲目身份未知时使用 */
+    static final int DURATION_ONLY_TOLERANCE_SECONDS = 3;
+
+    /**
+     * 在指定 Release 中查找曲目。
+     *
+     * <p>匹配顺序：Recording ID → 曲名 + 时长 → （仅当 recordingId 未知时）纯时长。
+     * 指纹已经给出了录音身份时，<b>绝不</b>只凭时长把它指派成 Release 里另一首歌——
+     * 旧实现正是这样把《金魚草》改名成《アトック》，并覆盖掉真正的《アトック》。</p>
+     *
+     * @param recordingId    指纹识别出的录音 ID（未知时为 null）
+     * @param recordingTitle 指纹识别出的曲名（用于曲名匹配）
+     */
+    public TrackMatch matchTrackInRelease(String releaseId, String releaseGroupId,
+                                          String recordingId, String recordingTitle,
+                                          int fileDurationSeconds,
+                                          String lockedAlbumTitle, String lockedAlbumArtist) {
         if (releaseId == null || releaseId.isEmpty()) {
-            log.warn("未提供锁定的 Release ID，无法执行强制专辑匹配");
-            return null;
+            log.warn("未提供锁定的 Release ID，无法在锁定版本中查找曲目");
+            return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
         }
-        
-        if (fileDurationSeconds <= 0) {
-            log.warn("未提供有效的文件时长，无法执行时长匹配");
-            return null;
-        }
-        
-        log.info("=== 强制使用锁定专辑模式 ===");
-        log.info("锁定专辑: {} (Release ID: {})", lockedAlbumTitle, releaseId);
-        log.info("文件时长: {}秒，将在锁定专辑中按时长查找匹配曲目", fileDurationSeconds);
-        
-        // 获取完整的 Release 信息（复用统一缓存与完整 inc 参数）
+        JsonNode release;
         try {
-            JsonNode release = getFullReleaseById(releaseId);
-            if (release == null) return null;
-            
-            JsonNode media = release.path("media");
-            if (!media.isArray() || media.size() == 0) {
-                log.warn("锁定专辑没有媒体信息");
-                return null;
-            }
-            
-            // 时长匹配容差
-            final int DURATION_TOLERANCE_SECONDS = 3; // 容差：±3秒
-            
-            JsonNode bestMatchTrack = null;
-            JsonNode bestMatchMedium = null;
-            int bestDurationDiff = Integer.MAX_VALUE;
-            
-            // 遍历所有曲目，找到时长最接近的
-            for (JsonNode medium : media) {
-                // 跳过视频格式
-                String format = medium.path("format").asText("").toLowerCase();
-                if (isVideoFormat(format)) {
-                    continue;
-                }
-                
-                JsonNode tracks = medium.path("tracks");
-                if (tracks.isArray()) {
-                    for (JsonNode track : tracks) {
-                        // 跳过视频曲目
-                        JsonNode recording = track.path("recording");
-                        if (recording.path("video").asBoolean(false)) {
-                            continue;
-                        }
-                        
-                        int trackDurationMs = track.path("length").asInt(0);
-                        if (trackDurationMs > 0) {
-                            int trackDurationSec = (trackDurationMs + 500) / 1000; // 四舍五入
-                            int durationDiff = Math.abs(trackDurationSec - fileDurationSeconds);
-                            
-                            // 如果时长差异在容差范围内，且是目前最接近的
-                            if (durationDiff <= DURATION_TOLERANCE_SECONDS && durationDiff < bestDurationDiff) {
-                                bestMatchTrack = track;
-                                bestMatchMedium = medium;
-                                bestDurationDiff = durationDiff;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // 如果找到了匹配的曲目
-            if (bestMatchTrack != null) {
-                MusicMetadata metadata = new MusicMetadata();
-                
-                // 设置专辑信息（使用锁定的信息）
-                metadata.setAlbum(lockedAlbumTitle);
-                metadata.setAlbumArtist(lockedAlbumArtist);
-                metadata.setReleaseGroupId(releaseGroupId);
-                metadata.setReleaseId(releaseId);
-                applyReleaseGroupMetadata(metadata, release.path("release-group"));
-                
-                // 设置碟号和曲目号
-                String discNumber = bestMatchMedium.path("position").asText("");
-                String trackNumber = bestMatchTrack.path("position").asText("");
-                metadata.setDiscNo(discNumber);
-                metadata.setTrackNo(trackNumber);
-                applyMatchedTrackMetadata(metadata, bestMatchMedium, bestMatchTrack);
-                
-                // 从匹配的 recording 获取曲目信息
-                JsonNode matchedRecording = bestMatchTrack.path("recording");
-                metadata.setRecordingId(matchedRecording.path("id").asText(""));
-                metadata.setTitle(matchedRecording.path("title").asText(""));
-                
-                // 获取艺术家信息
-                JsonNode artistCredits = matchedRecording.path("artist-credit");
-                if (artistCredits.isArray() && artistCredits.size() > 0) {
-                    StringBuilder artists = new StringBuilder();
-                    for (JsonNode credit : artistCredits) {
-                        if (artists.length() > 0) {
-                            artists.append(", ");
-                        }
-                        artists.append(credit.path("artist").path("name").asText());
-                    }
-                    metadata.setArtist(artists.toString());
-                    metadata.setArtistId(joinArtistValues(artistCredits, "id"));
-                    metadata.setArtistSort(joinArtistValues(artistCredits, "sort-name"));
-                } else {
-                    // 如果 recording 没有艺术家信息，尝试从 track 的 artist-credit 获取
-                    JsonNode trackArtistCredits = bestMatchTrack.path("artist-credit");
-                    if (trackArtistCredits.isArray() && trackArtistCredits.size() > 0) {
-                        StringBuilder artists = new StringBuilder();
-                        for (JsonNode credit : trackArtistCredits) {
-                            if (artists.length() > 0) {
-                                artists.append(", ");
-                            }
-                            artists.append(credit.path("artist").path("name").asText());
-                        }
-                        metadata.setArtist(artists.toString());
-                        metadata.setArtistId(joinArtistValues(trackArtistCredits, "id"));
-                        metadata.setArtistSort(joinArtistValues(trackArtistCredits, "sort-name"));
-                    }
-                }
-                
-                // 获取发行日期
-                metadata.setReleaseDate(release.path("date").asText(""));
-                ReleaseTagBundle bundle = fetchReleaseTagBundle(releaseId);
-                if (bundle != null) bundle.applyTo(metadata);
-                
-                int matchedDurationSec = (bestMatchTrack.path("length").asInt(0) + 500) / 1000;
-                log.info("✓ 强制专辑匹配成功！");
-                log.info("  曲目: {} - {}", metadata.getArtist(), metadata.getTitle());
-                log.info("  位置: 碟号 {}, 曲目号 {}", discNumber, trackNumber);
-                log.info("  时长匹配: 文件 {}秒 vs 曲目 {}秒 (差异: {}秒)",
-                    fileDurationSeconds, matchedDurationSec, bestDurationDiff);
-                
-                return metadata;
-            } else {
-                log.warn("在锁定专辑 {} 中未找到时长匹配的曲目（文件时长: {}秒，容差: ±{}秒）",
-                    lockedAlbumTitle, fileDurationSeconds, DURATION_TOLERANCE_SECONDS);
-                return null;
-            }
-            
+            release = getFullReleaseById(releaseId);
         } catch (Exception e) {
-            log.error("获取或解析锁定专辑响应失败", e);
-            return null;
+            log.warn("获取锁定 Release {} 失败，无法判断曲目是否在其中: {}", releaseId, e.getMessage());
+            return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
         }
+        if (release == null || !release.path("media").isArray() || release.path("media").size() == 0) {
+            log.warn("锁定 Release {} 没有媒体信息", releaseId);
+            return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
+        }
+        return matchTrackInReleaseNode(release, releaseId, releaseGroupId, recordingId, recordingTitle,
+            fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist);
+    }
+
+    /** 与 {@link #matchTrackInRelease} 相同，但直接使用已取得的 Release JSON（便于单元测试） */
+    TrackMatch matchTrackInReleaseNode(JsonNode release, String releaseId, String releaseGroupId,
+                                       String recordingId, String recordingTitle,
+                                       int fileDurationSeconds,
+                                       String lockedAlbumTitle, String lockedAlbumArtist) {
+        boolean identityKnown = recordingId != null && !recordingId.isBlank();
+        String wantedTitle = normalizeTitleForMatch(recordingTitle);
+
+        JsonNode exactTrack = null, exactMedium = null;
+        JsonNode titleTrack = null, titleMedium = null;
+        int titleDiff = Integer.MAX_VALUE;
+        JsonNode durationTrack = null, durationMedium = null;
+        int durationDiffBest = Integer.MAX_VALUE;
+
+        for (JsonNode medium : release.path("media")) {
+            if (isVideoFormat(medium.path("format").asText("").toLowerCase())) continue;
+            JsonNode tracks = medium.path("tracks");
+            if (!tracks.isArray()) continue;
+            for (JsonNode track : tracks) {
+                JsonNode recording = track.path("recording");
+                if (recording.path("video").asBoolean(false)) continue;
+
+                if (identityKnown && recordingId.equals(recording.path("id").asText(""))) {
+                    exactTrack = track;
+                    exactMedium = medium;
+                    break;
+                }
+
+                int trackDurationMs = effectiveTrackLengthMs(track);
+                int diff = trackDurationMs > 0 && fileDurationSeconds > 0
+                    ? Math.abs((trackDurationMs + 500) / 1000 - fileDurationSeconds) : Integer.MAX_VALUE;
+
+                if (!wantedTitle.isEmpty() && diff <= TITLE_MATCH_DURATION_TOLERANCE_SECONDS && diff < titleDiff
+                    && (wantedTitle.equals(normalizeTitleForMatch(track.path("title").asText("")))
+                        || wantedTitle.equals(normalizeTitleForMatch(recording.path("title").asText(""))))) {
+                    titleTrack = track;
+                    titleMedium = medium;
+                    titleDiff = diff;
+                }
+                if (diff <= DURATION_ONLY_TOLERANCE_SECONDS && diff < durationDiffBest) {
+                    durationTrack = track;
+                    durationMedium = medium;
+                    durationDiffBest = diff;
+                }
+            }
+            if (exactTrack != null) break;
+        }
+
+        TrackMatchType type;
+        JsonNode chosenTrack;
+        JsonNode chosenMedium;
+        if (exactTrack != null) {
+            type = TrackMatchType.RECORDING_ID; chosenTrack = exactTrack; chosenMedium = exactMedium;
+        } else if (titleTrack != null) {
+            type = TrackMatchType.TITLE_AND_DURATION; chosenTrack = titleTrack; chosenMedium = titleMedium;
+        } else if (!identityKnown && durationTrack != null) {
+            type = TrackMatchType.DURATION_ONLY; chosenTrack = durationTrack; chosenMedium = durationMedium;
+        } else {
+            log.warn("曲目「{}」(recording: {}, {}秒) 不在锁定版本「{}」(Release ID: {}) 中",
+                recordingTitle, recordingId, fileDurationSeconds, lockedAlbumTitle, releaseId);
+            return new TrackMatch(TrackMatchType.NOT_FOUND, null);
+        }
+
+        try {
+            MusicMetadata metadata = buildTrackMetadataFromRelease(release, chosenMedium, chosenTrack,
+                releaseId, releaseGroupId, lockedAlbumTitle, lockedAlbumArtist);
+            log.info("✓ 在锁定版本中找到曲目（{}）: {} - {} (碟号 {}, 曲目号 {})", type,
+                metadata.getArtist(), metadata.getTitle(), metadata.getDiscNo(), metadata.getTrackNo());
+            return new TrackMatch(type, metadata);
+        } catch (Exception e) {
+            log.warn("解析锁定版本曲目信息失败: {}", e.getMessage());
+            return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
+        }
+    }
+
+    /** 曲名比较用的规范化：NFKC、忽略大小写、只保留字母和数字 */
+    static String normalizeTitleForMatch(String title) {
+        if (title == null) return "";
+        String n = java.text.Normalizer.normalize(title, java.text.Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
+        StringBuilder sb = new StringBuilder(n.length());
+        n.codePoints().filter(Character::isLetterOrDigit).forEach(sb::appendCodePoint);
+        return sb.toString();
+    }
+
+    private MusicMetadata buildTrackMetadataFromRelease(JsonNode release, JsonNode medium, JsonNode track,
+                                                        String releaseId, String releaseGroupId,
+                                                        String lockedAlbumTitle, String lockedAlbumArtist)
+            throws IOException, InterruptedException {
+        MusicMetadata metadata = new MusicMetadata();
+        metadata.setAlbum(lockedAlbumTitle);
+        metadata.setAlbumArtist(lockedAlbumArtist);
+        metadata.setReleaseGroupId(releaseGroupId);
+        metadata.setReleaseId(releaseId);
+        applyReleaseGroupMetadata(metadata, release.path("release-group"));
+
+        metadata.setDiscNo(medium.path("position").asText(""));
+        metadata.setTrackNo(track.path("position").asText(""));
+        applyMatchedTrackMetadata(metadata, medium, track);
+
+        JsonNode matchedRecording = track.path("recording");
+        metadata.setRecordingId(matchedRecording.path("id").asText(""));
+        metadata.setTitle(matchedRecording.path("title").asText(""));
+
+        JsonNode artistCredits = matchedRecording.path("artist-credit");
+        if (!artistCredits.isArray() || artistCredits.size() == 0) {
+            artistCredits = track.path("artist-credit");
+        }
+        if (artistCredits.isArray() && artistCredits.size() > 0) {
+            StringBuilder artists = new StringBuilder();
+            for (JsonNode credit : artistCredits) {
+                if (artists.length() > 0) artists.append(", ");
+                artists.append(credit.path("artist").path("name").asText());
+            }
+            metadata.setArtist(artists.toString());
+            metadata.setArtistId(joinArtistValues(artistCredits, "id"));
+            metadata.setArtistSort(joinArtistValues(artistCredits, "sort-name"));
+        }
+
+        metadata.setReleaseDate(release.path("date").asText(""));
+        if (releaseId != null && !releaseId.isEmpty()) {
+            ReleaseTagBundle bundle = fetchReleaseTagBundle(releaseId);
+            if (bundle != null) bundle.applyTo(metadata);
+        }
+        return metadata;
     }
     
     /**
@@ -2372,15 +2496,27 @@ public class MusicBrainzClient {
             boolean musicFilesCountReliable,
             String lockedAlbumTitle,
             String lockedAlbumArtist) throws IOException, InterruptedException {
+        return matchTrackInReleaseGroup(releaseGroupId, null, null, fileDurationSeconds,
+            musicFilesInFolder, musicFilesCountReliable, lockedAlbumTitle, lockedAlbumArtist).getMetadata();
+    }
+
+    /**
+     * 只锁定了 Release Group 时：先按曲目数 / 格式选出具体版本，再用
+     * {@link #matchTrackInRelease} 的分级规则查找曲目。
+     */
+    public TrackMatch matchTrackInReleaseGroup(
+            String releaseGroupId,
+            String recordingId,
+            String recordingTitle,
+            int fileDurationSeconds,
+            int musicFilesInFolder,
+            boolean musicFilesCountReliable,
+            String lockedAlbumTitle,
+            String lockedAlbumArtist) throws IOException, InterruptedException {
 
         if (releaseGroupId == null || releaseGroupId.isEmpty()) {
             log.warn("未提供 Release Group ID，无法执行强制专辑匹配");
-            return null;
-        }
-        
-        if (fileDurationSeconds <= 0) {
-            log.warn("未提供有效的文件时长，无法执行时长匹配");
-            return null;
+            return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
         }
         
         log.info("=== 强制使用锁定专辑模式（通过 Release Group ID）===");
@@ -2407,7 +2543,7 @@ public class MusicBrainzClient {
             JsonNode releases = rgRoot.path("releases");
             if (!releases.isArray() || releases.size() == 0) {
                 log.warn("Release Group {} 没有找到任何 releases", releaseGroupId);
-                return null;
+                return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
             }
             
             log.info("Release Group {} 共有 {} 个 releases（{}）",
@@ -2452,7 +2588,7 @@ public class MusicBrainzClient {
             
             if (bestRelease == null) {
                 log.warn("未找到合适的 Release");
-                return null;
+                return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
             }
             
             String bestReleaseId = bestRelease.path("id").asText();
@@ -2462,24 +2598,20 @@ public class MusicBrainzClient {
             log.info("选择 Release: {} (ID: {}, {} 首曲目)",
                 bestReleaseTitle, bestReleaseId, bestTrackCount);
             
-            // 3. 使用选定的 Release ID 调用现有的时长匹配方法
-            MusicMetadata metadata = getTrackFromLockedAlbumByDuration(
-                bestReleaseId,
-                releaseGroupId,
-                fileDurationSeconds,
-                lockedAlbumTitle,
-                lockedAlbumArtist
-            );
+            // 3. 在选定的 Release 中按分级规则查找曲目
+            TrackMatch match = matchTrackInRelease(bestReleaseId, releaseGroupId, recordingId, recordingTitle,
+                fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist);
+            MusicMetadata metadata = match.getMetadata();
             if (metadata != null) {
                 applyReleaseGroupMetadata(metadata, rgRoot);
                 metadata.setReleaseGroupId(releaseGroupId);
                 metadata.setReleaseId(bestReleaseId);
             }
-            return metadata;
+            return match;
             
         } catch (ParseException e) {
             log.error("解析 Release Group 响应失败", e);
-            return null;
+            return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
         }
     }
     

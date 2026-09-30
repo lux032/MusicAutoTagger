@@ -30,6 +30,77 @@ public class DurationSequenceService {
     // 注意：只跨 Release Group 比较，同一张专辑的不同发行版本不算歧义。
     private static final double MIN_BEST_MATCH_MARGIN = 0.05;
     
+    /** 一对一覆盖检查的时长容差（秒），与 DTW 容差一致 */
+    public static final int COVERAGE_TOLERANCE_SECONDS = DURATION_TOLERANCE;
+
+    /**
+     * 一对一覆盖检查：本地有多少首在候选版本里找不到时长对应的曲目。
+     *
+     * <p>DTW 允许多对一对齐，故意容忍多出来的曲目——实测 63 首的文件夹对 5 首的单曲
+     * 也能拿到 96.7%。但「本地比版本多出来的曲目」恰恰是缺曲：锁定后这些歌会被按时长硬塞成
+     * 版本里的另一首。这里要求每首版本曲目最多对应一个本地文件。</p>
+     *
+     * <p>不依赖本地文件顺序（无曲号的文件名按字母排序时顺序不可信）。对两边时长排序后贪心匹配，
+     * 在「差值不超过容差即可匹配」这种区间关系下得到的就是最大匹配。</p>
+     *
+     * @return 未被覆盖的本地曲目数；任一序列为空时返回 0（无法判断，不拦）
+     */
+    /**
+     * 考虑版本里缺时长数据的曲目：每首没有时长的版本曲目都可能对应一首本地曲目，
+     * 不能拿它们证明「缺曲」。
+     *
+     * @param releaseTrackCount 版本的真实音频曲目数；≤ 0 表示未知（按时长列表长度处理）
+     */
+    public static int countUnmatchedLocalTracks(List<Integer> localDurations, List<Integer> releaseDurations,
+                                                int releaseTrackCount) {
+        int unmatched = countUnmatchedLocalTracks(localDurations, releaseDurations);
+        int known = 0;
+        if (releaseDurations != null) {
+            for (Integer d : releaseDurations) if (d != null && d > 0) known++;
+        }
+        int withoutDuration = Math.max(0, releaseTrackCount - known);
+        return Math.max(0, unmatched - withoutDuration);
+    }
+
+    /**
+     * 对不上的曲目是否少到可以解释为「这张专辑缺了几首」。
+     * 对不上的太多（如 63 首对 5 首的单曲）说明根本不是这张专辑，不能判缺曲。
+     */
+    public static boolean isPlausibleMissingTracks(int localTrackCount, int unmatched) {
+        if (localTrackCount <= 0 || unmatched <= 0) return false;
+        return unmatched <= Math.max(2, (int) Math.ceil(localTrackCount * 0.3));
+    }
+
+    public static int countUnmatchedLocalTracks(List<Integer> localDurations, List<Integer> releaseDurations) {
+        if (localDurations == null || releaseDurations == null
+            || localDurations.isEmpty() || releaseDurations.isEmpty()) {
+            return 0;
+        }
+        List<Integer> local = new java.util.ArrayList<>();
+        for (Integer d : localDurations) if (d != null && d > 0) local.add(d);
+        List<Integer> release = new java.util.ArrayList<>();
+        for (Integer d : releaseDurations) if (d != null && d > 0) release.add(d);
+        if (local.isEmpty() || release.isEmpty()) {
+            return 0;
+        }
+        java.util.Collections.sort(local);
+        java.util.Collections.sort(release);
+        int i = 0, j = 0, matched = 0;
+        while (i < local.size() && j < release.size()) {
+            int a = local.get(i), b = release.get(j);
+            if (Math.abs(a - b) <= COVERAGE_TOLERANCE_SECONDS) {
+                matched++;
+                i++;
+                j++;
+            } else if (a < b) {
+                i++;
+            } else {
+                j++;
+            }
+        }
+        return local.size() - matched;
+    }
+
     /**
      * 使用动态时间规整(DTW)算法计算相似度
      * DTW对序列的时间扭曲更宽容,适合处理专辑中可能存在的额外曲目
@@ -695,6 +766,13 @@ public class DurationSequenceService {
         private String mediaFormat;  // 新增：媒体格式（如 "CD", "Digital Media" 等）
         private String releaseType;
         private boolean compilation;
+        /** 版本真实曲目数（含缺时长的曲目）；0 = 未知 */
+        private int releaseTrackCount;
+
+        /** 展示 / 判定用的曲目数：优先真实曲目数 */
+        public int effectiveTrackCount() {
+            return Math.max(releaseTrackCount, durations == null ? 0 : durations.size());
+        }
         
         public AlbumDurationInfo(String releaseGroupId, String releaseId, String albumTitle,
                                 String albumArtist, List<Integer> durations) {

@@ -102,6 +102,7 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("cueSplitOutputDir", "cue.split.outputDir"),
             Map.entry("releaseCountryPriority", "release.countryPriority"),
             Map.entry("reviewEnabled", "review.enabled"),
+            Map.entry("reviewMissingTracksAutoOnlineSearch", "review.missingTracks.autoOnlineSearch"),
             Map.entry("enableLLMMatching", "llm.matching.enabled"),
             // 供应商 / 模型 / 协议 已移到 /api/llm/providers（存 llm-providers.json），
             // 这里不再接管，否则两套存储会写出分叉
@@ -223,6 +224,7 @@ public class ConfigServlet extends HttpServlet {
         handleString(body, updates, propertyUpdates, "releaseCountryPriority", false);
         // 阶段六：待人工确认开关（队列路径 / 暂存目录仍为只读，只能改 config.properties）
         handleBoolean(body, updates, propertyUpdates, "reviewEnabled");
+        handleBoolean(body, updates, propertyUpdates, "reviewMissingTracksAutoOnlineSearch");
         handleBoolean(body, updates, propertyUpdates, "enableLLMMatching");
         handleBoolean(body, updates, propertyUpdates, "llmAllowPrivateEndpoints");
         handleInteger(body, updates, propertyUpdates, "llmMaxTokens");
@@ -324,6 +326,7 @@ public class ConfigServlet extends HttpServlet {
         data.put("cueSplitEnabled", config.isCueSplitEnabled());
         data.put("cueSplitOutputDir", config.getCueSplitOutputDir());
         data.put("reviewEnabled", config.isReviewEnabled());
+        data.put("reviewMissingTracksAutoOnlineSearch", config.isReviewMissingTracksAutoOnlineSearch());
         data.put("releaseCountryPriority", config.getReleaseCountryPriority() == null || config.getReleaseCountryPriority().isEmpty()
             ? null
             : String.join(",", config.getReleaseCountryPriority()));
@@ -564,6 +567,9 @@ public class ConfigServlet extends HttpServlet {
         }
         if (updates.containsKey("reviewEnabled")) {
             config.setReviewEnabled((Boolean) updates.get("reviewEnabled"));
+        }
+        if (updates.containsKey("reviewMissingTracksAutoOnlineSearch")) {
+            config.setReviewMissingTracksAutoOnlineSearch((Boolean) updates.get("reviewMissingTracksAutoOnlineSearch"));
         }
         if (updates.containsKey("releaseCountryPriority")) {
             @SuppressWarnings("unchecked")

@@ -157,10 +157,82 @@ public class ReviewQueueService {
         return item;
     }
 
+    /**
+     * 为已有条目准备联网搜索：只有条目仍处于待确认、且文件夹一致时才返回，绝不新建条目。
+     * 后台自动搜索必须走这里：搜索排队期间人工可能已经确认 / 忽略，
+     * 按文件夹查找会新建一个普通条目，把已处理好的文件夹重新拦住。
+     */
+    public synchronized ReviewItem prepareOnlineSearchForItem(String itemId, String folderPath, String evidenceHash) {
+        ReviewItem item = itemId == null ? null : items.get(itemId);
+        if (item == null || item.getStatus() != ReviewItem.Status.PENDING_REVIEW
+            || folderPath == null || !folderPath.equals(item.getFolderPath())) {
+            return null;
+        }
+        item.setEvidenceHash(evidenceHash);
+        item.setOnlineEvidenceStale(false);
+        item.setUpdatedAt(System.currentTimeMillis());
+        saveQuietly();
+        return item;
+    }
+
+    /**
+     * 在队列锁内检查条目仍待确认，再应用修改并落盘。
+     * 后台流程（联网搜索返回、自动搜索标记）修改共享条目必须走这里：
+     * 锁外先检查再修改，中间人工确认的话，迟到的结果会写进已确认的条目。
+     *
+     * @param mutation 返回 false 表示放弃修改（不落盘）
+     * @return 是否已修改并落盘
+     */
+    public synchronized boolean updatePending(String itemId, java.util.function.Predicate<ReviewItem> mutation) {
+        ReviewItem item = itemId == null ? null : items.get(itemId);
+        if (item == null || item.getStatus() != ReviewItem.Status.PENDING_REVIEW) {
+            return false;
+        }
+        if (!mutation.test(item)) {
+            return false;
+        }
+        update(item);
+        return true;
+    }
+
+    /** 仅当条目仍待确认时才持久化（联网搜索返回时用）；返回是否写入 */
+    public synchronized boolean updateIfPending(ReviewItem item) {
+        if (item == null || item.getStatus() != ReviewItem.Status.PENDING_REVIEW
+            || !items.containsKey(item.getId())) {
+            return false;
+        }
+        update(item);
+        return true;
+    }
+
+    /** 待确认、尚未自动搜索过的缺曲条目（启动时补跑用） */
+    public synchronized List<ReviewItem> pendingMissingTracksWithoutAutoSearch() {
+        List<ReviewItem> result = new ArrayList<>();
+        for (ReviewItem item : items.values()) {
+            if (item.getStatus() == ReviewItem.Status.PENDING_REVIEW
+                && item.effectiveKind() == ReviewItem.Kind.TRACKS_MISSING
+                && !item.isAutoOnlineSearchTriggered() && item.getOnlineSearchedAt() <= 0L) {
+                result.add(item);
+            }
+        }
+        return result;
+    }
+
     public synchronized int countPending() {
         int count = 0;
         for (ReviewItem item : items.values()) {
             if (item.getStatus() == ReviewItem.Status.PENDING_REVIEW) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** 按条目类型统计待确认数量（面板 Tab 角标） */
+    public synchronized int countPending(ReviewItem.Kind kind) {
+        int count = 0;
+        for (ReviewItem item : items.values()) {
+            if (item.getStatus() == ReviewItem.Status.PENDING_REVIEW && item.effectiveKind() == kind) {
                 count++;
             }
         }
@@ -232,6 +304,85 @@ public class ReviewQueueService {
                                            List<Integer> durationSequence,
                                            String reason,
                                            double confidence) {
+        return enqueueInternal(folderPath, pendingFiles, synthesized, candidates, durationSequence,
+            reason, confidence, item -> item.setKind(ReviewItem.Kind.ALBUM_UNRESOLVED));
+    }
+
+    /** 缺曲条目入队后的回调（用于自动联网搜索），在队列锁外异步执行更安全 */
+    private volatile java.util.function.Consumer<ReviewItem> missingTracksEnqueuedListener;
+
+    public void setMissingTracksEnqueuedListener(java.util.function.Consumer<ReviewItem> listener) {
+        this.missingTracksEnqueuedListener = listener;
+    }
+
+    /**
+     * 「锁定专辑缺曲」入队：整个文件夹的待处理文件进入待确认，最接近的版本作为首个候选。
+     */
+    public ReviewItem enqueueMissingTracks(String folderPath,
+                                           List<FolderAlbumCache.PendingFile> pendingFiles,
+                                           FolderAlbumCache.CachedAlbumInfo synthesized,
+                                           List<FolderAlbumCache.FolderCandidate> candidates,
+                                           List<Integer> durationSequence,
+                                           FolderAlbumCache.MissingTracksInfo missing) {
+        String reason = "锁定专辑缺曲：「" + missing.getAlbumTitle() + "」" + missing.describe();
+        ReviewItem item;
+        synchronized (this) {
+            item = enqueueInternal(folderPath, pendingFiles, synthesized, candidates, durationSequence,
+                reason, 0.0, target -> applyMissingTracks(target, missing));
+        }
+        java.util.function.Consumer<ReviewItem> listener = missingTracksEnqueuedListener;
+        if (item != null && listener != null && !item.isAutoOnlineSearchTriggered()) {
+            try {
+                listener.accept(item);
+            } catch (Exception e) {
+                log.warn("缺曲条目入队回调失败（不影响条目本身）: {}", e.getMessage());
+            }
+        }
+        return item;
+    }
+
+    private void applyMissingTracks(ReviewItem item, FolderAlbumCache.MissingTracksInfo missing) {
+        item.setKind(ReviewItem.Kind.TRACKS_MISSING);
+        ReviewItem.MissingTracks detail = new ReviewItem.MissingTracks();
+        detail.setReleaseGroupId(missing.getReleaseGroupId());
+        detail.setReleaseId(missing.getReleaseId());
+        detail.setAlbumTitle(missing.getAlbumTitle());
+        detail.setAlbumArtist(missing.getAlbumArtist());
+        detail.setReleaseTrackCount(missing.getReleaseTrackCount());
+        detail.setLocalTrackCount(missing.getLocalTrackCount());
+        detail.setUnmatchedLocalCount(missing.getUnmatchedLocalCount());
+        detail.setDetectedBy(missing.getDetectedBy());
+        detail.setUnmatchedFiles(new java.util.LinkedHashMap<>(missing.getUnmatchedFiles()));
+        item.setMissingTracks(detail);
+
+        // 最接近的版本带着 releaseId 放在首位：人工可以直接选它，
+        // 对得上的用该版本的曲目位置，对不上的作为附加曲目
+        if (missing.getReleaseId() != null && !missing.getReleaseId().isEmpty()) {
+            List<ReviewItem.CandidateSnapshot> list = item.getCandidates() == null
+                ? new ArrayList<>() : new ArrayList<>(item.getCandidates());
+            list.removeIf(c -> missing.getReleaseId().equals(c.getReleaseId()));
+            ReviewItem.CandidateSnapshot closest = new ReviewItem.CandidateSnapshot();
+            closest.setReleaseGroupId(missing.getReleaseGroupId());
+            closest.setReleaseId(missing.getReleaseId());
+            closest.setTitle(missing.getAlbumTitle());
+            closest.setArtist(missing.getAlbumArtist());
+            closest.setReleaseType(missing.getReleaseType());
+            closest.setCompilation(missing.isCompilation());
+            closest.setDate(missing.getReleaseDate());
+            closest.setTrackCount(missing.getReleaseTrackCount());
+            list.add(0, closest);
+            item.setCandidates(list);
+        }
+    }
+
+    private ReviewItem enqueueInternal(String folderPath,
+                                       List<FolderAlbumCache.PendingFile> pendingFiles,
+                                       FolderAlbumCache.CachedAlbumInfo synthesized,
+                                       List<FolderAlbumCache.FolderCandidate> candidates,
+                                       List<Integer> durationSequence,
+                                       String reason,
+                                       double confidence,
+                                       java.util.function.Consumer<ReviewItem> customizer) {
         if (folderPath == null || pendingFiles == null || pendingFiles.isEmpty()) {
             return null;
         }
@@ -271,6 +422,9 @@ public class ReviewQueueService {
             }
             item.setCandidates(snapshots);
             item.setCandidatesExpanded(false);
+        }
+        if (customizer != null) {
+            customizer.accept(item);
         }
 
         Path stagingDir = stagingRoot.resolve(item.getId());

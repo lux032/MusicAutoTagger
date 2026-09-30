@@ -423,6 +423,17 @@ public class QuickScanService {
                     log.debug("候选专辑 {} 没有时长数据，跳过", candidate.getAlbum());
                     continue;
                 }
+
+                // 一对一覆盖检查：DTW 容忍多出来的曲目（63 首对 5 首的单曲实测也有 96.7%），
+                // 本地有曲目不在这个版本里时不能靠快速扫描锁定。
+                // 这里只跳过候选，是否「缺曲」由后续的时长序列匹配（覆盖全部 AcoustID 候选）来判定。
+                int unmatched = DurationSequenceService.countUnmatchedLocalTracks(
+                    folderDurations, albumDurations, durationResult.getTrackCount());
+                if (unmatched > 0) {
+                    log.info("候选专辑 {} ({}首) 无法覆盖本地 {} 首中的 {} 首，跳过快速锁定",
+                        candidate.getAlbum(), albumDurations.size(), folderDurations.size(), unmatched);
+                    continue;
+                }
                 
                 if (musicFilesCountReliable && candidate.getTrackCount() > 0 &&
                     Math.abs(candidate.getTrackCount() - musicFilesInFolder) >

@@ -223,6 +223,23 @@ public class AlbumBatchProcessor {
             }
         }
 
+        // 指纹未识别的文件（没有 recordingId，使用原标签）：在选定版本里按时长定位，
+        // 对不上的作为附加曲目，避免原标签里的曲目号与版本曲目冲突。
+        if (!unresolvedAlbum && albumInfo.getReleaseId() != null && !albumInfo.getReleaseId().isEmpty()) {
+            LockedReleaseTrackResolver resolver = new LockedReleaseTrackResolver(musicBrainzClient);
+            for (FolderAlbumCache.PendingFile pending : pendingFiles) {
+                MusicMetadata md = (MusicMetadata) pending.getMetadata();
+                if (md == null || (md.getRecordingId() != null && !md.getRecordingId().isEmpty())
+                    || md.isExtraTrack()) {
+                    continue;
+                }
+                pending.setMetadata(resolver.resolve(md, md.getDuration(),
+                    albumInfo.getReleaseId(), albumInfo.getReleaseGroupId(),
+                    albumInfo.getAlbumTitle(), albumInfo.getAlbumArtist(),
+                    albumInfo.getReleaseType(), albumInfo.isCompilation()).getMetadata());
+            }
+        }
+
         int successCount = 0;
         int failCount = 0;
         List<File> failedFiles = new ArrayList<>();
@@ -360,6 +377,13 @@ public class AlbumBatchProcessor {
             return BatchProcessResult.empty();
         }
 
+        // 锁定专辑缺曲：单独处理。
+        // allowReviewQueue=false 表示人工已在面板上选择「按未收录归档」，此时走原来的合成信息归档。
+        FolderAlbumCache.MissingTracksInfo missing = folderAlbumCache.getMissingTracksInfo(folderPath);
+        if (missing != null && allowReviewQueue) {
+            return processPendingFilesWithMissingTracks(folderPath, pendingFiles, missing);
+        }
+
         FolderAlbumCache.CachedAlbumInfo synthesized = buildUnresolvedAlbumInfo(folderPath, pendingFiles);
 
         // 阶段六 #18：开启人工确认时，不再直接落盘，而是进入可跨重启的待确认队列。
@@ -427,6 +451,75 @@ public class AlbumBatchProcessor {
         folderAlbumCache.markFolderUnresolved(folderPath);
 
         return processPendingFilesWithAlbum(folderPath, synthesized, true);
+    }
+
+    /**
+     * 锁定专辑缺曲的文件夹。
+     *
+     * <ul>
+     *   <li>开启人工确认：整个文件夹进入待确认（「锁定专辑缺曲」Tab），不走置信度分流——
+     *       缺曲必须由人决定；</li>
+     *   <li>关闭人工确认（或入队失败）：按最接近的版本归档，对上的用该版本的曲目位置，
+     *       对不上的作为附加曲目放进同一专辑目录。</li>
+     * </ul>
+     */
+    private BatchProcessResult processPendingFilesWithMissingTracks(String folderPath,
+                                                                    List<FolderAlbumCache.PendingFile> pendingFiles,
+                                                                    FolderAlbumCache.MissingTracksInfo missing) {
+        if (reviewQueueService != null && config.isReviewEnabled()) {
+            FolderAlbumCache.CachedAlbumInfo synthesized = buildUnresolvedAlbumInfo(folderPath, pendingFiles);
+            ReviewItem queued = reviewQueueService.enqueueMissingTracks(
+                folderPath,
+                pendingFiles,
+                synthesized,
+                folderAlbumCache.getFolderCandidates(folderPath),
+                folderAlbumCache.getFolderDurationSequence(folderPath),
+                missing);
+            if (queued != null) {
+                folderAlbumCache.markFolderUnresolved(folderPath);
+                folderAlbumCache.clearPendingFiles(folderPath);
+                log.warn("锁定专辑缺曲，整个文件夹已进入待确认: {} ({} 个文件)",
+                    new File(folderPath).getName(), pendingFiles.size());
+                return QUEUED_FOR_REVIEW;
+            }
+            log.error("缺曲条目入队失败，为避免任务丢失，改为按最接近的版本自动归档");
+            LogCollector.addLog("ERROR", "缺曲条目入队失败，已按最接近的版本自动归档: " + new File(folderPath).getName());
+        }
+        return processPendingFilesWithClosestRelease(folderPath, pendingFiles, missing);
+    }
+
+    /** 按最接近的版本归档：对上的用版本曲目位置，对不上的作为附加曲目 */
+    private BatchProcessResult processPendingFilesWithClosestRelease(String folderPath,
+                                                                     List<FolderAlbumCache.PendingFile> pendingFiles,
+                                                                     FolderAlbumCache.MissingTracksInfo missing) {
+        log.warn("未启用人工确认：按最接近的版本「{}」归档，不在该版本中的曲目作为附加曲目",
+            missing.getAlbumTitle());
+        LogCollector.addLog("WARN", "锁定专辑缺曲，已按最接近的版本归档（缺失曲目作为附加曲目）: "
+            + missing.getAlbumTitle());
+
+        LockedReleaseTrackResolver resolver = new LockedReleaseTrackResolver(musicBrainzClient);
+        for (FolderAlbumCache.PendingFile pending : pendingFiles) {
+            MusicMetadata metadata = (MusicMetadata) pending.getMetadata();
+            if (metadata == null) continue;
+            LockedReleaseTrackResolver.Resolution resolution = resolver.resolve(
+                metadata, metadata.getDuration(), missing.getReleaseId(), missing.getReleaseGroupId(),
+                missing.getAlbumTitle(), missing.getAlbumArtist(), missing.getReleaseType(), missing.isCompilation());
+            pending.setMetadata(resolution.getMetadata());
+        }
+
+        FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
+            missing.getReleaseGroupId(),
+            missing.getReleaseId(),
+            missing.getAlbumTitle(),
+            missing.getAlbumArtist(),
+            missing.getReleaseTrackCount(),
+            missing.getReleaseDate() != null ? missing.getReleaseDate() : "",
+            missing.getReleaseType(),
+            missing.isCompilation(),
+            0.0,
+            FolderAlbumCache.CacheSource.UNKNOWN
+        );
+        return processPendingFilesWithAlbum(folderPath, albumInfo, false);
     }
 
     /**
@@ -664,9 +757,20 @@ public class AlbumBatchProcessor {
     /**
      * 添加待处理文件到专辑缓存
      */
-    public void addPendingFile(String folderPath, File audioFile, File processingFile, java.nio.file.Path tempDirectory,
+    /**
+     * 加入待处理文件。文件夹已整体交给失败管线时拒绝加入并返回 false，
+     * 避免与失败 / 部分识别管线重复处理同一批文件。
+     */
+    public boolean addPendingFile(String folderPath, File audioFile, File processingFile, java.nio.file.Path tempDirectory,
                                MusicMetadata metadata, byte[] coverArtData) {
-        folderAlbumCache.addPendingFileIfAbsent(folderPath, audioFile, processingFile, tempDirectory, metadata, coverArtData);
+        synchronized (folderAlbumCache.folderLock(folderPath)) {
+            if (folderAlbumCache.isFailureHandoff(folderPath)) {
+                log.warn("文件夹已交给失败管线，不再加入待处理: {}", audioFile.getName());
+                return false;
+            }
+            folderAlbumCache.addPendingFileIfAbsent(folderPath, audioFile, processingFile, tempDirectory, metadata, coverArtData);
+            return true;
+        }
     }
     
     /**
@@ -724,6 +828,51 @@ public class AlbumBatchProcessor {
      */
     public void setFolderAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo) {
         folderAlbumCache.setFolderAlbum(folderPath, albumInfo);
+    }
+
+    /**
+     * 按文件夹当前锁定的专辑写入一个文件：授权检查与写入在同一把文件夹锁内完成。
+     * 锁定可能发生在收集中途（后来的文件快速锁定 / 其他来源锁定），
+     * 此时先按同一专辑写出已积压的待处理文件，否则它们会一直挂到关机。
+     *
+     * @return -1 表示文件夹已被判为未确定 / 缺曲、未写入；否则为一并写出的积压文件数
+     */
+    public int writeWithFolderLock(String folderPath, File processingFile, File originalFile,
+                                   MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
+        synchronized (folderAlbumCache.folderLock(folderPath)) {
+            if (!folderAlbumCache.isAutomaticWriteAllowed(folderPath)) {
+                return -1;
+            }
+            int flushed = 0;
+            FolderAlbumCache.CachedAlbumInfo lockedInfo = folderAlbumCache.peekFolderAlbum(folderPath);
+            int pendingCount = getPendingFileCount(folderPath);
+            if (lockedInfo != null && pendingCount > 0) {
+                log.info("专辑在收集中途锁定，先写出已积压的 {} 个待处理文件: {}",
+                    pendingCount, lockedInfo.getAlbumTitle());
+                processPendingFilesWithAlbum(folderPath, lockedInfo);
+                flushed = pendingCount;
+            }
+            processAndWriteFile(processingFile, originalFile, metadata, coverArtData, isQuickScanMode);
+            return flushed;
+        }
+    }
+
+    /** 丢弃文件夹的待处理文件（整个文件夹已被失败管线接管时使用），并清理转码临时文件 */
+    public void discardPendingFiles(String folderPath) {
+        List<FolderAlbumCache.PendingFile> pending = folderAlbumCache.getPendingFiles(folderPath);
+        if (pending == null || pending.isEmpty()) {
+            return;
+        }
+        List<FolderAlbumCache.PendingFile> snapshot;
+        synchronized (pending) {
+            snapshot = new ArrayList<>(pending);
+        }
+        log.warn("文件夹已交给失败管线，丢弃 {} 个待处理文件以避免重复处理: {}",
+            snapshot.size(), new File(folderPath).getName());
+        for (FolderAlbumCache.PendingFile p : snapshot) {
+            cleanupPendingTemp(p);
+        }
+        folderAlbumCache.clearPendingFiles(folderPath);
     }
 
     private void cleanupPendingTemp(FolderAlbumCache.PendingFile pending) {

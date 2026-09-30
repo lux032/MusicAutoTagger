@@ -80,6 +80,8 @@ public class ReviewServlet extends HttpServlet {
                 case "stats":
                     respond(resp, 200, Map.of(
                         "pending", reviewQueue.countPending(),
+                        "pendingAlbum", reviewQueue.countPending(ReviewItem.Kind.ALBUM_UNRESOLVED),
+                        "pendingMissingTracks", reviewQueue.countPending(ReviewItem.Kind.TRACKS_MISSING),
                         "rejected", reviewQueue.countRejected(),
                         "total", reviewQueue.list(null).size(),
                         // 面板靠这个开关决定要不要显示「待确认」入口：
@@ -294,6 +296,8 @@ public class ReviewServlet extends HttpServlet {
         map.put("folderName", item.getFolderName());
         map.put("folderPath", item.getFolderPath());
         map.put("status", item.getStatus().name());
+        map.put("kind", item.effectiveKind().name());
+        map.put("missingTracks", item.getMissingTracks());
         map.put("reason", item.getReason());
         map.put("confidence", item.getConfidence());
         boolean localEvidenceAvailable = (item.getCandidates() != null && !item.getCandidates().isEmpty())

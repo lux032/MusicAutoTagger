@@ -35,6 +35,31 @@ public class FolderAlbumCache {
 
     // 新增：被判定为「专辑无法确定」的文件夹（大概率是 MusicBrainz 尚未收录的专辑 / 自制精选集）
     private final Set<String> unresolvedFolders = ConcurrentHashMap.newKeySet();
+    /**
+     * 已整体交给失败 / 部分识别管线的文件夹 → 交接时间。
+     * 交接后短时间内拒绝加入待处理（挡住与交接并发、正在识别的同目录文件）；
+     * 过期后不再拦截，之后新放进来的文件照常处理。
+     */
+    private final Map<String, Long> failureHandoffFolders = new ConcurrentHashMap<>();
+    static final long FAILURE_HANDOFF_TTL_MS = 10 * 60 * 1000L;
+
+    /**
+     * 文件夹 -> 缺曲信息。
+     *
+     * 「缺曲」是 unresolved 的一种：最接近的版本找到了，但本地有曲目不在这个版本里。
+     * 这种文件夹不自动锁定，文件只识别不写入，最终整体进入待确认。
+     */
+    private final Map<String, MissingTracksInfo> folderMissingTracks = new ConcurrentHashMap<>();
+
+    /**
+     * 文件夹级锁：把「自动写入授权 + 写入」与「判定缺曲 / 未确定」串行化。
+     * 加锁顺序固定为 folderLock → folderAlbumCache，避免死锁。
+     */
+    private final Map<String, Object> folderLocks = new ConcurrentHashMap<>();
+
+    public Object folderLock(String folderPath) {
+        return folderLocks.computeIfAbsent(folderPath == null ? "" : folderPath, k -> new Object());
+    }
 
     /** 文件夹 -> 缓存专辑曲目数与实际文件数连续不一致的次数 */
     private final Map<String, Integer> cacheTrackCountMismatches = new ConcurrentHashMap<>();
@@ -172,6 +197,9 @@ public class FolderAlbumCache {
      */
     public void setFolderAlbum(String folderPath, CachedAlbumInfo albumInfo) {
         synchronized (folderAlbumCache) {
+            if (rejectAutomaticLockIfUnresolved(folderPath, albumInfo)) {
+                return;
+            }
             CachedAlbumInfo existing = folderAlbumCache.get(folderPath);
             
             if (existing != null) {
@@ -319,10 +347,18 @@ public class FolderAlbumCache {
             // 分析样本，确定最佳专辑
             CachedAlbumInfo bestAlbum = analyzeSamplesAndDetermineAlbum(
                 folderPath, collector, musicFilesCount, musicFilesCountReliable);
+            // 投票等不带时长证据的结果，锁定前补做一对一覆盖检查
+            bestAlbum = verifyCoverageBeforeLock(folderPath, bestAlbum, musicFilesCountReliable);
 
             if (bestAlbum != null) {
-                // 缓存确定的专辑信息
-                folderAlbumCache.put(folderPath, bestAlbum);
+                synchronized (folderAlbumCache) {
+                    // 分析期间（联网请求较慢）另一线程可能已把文件夹标为未确定 / 缺曲
+                    if (rejectAutomaticLockIfUnresolved(folderPath, bestAlbum)) {
+                        return null;
+                    }
+                    // 缓存确定的专辑信息
+                    folderAlbumCache.put(folderPath, bestAlbum);
+                }
                 // 标记收集器为完成
                 collector.markComplete();
                 // 移除样本收集器（节省内存）
@@ -616,7 +652,9 @@ public class FolderAlbumCache {
      */
     public void markFolderUnresolved(String folderPath) {
         if (folderPath != null && !folderPath.isEmpty()) {
-            unresolvedFolders.add(folderPath);
+            synchronized (folderLock(folderPath)) {
+                unresolvedFolders.add(folderPath);
+            }
         }
     }
 
@@ -635,7 +673,246 @@ public class FolderAlbumCache {
     public void clearFolderUnresolved(String folderPath) {
         if (folderPath != null) {
             unresolvedFolders.remove(folderPath);
+            folderMissingTracks.remove(folderPath);
+            failureHandoffFolders.remove(folderPath);
         }
+    }
+
+    /** 标记文件夹已整体交给失败管线（调用方需持有 folderLock） */
+    public void markFailureHandoff(String folderPath) {
+        if (folderPath != null && !folderPath.isEmpty()) {
+            failureHandoffFolders.put(folderPath, System.currentTimeMillis());
+        }
+    }
+
+    public void clearFailureHandoff(String folderPath) {
+        if (folderPath != null) {
+            synchronized (folderLock(folderPath)) {
+                failureHandoffFolders.remove(folderPath);
+            }
+        }
+    }
+
+    public boolean isFailureHandoff(String folderPath) {
+        if (folderPath == null) return false;
+        Long at = failureHandoffFolders.get(folderPath);
+        if (at == null) return false;
+        if (System.currentTimeMillis() - at > FAILURE_HANDOFF_TTL_MS) {
+            failureHandoffFolders.remove(folderPath, at);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 标记文件夹「缺曲」：最接近的版本里没有本地的全部曲目。
+     *
+     * 效果与 unresolved 相同（不再自动锁定、文件只识别不写入），并丢弃已有的自动锁定。
+     * 人工确认的锁定不受影响。
+     */
+    public void markFolderTracksMissing(String folderPath, MissingTracksInfo info) {
+        if (folderPath == null || folderPath.isEmpty() || info == null) {
+            return;
+        }
+        synchronized (folderLock(folderPath)) {
+            markFolderTracksMissingLocked(folderPath, info);
+        }
+    }
+
+    private void markFolderTracksMissingLocked(String folderPath, MissingTracksInfo info) {
+        synchronized (folderAlbumCache) {
+            CachedAlbumInfo existing = folderAlbumCache.get(folderPath);
+            if (existing != null && existing.getSource() != null && existing.getSource().isManual()) {
+                log.info("文件夹已由人工确认专辑，忽略缺曲判定: {}", folderPath);
+                return;
+            }
+            MissingTracksInfo previous = folderMissingTracks.get(folderPath);
+            if (previous != null) {
+                previous.mergeFrom(info);
+            } else {
+                folderMissingTracks.put(folderPath, info);
+            }
+            if (existing != null) {
+                folderAlbumCache.remove(folderPath, existing);
+            }
+            folderSampleCollectors.remove(folderPath);
+            cacheTrackCountMismatches.remove(folderPath);
+            unresolvedFolders.add(folderPath);
+        }
+        log.warn("========================================");
+        log.warn("⚠ 缺曲：本地有曲目不在最接近的版本「{}」中", info.getAlbumTitle());
+        log.warn("  {}", info.describe());
+        log.warn("  处理：不自动归档，整个文件夹进入待确认（锁定专辑缺曲）");
+        log.warn("========================================");
+        LogCollector.addLog("WARN", "锁定专辑缺曲，已暂停自动归档: " + new File(folderPath).getName()
+            + "（" + info.describe() + "）");
+    }
+
+    /**
+     * 文件夹已被判定为未确定 / 缺曲时，拒绝任何自动来源的锁定（人工确认除外）。
+     * 调用方须持有 folderAlbumCache 锁。
+     */
+    private boolean rejectAutomaticLockIfUnresolved(String folderPath, CachedAlbumInfo albumInfo) {
+        boolean manual = albumInfo != null && albumInfo.getSource() != null && albumInfo.getSource().isManual();
+        if (!manual && unresolvedFolders.contains(folderPath)) {
+            log.info("文件夹已判定为专辑未确定 / 缺曲，忽略自动锁定: {} ({})",
+                albumInfo == null ? null : albumInfo.getAlbumTitle(), folderPath);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 写入前复验：这个文件夹现在还能按自动锁定写入吗？
+     * 被判为未确定 / 缺曲且没有人工锁定时返回 false。
+     *
+     * <p>调用方必须在 {@link #folderLock(String)} 内调用并在同一锁内完成写入，
+     * 否则检查与写入之间仍可能被判为缺曲。</p>
+     */
+    public boolean isAutomaticWriteAllowed(String folderPath) {
+        synchronized (folderAlbumCache) {
+            if (!unresolvedFolders.contains(folderPath)) return true;
+            CachedAlbumInfo current = folderAlbumCache.get(folderPath);
+            return current != null && current.getSource() != null && current.getSource().isManual();
+        }
+    }
+
+    /** 读取文件夹当前锁定的专辑，不触发曲目数反悔等副作用 */
+    public CachedAlbumInfo peekFolderAlbum(String folderPath) {
+        return folderPath == null ? null : folderAlbumCache.get(folderPath);
+    }
+
+    /** 文件夹的缺曲信息（没有则为 null） */
+    public MissingTracksInfo getMissingTracksInfo(String folderPath) {
+        return folderPath == null ? null : folderMissingTracks.get(folderPath);
+    }
+
+    /**
+     * 锁定前的一对一覆盖检查。
+     *
+     * @return 本地未被该版本覆盖的曲目数；缺少任一时长序列时返回 0（无法判断，不拦）
+     */
+    private int unmatchedLocalTracks(List<Integer> folderDurations, List<Integer> releaseDurations,
+                                     int releaseTrackCount) {
+        return DurationSequenceService.countUnmatchedLocalTracks(folderDurations, releaseDurations, releaseTrackCount);
+    }
+
+    private int unmatchedLocalTracks(List<Integer> folderDurations, DurationSequenceService.AlbumDurationInfo candidate) {
+        return unmatchedLocalTracks(folderDurations, candidate.getDurations(), candidate.getReleaseTrackCount());
+    }
+
+    /** 只保留能一对一覆盖全部本地曲目的候选版本 */
+    private List<DurationSequenceService.AlbumDurationInfo> filterCoveringCandidates(
+            List<Integer> folderDurations, List<DurationSequenceService.AlbumDurationInfo> candidates) {
+        List<DurationSequenceService.AlbumDurationInfo> covering = new ArrayList<>();
+        for (DurationSequenceService.AlbumDurationInfo candidate : candidates) {
+            int unmatched = unmatchedLocalTracks(folderDurations, candidate);
+            if (unmatched == 0) {
+                covering.add(candidate);
+            } else {
+                log.info("候选版本「{}」({}首) 无法覆盖本地 {} 首中的 {} 首，不参与自动锁定",
+                    candidate.getAlbumTitle(), candidate.effectiveTrackCount(),
+                    folderDurations.size(), unmatched);
+            }
+        }
+        return covering;
+    }
+
+    private void markTracksMissingFromMatch(String folderPath, List<Integer> folderDurations,
+                                            DurationSequenceService.AlbumDurationInfo closest) {
+        MissingTracksInfo info = new MissingTracksInfo(
+            closest.getReleaseGroupId(), closest.getReleaseId(), closest.getAlbumTitle(), closest.getAlbumArtist(),
+            closest.getReleaseType(), closest.isCompilation(), "",
+            closest.effectiveTrackCount(), folderDurations.size(),
+            unmatchedLocalTracks(folderDurations, closest),
+            MissingTracksInfo.DETECTED_AT_LOCK);
+        markFolderTracksMissing(folderPath, info);
+    }
+
+    /**
+     * 投票（或其他不带时长证据的路径）选出专辑后，锁定前补做覆盖检查。
+     *
+     * <ul>
+     *   <li>该 Release Group 有版本能覆盖本地全部曲目：锁定，并把 Release ID 固定到这个版本；</li>
+     *   <li>没有任何版本能覆盖且曲目数可靠：判定缺曲，返回 null；</li>
+     *   <li>拿不到时长数据：无法判断，按原结果锁定。</li>
+     * </ul>
+     */
+    private CachedAlbumInfo verifyCoverageBeforeLock(String folderPath, CachedAlbumInfo album,
+                                                     boolean musicFilesCountReliable) {
+        if (album == null || album.getSource() == null || album.getSource().isManual()
+            || album.getSource() == CacheSource.DURATION_SEQUENCE) {
+            // 时长序列路径在选择前已经过滤过覆盖
+            return album;
+        }
+        String releaseGroupId = album.getReleaseGroupId();
+        List<Integer> folderDurations = folderDurationSequences.get(folderPath);
+        if (releaseGroupId == null || releaseGroupId.isEmpty() || folderDurations == null
+            || folderDurations.isEmpty() || musicBrainzClient == null) {
+            return album;
+        }
+        List<MusicBrainzClient.AlbumDurationResult> releases;
+        try {
+            releases = musicBrainzClient.getAllReleaseDurationSequences(releaseGroupId);
+        } catch (Exception e) {
+            log.warn("覆盖检查时获取版本时长失败，按原结果锁定: {}", e.getMessage());
+            return album;
+        }
+        if (releases == null || releases.isEmpty()) {
+            return album;
+        }
+
+        MusicBrainzClient.AlbumDurationResult bestCovering = null;
+        MusicBrainzClient.AlbumDurationResult closest = null;
+        int closestUnmatched = Integer.MAX_VALUE;
+        for (MusicBrainzClient.AlbumDurationResult release : releases) {
+            if (release.getDurations() == null || release.getDurations().isEmpty()) continue;
+            int unmatched = unmatchedLocalTracks(folderDurations, release.getDurations(), release.getTrackCount());
+            if (unmatched == 0) {
+                if (bestCovering == null || Math.abs(release.getTrackCount() - folderDurations.size())
+                        < Math.abs(bestCovering.getTrackCount() - folderDurations.size())) {
+                    bestCovering = release;
+                }
+            } else if (unmatched < closestUnmatched) {
+                closest = release;
+                closestUnmatched = unmatched;
+            }
+        }
+
+        if (bestCovering != null) {
+            if (album.getReleaseId() == null || album.getReleaseId().isEmpty()) {
+                log.info("覆盖检查通过，固定到版本: {} (Release ID: {})",
+                    bestCovering.getReleaseTitle(), bestCovering.getReleaseId());
+                return new CachedAlbumInfo(
+                    album.getReleaseGroupId(), bestCovering.getReleaseId(), album.getAlbumTitle(),
+                    album.getAlbumArtist(), Math.max(bestCovering.getTrackCount(), bestCovering.getDurations().size()),
+                    album.getReleaseDate(),
+                    album.getReleaseType(), album.isCompilation(), album.getConfidence(), album.getSource());
+            }
+            return album;
+        }
+        if (bestCovering == null && closest == null) {
+            // 所有版本都没有时长数据，无法判断
+            return album;
+        }
+        if (!DurationSequenceService.isPlausibleMissingTracks(folderDurations.size(), closestUnmatched)) {
+            // 对不上的太多：投票选出的专辑根本不是这个文件夹，不锁定，按专辑未确定处理
+            log.warn("投票结果「{}」与本地曲目严重不符（最接近的版本仍有 {}/{} 首对不上），不锁定",
+                album.getAlbumTitle(), closestUnmatched, folderDurations.size());
+            return null;
+        }
+        if (!musicFilesCountReliable) {
+            log.info("覆盖检查未通过，但曲目数输入不可靠，不锁定也不判缺曲: {}", album.getAlbumTitle());
+            return null;
+        }
+        MissingTracksInfo info = new MissingTracksInfo(
+            releaseGroupId, closest.getReleaseId(),
+            closest.getReleaseTitle() != null ? closest.getReleaseTitle() : album.getAlbumTitle(),
+            album.getAlbumArtist(), album.getReleaseType(), album.isCompilation(), album.getReleaseDate(),
+            Math.max(closest.getTrackCount(), closest.getDurations().size()), folderDurations.size(), closestUnmatched,
+            MissingTracksInfo.DETECTED_AT_LOCK);
+        markFolderTracksMissing(folderPath, info);
+        return null;
     }
 
     /**
@@ -776,16 +1053,18 @@ public class FolderAlbumCache {
                         }
                         candidateArtist = MusicMetadata.normalizeAlbumArtist(candidateArtist);
                         
-                        candidates.add(new DurationSequenceService.AlbumDurationInfo(
-                            releaseGroupId,
-                            releaseResult.getReleaseId(),
-                            releaseTitle,
-                            candidateArtist,
-                            releaseResult.getDurations(),
-                            releaseResult.getMediaFormat(),
-                            releaseResult.getReleaseType(),
-                            releaseResult.isCompilation()
-                        ));
+                        DurationSequenceService.AlbumDurationInfo candidateInfo =
+                            new DurationSequenceService.AlbumDurationInfo(
+                                releaseGroupId,
+                                releaseResult.getReleaseId(),
+                                releaseTitle,
+                                candidateArtist,
+                                releaseResult.getDurations(),
+                                releaseResult.getMediaFormat(),
+                                releaseResult.getReleaseType(),
+                                releaseResult.isCompilation());
+                        candidateInfo.setReleaseTrackCount(releaseResult.getTrackCount());
+                        candidates.add(candidateInfo);
 
                         log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 格式: {})",
                             candidateArtist, releaseTitle, releaseResult.getDurations().size(),
@@ -803,9 +1082,24 @@ public class FolderAlbumCache {
 
             log.info("成功获取 {} 个候选专辑的时长序列", candidates.size());
 
+            // 3.5 一对一覆盖检查：本地有曲目不在某版本里，该版本就不能被自动锁定
+            List<DurationSequenceService.AlbumDurationInfo> covering = filterCoveringCandidates(folderDurations, candidates);
+            if (covering.isEmpty()) {
+                DurationSequenceService.AlbumMatchResult rejected =
+                    durationSequenceService.selectBestMatchWithFolderName(folderDurations, candidates, folderName);
+                if (rejected != null && musicFilesCountReliable
+                    && DurationSequenceService.isPlausibleMissingTracks(folderDurations.size(),
+                        unmatchedLocalTracks(folderDurations, rejected.getAlbumInfo()))) {
+                    markTracksMissingFromMatch(folderPath, folderDurations, rejected.getAlbumInfo());
+                    return null;
+                }
+                log.warn("所有候选版本都无法覆盖本地曲目，回退到投票方法");
+                return analyzeSamplesWithVoting(samples, musicFilesCount, musicFilesCountReliable);
+            }
+
             // 4. 使用时长序列服务选择最佳匹配（同时考虑文件夹名称相似度）
             DurationSequenceService.AlbumMatchResult matchResult =
-                durationSequenceService.selectBestMatchWithFolderName(folderDurations, candidates, folderName);
+                durationSequenceService.selectBestMatchWithFolderName(folderDurations, covering, folderName);
 
             if (matchResult != null) {
                 DurationSequenceService.AlbumDurationInfo bestAlbum = matchResult.getAlbumInfo();
@@ -955,16 +1249,18 @@ public class FolderAlbumCache {
                         String normalizedArtist =
                             MusicMetadata.normalizeAlbumArtist(releaseResult.getAlbumArtist());
                         
-                        candidates.add(new DurationSequenceService.AlbumDurationInfo(
-                            releaseGroupId,
-                            releaseResult.getReleaseId(),
-                            releaseTitle,
-                            normalizedArtist,
-                            releaseResult.getDurations(),
-                            releaseResult.getMediaFormat(),
-                            releaseResult.getReleaseType(),
-                            releaseResult.isCompilation()
-                        ));
+                        DurationSequenceService.AlbumDurationInfo candidateInfo =
+                            new DurationSequenceService.AlbumDurationInfo(
+                                releaseGroupId,
+                                releaseResult.getReleaseId(),
+                                releaseTitle,
+                                normalizedArtist,
+                                releaseResult.getDurations(),
+                                releaseResult.getMediaFormat(),
+                                releaseResult.getReleaseType(),
+                                releaseResult.isCompilation());
+                        candidateInfo.setReleaseTrackCount(releaseResult.getTrackCount());
+                        candidates.add(candidateInfo);
                         
                         log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 格式: {})",
                             normalizedArtist, releaseTitle, releaseResult.getDurations().size(),
@@ -981,10 +1277,19 @@ public class FolderAlbumCache {
             }
             
             log.info("成功获取 {} 个候选专辑的时长序列", candidates.size());
+
+            // 3.5 一对一覆盖检查（见 analyzeSamplesWithDurationSequence）。
+            // 快速通道只看到第一首的候选，证据太少，不能下「缺曲」结论（第一首可能只查到一张单曲）：
+            // 这里只排除无法覆盖的候选，缺曲与否交给多样本流程判定。
+            List<DurationSequenceService.AlbumDurationInfo> covering = filterCoveringCandidates(folderDurations, candidates);
+            if (covering.isEmpty()) {
+                log.info("候选版本都无法覆盖本地曲目，暂不锁定，等待多样本分析");
+                return null;
+            }
             
             // 4. 使用时长序列服务选择最佳匹配
             DurationSequenceService.AlbumMatchResult matchResult =
-                durationSequenceService.selectBestMatchWithFolderName(folderDurations, candidates, folderName);
+                durationSequenceService.selectBestMatchWithFolderName(folderDurations, covering, folderName);
             
             if (matchResult != null) {
                 DurationSequenceService.AlbumDurationInfo bestAlbum = matchResult.getAlbumInfo();
@@ -1071,7 +1376,7 @@ public class FolderAlbumCache {
      */
     private List<File> collectAudioFilesRecursively(File folder) {
         List<File> audioFiles = new ArrayList<>();
-        collectAudioFilesRecursively(folder, audioFiles);
+        collectAudioFilesRecursively(folder, audioFiles, false);
         
         // 优先按 DISC/TRACK 标签排序，失败时使用数字感知的目录/文件名排序。
         AudioFileOrdering.sort(audioFiles);
@@ -1082,7 +1387,7 @@ public class FolderAlbumCache {
     /**
      * 递归收集音频文件的辅助方法
      */
-    private void collectAudioFilesRecursively(File folder, List<File> result) {
+    private void collectAudioFilesRecursively(File folder, List<File> result, boolean insideDiscFolder) {
         if (!folder.isDirectory()) {
             return;
         }
@@ -1094,8 +1399,10 @@ public class FolderAlbumCache {
         
         for (File file : files) {
             if (file.isDirectory()) {
-                // 递归进入子文件夹
-                collectAudioFilesRecursively(file, result);
+                // 只进入碟片子目录（Disc 1 / CD2 …），其他子目录是独立的专辑
+                if (insideDiscFolder || com.lux032.musicautotagger.util.FileSystemUtils.isDiscFolderName(file.getName())) {
+                    collectAudioFilesRecursively(file, result, true);
+                }
             } else if (isAudioFile(file)) {
                 // 添加音频文件
                 result.add(file);
@@ -1268,8 +1575,10 @@ public class FolderAlbumCache {
         folderSampleCollectors.remove(folderPath);
         folderDurationSequences.remove(folderPath);
         unresolvedFolders.remove(folderPath);
+        failureHandoffFolders.remove(folderPath);
         cacheTrackCountMismatches.remove(folderPath);
         folderCandidates.remove(folderPath);
+        folderMissingTracks.remove(folderPath);
         log.info("已清除文件夹专辑缓存: {}", folderPath);
     }
     
@@ -1399,6 +1708,86 @@ public class FolderAlbumCache {
         }
     }
     
+    /**
+     * 缺曲信息：最接近的版本是哪个、本地有哪些曲目对不上。
+     */
+    public static class MissingTracksInfo {
+        /** 在锁定前的时长覆盖检查中发现 */
+        public static final String DETECTED_AT_LOCK = "LOCK_CHECK";
+        /** 在逐首处理时发现（指纹录音不在锁定版本中） */
+        public static final String DETECTED_AT_TRACK = "TRACK_CHECK";
+
+        private final String releaseGroupId;
+        private final String releaseId;
+        private final String albumTitle;
+        private final String albumArtist;
+        private final String releaseType;
+        private final boolean compilation;
+        private final String releaseDate;
+        private final int releaseTrackCount;
+        private final int localTrackCount;
+        private int unmatchedLocalCount;
+        private final String detectedBy;
+        /** 逐首检测时确定不在版本中的曲目（文件名 → 指纹曲名） */
+        private final Map<String, String> unmatchedFiles = new LinkedHashMap<>();
+
+        public MissingTracksInfo(String releaseGroupId, String releaseId, String albumTitle, String albumArtist,
+                                 String releaseType, boolean compilation, String releaseDate,
+                                 int releaseTrackCount, int localTrackCount, int unmatchedLocalCount,
+                                 String detectedBy) {
+            this.releaseGroupId = releaseGroupId;
+            this.releaseId = releaseId;
+            this.albumTitle = albumTitle;
+            this.albumArtist = albumArtist;
+            this.releaseType = releaseType;
+            this.compilation = compilation;
+            this.releaseDate = releaseDate;
+            this.releaseTrackCount = releaseTrackCount;
+            this.localTrackCount = localTrackCount;
+            this.unmatchedLocalCount = unmatchedLocalCount;
+            this.detectedBy = detectedBy;
+        }
+
+        public String getReleaseGroupId() { return releaseGroupId; }
+        public String getReleaseId() { return releaseId; }
+        public String getAlbumTitle() { return albumTitle; }
+        public String getAlbumArtist() { return albumArtist; }
+        public String getReleaseType() { return releaseType; }
+        public boolean isCompilation() { return compilation; }
+        public String getReleaseDate() { return releaseDate; }
+        public int getReleaseTrackCount() { return releaseTrackCount; }
+        public int getLocalTrackCount() { return localTrackCount; }
+        public synchronized int getUnmatchedLocalCount() { return unmatchedLocalCount; }
+        public String getDetectedBy() { return detectedBy; }
+        public synchronized Map<String, String> getUnmatchedFiles() { return new LinkedHashMap<>(unmatchedFiles); }
+
+        public synchronized void addUnmatchedFile(String fileName, String identifiedTitle) {
+            if (fileName != null) unmatchedFiles.put(fileName, identifiedTitle);
+            unmatchedLocalCount = Math.max(unmatchedLocalCount, unmatchedFiles.size());
+        }
+
+        synchronized void mergeFrom(MissingTracksInfo other) {
+            if (other == null) return;
+            for (Map.Entry<String, String> e : other.getUnmatchedFiles().entrySet()) {
+                unmatchedFiles.put(e.getKey(), e.getValue());
+            }
+            unmatchedLocalCount = Math.max(unmatchedLocalCount,
+                Math.max(other.getUnmatchedLocalCount(), unmatchedFiles.size()));
+        }
+
+        public synchronized String describe() {
+            StringBuilder sb = new StringBuilder();
+            if (localTrackCount > 0 && releaseTrackCount > 0) {
+                sb.append("本地 ").append(localTrackCount).append(" 首 / 版本 ").append(releaseTrackCount).append(" 首，");
+            }
+            sb.append("至少 ").append(Math.max(1, unmatchedLocalCount)).append(" 首不在该版本中");
+            if (!unmatchedFiles.isEmpty()) {
+                sb.append("：").append(String.join("、", unmatchedFiles.keySet()));
+            }
+            return sb.toString();
+        }
+    }
+
     /**
      * 文件夹级候选专辑快照（用于人工确认队列）
      * supportCount = 有多少个样本的候选里包含这张专辑
@@ -1567,7 +1956,8 @@ public class FolderAlbumCache {
         private final File audioFile;
         private final File processingFile;
         private final java.nio.file.Path processingTempDir;
-        private final Object metadata; // MusicBrainzClient.MusicMetadata
+        /** 非 final：按最接近版本自动归档时需要替换为定位后的曲目元数据 */
+        private Object metadata; // MusicBrainzClient.MusicMetadata
         private final byte[] coverArtData;
         private final long addTime;
         

@@ -451,6 +451,12 @@ recovery.trash.retentionDays=7
 # immediately using synthesized album info (previous behaviour).
 review.enabled=false
 
+# When a locked album turns out to lack some local tracks (e.g. a single whose
+# coupling track is missing on MusicBrainz), the whole folder is queued under the
+# "Missing tracks" tab. If web search is configured, run one search round for the
+# complete edition automatically when such an item is queued.
+review.missingTracks.autoOnlineSearch=true
+
 # Persisted review queue (JSON). Must survive restarts.
 review.queuePath=data/review-queue.json
 

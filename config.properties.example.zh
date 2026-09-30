@@ -400,6 +400,10 @@ recovery.trash.retentionDays=7
 # 默认关闭：关闭时保持原有行为——直接用合成的专辑信息归档。
 review.enabled=false
 
+# 锁定专辑缺曲（例如 MusicBrainz 上的单曲没有收录 c/w 曲）时，整个文件夹会进入
+# 待确认的「锁定专辑缺曲」Tab。已配置联网搜索时，入队后自动搜一轮完整版本。
+review.missingTracks.autoOnlineSearch=true
+
 # 待确认队列持久化文件（JSON），必须能跨重启保留
 review.queuePath=data/review-queue.json
 

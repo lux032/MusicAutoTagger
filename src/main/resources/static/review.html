@@ -107,6 +107,16 @@
         .more-actions-body { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
         .filter-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .rejected-shortcut { cursor: pointer; border: 0; }
+        .kind-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+        .kind-tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; cursor: pointer;
+            font-size: 13.5px; font-weight: 600; color: var(--text-mute); display: inline-flex; align-items: center; gap: 6px; }
+        .kind-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+        .kind-tab .tab-count { min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--danger); color: #fff;
+            font-size: 11px; line-height: 18px; text-align: center; display: none; }
+        .kind-tab .tab-count.show { display: inline-block; }
+        .panel.missing { background: #fffbea; border-color: #f3df9b; }
+        .closest-badge { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 11px;
+            background: var(--primary-soft); color: var(--primary); font-weight: 700; }
 
         .diff-ok { color: var(--success); font-weight: 600; }
         .diff-bad { color: var(--danger); font-weight: 600; }
@@ -160,6 +170,14 @@
                     </span>
                     <span data-i18n="review.queue">队列</span>
                 </div>
+            </div>
+            <div class="kind-tabs" id="kindTabs">
+                <button class="kind-tab" data-kind="ALBUM_UNRESOLVED" onclick="switchKind('ALBUM_UNRESOLVED')">
+                    <span data-i18n="review.tab.album">专辑待确认</span><span class="tab-count" id="tabCountAlbum"></span>
+                </button>
+                <button class="kind-tab" data-kind="TRACKS_MISSING" onclick="switchKind('TRACKS_MISSING')">
+                    <span data-i18n="review.tab.missing">锁定专辑缺曲</span><span class="tab-count" id="tabCountMissing"></span>
+                </button>
             </div>
             <div class="form-row" style="margin-bottom: 12px;">
                 <div class="filter-row">
@@ -259,6 +277,9 @@
     let currentId = null;
     let currentItem = null;
     let onlineSearchRunning = false;
+    // 当前 Tab：URL 带 #missing 时直接打开缺曲 Tab；否则首次加载时按待处理数量决定
+    let currentKind = location.hash === '#missing' ? 'TRACKS_MISSING'
+        : (location.hash === '#album' ? 'ALBUM_UNRESOLVED' : null);
     const t = (k, d) => I18n.t(k, d);
     const tf = (k, ...a) => I18n.tf(k, ...a);
 
@@ -347,9 +368,35 @@
         try {
             const data = await api('/api/review/stats');
             document.getElementById('rejectedShortcut').textContent = tf('review.filter.rejected.count', data.rejected || 0);
+            setTabCount('tabCountAlbum', data.pendingAlbum || 0);
+            setTabCount('tabCountMissing', data.pendingMissingTracks || 0);
+            return data;
         } catch (e) {
             // 列表本身仍可使用，统计快捷入口失败不覆盖主要错误信息。
+            return null;
         }
+    }
+
+    function setTabCount(id, count) {
+        const el = document.getElementById(id);
+        el.textContent = count > 99 ? '99+' : String(count);
+        el.classList.toggle('show', count > 0);
+    }
+
+    function applyKindTabs() {
+        document.querySelectorAll('#kindTabs .kind-tab').forEach(btn =>
+            btn.classList.toggle('active', btn.dataset.kind === currentKind));
+    }
+
+    function switchKind(kind) {
+        if (currentKind === kind) return;
+        currentKind = kind;
+        history.replaceState(null, '', kind === 'TRACKS_MISSING' ? '#missing' : '#album');
+        currentId = null;
+        currentItem = null;
+        document.getElementById('detail').innerHTML = `<div class="empty">${escapeHtml(t('review.select.folder'))}</div>`;
+        applyKindTabs();
+        loadList();
     }
 
     function showRejected() {
@@ -358,11 +405,18 @@
     }
 
     async function loadList() {
-        loadRejectedCount();
+        const stats = await loadRejectedCount();
+        if (!currentKind) {
+            // 首次进入：哪个 Tab 有待处理就打开哪个，两个都有时优先「专辑待确认」
+            currentKind = stats && !(stats.pendingAlbum > 0) && stats.pendingMissingTracks > 0
+                ? 'TRACKS_MISSING' : 'ALBUM_UNRESOLVED';
+        }
+        applyKindTabs();
         const status = document.getElementById('statusFilter').value;
         const listEl = document.getElementById('list');
         try {
             const data = await api('/api/review/list?status=' + encodeURIComponent(status));
+            data.items = (data.items || []).filter(item => (item.kind || 'ALBUM_UNRESOLVED') === currentKind);
             if (!data.items || data.items.length === 0) {
                 listEl.innerHTML = `<div class="empty">${escapeHtml(t('review.no.items'))}</div>`;
                 return;
@@ -428,8 +482,10 @@
                 : (key
                     ? `<button class="btn primary sm" onclick="confirmCandidate('${key}','${rg}')">${escapeHtml(t('review.confirm'))}</button>`
                     : `<span class="hint">${escapeHtml(t('review.need.expand'))}</span>`);
+            const closest = item.missingTracks && c.releaseId && c.releaseId === item.missingTracks.releaseId
+                ? `<span class="closest-badge">${escapeHtml(t('review.missing.closest.badge'))}</span>` : '';
             return `<tr>
-                <td>${escapeHtml(c.title || '')}<div class="hint">${escapeHtml(c.releaseId || c.releaseGroupId || '')}</div></td>
+                <td>${escapeHtml(c.title || '')}${closest}<div class="hint">${escapeHtml(c.releaseId || c.releaseGroupId || '')}</div></td>
                 <td>${escapeHtml(c.mediaFormat || '-')}</td>
                 <td>${c.trackCount || '-'} ${deltaText}</td>
                 <td>${sim}</td>
@@ -490,6 +546,7 @@
             </div>
             <div class="hint">${escapeHtml(item.folderPath || '')}</div>
             <div class="hint">${escapeHtml(item.reason || '')}</div>
+            ${renderMissingTracks(item)}
             ${pending ? renderSystemSuggestion(item) : ''}
             <div class="detail-facts">
                 <div class="fact">
@@ -565,6 +622,21 @@
             </div>
             ${item.resolutionNote ? `<div class="hint">${escapeHtml(tf('review.resolution', item.resolutionNote))}</div>` : ''}
         `;
+    }
+
+    function renderMissingTracks(item) {
+        const m = item.missingTracks;
+        if (item.kind !== 'TRACKS_MISSING' || !m) return '';
+        const unmatched = Object.entries(m.unmatchedFiles || {});
+        return `<div class="panel missing">
+            <div class="section-title">${escapeHtml(t('review.missing.section'))}</div>
+            <div><strong>${escapeHtml(tf('review.missing.closest', m.albumTitle || '-', m.albumArtist || '-'))}</strong></div>
+            <div class="hint">${escapeHtml(tf('review.missing.counts', m.localTrackCount || '-', m.releaseTrackCount || '-', Math.max(1, m.unmatchedLocalCount || 0)))}</div>
+            ${unmatched.length ? `<div class="hint">${escapeHtml(t('review.missing.unmatched.files'))}</div>
+                ${unmatched.map(([file, title]) => `<div class="hint">· ${escapeHtml(file)}${title ? ' → ' + escapeHtml(title) : ''}</div>`).join('')}` : ''}
+            <div class="hint">${escapeHtml(t(m.detectedBy === 'TRACK_CHECK' ? 'review.missing.detected.track' : 'review.missing.detected.lock'))}</div>
+            <div class="hint" style="margin-top:6px">${escapeHtml(t('review.missing.hint'))}</div>
+        </div>`;
     }
 
     function renderSystemSuggestion(item) {

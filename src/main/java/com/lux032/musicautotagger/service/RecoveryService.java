@@ -180,6 +180,11 @@ public class RecoveryService implements AutoCloseable {
         return onlineIdentificationService.search(folder, null, analyzeCover);
     }
 
+    /** 只为指定条目搜索；条目已不在待确认时返回 null，不会新建条目 */
+    public ReviewItem triggerOnlineSearchForReviewItem(String itemId, File folder) throws Exception {
+        return onlineIdentificationService.searchForExistingItem(itemId, folder);
+    }
+
     /** 回收站条目列表，按入站时间倒序。 */
     public List<Map<String, Object>> listTrash() {
         List<Map<String, Object>> result = new ArrayList<>();

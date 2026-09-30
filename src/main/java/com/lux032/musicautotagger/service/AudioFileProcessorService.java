@@ -405,12 +405,55 @@ public class AudioFileProcessorService {
                     if (isLooseFileInMonitorRoot) {
                         failedFileHandler.handleLooseFileFailed(originalAudioFile, processingAudioFile);
                     } else {
-                        failedFileHandler.handleAlbumFileFailed(originalAudioFile, albumRootDir);
-                        // 该文件不会进入 pending，但之前统计的「剩余未处理数」把它算进去了。
-                        // 必须失效重算，否则 pendingCount 永远追不上 remainingUnprocessed，
-                        // 剩余待处理文件会一直挂到关机才被 flush。
-                        folderUnprocessedCounts.remove(folderPath);
-                        fileSystemUtils.invalidateInspection(folderPath);
+                        // 「是否正在收集」的判断与「加入待处理 / 交给失败管线」在同一把文件夹锁内完成，
+                        // 避免另一线程在两者之间加入待处理文件
+                        MusicMetadata unidentified = null;
+                        boolean addedAsUnidentified = false;
+                        synchronized (folderAlbumCache.folderLock(folderPath)) {
+                            if (isFolderCollecting(folderPath)) {
+                                // 文件夹正在收集（已有识别好的待处理文件，或已判定缺曲）：
+                                // 不把整个文件夹交给失败管线——那会把尚未识别的歌也标成已处理，
+                                // 待确认条目就只剩失败前的一部分。这首用原标签作为「未识别曲目」加入待处理，
+                                // 其余歌照常识别，收齐后整个文件夹一起处理 / 进待确认。
+                                log.warn("文件夹正在收集中，未识别的曲目以原标签加入待处理，不中断整个文件夹: {}",
+                                    originalAudioFile.getName());
+                                LogCollector.addLog("WARN", "未能识别，已按原标签加入同文件夹待处理: " + originalAudioFile.getName());
+                                unidentified = tagWriter.readTags(originalAudioFile);
+                                if (unidentified == null) {
+                                    unidentified = new MusicMetadata();
+                                }
+                                unidentified.setRecordingId(null);
+                                if (acoustIdResult.getDuration() > 0) {
+                                    unidentified.setDuration(acoustIdResult.getDuration());
+                                }
+                                if (unidentified.getTitle() == null || unidentified.getTitle().isBlank()) {
+                                    unidentified.setTitle(stripExtension(originalAudioFile.getName()));
+                                }
+                                addedAsUnidentified = albumBatchProcessor.addPendingFile(
+                                    folderPath,
+                                    originalAudioFile,
+                                    processingAudioFile,
+                                    normalizationResult != null ? normalizationResult.getTempDirectory() : null,
+                                    unidentified,
+                                    null);
+                            } else {
+                                // 文件夹还没有任何进展：保持原有失败策略，整个文件夹交给失败 / 部分识别管线。
+                                // 先标记终态，之后其他线程的 addPendingFile 会被拒绝
+                                folderAlbumCache.markFailureHandoff(folderPath);
+                            }
+                        }
+                        if (addedAsUnidentified) {
+                            deferNormalizationCleanup = normalizationResult != null && normalizationResult.isConverted();
+                            finalizePendingIfComplete(folderPath, albumRootDir, musicFilesInFolder);
+                            return ProcessResult.SUCCESS;
+                        }
+                        if (unidentified == null) {
+                            failedFileHandler.handleAlbumFileFailed(originalAudioFile, albumRootDir);
+                            folderUnprocessedCounts.remove(folderPath);
+                            fileSystemUtils.invalidateInspection(folderPath);
+                            // 标记终态前已加入的待处理文件（极窄的并发窗口）一并丢弃，失败管线已接管整个文件夹
+                            albumBatchProcessor.discardPendingFiles(folderPath);
+                        }
                     }
 
                     return ProcessResult.PERMANENT_FAIL; // 识别失败，不重试但记录
@@ -564,50 +607,67 @@ public class AudioFileProcessorService {
                                 log.warn("    返回: {} ({})", returnedReleaseId, detailedMetadata.getAlbum());
                             }
                             
-                            // 如果有具体的 Release ID，尝试强制匹配
+                            // 在锁定版本中查找这首歌：Recording ID → 曲名 + 时长；
+                            // 指纹已给出录音身份时绝不只凭时长把它改成版本里的另一首歌。
+                            MusicBrainzClient.TrackMatch lockedMatch;
                             if (lockedReleaseId != null && !lockedReleaseId.isEmpty()) {
-                                log.info("启用强制使用锁定专辑模式（Release ID: {}）...", lockedReleaseId);
-                                
-                                // 调用强制专辑匹配方法
-                                MusicMetadata forcedMetadata = musicBrainzClient.getTrackFromLockedAlbumByDuration(
-                                    lockedReleaseId,
+                                lockedMatch = musicBrainzClient.matchTrackInRelease(
+                                    lockedReleaseId, lockedReleaseGroupId,
+                                    detailedMetadata.getRecordingId(), detailedMetadata.getTitle(),
+                                    fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist);
+                            } else {
+                                lockedMatch = musicBrainzClient.matchTrackInReleaseGroup(
                                     lockedReleaseGroupId,
-                                    fileDurationSeconds,
-                                    lockedAlbumTitle,
-                                    lockedAlbumArtist
-                                );
-                                
-                                if (forcedMetadata != null) {
-                                    // 强制匹配成功，使用新的元数据
-                                    log.info("✓ 强制专辑匹配成功，使用锁定专辑中的曲目信息");
-                                    // Release 详情不含曲目级 artist-rels / work-rels，
-                                    // 必须保留 Recording 查询已得到的作曲/作词/编曲/流派/歌词。
-                                    detailedMetadata = MetadataUtils.preserveTrackCredits(detailedMetadata, forcedMetadata);
+                                    detailedMetadata.getRecordingId(), detailedMetadata.getTitle(),
+                                    fileDurationSeconds, musicFilesInFolder, musicFilesCountReliable,
+                                    lockedAlbumTitle, lockedAlbumArtist);
+                            }
+
+                            if (lockedMatch.isFound()) {
+                                log.info("✓ 在锁定专辑中找到该曲目（{}）", lockedMatch.getType());
+                                // Release 详情不含曲目级 artist-rels / work-rels，
+                                // 必须保留 Recording 查询已得到的作曲/作词/编曲/流派/歌词。
+                                detailedMetadata = MetadataUtils.preserveTrackCredits(
+                                    detailedMetadata, lockedMatch.getMetadata());
+                            } else if (lockedMatch.isNotInRelease()) {
+                                FolderAlbumCache.CachedAlbumInfo currentLock =
+                                    folderAlbumCache.peekFolderAlbum(folderPath);
+                                boolean manualLock = currentLock != null && currentLock.getSource() != null
+                                    && currentLock.getSource().isManual();
+                                if (manualLock) {
+                                    // 人工已选定这个版本：对不上的歌作为附加曲目放进同一专辑目录
+                                    log.warn("该曲目不在人工确认的版本中，作为附加曲目归档（保留识别曲名、不加曲目号）: {}",
+                                        originalAudioFile.getName());
+                                    detailedMetadata.setExtraTrack(true);
+                                    detailedMetadata.setDiscNo(null);
+                                    detailedMetadata.setTrackNo(null);
+                                    detailedMetadata.setTrackTotal(null);
+                                    detailedMetadata.setReleaseTrackId(null);
+                                    detailedMetadata.setReleaseId(lockedReleaseId);
                                 } else {
-                                    // 强制匹配失败，保留原有元数据但应用锁定的专辑信息
-                                    log.warn("强制专辑匹配失败，将保留 AcoustID 识别的曲目信息但覆盖专辑信息");
+                                    // 缺曲：暂停这个文件夹的自动归档，整体进入待确认
+                                    FolderAlbumCache.MissingTracksInfo missing = new FolderAlbumCache.MissingTracksInfo(
+                                        lockedReleaseGroupId, lockedReleaseId, lockedAlbumTitle, lockedAlbumArtist,
+                                        currentLock != null ? currentLock.getReleaseType() : null,
+                                        currentLock != null && currentLock.isCompilation(),
+                                        lockedReleaseDate,
+                                        currentLock != null ? currentLock.getTrackCount() : 0,
+                                        musicFilesInFolder, 1,
+                                        FolderAlbumCache.MissingTracksInfo.DETECTED_AT_TRACK);
+                                    missing.addUnmatchedFile(originalAudioFile.getName(), detailedMetadata.getTitle());
+                                    folderAlbumCache.markFolderTracksMissing(folderPath, missing);
+
+                                    // 本文件改走「未锁定」分支：只识别、不写入，进入待处理队列
+                                    cachedAlbum = null;
+                                    lockedAlbumTitle = null;
+                                    lockedAlbumArtist = null;
+                                    lockedReleaseGroupId = null;
+                                    lockedReleaseId = null;
+                                    lockedReleaseDate = null;
                                 }
                             } else {
-                                // 没有具体的 Release ID，尝试通过 Release Group ID 强制匹配
-                                log.warn("没有锁定的 Release ID，尝试通过 Release Group ID 强制匹配");
-                                
-                                MusicMetadata forcedMetadataByRG = musicBrainzClient.getTrackFromLockedAlbumByReleaseGroup(
-                                    lockedReleaseGroupId,
-                                    fileDurationSeconds,
-                                    musicFilesInFolder,
-                                    musicFilesCountReliable,
-                                    lockedAlbumTitle,
-                                    lockedAlbumArtist
-                                );
-                                
-                                if (forcedMetadataByRG != null) {
-                                    // 强制匹配成功，使用新的元数据
-                                    log.info("✓ 通过 Release Group ID 强制专辑匹配成功");
-                                    detailedMetadata = MetadataUtils.preserveTrackCredits(detailedMetadata, forcedMetadataByRG);
-                                } else {
-                                    // 强制匹配失败，保留原有元数据但应用锁定的专辑信息
-                                    log.warn("通过 Release Group ID 强制匹配也失败，将保留 AcoustID 识别的曲目信息但覆盖专辑信息");
-                                }
+                                // 取不到锁定版本数据：无法判断，保留 AcoustID 识别的曲目信息并套用锁定专辑
+                                log.warn("无法获取锁定版本的曲目数据，保留 AcoustID 识别的曲目信息但覆盖专辑信息");
                             }
                         }
                     }
@@ -637,6 +697,11 @@ public class AudioFileProcessorService {
             } else {
                 log.debug("源文件没有可读取的标签信息");
             }
+
+            // 记录文件时长：待确认条目在人工选定版本后要靠它做「曲名 + 时长」匹配
+            if (detailedMetadata.getDuration() == null && acoustIdResult != null && acoustIdResult.getDuration() > 0) {
+                detailedMetadata.setDuration(acoustIdResult.getDuration());
+            }
             
             // 4. 获取封面图片(多层降级策略)
             byte[] coverArtData = coverArtService.getCoverArtWithFallback(
@@ -662,15 +727,38 @@ public class AudioFileProcessorService {
                 log.info(I18nUtil.getMessage("main.lyrics.not.found"));
             }
             
+            // 4.9 按锁定专辑写入：授权检查与写入放在同一把文件夹锁里。
+            // 识别期间（联网请求较慢）另一线程可能已把文件夹判为未确定 / 缺曲；
+            // 判定也要拿这把锁，因此不会出现「检查通过后、写入前被判缺曲」的窗口。
+            boolean writtenWithLock = false;
+            if (lockedAlbumTitle != null && !isLooseFileInMonitorRoot) {
+                log.info("使用已锁定的专辑信息: {}", lockedAlbumTitle);
+                int flushed = albumBatchProcessor.writeWithFolderLock(folderPath, processingAudioFile,
+                    originalAudioFile, detailedMetadata, coverArtData, isQuickScanMode);
+                writtenWithLock = flushed >= 0;
+                if (flushed > 0) {
+                    folderUnprocessedCounts.remove(folderPath);
+                    fileSystemUtils.invalidateInspection(folderPath);
+                }
+                if (!writtenWithLock) {
+                    // 改走「未锁定」分支只识别不写入
+                    log.warn("文件夹已在处理期间被判定为未确定 / 缺曲，本文件不按旧锁定写入: {}",
+                        originalAudioFile.getName());
+                    lockedAlbumTitle = null;
+                    lockedAlbumArtist = null;
+                    lockedReleaseGroupId = null;
+                    lockedReleaseId = null;
+                    lockedReleaseDate = null;
+                }
+            }
+
             // 5. 文件夹级别的专辑锁定处理
             // 注意：散落文件跳过专辑锁定和投票机制，直接处理
             if (isLooseFileInMonitorRoot) {
                 log.info("散落文件保底处理：直接写入元数据（随缘模式）");
                 albumBatchProcessor.processAndWriteFile(processingAudioFile, originalAudioFile, detailedMetadata, coverArtData, false);
-            } else if (lockedAlbumTitle != null) {
-                // 已有锁定的专辑信息（来自快速扫描或缓存），直接处理文件
-                log.info("使用已锁定的专辑信息: {}", lockedAlbumTitle);
-                albumBatchProcessor.processAndWriteFile(processingAudioFile, originalAudioFile, detailedMetadata, coverArtData, isQuickScanMode);
+            } else if (writtenWithLock) {
+                // 已在 4.9 按锁定专辑写入
             } else {
                 // 未锁定专辑：收集样本进行投票
                 log.info("启用文件夹级别专辑锁定（{}首音乐文件）", musicFilesInFolder);
@@ -694,14 +782,17 @@ public class AudioFileProcessorService {
                 );
 
                 // 关键修复：使用原子操作添加待处理文件，避免竞态条件
-                albumBatchProcessor.addPendingFile(
+                if (!albumBatchProcessor.addPendingFile(
                     folderPath,
                     originalAudioFile,
                     processingAudioFile,
                     normalizationResult != null ? normalizationResult.getTempDirectory() : null,
                     detailedMetadata,
                     coverArtData
-                );
+                )) {
+                    // 同文件夹另一首识别失败，整个文件夹已交给失败 / 部分识别管线，本文件由它处理
+                    return ProcessResult.SUCCESS;
+                }
                 deferNormalizationCleanup = normalizationResult != null && normalizationResult.isConverted();
 
                 // 尝试确定专辑
@@ -718,14 +809,25 @@ public class AudioFileProcessorService {
                     musicFilesCountReliable
                 );
 
+                boolean batchWritten = false;
                 if (determinedAlbum != null) {
-                    // 专辑已确定，批量处理所有待处理文件
-                    log.info("========================================");
-                    log.info("✓ 文件夹专辑已确定: {}", determinedAlbum.getAlbumTitle());
-                    log.info("开始批量处理文件夹内的所有文件...");
-                    log.info("========================================");
-
-                    albumBatchProcessor.processPendingFilesWithAlbum(folderPath, determinedAlbum);
+                    // 授权检查与批量写入在同一把文件夹锁里：确定专辑之后、写入之前，
+                    // 另一线程可能刚把文件夹判为缺曲
+                    synchronized (folderAlbumCache.folderLock(folderPath)) {
+                        if (folderAlbumCache.isAutomaticWriteAllowed(folderPath)) {
+                            log.info("========================================");
+                            log.info("✓ 文件夹专辑已确定: {}", determinedAlbum.getAlbumTitle());
+                            log.info("开始批量处理文件夹内的所有文件...");
+                            log.info("========================================");
+                            albumBatchProcessor.processPendingFilesWithAlbum(folderPath, determinedAlbum);
+                            batchWritten = true;
+                        } else {
+                            log.warn("专辑确定后文件夹被判定为未确定 / 缺曲，放弃按该专辑批量写入: {}",
+                                determinedAlbum.getAlbumTitle());
+                        }
+                    }
+                }
+                if (batchWritten) {
                     folderUnprocessedCounts.remove(folderPath);
                     fileSystemUtils.invalidateInspection(folderPath);
                 } else {
@@ -735,14 +837,7 @@ public class AudioFileProcessorService {
                     // 这种情况可能发生在样本收集过程中部分文件识别失败
                     // 注意：源文件处理后不会离开监控目录，所以不能只拿 musicFilesInFolder 比较，
                     // 否则「一张专辑只剩少量新文件」时永远触发不了，文件会一直挂到关机。
-                    int pendingCount = albumBatchProcessor.getPendingFileCount(folderPath);
-                    if (pendingCount >= musicFilesInFolder || pendingCount >= remainingUnprocessed) {
-                        log.warn("所有待处理文件均已入队但专辑仍未确定（pending={}, 剩余未处理={}, 文件夹总数={}）",
-                            pendingCount, remainingUnprocessed, musicFilesInFolder);
-                        albumBatchProcessor.forceProcessPendingFiles(folderPath, albumInfo);
-                        folderUnprocessedCounts.remove(folderPath);
-                        fileSystemUtils.invalidateInspection(folderPath);
-                    }
+                    finalizePendingIfComplete(folderPath, albumRootDir, musicFilesInFolder, remainingUnprocessed);
                 }
             }
 
@@ -779,6 +874,44 @@ public class AudioFileProcessorService {
                 audioFormatNormalizer.cleanup(normalizationResult);
             }
             log.info("========================================");
+        }
+    }
+
+    /** 文件夹是否正处于收集阶段：已有待处理文件，或已被判定缺曲 */
+    private boolean isFolderCollecting(String folderPath) {
+        return albumBatchProcessor.getPendingFileCount(folderPath) > 0
+            || folderAlbumCache.getMissingTracksInfo(folderPath) != null;
+    }
+
+    private static String stripExtension(String name) {
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
+    }
+
+    /**
+     * 待处理文件已收齐但专辑仍未确定时收尾：按「专辑未确定」处理
+     * （缺曲文件夹在其中进入待确认，普通文件夹按合成信息归档或进待确认）。
+     */
+    private void finalizePendingIfComplete(String folderPath, File albumRootDir, int musicFilesInFolder) {
+        if (albumBatchProcessor.getPendingFileCount(folderPath) <= 0) {
+            return;
+        }
+        finalizePendingIfComplete(folderPath, albumRootDir, musicFilesInFolder,
+            getRemainingUnprocessedCount(folderPath, albumRootDir));
+    }
+
+    private void finalizePendingIfComplete(String folderPath, File albumRootDir, int musicFilesInFolder,
+                                           int remainingUnprocessed) {
+        int pendingCount = albumBatchProcessor.getPendingFileCount(folderPath);
+        if (pendingCount <= 0) {
+            return;
+        }
+        if (pendingCount >= musicFilesInFolder || pendingCount >= remainingUnprocessed) {
+            log.warn("所有待处理文件均已入队但专辑仍未确定（pending={}, 剩余未处理={}, 文件夹总数={}）",
+                pendingCount, remainingUnprocessed, musicFilesInFolder);
+            albumBatchProcessor.processPendingFilesAsUnresolvedAlbum(folderPath);
+            folderUnprocessedCounts.remove(folderPath);
+            fileSystemUtils.invalidateInspection(folderPath);
         }
     }
 
