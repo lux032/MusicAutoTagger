@@ -72,6 +72,52 @@ class MusicBrainzClientCreatorCreditsTest {
     }
 
     @Test
+    void writerCountsAsBothComposerAndLyricist() throws Exception {
+        // writer = 词曲作者、分工不明；只录了 writer 的作品也必须有作曲
+        MusicMetadata md = parse("""
+            {"relations":[
+              {"type":"performance","work":{"relations":[
+                {"type":"writer","artist":{"name":"Songwriter"}}
+              ]}}
+            ]}
+            """);
+
+        assertEquals("Songwriter", md.getComposer());
+        assertEquals("Songwriter", md.getLyricist());
+    }
+
+    @Test
+    void writerIsMergedWithExplicitCreditsWithoutDuplicates() throws Exception {
+        MusicMetadata md = parse("""
+            {"relations":[
+              {"type":"performance","work":{"relations":[
+                {"type":"composer","artist":{"name":"Composer"}},
+                {"type":"lyricist","artist":{"name":"Lyricist"}},
+                {"type":"writer","artist":{"name":"Composer"}},
+                {"type":"writer","artist":{"name":"Co-writer"}}
+              ]}}
+            ]}
+            """);
+
+        assertEquals("Composer, Co-writer", md.getComposer());
+        assertEquals("Lyricist, Composer, Co-writer", md.getLyricist());
+    }
+
+    @Test
+    void workLevelLibrettistCountsAsLyricist() throws Exception {
+        MusicMetadata md = parse("""
+            {"relations":[
+              {"type":"performance","work":{"relations":[
+                {"type":"librettist","artist":{"name":"Librettist"}}
+              ]}}
+            ]}
+            """);
+
+        assertEquals("Librettist", md.getLyricist());
+        assertNull(md.getComposer());
+    }
+
+    @Test
     void unrelatedRelationTypesAndBlankNamesAreIgnored() throws Exception {
         MusicMetadata md = parse("""
             {"relations":[

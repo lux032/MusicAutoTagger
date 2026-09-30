@@ -1541,10 +1541,13 @@ public class MusicBrainzClient {
     /** 录音级 / 作品级关系中视为「编曲」的类型（MusicBrainz relationship type 名称，小写比较）。 */
     private static final Set<String> ARRANGER_RELATION_TYPES =
         Set.of("arranger", "instrument arranger", "vocal arranger", "orchestrator");
-    private static final Set<String> RECORDING_COMPOSER_RELATION_TYPES = Set.of("composer", "composing");
-    private static final Set<String> WORK_COMPOSER_RELATION_TYPES = Set.of("composer");
-    private static final Set<String> RECORDING_LYRICIST_RELATION_TYPES = Set.of("lyricist", "writer", "librettist");
-    private static final Set<String> WORK_LYRICIST_RELATION_TYPES = Set.of("lyricist", "writer");
+    /**
+     * MusicBrainz 的 {@code writer} 表示「词曲作者，分工不明」，因此同时计入作曲与作词，
+     * 否则只录了 writer 的作品会丢失作曲。录音级与作品级使用同一套类型：
+     * librettist 等关系实际挂在作品上，按层级区分反而会漏掉。
+     */
+    private static final Set<String> COMPOSER_RELATION_TYPES = Set.of("composer", "composing", "writer");
+    private static final Set<String> LYRICIST_RELATION_TYPES = Set.of("lyricist", "librettist", "writer");
 
     /**
      * 解析作曲、作词、编曲信息。
@@ -1563,16 +1566,16 @@ public class MusicBrainzClient {
             Set<String> arrangers = new LinkedHashSet<>();
 
             for (JsonNode relation : relations) {
-                collectCredit(relation, RECORDING_COMPOSER_RELATION_TYPES, composers);
-                collectCredit(relation, RECORDING_LYRICIST_RELATION_TYPES, lyricists);
+                collectCredit(relation, COMPOSER_RELATION_TYPES, composers);
+                collectCredit(relation, LYRICIST_RELATION_TYPES, lyricists);
                 collectCredit(relation, ARRANGER_RELATION_TYPES, arrangers);
 
                 // 从 work 关系中提取
                 JsonNode workRelations = relation.path("work").path("relations");
                 if (workRelations.isArray()) {
                     for (JsonNode workRel : workRelations) {
-                        collectCredit(workRel, WORK_COMPOSER_RELATION_TYPES, composers);
-                        collectCredit(workRel, WORK_LYRICIST_RELATION_TYPES, lyricists);
+                        collectCredit(workRel, COMPOSER_RELATION_TYPES, composers);
+                        collectCredit(workRel, LYRICIST_RELATION_TYPES, lyricists);
                         collectCredit(workRel, ARRANGER_RELATION_TYPES, arrangers);
                     }
                 }
