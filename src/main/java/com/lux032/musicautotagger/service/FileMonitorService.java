@@ -30,7 +30,9 @@ public class FileMonitorService {
     private final Map<WatchKey, Path> watchKeys;
     private volatile boolean running;
     private volatile boolean paused;  // 暂停状态标志
-    private static final long PROCESS_INTERVAL = 5000; // 每个文件处理间隔5秒,防止API限流
+    // 每个文件处理间隔。MusicBrainz 客户端自带请求级限流，AcoustID / 歌词每首仅一次请求，
+    // 这里只需留一点余量，不必再用 5 秒
+    private static final long PROCESS_INTERVAL = 2000;
     private final int maxFileRetries; // 单个文件最大重试次数（从配置读取）
     private static final long RETRY_QUEUE_CHECK_INTERVAL = 60000; // 重试队列检查间隔60秒
     
