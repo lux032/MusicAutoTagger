@@ -8,6 +8,7 @@ import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FileSystemUtils;
+import com.lux032.musicautotagger.util.MetadataUtils;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
@@ -382,15 +383,28 @@ public class RecoveryService implements AutoCloseable {
         if (workRoot.exists()) deleteRecursively(workRoot.toPath());
         Files.createDirectories(workRoot.toPath());
         List<Path> committed;
+        // 入队前指纹识别阶段已从 MusicBrainz 拿到的曲目级元数据（作曲/作词/编曲/流派等），
+        // 按原始路径索引；MusicBrainz 有值则覆盖源文件标签，没有则保留源文件原值。
+        java.util.Map<String, MusicMetadata> queuedMetadataByOriginalPath = new java.util.HashMap<>();
+        if (item.getFiles() != null) {
+            for (ReviewItem.FileEntry entry : item.getFiles()) {
+                if (entry.getOriginalPath() != null && entry.getMetadata() != null) {
+                    queuedMetadataByOriginalPath.put(
+                        new File(entry.getOriginalPath()).getAbsolutePath(), entry.getMetadata());
+                }
+            }
+        }
+
         try {
             for (File file : files) {
                 MusicMetadata original = tagWriter.readTags(file);
                 MusicMetadata md = original == null ? new MusicMetadata() : original;
+                String matchedPath = originalPathByProcessingPath.getOrDefault(
+                    file.getAbsolutePath(), file.getAbsolutePath());
+                MetadataUtils.overlayTrackCredits(queuedMetadataByOriginalPath.get(matchedPath), md);
                 md.setAlbum(finalAlbum);
                 md.setAlbumArtist(finalArtist);
                 md.setReleaseDate(finalDate);
-                String matchedPath = originalPathByProcessingPath.getOrDefault(
-                    file.getAbsolutePath(), file.getAbsolutePath());
                 ReviewItem.OnlineTrack track = trackByFile.get(matchedPath);
                 if (track != null) {
                     if (meaningful(track.getTitle())) md.setTitle(track.getTitle());

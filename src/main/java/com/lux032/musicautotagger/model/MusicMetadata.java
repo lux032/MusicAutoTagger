@@ -49,6 +49,7 @@ public class MusicMetadata {
     private List<String> genres;
     private String composer;
     private String lyricist;
+    private String arranger;
     private String lyrics;
     private String discNo;
     private String trackNo;
@@ -99,6 +100,7 @@ public class MusicMetadata {
         copy.genres = genres == null ? null : List.copyOf(genres);
         copy.composer = composer;
         copy.lyricist = lyricist;
+        copy.arranger = arranger;
         copy.lyrics = lyrics;
         copy.discNo = discNo;
         copy.trackNo = trackNo;

@@ -482,6 +482,11 @@ public class TagWriterService {
             tag.setField(FieldKey.LYRICIST, metadata.getLyricist());
         }
 
+        // 写入编曲（部分容器可能不支持该字段，失败只记日志）
+        if (metadata.getArranger() != null && !metadata.getArranger().isEmpty()) {
+            setFieldSafely(tag, FieldKey.ARRANGER, metadata.getArranger());
+        }
+
         // 写入歌词
         if (metadata.getLyrics() != null && !metadata.getLyrics().isEmpty()) {
             tag.setField(FieldKey.LYRICS, metadata.getLyrics());
@@ -832,6 +837,16 @@ public class TagWriterService {
             String lyricist = tag.getFirst(FieldKey.LYRICIST);
             if (lyricist != null && !lyricist.isEmpty()) {
                 metadata.setLyricist(lyricist);
+            }
+
+            // 读取编曲（逐项隔离，不支持该键的容器不影响其它字段）
+            try {
+                String arranger = tag.getFirst(FieldKey.ARRANGER);
+                if (arranger != null && !arranger.isEmpty()) {
+                    metadata.setArranger(arranger);
+                }
+            } catch (Exception e) {
+                log.debug("读取编曲失败: {}", e.getMessage());
             }
 
             // 读取歌词

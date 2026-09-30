@@ -658,6 +658,9 @@ public class ReviewResolutionService {
             if (fromRelease.getLyricist() == null) {
                 fromRelease.setLyricist(metadata.getLyricist());
             }
+            if (fromRelease.getArranger() == null) {
+                fromRelease.setArranger(metadata.getArranger());
+            }
             if (fromRelease.getLyrics() == null) {
                 fromRelease.setLyrics(metadata.getLyrics());
             }

@@ -1381,7 +1381,7 @@ public class MusicBrainzClient {
             }
             
             // 解析作曲家和作词家信息
-            parseComposerAndLyricist(root, metadata);
+            parseCreatorCredits(root, metadata);
             
             return metadata;
         }
@@ -1395,7 +1395,7 @@ public class MusicBrainzClient {
             }
             metadata.setGenres(genres);
         }
-        parseComposerAndLyricist(root, metadata);
+        parseCreatorCredits(root, metadata);
 
         return metadata;
     }
@@ -1538,95 +1538,75 @@ public class MusicBrainzClient {
         }
     }
     
+    /** 录音级 / 作品级关系中视为「编曲」的类型（MusicBrainz relationship type 名称，小写比较）。 */
+    private static final Set<String> ARRANGER_RELATION_TYPES =
+        Set.of("arranger", "instrument arranger", "vocal arranger", "orchestrator");
+    private static final Set<String> RECORDING_COMPOSER_RELATION_TYPES = Set.of("composer", "composing");
+    private static final Set<String> WORK_COMPOSER_RELATION_TYPES = Set.of("composer");
+    private static final Set<String> RECORDING_LYRICIST_RELATION_TYPES = Set.of("lyricist", "writer", "librettist");
+    private static final Set<String> WORK_LYRICIST_RELATION_TYPES = Set.of("lyricist", "writer");
+
     /**
-     * 解析作曲家和作词家信息
-     * 从 relations 和 work-relations 中提取
+     * 解析作曲、作词、编曲信息。
+     * 从 recording 级 relations 与 work 级 relations 中提取，使用 LinkedHashSet 按姓名精确去重，
+     * 避免旧实现用 {@code String.contains} 把「Ann」误判为已存在于「Anna」中而漏掉创作人。
      */
-    private void parseComposerAndLyricist(JsonNode recording, MusicMetadata metadata) {
-            try {
-                JsonNode relations = recording.path("relations");
-                if (!relations.isArray()) {
-                    return;
-                }
-                
-                StringBuilder composers = new StringBuilder();
-                StringBuilder lyricists = new StringBuilder();
-                
-                for (JsonNode relation : relations) {
-                    String relationType = relation.path("type").asText("");
-                    JsonNode artist = relation.path("artist");
-                    
-                    if (!artist.isMissingNode()) {
-                        String artistName = artist.path("name").asText("");
-                        
-                        // 作曲家关系类型
-                        if ("composer".equalsIgnoreCase(relationType) ||
-                            "composing".equalsIgnoreCase(relationType)) {
-                            if (composers.length() > 0) {
-                                composers.append(", ");
-                            }
-                            composers.append(artistName);
-                        }
-                        
-                        // 作词家关系类型
-                        if ("lyricist".equalsIgnoreCase(relationType) ||
-                            "writer".equalsIgnoreCase(relationType) ||
-                            "librettist".equalsIgnoreCase(relationType)) {
-                            if (lyricists.length() > 0) {
-                                lyricists.append(", ");
-                            }
-                            lyricists.append(artistName);
-                        }
-                    }
-                    
-                    // 从 work 关系中提取
-                    JsonNode work = relation.path("work");
-                    if (!work.isMissingNode()) {
-                        JsonNode workRelations = work.path("relations");
-                        if (workRelations.isArray()) {
-                            for (JsonNode workRel : workRelations) {
-                                String workRelType = workRel.path("type").asText("");
-                                JsonNode workArtist = workRel.path("artist");
-                                
-                                if (!workArtist.isMissingNode()) {
-                                    String workArtistName = workArtist.path("name").asText("");
-                                    
-                                    if ("composer".equalsIgnoreCase(workRelType)) {
-                                        if (composers.length() > 0 && !composers.toString().contains(workArtistName)) {
-                                            composers.append(", ");
-                                        }
-                                        if (!composers.toString().contains(workArtistName)) {
-                                            composers.append(workArtistName);
-                                        }
-                                    }
-                                    
-                                    if ("lyricist".equalsIgnoreCase(workRelType) ||
-                                        "writer".equalsIgnoreCase(workRelType)) {
-                                        if (lyricists.length() > 0 && !lyricists.toString().contains(workArtistName)) {
-                                            lyricists.append(", ");
-                                        }
-                                        if (!lyricists.toString().contains(workArtistName)) {
-                                            lyricists.append(workArtistName);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+    void parseCreatorCredits(JsonNode recording, MusicMetadata metadata) {
+        try {
+            JsonNode relations = recording.path("relations");
+            if (!relations.isArray()) {
+                return;
+            }
+
+            Set<String> composers = new LinkedHashSet<>();
+            Set<String> lyricists = new LinkedHashSet<>();
+            Set<String> arrangers = new LinkedHashSet<>();
+
+            for (JsonNode relation : relations) {
+                collectCredit(relation, RECORDING_COMPOSER_RELATION_TYPES, composers);
+                collectCredit(relation, RECORDING_LYRICIST_RELATION_TYPES, lyricists);
+                collectCredit(relation, ARRANGER_RELATION_TYPES, arrangers);
+
+                // 从 work 关系中提取
+                JsonNode workRelations = relation.path("work").path("relations");
+                if (workRelations.isArray()) {
+                    for (JsonNode workRel : workRelations) {
+                        collectCredit(workRel, WORK_COMPOSER_RELATION_TYPES, composers);
+                        collectCredit(workRel, WORK_LYRICIST_RELATION_TYPES, lyricists);
+                        collectCredit(workRel, ARRANGER_RELATION_TYPES, arrangers);
                     }
                 }
-                
-                if (composers.length() > 0) {
-                    metadata.setComposer(composers.toString());
-                    log.debug("找到作曲家: {}", composers);
-                }
-                
-                if (lyricists.length() > 0) {
-                    metadata.setLyricist(lyricists.toString());
-                    log.debug("找到作词家: {}", lyricists);
-                }
-                
+            }
+
+            if (!composers.isEmpty()) {
+                metadata.setComposer(String.join(", ", composers));
+                log.debug("找到作曲家: {}", metadata.getComposer());
+            }
+            if (!lyricists.isEmpty()) {
+                metadata.setLyricist(String.join(", ", lyricists));
+                log.debug("找到作词家: {}", metadata.getLyricist());
+            }
+            if (!arrangers.isEmpty()) {
+                metadata.setArranger(String.join(", ", arrangers));
+                log.debug("找到编曲: {}", metadata.getArranger());
+            }
         } catch (Exception e) {
-            log.warn("解析作曲家/作词家信息失败", e);
+            log.warn("解析作曲/作词/编曲信息失败", e);
+        }
+    }
+
+    private static void collectCredit(JsonNode relation, Set<String> acceptedTypes, Set<String> target) {
+        String type = relation.path("type").asText("").trim().toLowerCase(Locale.ROOT);
+        if (!acceptedTypes.contains(type)) {
+            return;
+        }
+        JsonNode artist = relation.path("artist");
+        if (artist.isMissingNode() || artist.isNull()) {
+            return;
+        }
+        String name = artist.path("name").asText("").trim();
+        if (!name.isEmpty()) {
+            target.add(name);
         }
     }
 

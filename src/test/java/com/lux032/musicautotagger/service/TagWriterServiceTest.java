@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.model.MusicMetadata;
 import org.jaudiotagger.tag.FieldKey;
 import org.jaudiotagger.tag.TagField;
 import org.jaudiotagger.tag.flac.FlacTag;
@@ -110,6 +111,44 @@ class TagWriterServiceTest {
         assertNotNull(tag.getFirstField("----:com.apple.iTunes:ORIGINALYEAR"));
         assertEquals("2026-07-08", tag.getFirst("----:com.apple.iTunes:ORIGINALDATE"));
         assertEquals("2026", tag.getFirst("----:com.apple.iTunes:ORIGINALYEAR"));
+    }
+
+    @Test
+    void updateTextTagsWritesArrangerComposerAndLyricistAcrossContainers() throws Exception {
+        MusicMetadata metadata = new MusicMetadata();
+        metadata.setTitle("Song");
+        metadata.setComposer("Composer A");
+        metadata.setLyricist("Lyricist B");
+        metadata.setArranger("Arranger C, Arranger D");
+
+        for (org.jaudiotagger.tag.Tag tag : List.of(new ID3v24Tag(), new ID3v23Tag(), new FlacTag(),
+                new VorbisCommentTag(), new Mp4Tag())) {
+            invokeUpdateTextTags(tag, metadata);
+            String type = tag.getClass().getSimpleName();
+            assertEquals("Composer A", tag.getFirst(FieldKey.COMPOSER), type);
+            assertEquals("Lyricist B", tag.getFirst(FieldKey.LYRICIST), type);
+            assertEquals("Arranger C, Arranger D", tag.getFirst(FieldKey.ARRANGER), type);
+        }
+    }
+
+    @Test
+    void updateTextTagsLeavesExistingArrangerWhenMetadataHasNone() throws Exception {
+        FlacTag tag = new FlacTag();
+        tag.setField(FieldKey.ARRANGER, "Existing Arranger");
+        MusicMetadata metadata = new MusicMetadata();
+        metadata.setTitle("Song");
+
+        invokeUpdateTextTags(tag, metadata);
+
+        assertEquals("Existing Arranger", tag.getFirst(FieldKey.ARRANGER));
+    }
+
+    private static void invokeUpdateTextTags(org.jaudiotagger.tag.Tag tag, MusicMetadata metadata) throws Exception {
+        TagWriterService writer = new TagWriterService(MusicConfig.getInstance());
+        Method method = TagWriterService.class.getDeclaredMethod(
+            "updateTextTags", org.jaudiotagger.tag.Tag.class, MusicMetadata.class);
+        method.setAccessible(true);
+        method.invoke(writer, tag, metadata);
     }
 
     private static void invokeOriginalReleaseWriter(Object tag, String date, String year) throws Exception {

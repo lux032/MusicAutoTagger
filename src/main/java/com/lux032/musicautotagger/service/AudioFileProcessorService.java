@@ -580,7 +580,9 @@ public class AudioFileProcessorService {
                                 if (forcedMetadata != null) {
                                     // 强制匹配成功，使用新的元数据
                                     log.info("✓ 强制专辑匹配成功，使用锁定专辑中的曲目信息");
-                                    detailedMetadata = forcedMetadata;
+                                    // Release 详情不含曲目级 artist-rels / work-rels，
+                                    // 必须保留 Recording 查询已得到的作曲/作词/编曲/流派/歌词。
+                                    detailedMetadata = MetadataUtils.preserveTrackCredits(detailedMetadata, forcedMetadata);
                                 } else {
                                     // 强制匹配失败，保留原有元数据但应用锁定的专辑信息
                                     log.warn("强制专辑匹配失败，将保留 AcoustID 识别的曲目信息但覆盖专辑信息");
@@ -601,7 +603,7 @@ public class AudioFileProcessorService {
                                 if (forcedMetadataByRG != null) {
                                     // 强制匹配成功，使用新的元数据
                                     log.info("✓ 通过 Release Group ID 强制专辑匹配成功");
-                                    detailedMetadata = forcedMetadataByRG;
+                                    detailedMetadata = MetadataUtils.preserveTrackCredits(detailedMetadata, forcedMetadataByRG);
                                 } else {
                                     // 强制匹配失败，保留原有元数据但应用锁定的专辑信息
                                     log.warn("通过 Release Group ID 强制匹配也失败，将保留 AcoustID 识别的曲目信息但覆盖专辑信息");

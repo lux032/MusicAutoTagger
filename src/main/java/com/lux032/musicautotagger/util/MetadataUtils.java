@@ -332,7 +332,7 @@ public class MetadataUtils {
      *
      * 策略：
      * - 歌曲名、专辑名、专辑艺术家：使用新识别的数据（来自快速扫描或指纹识别）
-     * - 作曲家、作词家、歌词、风格：优先使用新识别的数据，如果新数据为空则保留源文件的
+     * - 作曲家、作词家、编曲、歌词、风格：优先使用新识别的数据，如果新数据为空则保留源文件的
      *
      * @param sourceMetadata 源文件已有的元数据
      * @param newMetadata 新识别的元数据
@@ -381,6 +381,13 @@ public class MetadataUtils {
             merged.setLyricist(sourceMetadata.getLyricist());
         }
 
+        // 保留源文件中的编曲信息（如果新数据没有）
+        if ((merged.getArranger() == null || merged.getArranger().isEmpty()) &&
+            (sourceMetadata.getArranger() != null && !sourceMetadata.getArranger().isEmpty())) {
+            log.info("保留源文件的编曲信息: {}", sourceMetadata.getArranger());
+            merged.setArranger(sourceMetadata.getArranger());
+        }
+
         // 保留源文件中的歌词（如果新数据没有）
         if ((merged.getLyrics() == null || merged.getLyrics().isEmpty()) &&
             (sourceMetadata.getLyrics() != null && !sourceMetadata.getLyrics().isEmpty())) {
@@ -396,6 +403,71 @@ public class MetadataUtils {
         }
 
         return merged;
+    }
+
+    /**
+     * 将曲目级创作信息（作曲 / 作词 / 编曲 / 歌词 / 流派）从 {@code from} 补到 {@code target} 中缺失的字段。
+     *
+     * Release 详情接口不包含曲目级 artist-rels / work-rels，按锁定专辑强制匹配得到的元数据
+     * 在这些字段上必然为空；直接用它替换 Recording 查询结果会把已查出的创作人信息冲掉。
+     * target 中已有的非空值始终优先。
+     *
+     * @return target 本身（便于链式赋值）；target 为 null 时返回 null
+     */
+    public static MusicMetadata preserveTrackCredits(MusicMetadata from, MusicMetadata target) {
+        if (from == null || target == null) {
+            return target;
+        }
+        if (isBlank(target.getComposer()) && !isBlank(from.getComposer())) {
+            target.setComposer(from.getComposer());
+        }
+        if (isBlank(target.getLyricist()) && !isBlank(from.getLyricist())) {
+            target.setLyricist(from.getLyricist());
+        }
+        if (isBlank(target.getArranger()) && !isBlank(from.getArranger())) {
+            target.setArranger(from.getArranger());
+        }
+        if (isBlank(target.getLyrics()) && !isBlank(from.getLyrics())) {
+            target.setLyrics(from.getLyrics());
+        }
+        if ((target.getGenres() == null || target.getGenres().isEmpty())
+            && from.getGenres() != null && !from.getGenres().isEmpty()) {
+            target.setGenres(from.getGenres());
+        }
+        return target;
+    }
+
+    /**
+     * 用 {@code from}（如 MusicBrainz 识别结果）中非空的曲目级创作信息（作曲 / 作词 / 编曲 / 歌词 / 流派）
+     * 覆盖 {@code target}；from 中为空的字段保留 target 原值（如源文件标签）。
+     * 只修改 target，不会改动 from。
+     *
+     * @return target 本身；target 为 null 时返回 null
+     */
+    public static MusicMetadata overlayTrackCredits(MusicMetadata from, MusicMetadata target) {
+        if (from == null || target == null) {
+            return target;
+        }
+        if (!isBlank(from.getComposer())) {
+            target.setComposer(from.getComposer());
+        }
+        if (!isBlank(from.getLyricist())) {
+            target.setLyricist(from.getLyricist());
+        }
+        if (!isBlank(from.getArranger())) {
+            target.setArranger(from.getArranger());
+        }
+        if (!isBlank(from.getLyrics())) {
+            target.setLyrics(from.getLyrics());
+        }
+        if (from.getGenres() != null && !from.getGenres().isEmpty()) {
+            target.setGenres(from.getGenres());
+        }
+        return target;
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isEmpty();
     }
 
     /**
@@ -478,6 +550,9 @@ public class MetadataUtils {
             }
             if (sourceTagsForFallback.getLyricist() != null && !sourceTagsForFallback.getLyricist().isEmpty()) {
                 detailedMetadata.setLyricist(sourceTagsForFallback.getLyricist());
+            }
+            if (sourceTagsForFallback.getArranger() != null && !sourceTagsForFallback.getArranger().isEmpty()) {
+                detailedMetadata.setArranger(sourceTagsForFallback.getArranger());
             }
             if (sourceTagsForFallback.getLyrics() != null && !sourceTagsForFallback.getLyrics().isEmpty()) {
                 detailedMetadata.setLyrics(sourceTagsForFallback.getLyrics());
