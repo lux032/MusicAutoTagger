@@ -165,9 +165,16 @@ cache.coverArtDirectory=/app/.cover_cache
 # 数据库配置
 # ========================================
 
-# 数据库类型：file（文本文件）或 mysql（MySQL数据库）
-# 推荐使用 mysql 以获得更好的性能和可靠性
-db.type=file
+# 数据库类型：
+#   sqlite（默认）- 嵌入式单文件数据库，零部署，启动时自动建表
+#   mysql         - 外部 MySQL 服务（需执行 schema.sql，见 docs/DATABASE_SETUP.md）
+#   file          - 纯文本日志（旧模式）
+# 从 file 切换到 sqlite 时，processed_files.log 中的历史记录会自动导入。
+db.type=sqlite
+
+# ===== SQLite 配置 =====
+# 数据库文件路径（相对路径基于工作目录；Docker 中即 /app/data/music-tagger.db）
+db.sqlite.path=data/music-tagger.db
 
 # ===== MySQL 数据库配置 =====
 # 如果 db.type=mysql，需要配置以下项

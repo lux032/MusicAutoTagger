@@ -59,9 +59,10 @@
     - **第二级：指纹识别** - 仅在快速扫描失败时启用，保证识别率
     - **文件夹级缓存** - 同一专辑的后续文件直接使用缓存，跳过所有扫描
     - **性能提升**：处理一张 16 首的专辑，仅需 1 次完整扫描 + 15 次缓存查询
-- 💾 **双模式持久化**：
-    - **文本模式 (默认)**：无需数据库，使用 CSV 文件记录已处理文件，开箱即用，适合个人用户。
+- 💾 **三种持久化模式**：
+    - **SQLite 模式 (默认)**：嵌入式单文件数据库（`data/music-tagger.db`），无需安装数据库服务，启动时自动建表，开箱即用。
     - **MySQL 模式**：支持连接外部数据库，适合海量文件和高性能并发场景。
+    - **文本模式**：使用纯文本日志记录已处理文件（旧模式）；切换到 SQLite 时历史记录会自动导入。
 - 🐳 **Docker 部署**：提供轻量级 Docker 镜像，支持 Synology/QNAP/Unraid 等 NAS 系统。
 - 🔄 **智能重试机制**：自动处理网络波动导致的识别失败，并提供失败文件隔离。
 - 📊 **Web 监控面板**：🆕 内置实时监控面板，可视化查看处理进度、系统状态和运行日志。
@@ -102,7 +103,7 @@
         volumes:
           - /path/to/downloads:/music
           - /path/to/music_library:/app/tagged_music
-          # 管理员账号、待确认队列、LLM 供应商配置、回收站
+          # SQLite 数据库、管理员账号、待确认队列、LLM 供应商配置、回收站（务必持久化）
           - ./data:/app/data
           # 恢复页面操作的隔离目录（不挂载则容器重建即丢失）
           - ./partial_files:/app/partial_files
@@ -112,6 +113,8 @@
     ```
 
     `PUID`/`PGID` 设置为 NAS 挂载目录所属用户/组的 UID/GID，`UMASK` 控制默认权限。
+
+    > 💡 默认使用内置 SQLite 数据库，**无需再部署 MySQL 容器**。处理记录保存在 `./data/music-tagger.db`，只要保留 `./data` 目录，重建容器后记录不会丢失。
 
 2.  **启动服务**
     ```bash
@@ -148,7 +151,7 @@
 mvn clean package
 
 # 2. 运行
-java -jar target/MusicDemo-1.0-SNAPSHOT.jar
+java -jar target/MusicDemo-1.4.0.jar
 
 # 3. 访问 Web 面板
 # 浏览器打开 http://localhost:8080
@@ -156,11 +159,35 @@ java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 
 配置会在首次启动时自动生成。
 API Key/数据库/代理/路径/语言等在登录后设置面板中配置。
+SQLite 数据库默认创建在**当前工作目录**下的 `data/music-tagger.db`，请在固定目录中启动程序。
+
+## 💾 数据存储
+
+程序需要记录「哪些文件已经处理过」以避免重复整理，并缓存封面信息。支持三种存储方式，通过 `db.type` 选择（也可在 设置 → 数据库 中修改，**重启后生效**）：
+
+| `db.type` | 说明 | 部署成本 | 适用场景 |
+|-----------|------|----------|----------|
+| `sqlite`（默认） | 内置单文件数据库，启动时自动建表 | 无 | 绝大多数个人 / NAS 用户 |
+| `mysql` | 连接外部 MySQL 服务 | 需安装 MySQL 并执行 `schema.sql` | 已有 MySQL、需要外部查询或集中管理 |
+| `file` | 纯文本日志（旧版默认） | 无 | 仅为兼容保留 |
+
+**SQLite 配置**（一般无需改动）：
+```properties
+db.type=sqlite
+# 相对路径基于工作目录；Docker 中即 /app/data/music-tagger.db
+db.sqlite.path=data/music-tagger.db
+```
+
+**从旧版本（文本模式）升级**：如果你之前没有显式设置 `db.type`，升级后会自动切换为 SQLite。首次启动时，程序会把 `logging.processedFileLogPath` 指向的旧日志一次性导入数据库，已处理的文件不会被重新识别；原日志文件保留不动。若想继续使用文本模式，设置 `db.type=file` 即可。
+
+**备份**：停止程序后复制整个 `data/` 目录。运行中目录下出现 `music-tagger.db-wal` / `-shm` 文件属正常现象，备份时需一并复制。
+
+**注意**：不要把 SQLite 数据库文件放在 SMB / NFS 等网络共享上（文件锁不可靠，可能损坏数据库）；在 NAS 上请使用本地卷。MySQL 的详细配置参见 [数据库设置](docs/DATABASE_SETUP.md)。
 
 ## 📚 文档指南
 
 - **QNAP NAS 用户**：请参阅 [QNAP 部署指南](docs/QNAP_DEPLOYMENT_GUIDE.md)
-- **数据库配置**：默认使用文件记录处理状态，如需使用 MySQL 请参阅 [数据库设置](docs/DATABASE_SETUP.md)
+- **数据库配置**：默认使用 SQLite（零配置，只需持久化 `data/` 目录），如需使用 MySQL 请参阅 [数据库设置](docs/DATABASE_SETUP.md)
 - **Windows 指南**：[Windows 构建与测试](docs/WINDOWS_BUILD_GUIDE.md)
 - **升级注意事项**：[UPGRADE_NOTES.md](UPGRADE_NOTES.md)（行为变化与运维注意点）
 - **专辑匹配机制**：[ALBUM_MATCHING_FIXES.md](ALBUM_MATCHING_FIXES.md)、[FOLDER_ALBUM_CACHE.md](FOLDER_ALBUM_CACHE.md)

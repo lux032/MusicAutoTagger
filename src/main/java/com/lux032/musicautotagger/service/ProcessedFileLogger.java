@@ -28,7 +28,7 @@ import java.util.Set;
 import com.lux032.musicautotagger.config.MusicConfig;
 
 /**
- * 已处理文件日志服务 - 支持 MySQL 和 文件模式
+ * 已处理文件日志服务 - 支持 SQLite（默认）、MySQL 和 文件模式
  * 用于记录和检查文件是否已被处理,防止重复整理
  */
 @Slf4j
@@ -38,6 +38,8 @@ public class ProcessedFileLogger {
     private final MusicConfig config;
     private final DateTimeFormatter dateFormatter;
     private final boolean isDbMode;
+    /** 数据库模式下是否为 SQLite 方言（否则为 MySQL）。 */
+    private final boolean isSqlite;
     // 关键修复：添加文件写入锁，解决并发写入日志文件的线程安全问题
     private final Object fileWriteLock = new Object();
     // 两个后加列必须独立探测：任一 ALTER 失败都不能误判另一列。
@@ -50,19 +52,23 @@ public class ProcessedFileLogger {
 
     /**
      * 构造函数
-     * @param databaseService 数据库服务 (仅在 dbMode 为 mysql 时需要)
+     * @param databaseService 数据库服务 (仅在 dbMode 为 sqlite / mysql 时需要)
      */
     public ProcessedFileLogger(MusicConfig config, DatabaseService databaseService) {
         this.config = config;
         this.databaseService = databaseService;
         this.dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-        this.isDbMode = "mysql".equalsIgnoreCase(config.getDbType());
+        this.isDbMode = databaseService != null && DatabaseService.usesDatabase(config);
+        this.isSqlite = isDbMode && databaseService.isSqlite();
 
         if (isDbMode) {
-            log.info(I18nUtil.getMessage("logger.init.mysql"));
+            log.info(I18nUtil.getMessage("logger.init.mysql").replace("MySQL", databaseService.getDisplayName()));
             ensureReleaseGroupIdColumn();
             ensureTargetFilePathColumn();
+            if (isSqlite) {
+                importLegacyFileLogIfEmpty();
+            }
         } else {
             log.info(I18nUtil.getMessage("logger.init.file"), config.getProcessedFileLogPath());
             initLogFile();
@@ -91,7 +97,8 @@ public class ProcessedFileLogger {
             }
             try (Statement stmt = conn.createStatement()) {
                 stmt.executeUpdate("ALTER TABLE processed_files "
-                    + "ADD COLUMN release_group_id VARCHAR(100) NULL COMMENT 'MusicBrainz Release Group ID'");
+                    + "ADD COLUMN release_group_id VARCHAR(100) NULL"
+                    + (isSqlite ? "" : " COMMENT 'MusicBrainz Release Group ID'"));
                 releaseGroupIdColumnAvailable = true;
                 log.info("已为 processed_files 补充 release_group_id 列");
             }
@@ -114,7 +121,8 @@ public class ProcessedFileLogger {
             }
             try (Statement stmt = conn.createStatement()) {
                 stmt.executeUpdate("ALTER TABLE processed_files "
-                    + "ADD COLUMN target_file_path VARCHAR(1000) NULL COMMENT '归档目标文件绝对路径'");
+                    + "ADD COLUMN target_file_path VARCHAR(1000) NULL"
+                    + (isSqlite ? "" : " COMMENT '归档目标文件绝对路径'"));
                 targetFilePathColumnAvailable = true;
                 log.info("已为 processed_files 补充 target_file_path 列");
             }
@@ -122,6 +130,73 @@ public class ProcessedFileLogger {
             targetFilePathColumnAvailable = false;
             log.warn("processed_files 缺少 target_file_path 列且自动补列失败: {}", e.getMessage());
         }
+    }
+
+    /**
+     * 从旧版默认的文件模式升级到 SQLite 时，把 processed_files.log 中的历史记录一次性导入，
+     * 避免切换默认存储后所有文件被重新识别。仅在表为空时执行，原日志文件保持不动。
+     */
+    private void importLegacyFileLogIfEmpty() {
+        String logPath = config.getProcessedFileLogPath();
+        if (logPath == null || logPath.isBlank()) return;
+        File logFile = new File(logPath);
+        if (!logFile.isFile() || logFile.length() == 0) return;
+
+        try (Connection conn = databaseService.getConnection()) {
+            try (Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM processed_files")) {
+                if (rs.next() && rs.getLong(1) > 0) return;
+            }
+            List<String[]> rows = readLogRows();
+            if (rows.isEmpty()) return;
+
+            String sql = "INSERT OR REPLACE INTO processed_files (file_hash, file_name, file_path, file_size, "
+                + "processed_time, recording_id, artist, title, album, release_group_id, target_file_path) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            boolean autoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            int imported = 0;
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                for (String[] parts : rows) {
+                    File source = new File(parts[0]);
+                    // file_hash 仅做记录用途；导入时不逐个读文件算哈希，避免大库启动过慢
+                    String hash = "";
+                    Timestamp time;
+                    try {
+                        time = Timestamp.valueOf(LocalDateTime.parse(parts[5], dateFormatter));
+                    } catch (RuntimeException e) {
+                        time = Timestamp.valueOf(LocalDateTime.now());
+                    }
+                    pstmt.setString(1, hash);
+                    pstmt.setString(2, source.getName());
+                    pstmt.setString(3, parts[0]);
+                    pstmt.setLong(4, source.isFile() ? source.length() : 0L);
+                    pstmt.setTimestamp(5, time);
+                    pstmt.setString(6, emptyToNull(parts[1]));
+                    pstmt.setString(7, emptyToNull(parts[2]));
+                    pstmt.setString(8, emptyToNull(parts[3]));
+                    pstmt.setString(9, emptyToNull(parts[4]));
+                    pstmt.setString(10, parts.length >= 7 ? emptyToNull(parts[6]) : null);
+                    pstmt.setString(11, parts.length >= 8 ? emptyToNull(parts[7]) : null);
+                    pstmt.addBatch();
+                    imported++;
+                }
+                pstmt.executeBatch();
+                conn.commit();
+                log.info("已从旧文件日志导入 {} 条处理记录到 SQLite: {}", imported, logFile.getAbsolutePath());
+            } catch (SQLException e) {
+                conn.rollback();
+                throw e;
+            } finally {
+                conn.setAutoCommit(autoCommit);
+            }
+        } catch (SQLException e) {
+            log.warn("导入旧文件日志到 SQLite 失败（不影响运行）: {}", e.getMessage());
+        }
+    }
+
+    private static String emptyToNull(String value) {
+        return value == null || value.isEmpty() ? null : value;
     }
 
     private void initLogFile() {
@@ -243,15 +318,24 @@ public class ProcessedFileLogger {
                 if (withRgid) columns.add("release_group_id");
                 if (withTarget) columns.add("target_file_path");
                 String values = String.join(", ", java.util.Collections.nCopies(columns.size(), "?"));
-                StringBuilder update = new StringBuilder(
-                    "file_hash = VALUES(file_hash), file_name = VALUES(file_name), "
-                    + "file_size = VALUES(file_size), processed_time = VALUES(processed_time), "
-                    + "recording_id = VALUES(recording_id), artist = VALUES(artist), "
-                    + "title = VALUES(title), album = VALUES(album)");
-                if (withRgid) update.append(", release_group_id = VALUES(release_group_id)");
-                if (withTarget) update.append(", target_file_path = COALESCE(VALUES(target_file_path), target_file_path)");
+                // MySQL: VALUES(col)；SQLite: excluded.col
+                java.util.function.UnaryOperator<String> newVal = isSqlite
+                    ? c -> "excluded." + c
+                    : c -> "VALUES(" + c + ")";
+                StringBuilder update = new StringBuilder();
+                for (String c : List.of("file_hash", "file_name", "file_size", "processed_time",
+                        "recording_id", "artist", "title", "album")) {
+                    if (update.length() > 0) update.append(", ");
+                    update.append(c).append(" = ").append(newVal.apply(c));
+                }
+                if (withRgid) update.append(", release_group_id = ").append(newVal.apply("release_group_id"));
+                if (withTarget) update.append(", target_file_path = COALESCE(")
+                    .append(newVal.apply("target_file_path")).append(", target_file_path)");
+                if (isSqlite) update.append(", updated_at = CURRENT_TIMESTAMP");
                 String sql = "INSERT INTO processed_files (" + String.join(", ", columns) + ") VALUES ("
-                    + values + ") ON DUPLICATE KEY UPDATE " + update;
+                    + values + ")"
+                    + (isSqlite ? " ON CONFLICT(file_path) DO UPDATE SET " : " ON DUPLICATE KEY UPDATE ")
+                    + update;
 
                 try (Connection conn = databaseService.getConnection();
                      PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -292,7 +376,8 @@ public class ProcessedFileLogger {
             }
         }
 
-        log.info(I18nUtil.getMessage("logger.history.recorded"), artist, title, isDbMode ? I18nUtil.getMessage("logger.db.mode") : I18nUtil.getMessage("logger.file.mode"));
+        log.info(I18nUtil.getMessage("logger.history.recorded"), artist, title,
+            isDbMode ? databaseService.getDisplayName() : I18nUtil.getMessage("logger.file.mode"));
     }
 
     // ==================== 封面回填支持 ====================
@@ -472,8 +557,11 @@ public class ProcessedFileLogger {
         String newAbsolute = new File(newPrefix).getAbsolutePath();
         if (isDbMode) {
             if (!targetFilePathColumnAvailable) return;
-            String sql = "UPDATE processed_files SET target_file_path = CONCAT(?, SUBSTRING(target_file_path, ?)) "
-                + "WHERE target_file_path IS NOT NULL AND LEFT(target_file_path, ?) = ?";
+            String sql = isSqlite
+                ? "UPDATE processed_files SET target_file_path = ? || substr(target_file_path, ?) "
+                    + "WHERE target_file_path IS NOT NULL AND substr(target_file_path, 1, ?) = ?"
+                : "UPDATE processed_files SET target_file_path = CONCAT(?, SUBSTRING(target_file_path, ?)) "
+                    + "WHERE target_file_path IS NOT NULL AND LEFT(target_file_path, ?) = ?";
             try (Connection conn = databaseService.getConnection();
                  PreparedStatement pstmt = conn.prepareStatement(sql)) {
                 pstmt.setString(1, newAbsolute);
@@ -497,7 +585,8 @@ public class ProcessedFileLogger {
         if (isDbMode) {
             if (!targetFilePathColumnAvailable) return;
             String sql = "UPDATE processed_files SET target_file_path = NULL "
-                + "WHERE target_file_path IS NOT NULL AND LEFT(target_file_path, ?) = ?";
+                + "WHERE target_file_path IS NOT NULL AND "
+                + (isSqlite ? "substr(target_file_path, 1, ?)" : "LEFT(target_file_path, ?)") + " = ?";
             try (Connection conn = databaseService.getConnection();
                  PreparedStatement pstmt = conn.prepareStatement(sql)) {
                 pstmt.setInt(1, absolute.length());
@@ -780,7 +869,7 @@ public class ProcessedFileLogger {
                 try (Statement stmt = conn.createStatement(); ResultSet rs = stmt.executeQuery(countSQL)) {
                     if (rs.next()) stats.put("totalProcessed", rs.getLong("total"));
                 }
-                stats.put("databaseType", "MySQL");
+                stats.put("databaseType", databaseService.getDisplayName());
             } catch (SQLException e) {
                 log.error("获取统计信息失败", e);
             }
@@ -810,10 +899,11 @@ public class ProcessedFileLogger {
      */
     public void cleanupOldRecords(int daysToKeep) {
         if (isDbMode) {
-            String sql = "DELETE FROM processed_files WHERE processed_time < DATE_SUB(NOW(), INTERVAL ? DAY)";
+            // 截止时间在 Java 侧计算，兼容 MySQL / SQLite
+            String sql = "DELETE FROM processed_files WHERE processed_time < ?";
             try (Connection conn = databaseService.getConnection();
                  PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                pstmt.setInt(1, daysToKeep);
+                pstmt.setTimestamp(1, Timestamp.valueOf(LocalDateTime.now().minusDays(daysToKeep)));
                 int deletedCount = pstmt.executeUpdate();
                 if (deletedCount > 0) {
                     log.info(I18nUtil.getMessage("logger.cleanup.old.records"), deletedCount);

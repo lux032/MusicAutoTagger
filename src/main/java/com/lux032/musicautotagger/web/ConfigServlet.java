@@ -80,6 +80,7 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("animeCoverKeywords", "cover.animeEditionKeywords"),
             Map.entry("animeCoverMaxCandidates", "cover.animeEditionMaxCandidates"),
             Map.entry("dbType", "db.type"),
+            Map.entry("dbSqlitePath", "db.sqlite.path"),
             Map.entry("dbHost", "db.mysql.host"),
             Map.entry("dbPort", "db.mysql.port"),
             Map.entry("dbDatabase", "db.mysql.database"),
@@ -141,7 +142,7 @@ public class ConfigServlet extends HttpServlet {
             // 默认值 data/recovery-trash 是相对路径，强制绝对路径会让默认值无法原样回写
         );
         this.allowedLanguages = Set.of("zh_CN", "en_US");
-        this.allowedDbTypes = Set.of("file", "mysql");
+        this.allowedDbTypes = Set.of("sqlite", "file", "mysql");
         // 这些字段不以明文返回给前端: 一旦有会话被拿到,否则等于所有凭据一次性泄露
         this.secretFields = Set.of(
             "dbPassword",
@@ -195,6 +196,7 @@ public class ConfigServlet extends HttpServlet {
         handleString(body, updates, propertyUpdates, "animeCoverKeywords", false);
         handleIntegerInRange(body, updates, propertyUpdates, "animeCoverMaxCandidates", 1, 20);
         handleString(body, updates, propertyUpdates, "dbType", false);
+        handleString(body, updates, propertyUpdates, "dbSqlitePath", false);
         handleString(body, updates, propertyUpdates, "dbHost", false);
         handleInteger(body, updates, propertyUpdates, "dbPort");
         handleString(body, updates, propertyUpdates, "dbDatabase", false);
@@ -299,6 +301,7 @@ public class ConfigServlet extends HttpServlet {
             : String.join(",", config.getAnimeCoverKeywords()));
         data.put("animeCoverMaxCandidates", config.getAnimeCoverMaxCandidates());
         data.put("dbType", config.getDbType());
+        data.put("dbSqlitePath", config.getDbSqlitePath());
         data.put("dbHost", config.getDbHost());
         data.put("dbPort", config.getDbPort());
         data.put("dbDatabase", config.getDbDatabase());
@@ -500,6 +503,9 @@ public class ConfigServlet extends HttpServlet {
         }
         if (updates.containsKey("dbType")) {
             config.setDbType((String) updates.get("dbType"));
+        }
+        if (updates.containsKey("dbSqlitePath")) {
+            config.setDbSqlitePath((String) updates.get("dbSqlitePath"));
         }
         if (updates.containsKey("dbHost")) {
             config.setDbHost((String) updates.get("dbHost"));

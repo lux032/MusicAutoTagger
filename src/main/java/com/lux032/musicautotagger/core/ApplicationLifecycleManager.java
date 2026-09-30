@@ -60,8 +60,8 @@ public class ApplicationLifecycleManager {
     public void initializeServices() throws IOException {
         log.info(I18nUtil.getMessage("app.init.services"));
 
-        // Level 1: 初始化数据库服务 (如果配置为 MySQL)
-        if ("mysql".equalsIgnoreCase(config.getDbType())) {
+        // Level 1: 初始化数据库服务 (SQLite 默认 / MySQL)
+        if (DatabaseService.usesDatabase(config)) {
             log.info(I18nUtil.getMessage("app.init.database"));
             databaseService = new DatabaseService(config);
         } else {

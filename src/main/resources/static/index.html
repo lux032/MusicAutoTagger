@@ -804,9 +804,14 @@
                         <div class="form-row">
                             <label for="cfgDbType" data-i18n="config.db.type">数据库类型</label>
                             <select id="cfgDbType">
+                                <option value="sqlite">sqlite</option>
                                 <option value="file">file</option>
                                 <option value="mysql">mysql</option>
                             </select>
+                        </div>
+                        <div class="form-row">
+                            <label for="cfgDbSqlitePath" data-i18n="config.db.sqlite.path">SQLite 数据库文件</label>
+                            <input id="cfgDbSqlitePath" type="text" placeholder="data/music-tagger.db">
                         </div>
                         <div class="form-row">
                             <label for="cfgDbHost" data-i18n="config.db.host">主机</label>
@@ -2172,7 +2177,8 @@
                 document.getElementById('cfgRecoveryWorkDirectory').value = cfg.recoveryWorkDirectory || '';
                 document.getElementById('cfgRecoveryTrashDirectory').value = cfg.recoveryTrashDirectory || '';
                 document.getElementById('cfgRecoveryTrashRetentionDays').value = cfg.recoveryTrashRetentionDays ?? '';
-                document.getElementById('cfgDbType').value = cfg.dbType || 'file';
+                document.getElementById('cfgDbType').value = cfg.dbType || 'sqlite';
+                document.getElementById('cfgDbSqlitePath').value = cfg.dbSqlitePath || '';
                 document.getElementById('cfgDbHost').value = cfg.dbHost || '';
                 document.getElementById('cfgDbPort').value = cfg.dbPort ?? '';
                 document.getElementById('cfgDbDatabase').value = cfg.dbDatabase || '';
@@ -2251,6 +2257,7 @@
                 recoveryTrashDirectory: getValue('cfgRecoveryTrashDirectory'),
                 recoveryTrashRetentionDays: getNumberValue('cfgRecoveryTrashRetentionDays'),
                 dbType: getValue('cfgDbType'),
+                dbSqlitePath: getValue('cfgDbSqlitePath'),
                 dbHost: getValue('cfgDbHost'),
                 dbPort: getNumberValue('cfgDbPort'),
                 dbDatabase: getValue('cfgDbDatabase'),

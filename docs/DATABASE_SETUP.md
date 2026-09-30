@@ -1,3 +1,30 @@
+# 数据库配置说明
+
+## 存储模式一览
+
+| `db.type` | 说明 | 部署成本 |
+|-----------|------|----------|
+| `sqlite`（默认） | 嵌入式单文件数据库，启动时自动建表 | 无，持久化 `data/` 目录即可 |
+| `mysql` | 外部 MySQL 服务 | 需安装 MySQL 并执行 `schema.sql` |
+| `file` | 纯文本日志（旧模式） | 无 |
+
+### SQLite（推荐）
+
+```properties
+db.type=sqlite
+db.sqlite.path=data/music-tagger.db
+```
+
+- 相对路径基于工作目录；Docker 中即 `/app/data/music-tagger.db`，`docker-compose.yml` 已挂载 `./data:/app/data`。
+- 使用 WAL 模式，目录下会同时出现 `music-tagger.db-wal` / `-shm` 文件，属正常现象。
+- 备份：停止程序后复制整个 `data/` 目录。
+- 从 `file` 模式切换过来时，若 SQLite 表为空，`logging.processedFileLogPath` 指向的旧日志会被自动导入（原文件保留不动）。
+- 请勿把 SQLite 文件放在 SMB/NFS 网络共享上，文件锁不可靠。
+
+---
+
+以下为 MySQL 模式的配置说明。
+
 # MySQL数据库日志系统配置说明
 
 ## 概述

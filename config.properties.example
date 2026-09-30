@@ -168,9 +168,16 @@ cache.coverArtDirectory=/app/.cover_cache
 # Database Configuration
 # ========================================
 
-# Database type: file (text file) or mysql (MySQL database)
-# Recommended to use mysql for better performance and reliability
-db.type=file
+# Database type:
+#   sqlite (default) - embedded single-file database, zero setup, tables are created automatically
+#   mysql            - external MySQL server (requires schema.sql, see docs/DATABASE_SETUP.md)
+#   file             - plain text log (legacy)
+# When switching from file to sqlite, existing records in processed_files.log are imported automatically.
+db.type=sqlite
+
+# ===== SQLite Configuration =====
+# Database file path (relative paths are resolved against the working directory; /app/data/music-tagger.db in Docker)
+db.sqlite.path=data/music-tagger.db
 
 # ===== MySQL Database Configuration =====
 # If db.type=mysql, configure the following items

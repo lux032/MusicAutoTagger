@@ -163,8 +163,16 @@ public class CoverArtCache {
             }
 
             // 保存数据库记录
-            String sql = "INSERT INTO cover_art_cache (url_hash, cover_url, cache_file_path, file_size, cached_time) " +
-                        "VALUES (?, ?, ?, ?, NOW()) " +
+            String sql = databaseService.isSqlite()
+                ? "INSERT INTO cover_art_cache (url_hash, cover_url, cache_file_path, file_size, cached_time) " +
+                        "VALUES (?, ?, ?, ?, ?) " +
+                        "ON CONFLICT(url_hash) DO UPDATE SET " +
+                        "cache_file_path = excluded.cache_file_path, " +
+                        "file_size = excluded.file_size, " +
+                        "cached_time = excluded.cached_time, " +
+                        "updated_at = CURRENT_TIMESTAMP"
+                : "INSERT INTO cover_art_cache (url_hash, cover_url, cache_file_path, file_size, cached_time) " +
+                        "VALUES (?, ?, ?, ?, ?) " +
                         "ON DUPLICATE KEY UPDATE " +
                         "cache_file_path = VALUES(cache_file_path), " +
                         "file_size = VALUES(file_size), " +
@@ -177,6 +185,7 @@ public class CoverArtCache {
                 pstmt.setString(2, coverArtUrl);
                 pstmt.setString(3, cacheFilePath.toString());
                 pstmt.setLong(4, coverData.length);
+                pstmt.setTimestamp(5, new Timestamp(System.currentTimeMillis()));
                 
                 pstmt.executeUpdate();
                 log.info(I18nUtil.getMessage("cache.cover.record.saved"));
@@ -238,13 +247,14 @@ public class CoverArtCache {
             return;
         }
         
+        // 截止时间在 Java 侧计算，兼容 MySQL / SQLite
         String sql = "SELECT url_hash, cache_file_path FROM cover_art_cache " +
-                    "WHERE cached_time < DATE_SUB(NOW(), INTERVAL ? DAY)";
+                    "WHERE cached_time < ?";
         
         try (Connection conn = databaseService.getConnection();
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
-            pstmt.setInt(1, daysToKeep);
+            pstmt.setTimestamp(1, new Timestamp(System.currentTimeMillis() - daysToKeep * 24L * 3600_000L));
             
             try (ResultSet rs = pstmt.executeQuery()) {
                 int deletedCount = 0;
@@ -296,7 +306,7 @@ public class CoverArtCache {
             return stats;
         }
         
-        // MySQL 模式：从数据库统计
+        // 数据库模式（SQLite / MySQL）：从数据库统计
         try (Connection conn = databaseService.getConnection()) {
             // 总缓存数量
             String countSQL = "SELECT COUNT(*) as total, SUM(file_size) as total_size FROM cover_art_cache";

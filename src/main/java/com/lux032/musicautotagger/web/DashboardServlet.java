@@ -146,7 +146,7 @@ public class DashboardServlet extends HttpServlet {
      *     按文件列会让同一张专辑的 12 首歌铺出 12 个一模一样的封面。
      */
     private List<Map<String, Object>> getRecentAlbums(int limit) {
-        if ("mysql".equalsIgnoreCase(config.getDbType())) {
+        if (databaseService != null) {
             return getRecentAlbumsFromDb(limit);
         }
         return getRecentAlbumsFromLog(limit);

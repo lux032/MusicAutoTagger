@@ -59,9 +59,10 @@ Upgrading from an earlier version? Read [UPGRADE_NOTES.md](UPGRADE_NOTES.md) fir
     - **Tier 2: Fingerprint** - Only triggered when quick scan fails, ensures high recognition rate
     - **Folder-level Caching** - Subsequent files in the same album use cached results, skip all scans
     - **Performance Boost**: Processing a 16-track album requires only 1 full scan + 15 cache lookups
-- 💾 **Dual Persistence Modes**:
-    - **File Mode (Default)**: Uses a CSV file to track processed files. Zero config, ready out of the box for personal use.
+- 💾 **Three Persistence Modes**:
+    - **SQLite Mode (Default)**: Embedded single-file database (`data/music-tagger.db`). No database server needed, tables are created automatically on startup.
     - **MySQL Mode**: Supports external database connection for massive libraries and high concurrency.
+    - **File Mode**: Uses a plain text log to track processed files (legacy). Existing logs are imported automatically when switching to SQLite.
 - 🐳 **Docker Ready**: Provides lightweight Docker images compatible with Synology, QNAP, Unraid, and other NAS systems.
 - 🔄 **Smart Retry**: Automatically handles network failures with retry logic and isolates failed files for later inspection.
 - 📊 **Web Monitoring Dashboard**: 🆕 Built-in real-time monitoring dashboard to visualize processing progress, system status, and runtime logs.
@@ -101,7 +102,7 @@ The easiest way to run the application. Configuration is done in the web UI afte
         volumes:
           - /path/to/downloads:/music
           - /path/to/music_library:/app/tagged_music
-          # admin account, review queue, LLM providers, recovery trash
+          # SQLite database, admin account, review queue, LLM providers, recovery trash (keep persisted!)
           - ./data:/app/data
           # quarantine dirs used by the recovery page (otherwise lost on recreate)
           - ./partial_files:/app/partial_files
@@ -111,6 +112,8 @@ The easiest way to run the application. Configuration is done in the web UI afte
     ```
 
     Set `PUID`/`PGID` to match the NAS user/group that owns your mounted folders. `UMASK` controls default permissions.
+
+    > 💡 The built-in SQLite database is used by default — **no separate MySQL container is needed**. Processing history lives in `./data/music-tagger.db`; as long as `./data` is kept, recreating the container loses nothing.
 
 2.  **Start Service**
     ```bash
@@ -140,7 +143,7 @@ If you prefer to run it locally for development or testing:
 mvn clean package
 
 # 2. Run
-java -jar target/MusicDemo-1.0-SNAPSHOT.jar
+java -jar target/MusicDemo-1.4.0.jar
 
 # 3. Access Web Dashboard
 # Open http://localhost:8080 in your browser
@@ -148,11 +151,35 @@ java -jar target/MusicDemo-1.0-SNAPSHOT.jar
 
 Configuration is created automatically on first run.
 All settings (API keys, database, proxy, paths, language) are managed in the web UI after login.
+The SQLite database is created at `data/music-tagger.db` relative to the **current working directory**, so always start the app from the same directory.
+
+## 💾 Data Storage
+
+The app keeps track of which files have already been processed (to avoid re-processing) and caches cover art metadata. Three storage backends are available via `db.type` (also editable under Settings → Database; **takes effect after restart**):
+
+| `db.type` | Description | Setup cost | Best for |
+|-----------|-------------|------------|----------|
+| `sqlite` (default) | Embedded single-file database, tables created automatically | None | Most personal / NAS users |
+| `mysql` | External MySQL server | Install MySQL and run `schema.sql` | Existing MySQL setups, external querying |
+| `file` | Plain text log (legacy default) | None | Backward compatibility only |
+
+**SQLite settings** (usually no changes needed):
+```properties
+db.type=sqlite
+# Relative to the working directory; /app/data/music-tagger.db in Docker
+db.sqlite.path=data/music-tagger.db
+```
+
+**Upgrading from file mode**: if you never set `db.type` explicitly, you are switched to SQLite on upgrade. On first start, the old log at `logging.processedFileLogPath` is imported once, so already-processed files are not identified again; the original log file is left untouched. To stay on file mode, set `db.type=file`.
+
+**Backup**: stop the app and copy the whole `data/` directory. The `music-tagger.db-wal` / `-shm` files that appear while running are normal and should be copied too.
+
+**Caveat**: do not put the SQLite file on an SMB / NFS network share (unreliable file locking can corrupt the database); use a local volume on your NAS. For MySQL details see [Database Setup](docs/DATABASE_SETUP.md).
 
 ## 📚 Documentation
 
 - **QNAP NAS Users**: See [QNAP Deployment Guide](docs/QNAP_DEPLOYMENT_GUIDE.md) (Chinese)
-- **Database Setup**: Default is file-based. For MySQL setup, see [Database Setup](docs/DATABASE_SETUP.md)
+- **Database Setup**: Default is SQLite (zero setup, just persist the `data/` directory). For MySQL setup, see [Database Setup](docs/DATABASE_SETUP.md)
 - **Windows Guide**: [Windows Build & Test](docs/WINDOWS_BUILD_GUIDE.md)
 - **Upgrade Notes**: [UPGRADE_NOTES.md](UPGRADE_NOTES.md) (behaviour changes and operational caveats)
 - **Album Matching**: [ALBUM_MATCHING_FIXES.md](ALBUM_MATCHING_FIXES.md), [FOLDER_ALBUM_CACHE.md](FOLDER_ALBUM_CACHE.md)

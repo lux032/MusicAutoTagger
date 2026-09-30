@@ -56,7 +56,8 @@ public class MusicConfig {
     private int animeCoverMaxCandidates;
     
     // 数据库配置
-    private String dbType; // file (默认) 或 mysql
+    private String dbType; // sqlite (默认) / mysql / file
+    private String dbSqlitePath; // SQLite 数据库文件路径（相对路径基于工作目录）
     private String dbHost;
     private int dbPort;
     private String dbDatabase;
@@ -218,7 +219,8 @@ public class MusicConfig {
         this.animeCoverMaxCandidates = 5;
         
         // 数据库默认配置
-        this.dbType = "file";
+        this.dbType = "sqlite";
+        this.dbSqlitePath = "data/music-tagger.db";
         this.dbHost = "localhost";
         this.dbPort = 3306;
         this.dbDatabase = "music_demo";
@@ -441,7 +443,13 @@ public class MusicConfig {
             
             // 加载数据库配置
             if (props.containsKey("db.type")) {
-                this.dbType = props.getProperty("db.type");
+                String type = props.getProperty("db.type");
+                if (type != null && !type.isBlank()) {
+                    this.dbType = type.trim().toLowerCase(java.util.Locale.ROOT);
+                }
+            }
+            if (props.containsKey("db.sqlite.path") && !props.getProperty("db.sqlite.path").isBlank()) {
+                this.dbSqlitePath = props.getProperty("db.sqlite.path").trim();
             }
             if (props.containsKey("db.mysql.host")) {
                 this.dbHost = props.getProperty("db.mysql.host");
@@ -860,6 +868,9 @@ public class MusicConfig {
         }
         props.setProperty("cover.animeEditionMaxCandidates", String.valueOf(animeCoverMaxCandidates));
         props.setProperty("db.type", dbType);
+        if (dbSqlitePath != null) {
+            props.setProperty("db.sqlite.path", dbSqlitePath);
+        }
         props.setProperty("db.mysql.host", dbHost);
         props.setProperty("db.mysql.port", String.valueOf(dbPort));
         props.setProperty("db.mysql.database", dbDatabase);
