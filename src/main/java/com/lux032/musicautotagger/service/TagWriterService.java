@@ -113,9 +113,8 @@ public class TagWriterService {
                 ensureWritablePermissions(targetFile.getParentFile().toPath(), true);
             }
 
-            // 3. 复制文件
-            log.info("复制文件: {} -> {}", sourceFile.getName(), targetFile.getName());
-            Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            // 3. 复制文件（目标已存在且不是同一首歌时不覆盖，改名另存）
+            targetFile = copyWithoutClobbering(sourceFile, targetFile);
             ensureWritablePermissions(targetFile.toPath(), false);
 
             // 3.1 剥离 FLAC 头部 ID3v2 / 尾部 ID3v1，确保 jaudiotagger 读写的是以 fLaC 开头的纯净文件
@@ -150,6 +149,94 @@ public class TagWriterService {
             log.error("处理文件失败: {}", sourceFile.getName(), e);
             return new TagProcessResult(false, targetFile == null ? null : targetFile.getAbsoluteFile());
         }
+    }
+
+    /** 判定「同一段音频」的时长容差（秒）。重编码 / 降采样带来的时长偏差远小于此值。 */
+    static final double SAME_AUDIO_DURATION_TOLERANCE_SECONDS = 1.0;
+    private static final int MAX_CONFLICT_SUFFIX = 99;
+
+    /**
+     * 复制源文件到目标路径，但不会用另一首歌覆盖已存在的文件。
+     *
+     * <p>背景：识别出错时（例如两首不同的歌被认成同一个 recording、落到同一曲目位置），
+     * 旧实现直接 REPLACE_EXISTING，后写入的歌会静默覆盖先写入的歌，造成数据丢失。
+     * 这类错误下两条记录的 recording_id 是相同的，无法靠元数据区分，只能看音频本身。</p>
+     *
+     * <ul>
+     *   <li>目标不存在：直接写入；</li>
+     *   <li>目标存在且音频时长一致（同一首歌：重新识别 / 重复文件）：覆盖，行为与旧版一致；</li>
+     *   <li>目标存在但时长不一致或无法判断：保留原文件，另存为 {@code 名称 (2).ext}。</li>
+     * </ul>
+     *
+     * @return 实际写入的目标文件
+     */
+    File copyWithoutClobbering(File sourceFile, File targetFile) throws IOException {
+        Double sourceDuration = null;
+        boolean sourceDurationRead = false;
+
+        File candidate = targetFile;
+        for (int attempt = 1; attempt <= MAX_CONFLICT_SUFFIX; attempt++) {
+            if (!candidate.exists()) {
+                try {
+                    // 不带 REPLACE_EXISTING：若并发线程抢先创建了同名文件，会抛异常并重新判定
+                    Files.copy(sourceFile.toPath(), candidate.toPath());
+                    logCopy(sourceFile, candidate, targetFile);
+                    return candidate;
+                } catch (java.nio.file.FileAlreadyExistsException raced) {
+                    // 落入下面的「已存在」判定
+                }
+            }
+
+            if (!sourceDurationRead) {
+                sourceDuration = readPreciseDuration(sourceFile);
+                sourceDurationRead = true;
+            }
+            Double existingDuration = readPreciseDuration(candidate);
+            if (sourceDuration != null && existingDuration != null
+                && Math.abs(sourceDuration - existingDuration) <= SAME_AUDIO_DURATION_TOLERANCE_SECONDS) {
+                Files.copy(sourceFile.toPath(), candidate.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                logCopy(sourceFile, candidate, targetFile);
+                return candidate;
+            }
+
+            log.warn("⚠ 目标文件已存在且音频不同（新 {}s / 已有 {}s），不覆盖: {}",
+                formatDuration(sourceDuration), formatDuration(existingDuration), candidate.getName());
+            candidate = withConflictSuffix(targetFile, attempt + 1);
+        }
+        throw new IOException("目标文件名冲突过多，放弃写入: " + targetFile.getAbsolutePath());
+    }
+
+    private void logCopy(File sourceFile, File actual, File intended) {
+        if (actual.equals(intended)) {
+            log.info("复制文件: {} -> {}", sourceFile.getName(), actual.getName());
+        } else {
+            log.warn("⚠ 目标路径冲突，已另存: {} -> {}（请检查该曲目的识别结果）",
+                sourceFile.getName(), actual.getName());
+            LogCollector.addLog("WARN", "目标路径冲突，未覆盖已有文件，已另存为: " + actual.getName()
+                + "（源文件: " + sourceFile.getName() + "，请检查识别结果）");
+        }
+    }
+
+    static File withConflictSuffix(File targetFile, int n) {
+        String name = targetFile.getName();
+        int dot = name.lastIndexOf('.');
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : "";
+        return new File(targetFile.getParentFile(), base + " (" + n + ")" + ext);
+    }
+
+    private static Double readPreciseDuration(File file) {
+        try {
+            double seconds = AudioFileIO.read(file).getAudioHeader().getPreciseTrackLength();
+            return seconds > 0 ? seconds : null;
+        } catch (Exception e) {
+            log.debug("读取音频时长失败: {} - {}", file.getName(), e.getMessage());
+            return null;
+        }
+    }
+
+    private static String formatDuration(Double seconds) {
+        return seconds == null ? "?" : String.format("%.1f", seconds);
     }
 
     /**
