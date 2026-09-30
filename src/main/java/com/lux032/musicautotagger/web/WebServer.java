@@ -17,6 +17,7 @@ import com.lux032.musicautotagger.service.CoverCandidateService;
 import com.lux032.musicautotagger.service.DatabaseService;
 import com.lux032.musicautotagger.service.FolderAlbumCache;
 import com.lux032.musicautotagger.service.ProcessedFileLogger;
+import com.lux032.musicautotagger.service.ProcessedRecordService;
 import com.lux032.musicautotagger.service.ReviewQueueService;
 import com.lux032.musicautotagger.service.ReviewResolutionService;
 import com.lux032.musicautotagger.service.RecoveryService;
@@ -36,9 +37,15 @@ public class WebServer {
     
     private Server server;
     private final int port;
+    private ProcessedRecordService processedRecordService;
     
     public WebServer(int port) {
         this.port = port;
+    }
+
+    /** 处理记录管理 API 的依赖，需在 start() 之前设置。 */
+    public void setProcessedRecordService(ProcessedRecordService processedRecordService) {
+        this.processedRecordService = processedRecordService;
     }
     
     /**
@@ -153,6 +160,12 @@ public class WebServer {
         // 注册部分识别 / 识别失败恢复 API
         if (recoveryService != null) {
             servletHandler.addServlet(new ServletHolder(new RecoveryServlet(recoveryService)), "/api/recovery/*");
+        }
+
+        // 注册处理记录管理 API（搜索 / 删除记录 / 重新识别 / 导出）
+        if (processedRecordService != null) {
+            servletHandler.addServlet(new ServletHolder(new RecordsServlet(processedRecordService, config)),
+                "/api/records/*");
         }
 
         // API 认证过滤器

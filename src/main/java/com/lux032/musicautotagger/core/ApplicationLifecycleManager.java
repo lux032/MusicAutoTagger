@@ -49,6 +49,7 @@ public class ApplicationLifecycleManager {
     private ReviewQueueService reviewQueueService;
     private ReviewResolutionService reviewResolutionService;
     private RecoveryService recoveryService;
+    private ProcessedRecordService processedRecordService;
     
     public ApplicationLifecycleManager(MusicConfig config) {
         this.config = config;
@@ -177,6 +178,10 @@ public class ApplicationLifecycleManager {
         log.info(I18nUtil.getMessage("app.init.file.monitor"));
         fileMonitor = new FileMonitorService(config, processedLogger);
         fileMonitor.setFileReadyCallbackWithResult(audioFileProcessorService::processAudioFile);
+
+        // 处理记录管理（Web 「处理记录」页面）
+        processedRecordService = new ProcessedRecordService(config, processedLogger, folderAlbumCache,
+            coverArtService, fileSystemUtils, () -> fileMonitor);
         
         log.info(I18nUtil.getMessage("app.all.services.ready"));
     }
@@ -187,6 +192,7 @@ public class ApplicationLifecycleManager {
     public void startWebServer() {
         try {
             webServer = new WebServer(8080);
+            webServer.setProcessedRecordService(processedRecordService);
             webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this,
                 reviewQueueService, reviewResolutionService, recoveryService, coverBackfillService,
                 coverCandidateService);

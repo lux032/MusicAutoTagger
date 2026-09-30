@@ -531,6 +531,39 @@ public class FileMonitorService {
     }
     
     /**
+     * 把指定文件重新加入处理队列（处理记录管理页「重新识别」使用）。
+     * 调用方需先删除这些文件的已处理记录，否则入队时会被当作已处理跳过。
+     * 按文件夹分组、组内按路径排序后入队，与启动扫描的顺序保持一致。
+     * @return 实际入队的文件数（监控未运行、文件不存在或不是支持的格式时不入队）
+     */
+    public int requeueFiles(java.util.Collection<File> files) {
+        if (!running || files == null) {
+            return 0;
+        }
+        Map<String, List<Path>> byFolder = new java.util.TreeMap<>();
+        for (File file : files) {
+            Path path = file.toPath();
+            if (isMusicFile(path) && path.getParent() != null) {
+                byFolder.computeIfAbsent(path.getParent().toString(), k -> new ArrayList<>()).add(path);
+            }
+        }
+        int queued = 0;
+        for (List<Path> folderFiles : byFolder.values()) {
+            folderFiles.sort(null);
+            for (Path path : folderFiles) {
+                processedFiles.remove(path.toString());
+                fileCheckExecutorService.submit(() -> addToQueue(path, false));
+                queued++;
+            }
+        }
+        if (queued > 0) {
+            log.info("已将 {} 个文件重新加入处理队列（手动重新识别）", queued);
+            LogCollector.addLog("INFO", "手动重新识别：已将 " + queued + " 个文件加入处理队列");
+        }
+        return queued;
+    }
+
+    /**
      * 判断是否为音乐文件
      */
     private boolean isMusicFile(Path path) {

@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-i18n-title-key="records.page.title">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>处理记录 - Music Auto Tagger</title>
+    <link rel="icon" href="logo.png" type="image/png">
+    <link rel="stylesheet" href="app.css?v=8">
+    <script src="i18n.js?v=1"></script>
+    <style>
+        /* ---------- 工具栏 ---------- */
+        .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+        .search { position: relative; flex: 1 1 320px; min-width: 220px; }
+        .search svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text-mute); pointer-events: none; }
+        .search .input { padding-left: 34px; padding-right: 64px; }
+        .search .kbd {
+            position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+            font-size: 11px; color: var(--text-mute); border: 1px solid var(--border-strong);
+            border-radius: 5px; padding: 0 6px; line-height: 18px; background: var(--bg-soft);
+        }
+        .search .clear {
+            position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+            border: none; background: var(--bg-soft); color: var(--text-mute); width: 22px; height: 22px;
+            border-radius: 50%; cursor: pointer; display: none; font-size: 14px; line-height: 22px;
+        }
+        .search.has-value .clear { display: block; }
+        .search.has-value .kbd { display: none; }
+        .toolbar select.input { width: auto; min-width: 150px; }
+        .pill {
+            display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-soft);
+            border: 1px solid var(--border); background: var(--bg-soft); border-radius: 999px; padding: 4px 10px; white-space: nowrap;
+        }
+        .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: #f7dcb3; }
+
+        .tabs { display: flex; gap: 4px; padding: 4px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius); flex-wrap: wrap; }
+        .tab {
+            border: none; background: transparent; color: var(--text-soft); font: inherit; font-size: 13px; font-weight: 600;
+            padding: 7px 14px; border-radius: var(--radius-sm); cursor: pointer; transition: .15s; display: inline-flex; gap: 7px; align-items: center;
+        }
+        .tab:hover { background: #fff; color: var(--primary); }
+        .tab.active { background: var(--primary); color: #fff; box-shadow: 0 2px 6px rgba(29, 110, 240, .25); }
+        .tab .count { font-size: 11.5px; font-weight: 700; padding: 0 7px; border-radius: 999px; background: rgba(0,0,0,.06); line-height: 18px; }
+        .tab.active .count { background: rgba(255,255,255,.22); }
+
+        .filter-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+        .chip {
+            display: inline-flex; align-items: center; gap: 6px; background: var(--primary-soft); color: var(--primary);
+            border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 12.5px; font-weight: 600; max-width: 100%;
+        }
+        .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .chip button { border: none; background: rgba(29,110,240,.12); color: var(--primary); border-radius: 50%; width: 20px; height: 20px; cursor: pointer; flex: 0 0 auto; }
+        .chip button:hover { background: rgba(29,110,240,.22); }
+
+        /* ---------- 批量操作栏 ---------- */
+        .bulkbar {
+            position: sticky; top: 8px; z-index: 50; display: none; align-items: center; gap: 10px; flex-wrap: wrap;
+            background: #16202f; color: #fff; border-radius: var(--radius); padding: 9px 12px 9px 16px; margin-bottom: 10px;
+            box-shadow: var(--shadow-lg); font-size: 13px;
+        }
+        .bulkbar.show { display: flex; }
+        .bulkbar .grow { flex: 1; }
+        .bulkbar .link { background: none; border: none; color: #8fb8ff; font: inherit; cursor: pointer; text-decoration: underline; padding: 0; }
+        .bulkbar .btn.ghost { background: transparent; color: #dfe6f1; border-color: rgba(255,255,255,.28); }
+        .bulkbar .btn.ghost:hover { border-color: #fff; color: #fff; }
+
+        /* ---------- 列表 ---------- */
+        .list { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; transition: opacity .15s; }
+        .list.is-loading { opacity: .55; pointer-events: none; }
+        .row {
+            display: grid; align-items: center; gap: 12px;
+            grid-template-columns: 22px minmax(0, 2.3fr) minmax(0, 1.4fr) 128px 116px 104px;
+            padding: 9px 12px; border-bottom: 1px solid var(--border); background: #fff; cursor: pointer;
+        }
+        .row:last-child { border-bottom: none; }
+        .row:hover { background: #fafbfd; }
+        .row.selected { background: var(--primary-soft); }
+        .row.head { background: var(--bg-soft); cursor: default; font-size: 12px; font-weight: 600; color: var(--text-soft); padding-top: 8px; padding-bottom: 8px; }
+        .row.head:hover { background: var(--bg-soft); }
+        .row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
+
+        .track { display: flex; align-items: center; gap: 11px; min-width: 0; }
+        .thumb {
+            width: 40px; height: 40px; border-radius: 7px; flex: 0 0 auto; position: relative; overflow: hidden;
+            display: flex; align-items: center; justify-content: center; color: #fff;
+        }
+        .thumb svg { width: 18px; height: 18px; opacity: .9; }
+        .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .2s; }
+        .thumb img.loaded { opacity: 1; }
+        .thumb.failed { background: var(--danger-soft) !important; color: var(--danger); }
+        .track-text { min-width: 0; }
+        .t-title { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .t-sub { font-size: 12px; color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .t-sub.reason { color: var(--danger); }
+
+        .album-link {
+            border: none; background: none; font: inherit; color: var(--text-soft); cursor: pointer; padding: 0; text-align: left;
+            max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block;
+        }
+        .album-link:hover { color: var(--primary); text-decoration: underline; }
+        .muted { color: var(--text-mute); }
+        .status-cell { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+        .status-cell .badges { display: flex; gap: 4px; flex-wrap: wrap; }
+        .warn-text { font-size: 11.5px; color: var(--warn); white-space: nowrap; }
+        .time { font-size: 12.5px; color: var(--text-soft); white-space: nowrap; }
+
+        .row-actions { display: flex; gap: 4px; justify-content: flex-end; }
+        .icon-action {
+            width: 30px; height: 30px; border-radius: var(--radius-sm); border: 1px solid transparent; background: transparent;
+            color: var(--text-mute); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: .14s;
+        }
+        .icon-action svg { width: 16px; height: 16px; }
+        .icon-action:hover { background: #fff; border-color: var(--border-strong); color: var(--primary); }
+        .icon-action.danger:hover { color: var(--danger); border-color: #f3c4c4; background: var(--danger-soft); }
+
+        .sort-head { border: none; background: none; font: inherit; color: inherit; cursor: pointer; padding: 0; display: inline-flex; gap: 4px; align-items: center; }
+        .sort-head:hover { color: var(--primary); }
+        .sort-head.active { color: var(--primary); }
+
+        /* ---------- 分页 ---------- */
+        .pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 12px; font-size: 12.5px; color: var(--text-soft); }
+        .pager .pages { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+        .page-btn {
+            min-width: 32px; height: 32px; padding: 0 9px; border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
+            background: #fff; color: var(--text-soft); font: inherit; font-size: 12.5px; cursor: pointer;
+        }
+        .page-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+        .page-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 700; }
+        .page-btn:disabled { opacity: .45; cursor: not-allowed; }
+        .pager select.input { width: auto; padding: 6px 8px; }
+
+        .empty-state { text-align: center; padding: 50px 16px; color: var(--text-mute); }
+        .empty-state .big { font-size: 15px; font-weight: 650; color: var(--text-soft); margin-bottom: 6px; }
+        .empty-state .btn { margin-top: 14px; }
+
+        /* ---------- 详情 ---------- */
+        .detail-head { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; }
+        .detail-head .thumb { width: 84px; height: 84px; border-radius: 12px; }
+        .detail-head .thumb svg { width: 30px; height: 30px; }
+        .detail-title { font-size: 17px; font-weight: 700; word-break: break-word; }
+        .detail-grid { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px 14px; font-size: 13px; }
+        .detail-grid .k { color: var(--text-mute); }
+        .detail-grid .v { word-break: break-all; }
+        .path-line { display: flex; gap: 8px; align-items: flex-start; }
+        .path-line code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 6px; padding: 4px 7px; flex: 1; min-width: 0; }
+        .exists { font-size: 11.5px; font-weight: 600; white-space: nowrap; margin-top: 4px; }
+        .exists.yes { color: var(--success); }
+        .exists.no { color: var(--warn); }
+
+        .confirm-list { margin: 4px 0 0; padding-left: 0; list-style: none; display: grid; gap: 7px; font-size: 13px; color: var(--text); }
+        .confirm-list li { display: flex; gap: 8px; }
+        .confirm-list li::before { content: '•'; color: var(--primary); font-weight: 700; }
+        .confirm-list li.warn::before { color: var(--warn); }
+        .confirm-note { margin-top: 12px; font-size: 12.5px; color: var(--text-mute); line-height: 1.6; }
+
+        @media (max-width: 860px) {
+            .row { grid-template-columns: 22px minmax(0, 1fr) 96px; }
+            .row .col-album, .row .col-time { display: none; }
+            .row .col-status { grid-column: 3; }
+            .row .row-actions { grid-column: 2 / 4; justify-content: flex-start; }
+            .row.head .col-actions { display: none; }
+            .row.head .row-actions { display: none; }
+            .detail-grid { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+            .detail-grid .v { margin-bottom: 8px; }
+        }
+    </style>
+</head>
+<body>
+<div class="app">
+    <header class="topbar">
+        <div class="topbar-main">
+            <div class="brand">
+                <img class="brand-logo" src="logo.png" alt="Music Auto Tagger">
+                <div>
+                    <div class="brand-title" data-i18n="records.page.title">处理记录</div>
+                    <div class="brand-subtitle" data-i18n="records.page.subtitle">搜索、查看和管理已处理文件的记录，可让文件重新识别</div>
+                </div>
+            </div>
+        </div>
+        <nav class="navbar">
+            <button class="nav-toggle" onclick="document.getElementById('navGroup').classList.toggle('open')" aria-label="menu">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                <span data-i18n="web.menu">菜单</span>
+            </button>
+            <div class="nav-group" id="navGroup">
+                <button class="nav-btn" onclick="load()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                    <span data-i18n="records.nav.refresh">刷新</span>
+                </button>
+                <a class="nav-btn" id="exportLink" href="/api/records/export">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    <span data-i18n="records.nav.export">导出 CSV</span>
+                </a>
+                <a class="nav-btn" href="recovery.html">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                    <span data-i18n="web.recovery">重新识别</span>
+                </a>
+                <a class="nav-btn active" href="index.html">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"></path><path d="M9 21V12h6v9"></path><path d="M5 10v11h14V10"></path></svg>
+                    <span data-i18n="recovery.nav.back">返回面板</span>
+                </a>
+            </div>
+        </nav>
+    </header>
+
+    <section class="card">
+        <div class="toolbar">
+            <div class="search" id="searchBox">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <input class="input" id="searchInput" type="search" autocomplete="off"
+                       data-i18n-placeholder="records.search.placeholder" placeholder="搜索文件名、艺术家、标题或专辑…">
+                <span class="kbd">/</span>
+                <button class="clear" id="searchClear" type="button" aria-label="clear">×</button>
+            </div>
+            <select class="input" id="sortSelect" aria-label="sort">
+                <option value="TIME_DESC" data-i18n="records.sort.time.desc">最近处理</option>
+                <option value="TIME_ASC" data-i18n="records.sort.time.asc">最早处理</option>
+                <option value="ALBUM" data-i18n="records.sort.album">按专辑</option>
+                <option value="ARTIST" data-i18n="records.sort.artist">按艺术家</option>
+                <option value="TITLE" data-i18n="records.sort.title">按标题</option>
+                <option value="PATH" data-i18n="records.sort.path">按文件路径</option>
+            </select>
+            <span class="pill" id="storagePill" style="display:none;"></span>
+            <span class="pill warn" id="monitorPill" style="display:none;"></span>
+        </div>
+
+        <div class="filter-row">
+            <div class="tabs" id="tabs">
+                <button class="tab" data-status="ALL"><span data-i18n="records.tab.all">全部</span><span class="count" data-count="ALL">0</span></button>
+                <button class="tab" data-status="SUCCESS"><span data-i18n="records.tab.success">成功</span><span class="count" data-count="SUCCESS">0</span></button>
+                <button class="tab" data-status="FAILED"><span data-i18n="records.tab.failed">失败</span><span class="count" data-count="FAILED">0</span></button>
+                <button class="tab" data-status="OTHER"><span data-i18n="records.tab.other">其他</span><span class="count" data-count="OTHER">0</span></button>
+            </div>
+            <div class="chip" id="albumChip" style="display:none;">
+                <span id="albumChipText"></span>
+                <button type="button" onclick="setAlbum('')" aria-label="clear">×</button>
+            </div>
+        </div>
+
+        <div class="bulkbar" id="bulkbar">
+            <span id="bulkText"></span>
+            <button class="link" id="selectAllMatching" style="display:none;"></button>
+            <span class="grow"></span>
+            <button class="btn primary sm" onclick="bulk('reidentify')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                <span data-i18n="records.action.reidentify">重新识别</span>
+            </button>
+            <button class="btn danger-soft sm" onclick="bulk('forget')" data-i18n="records.action.forget">删除记录</button>
+            <button class="btn ghost sm" onclick="clearSelection()" data-i18n="records.action.clear.selection">取消选择</button>
+        </div>
+
+        <div id="errorBox" class="alert" style="display:none; margin-bottom: 12px;"></div>
+
+        <div class="list" id="list">
+            <div class="page-loading"><div class="spinner"></div></div>
+        </div>
+
+        <div class="pager" id="pager" style="display:none;">
+            <div id="pagerInfo"></div>
+            <div class="pages" id="pages"></div>
+            <label style="display:flex; gap:6px; align-items:center;">
+                <span data-i18n="records.page.size">每页</span>
+                <select class="input" id="sizeSelect">
+                    <option value="20">20</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                </select>
+            </label>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <a href="https://032.im" target="_blank" rel="noopener">Lux032</a>
+            <span class="footer-divider">|</span>
+            <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" rel="noopener">Music Auto Tagger</a>
+        </div>
+    </footer>
+</div>
+
+<!-- 详情 -->
+<div class="overlay" id="detailDialog">
+    <div class="dialog" style="width: min(640px, 96vw); max-height: 92vh; overflow-y: auto;">
+        <div id="detailBody"></div>
+        <div class="dialog-actions">
+            <button class="btn ghost" onclick="closeDetail()" data-i18n="records.close">关闭</button>
+            <button class="btn danger-soft" id="detailForget" data-i18n="records.action.forget">删除记录</button>
+            <button class="btn primary" id="detailReidentify" data-i18n="records.action.reidentify">重新识别</button>
+        </div>
+    </div>
+</div>
+
+<!-- 确认 -->
+<div class="overlay" id="confirmDialog">
+    <div class="dialog" style="width: min(520px, 96vw);">
+        <div class="dialog-title" id="confirmTitle"></div>
+        <div id="confirmBody"></div>
+        <div class="dialog-actions">
+            <button class="btn ghost" onclick="closeConfirm(false)" data-i18n="web.cancel">取消</button>
+            <button class="btn primary" id="confirmOkBtn" onclick="closeConfirm(true)"></button>
+        </div>
+    </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+    const T = (k, d) => I18n.t(k, d);
+    const TF = (k, ...a) => I18n.tf(k, ...a);
+
+    const ICON_NOTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>';
+    const ICON_ALERT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
+    const ICON_REID = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>';
+    const ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>';
+    const ICON_INFO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>';
+    const ICON_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+
+    const state = { q: '', status: 'ALL', album: '', sort: 'TIME_DESC', page: 0, size: 50 };
+    let csrfToken = null;
+    let items = [], total = 0, counts = {}, monitoring = { active: false, paused: false };
+    let selected = new Map();      // filePath -> record
+    let allMatching = false;       // 「选择全部匹配结果」：批量操作改为按筛选条件提交
+    let loadSeq = 0, loadedOnce = false;
+    let detailRecord = null;
+
+    // ---------------- 初始化 ----------------
+    async function init() {
+        await I18n.load();
+        I18n.apply();
+        const r = await fetch('/api/auth/status'), d = await r.json();
+        if (!d.authenticated) { location.href = '/index.html'; return; }
+        csrfToken = d.csrfToken;
+
+        readUrl();
+        const savedSize = Number(localStorage.getItem('records.pageSize'));
+        if (!new URLSearchParams(location.search).has('size') && [20, 50, 100, 200].includes(savedSize)) state.size = savedSize;
+
+        bindControls();
+        syncControls();
+        await load();
+
+        // 列表在第一页、按时间倒序、没有选择或弹窗时静默刷新，便于观察重新识别的进度
+        setInterval(() => {
+            if (document.hidden || selected.size || allMatching || isDialogOpen()) return;
+            if (state.page !== 0 || state.sort !== 'TIME_DESC') return;
+            load({ silent: true });
+        }, 15000);
+    }
+
+    function readUrl() {
+        const p = new URLSearchParams(location.search);
+        state.q = p.get('q') || '';
+        state.status = ['ALL', 'SUCCESS', 'FAILED', 'OTHER'].includes(p.get('status')) ? p.get('status') : 'ALL';
+        state.album = p.get('album') || '';
+        const sorts = ['TIME_DESC', 'TIME_ASC', 'ALBUM', 'ARTIST', 'TITLE', 'PATH'];
+        state.sort = sorts.includes(p.get('sort')) ? p.get('sort') : 'TIME_DESC';
+        state.page = Math.max(0, (parseInt(p.get('page'), 10) || 1) - 1);
+        const size = parseInt(p.get('size'), 10);
+        if ([20, 50, 100, 200].includes(size)) state.size = size;
+    }
+
+    function writeUrl() {
+        const p = new URLSearchParams();
+        if (state.q) p.set('q', state.q);
+        if (state.status !== 'ALL') p.set('status', state.status);
+        if (state.album) p.set('album', state.album);
+        if (state.sort !== 'TIME_DESC') p.set('sort', state.sort);
+        if (state.page > 0) p.set('page', String(state.page + 1));
+        const qs = p.toString();
+        history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+    }
+
+    function filterObject() {
+        return { q: state.q, status: state.status, album: state.album, sort: state.sort };
+    }
+
+    function queryString(withPaging) {
+        const p = new URLSearchParams();
+        if (state.q) p.set('q', state.q);
+        if (state.status !== 'ALL') p.set('status', state.status);
+        if (state.album) p.set('album', state.album);
+        p.set('sort', state.sort);
+        if (withPaging) {
+            p.set('offset', String(state.page * state.size));
+            p.set('limit', String(state.size));
+        }
+        return p.toString();
+    }
+
+    function bindControls() {
+        const input = document.getElementById('searchInput');
+        let timer = null;
+        input.addEventListener('input', () => {
+            document.getElementById('searchBox').classList.toggle('has-value', !!input.value);
+            clearTimeout(timer);
+            timer = setTimeout(() => { state.q = input.value.trim(); resetAndLoad(); }, 300);
+        });
+        input.addEventListener('keydown', e => {
+            if (e.key === 'Enter') { clearTimeout(timer); state.q = input.value.trim(); resetAndLoad(); }
+            if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; input.dispatchEvent(new Event('input')); }
+        });
+        document.getElementById('searchClear').addEventListener('click', () => {
+            input.value = ''; input.dispatchEvent(new Event('input')); input.focus();
+        });
+        document.getElementById('sortSelect').addEventListener('change', e => { state.sort = e.target.value; resetAndLoad(); });
+        document.getElementById('sizeSelect').addEventListener('change', e => {
+            state.size = Number(e.target.value);
+            localStorage.setItem('records.pageSize', String(state.size));
+            resetAndLoad();
+        });
+        document.getElementById('tabs').addEventListener('click', e => {
+            const tab = e.target.closest('.tab');
+            if (!tab) return;
+            state.status = tab.dataset.status;
+            resetAndLoad();
+        });
+        document.getElementById('list').addEventListener('click', onListClick);
+        document.getElementById('pages').addEventListener('click', e => {
+            const b = e.target.closest('[data-page]');
+            if (!b || b.disabled) return;
+            state.page = Number(b.dataset.page);
+            clearSelection(false);
+            load();
+            document.getElementById('list').scrollIntoView({ block: 'start', behavior: 'smooth' });
+        });
+        document.getElementById('selectAllMatching').addEventListener('click', () => {
+            if (allMatching) { clearSelection(); return; }
+            allMatching = true;
+            renderSelection();
+            renderRows();
+        });
+        document.getElementById('detailForget').addEventListener('click', () => detailRecord && runAction('forget', { paths: [detailRecord.filePath] }));
+        document.getElementById('detailReidentify').addEventListener('click', () => detailRecord && runAction('reidentify', { paths: [detailRecord.filePath] }));
+
+        for (const id of ['detailDialog', 'confirmDialog']) {
+            document.getElementById(id).addEventListener('mousedown', e => {
+                if (e.target.id !== id) return;
+                if (id === 'confirmDialog') closeConfirm(false); else closeDetail();
+            });
+        }
+        document.addEventListener('keydown', e => {
+            const inField = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+            if (e.key === '/' && !inField && !isDialogOpen()) { e.preventDefault(); input.focus(); input.select(); }
+            if (e.key === 'Escape') {
+                if (document.getElementById('confirmDialog').classList.contains('show')) closeConfirm(false);
+                else if (document.getElementById('detailDialog').classList.contains('show')) closeDetail();
+                else if (selected.size || allMatching) clearSelection();
+            }
+        });
+    }
+
+    function syncControls() {
+        const input = document.getElementById('searchInput');
+        // 正在输入时不要覆盖（静默刷新也会走到这里）
+        if (document.activeElement !== input) input.value = state.q;
+        document.getElementById('searchBox').classList.toggle('has-value', !!input.value);
+        document.getElementById('sortSelect').value = state.sort;
+        document.getElementById('sizeSelect').value = String(state.size);
+        document.querySelectorAll('#tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.status === state.status));
+        const chip = document.getElementById('albumChip');
+        chip.style.display = state.album ? 'inline-flex' : 'none';
+        document.getElementById('albumChipText').textContent = TF('records.album.filter', state.album);
+        document.getElementById('exportLink').href = '/api/records/export?' + queryString(false);
+    }
+
+    function resetAndLoad() {
+        state.page = 0;
+        clearSelection(false);
+        load();
+    }
+
+    function setAlbum(album) {
+        state.album = album || '';
+        resetAndLoad();
+    }
+
+    // ---------------- 数据 ----------------
+    async function api(path, opt = {}) {
+        opt.headers = opt.headers || {};
+        if (csrfToken) opt.headers['X-CSRF-Token'] = csrfToken;
+        if (opt.body) opt.headers['Content-Type'] = 'application/json';
+        const r = await fetch(path, opt);
+        let d = {};
+        try { d = await r.json(); } catch (e) { /* ignore */ }
+        if (r.status === 401) { location.href = '/index.html'; throw new Error('unauthorized'); }
+        if (!r.ok) {
+            const known = { 'csrf.invalid': 'records.error.csrf', 'records.no.target': 'records.error.no.target' };
+            throw new Error(known[d.error] ? T(known[d.error]) : (d.message || d.error || ('HTTP ' + r.status)));
+        }
+        return d;
+    }
+
+    async function load({ silent = false } = {}) {
+        const seq = ++loadSeq;
+        writeUrl();
+        syncControls();
+        const list = document.getElementById('list');
+        if (!silent && loadedOnce) list.classList.add('is-loading');
+        try {
+            const d = await api('/api/records/list?' + queryString(true));
+            if (seq !== loadSeq) return;
+            items = d.items || [];
+            total = d.total || 0;
+            counts = d.counts || {};
+            monitoring = { active: !!d.monitoringActive, paused: !!d.monitoringPaused };
+            document.getElementById('errorBox').style.display = 'none';
+
+            // 删除后当前页可能已经越界，回退到最后一页
+            if (!items.length && total > 0 && state.page > 0) {
+                state.page = Math.max(0, Math.ceil(total / state.size) - 1);
+                return load({ silent });
+            }
+            loadedOnce = true;
+            renderMeta(d.storage);
+            renderRows();
+            renderPager();
+            renderSelection();
+        } catch (e) {
+            if (seq !== loadSeq) return;
+            if (silent) return;
+            const box = document.getElementById('errorBox');
+            box.textContent = TF('records.load.failed', e.message);
+            box.style.display = 'block';
+            if (!loadedOnce) list.innerHTML = '';
+        } finally {
+            if (seq === loadSeq) list.classList.remove('is-loading');
+        }
+    }
+
+    // ---------------- 渲染 ----------------
+    function renderMeta(storage) {
+        document.querySelectorAll('#tabs [data-count]').forEach(el => {
+            el.textContent = formatNumber(counts[el.dataset.count] || 0);
+        });
+        const sp = document.getElementById('storagePill');
+        if (storage) { sp.textContent = TF('records.storage', storage); sp.style.display = 'inline-flex'; }
+        const mp = document.getElementById('monitorPill');
+        if (monitoring.paused || !monitoring.active) {
+            mp.textContent = monitoring.paused ? T('records.monitor.paused') : T('records.monitor.stopped');
+            mp.style.display = 'inline-flex';
+        } else {
+            mp.style.display = 'none';
+        }
+    }
+
+    function hasFilters() {
+        return !!(state.q || state.album || state.status !== 'ALL');
+    }
+
+    function renderRows() {
+        const list = document.getElementById('list');
+        if (!items.length) {
+            if (!hasFilters()) {
+                list.innerHTML = `<div class="empty-state"><div class="big">${esc(T('records.empty.title'))}</div>
+                    <div>${esc(T('records.empty.hint'))}</div></div>`;
+            } else {
+                list.innerHTML = `<div class="empty-state"><div class="big">${esc(T('records.nomatch.title'))}</div>
+                    <div>${esc(T('records.nomatch.hint'))}</div>
+                    <button class="btn ghost sm" onclick="clearFilters()">${esc(T('records.clear.filters'))}</button></div>`;
+            }
+            return;
+        }
+        const pageAll = items.length > 0 && items.every(r => allMatching || selected.has(r.filePath));
+        const pageSome = items.some(r => allMatching || selected.has(r.filePath));
+        const sortHead = (key, label) =>
+            `<button class="sort-head ${state.sort === key ? 'active' : ''}" data-sort="${key}">${esc(label)}${state.sort === key ? ' ↓' : ''}</button>`;
+        const head = `<div class="row head">
+                <input type="checkbox" id="pageCheck" ${pageAll ? 'checked' : ''} aria-label="select page">
+                <div>${sortHead('TITLE', T('records.col.track'))}</div>
+                <div class="col-album">${sortHead('ALBUM', T('records.col.album'))}</div>
+                <div class="col-status">${esc(T('records.col.status'))}</div>
+                <div class="col-time">${sortHead('TIME_DESC', T('records.col.time'))}</div>
+                <div class="row-actions"></div>
+            </div>`;
+        list.innerHTML = head + items.map(rowHtml).join('');
+        const pc = document.getElementById('pageCheck');
+        if (pc) pc.indeterminate = !pageAll && pageSome;
+        list.querySelectorAll('img[data-cover]').forEach(img => {
+            img.onload = () => img.classList.add('loaded');
+            img.onerror = () => img.remove();
+        });
+    }
+
+    function rowHtml(r, i) {
+        const isSelected = allMatching || selected.has(r.filePath);
+        const failed = r.status === 'FAILED';
+        const title = failed ? r.fileName : (r.title || r.fileName);
+        const sub = failed ? (r.artist || '') : [r.artist, r.title && r.title !== r.fileName ? r.fileName : null].filter(Boolean).join(' · ');
+        return `<div class="row ${isSelected ? 'selected' : ''}" data-i="${i}">
+                <input type="checkbox" data-check="${i}" ${isSelected ? 'checked' : ''} aria-label="select">
+                <div class="track">
+                    ${thumbHtml(r)}
+                    <div class="track-text">
+                        <div class="t-title" title="${esc(title)}">${esc(title)}</div>
+                        <div class="t-sub ${failed ? 'reason' : ''}" title="${esc(sub)}">${esc(sub) || '&nbsp;'}</div>
+                    </div>
+                </div>
+                <div class="col-album">${r.album && r.album !== 'Unknown Album'
+                    ? `<button class="album-link" data-album="${i}" title="${esc(TF('records.filter.by.album', r.album))}">${esc(r.album)}</button>`
+                    : `<span class="muted">—</span>`}</div>
+                <div class="col-status status-cell">
+                    <div class="badges">${statusBadges(r)}</div>
+                    ${r.sourceExists === false ? `<span class="warn-text">${esc(T('records.source.missing.short'))}</span>` : ''}
+                </div>
+                <div class="col-time time" title="${esc(r.processedTime || '')}">${esc(relTime(r.processedTime))}</div>
+                <div class="row-actions">
+                    <button class="icon-action" data-act="reidentify" data-i="${i}" title="${esc(T('records.action.reidentify'))}">${ICON_REID}</button>
+                    <button class="icon-action danger" data-act="forget" data-i="${i}" title="${esc(T('records.action.forget'))}">${ICON_TRASH}</button>
+                    <button class="icon-action" data-act="detail" data-i="${i}" title="${esc(T('records.action.detail'))}">${ICON_INFO}</button>
+                </div>
+            </div>`;
+    }
+
+    function thumbHtml(r, big) {
+        if (r.status === 'FAILED') return `<div class="thumb failed">${ICON_ALERT}</div>`;
+        const [c1, c2] = palette(r.album || r.fileName || '');
+        const q = [];
+        if (r.releaseGroupId) q.push('rgid=' + encodeURIComponent(r.releaseGroupId));
+        const p = r.targetExists ? r.targetFilePath : (r.sourceExists ? r.filePath : null);
+        if (p) q.push('path=' + encodeURIComponent(p));
+        const img = q.length ? `<img data-cover alt="" loading="lazy" src="/api/cover?${q.join('&')}">` : '';
+        return `<div class="thumb" style="background: linear-gradient(135deg, ${c1}, ${c2});">${ICON_NOTE}${img}</div>`;
+    }
+
+    function statusBadges(r) {
+        const id = (r.recordingId || '').trim();
+        if (r.status === 'SUCCESS') {
+            let html = `<span class="badge confirmed">${esc(T('records.status.success'))}</span>`;
+            if (id === 'ONLINE_SEARCH') html += `<span class="badge unverified">${esc(T('records.status.online'))}</span>`;
+            return html;
+        }
+        if (r.status === 'FAILED') {
+            const key = { WRITE_FAILED: 'records.status.write.failed', EXCEPTION: 'records.status.exception' }[id] || 'records.status.failed';
+            return `<span class="badge rejected">${esc(T(key))}</span>`;
+        }
+        if (id === 'REVIEW_REJECTED') return `<span class="badge pending">${esc(T('records.status.rejected'))}</span>`;
+        if (id === 'CUE_SPLIT') return `<span class="badge unverified">${esc(T('records.status.cue'))}</span>`;
+        return `<span class="badge">${esc(id || '?')}</span>`;
+    }
+
+    function renderPager() {
+        const pager = document.getElementById('pager');
+        if (!total) { pager.style.display = 'none'; return; }
+        pager.style.display = 'flex';
+        const from = state.page * state.size + 1;
+        const to = Math.min(total, from + items.length - 1);
+        document.getElementById('pagerInfo').textContent = TF('records.pager.info', formatNumber(from), formatNumber(to), formatNumber(total));
+        const pages = Math.max(1, Math.ceil(total / state.size));
+        const cur = state.page;
+        const nums = new Set([0, pages - 1, cur - 1, cur, cur + 1]);
+        let html = `<button class="page-btn" data-page="${cur - 1}" ${cur === 0 ? 'disabled' : ''} aria-label="prev">‹</button>`;
+        let last = -1;
+        [...nums].filter(n => n >= 0 && n < pages).sort((a, b) => a - b).forEach(n => {
+            if (last >= 0 && n - last > 1) html += `<span class="muted">…</span>`;
+            html += `<button class="page-btn ${n === cur ? 'active' : ''}" data-page="${n}">${n + 1}</button>`;
+            last = n;
+        });
+        html += `<button class="page-btn" data-page="${cur + 1}" ${cur >= pages - 1 ? 'disabled' : ''} aria-label="next">›</button>`;
+        document.getElementById('pages').innerHTML = html;
+    }
+
+    function renderSelection() {
+        const bar = document.getElementById('bulkbar');
+        const count = allMatching ? total : selected.size;
+        bar.classList.toggle('show', count > 0);
+        document.getElementById('bulkText').textContent = allMatching
+            ? TF('records.selected.all', formatNumber(total))
+            : TF('records.selected', formatNumber(selected.size));
+        const link = document.getElementById('selectAllMatching');
+        const pageAll = items.length > 0 && items.every(r => selected.has(r.filePath));
+        if (allMatching) {
+            link.style.display = 'inline';
+            link.textContent = T('records.clear.selection');
+        } else if (pageAll && total > items.length) {
+            link.style.display = 'inline';
+            link.textContent = TF('records.select.all.matching', formatNumber(total));
+        } else {
+            link.style.display = 'none';
+        }
+    }
+
+    // ---------------- 交互 ----------------
+    let lastCheckedIndex = null;
+
+    function onListClick(e) {
+        const sortBtn = e.target.closest('[data-sort]');
+        if (sortBtn) { state.sort = sortBtn.dataset.sort; resetAndLoad(); return; }
+
+        if (e.target.id === 'pageCheck') {
+            const check = e.target.checked;
+            if (allMatching && !check) { clearSelection(); return; }
+            items.forEach(r => check ? selected.set(r.filePath, r) : selected.delete(r.filePath));
+            renderRows(); renderSelection();
+            return;
+        }
+        const check = e.target.closest('[data-check]');
+        if (check) {
+            const i = Number(check.dataset.check);
+            if (allMatching) {
+                // 从「全部匹配」退回到「本页除这一条外全部选中」
+                allMatching = false;
+                items.forEach(r => selected.set(r.filePath, r));
+            }
+            const on = check.checked;
+            if (e.shiftKey && lastCheckedIndex !== null) {
+                const [a, b] = [Math.min(lastCheckedIndex, i), Math.max(lastCheckedIndex, i)];
+                for (let k = a; k <= b; k++) on ? selected.set(items[k].filePath, items[k]) : selected.delete(items[k].filePath);
+            } else {
+                on ? selected.set(items[i].filePath, items[i]) : selected.delete(items[i].filePath);
+            }
+            lastCheckedIndex = i;
+            renderRows(); renderSelection();
+            return;
+        }
+        const albumBtn = e.target.closest('[data-album]');
+        if (albumBtn) { setAlbum(items[Number(albumBtn.dataset.album)].album); return; }
+
+        const act = e.target.closest('[data-act]');
+        if (act) {
+            const r = items[Number(act.dataset.i)];
+            if (act.dataset.act === 'detail') openDetail(r);
+            else runAction(act.dataset.act, { paths: [r.filePath] });
+            return;
+        }
+        const row = e.target.closest('.row[data-i]');
+        if (row && !window.getSelection().toString()) openDetail(items[Number(row.dataset.i)]);
+    }
+
+    function clearSelection(render = true) {
+        selected.clear();
+        allMatching = false;
+        lastCheckedIndex = null;
+        if (render) { renderRows(); renderSelection(); }
+        else renderSelection();
+    }
+
+    function clearFilters() {
+        state.q = ''; state.album = ''; state.status = 'ALL';
+        resetAndLoad();
+    }
+
+    function bulk(kind) {
+        const payload = allMatching ? { filter: filterObject() } : { paths: [...selected.keys()] };
+        runAction(kind, payload);
+    }
+
+    async function runAction(kind, payload) {
+        let preview;
+        try {
+            preview = await api('/api/records/preview', { method: 'POST', body: JSON.stringify(payload) });
+        } catch (e) { toast(TF('records.action.failed', e.message)); return; }
+        if (!preview.total) { toast(T('records.nothing.to.do')); return; }
+
+        const lines = [];
+        const notes = [];
+        if (kind === 'reidentify') {
+            if (preview.requeueable) lines.push(['', TF('records.confirm.requeue', preview.requeueable)]);
+            if (preview.sourceMissing) lines.push(['warn', TF('records.confirm.missing', preview.sourceMissing)]);
+            if (preview.outsideMonitor) lines.push(['warn', TF('records.confirm.outside', preview.outsideMonitor)]);
+            if (preview.successCount) notes.push(T('records.confirm.archive.note'));
+            if (preview.requeueable && preview.monitoringPaused) notes.push(T('records.confirm.paused.note'));
+            else if (preview.requeueable && !preview.monitoringActive) notes.push(T('records.confirm.stopped.note'));
+        } else {
+            lines.push(['', TF('records.confirm.forget', preview.total)]);
+            if (preview.requeueable) notes.push(TF('records.confirm.forget.note', preview.requeueable));
+        }
+        if (preview.truncated) notes.push(T('records.confirm.truncated'));
+
+        const albums = (preview.albums || []);
+        const albumText = albums.length ? TF('records.confirm.albums', albums.slice(0, 5).join('、') + (albums.length > 5 ? '…' : '')) : '';
+        const body = `<div class="dialog-subtitle" style="margin-bottom:10px;">${esc(albumText)}</div>
+            <ul class="confirm-list">${lines.map(([cls, text]) => `<li class="${cls}">${esc(text)}</li>`).join('')}</ul>
+            ${notes.map(n => `<div class="confirm-note">${esc(n)}</div>`).join('')}`;
+        const title = kind === 'reidentify'
+            ? TF('records.confirm.reidentify.title', preview.total)
+            : TF('records.confirm.forget.title', preview.total);
+        const ok = await ask(title, body,
+            kind === 'reidentify' ? T('records.action.reidentify') : T('records.action.forget'),
+            kind !== 'reidentify');
+        if (!ok) return;
+
+        try {
+            const res = await api('/api/records/' + kind, { method: 'POST', body: JSON.stringify(payload) });
+            if (kind === 'reidentify') {
+                let msg = TF('records.done.reidentify', res.removed, res.queued);
+                if (res.queued && res.monitoringPaused) msg += ' ' + T('records.done.paused');
+                toast(msg);
+            } else {
+                toast(TF('records.done.forget', res.removed));
+            }
+            closeDetail();
+            clearSelection(false);
+            load();
+        } catch (e) { toast(TF('records.action.failed', e.message)); }
+    }
+
+    // ---------------- 详情 ----------------
+    function openDetail(r) {
+        detailRecord = r;
+        const failed = r.status === 'FAILED';
+        const title = failed ? r.fileName : (r.title || r.fileName);
+        const mbId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        const rows = [];
+        const add = (k, v) => rows.push(`<div class="k">${esc(k)}</div><div class="v">${v}</div>`);
+
+        add(T('records.col.status'), `<div class="badges" style="display:flex;gap:4px;flex-wrap:wrap;">${statusBadges(r)}</div>`);
+        if (!failed) add(T('records.field.artist'), esc(r.artist || '—'));
+        else if (r.artist) add(T('records.field.reason'), `<span style="color:var(--danger)">${esc(r.artist)}</span>`);
+        add(T('records.col.album'), r.album && r.album !== 'Unknown Album'
+            ? `${esc(r.album)} <button class="btn ghost sm" style="margin-left:6px;padding:2px 8px;" onclick="const a = detailAlbum(); closeDetail(); setAlbum(a);">${esc(T('records.only.this.album'))}</button>`
+            : '—');
+        add(T('records.col.time'), esc(r.processedTime || '—') + (r.processedTime ? ` <span class="muted">(${esc(relTime(r.processedTime))})</span>` : ''));
+        add(T('records.field.source'), pathBlock(r.filePath, r.sourceExists,
+            r.sourceExists ? (r.inMonitorDirectory ? T('records.exists.in.monitor') : T('records.exists.outside')) : T('records.source.missing')));
+        if (r.targetFilePath) {
+            add(T('records.field.target'), pathBlock(r.targetFilePath, r.targetExists,
+                r.targetExists ? T('records.exists.yes') : T('records.target.missing')));
+        }
+        if (r.recordingId) {
+            add('Recording ID', mbId.test(r.recordingId)
+                ? `<a href="https://musicbrainz.org/recording/${encodeURIComponent(r.recordingId)}" target="_blank" rel="noopener">${esc(r.recordingId)}</a>`
+                : `<code>${esc(r.recordingId)}</code>`);
+        }
+        if (r.releaseGroupId) {
+            add('Release Group', mbId.test(r.releaseGroupId)
+                ? `<a href="https://musicbrainz.org/release-group/${encodeURIComponent(r.releaseGroupId)}" target="_blank" rel="noopener">${esc(r.releaseGroupId)}</a>`
+                : `<code>${esc(r.releaseGroupId)}</code>`);
+        }
+
+        document.getElementById('detailBody').innerHTML = `
+            <div class="detail-head">
+                ${thumbHtml(r)}
+                <div style="min-width:0;">
+                    <div class="detail-title">${esc(title)}</div>
+                    <div class="muted" style="font-size:13px;">${esc(failed ? r.fileName : (r.artist || ''))}</div>
+                </div>
+            </div>
+            <div class="detail-grid">${rows.join('')}</div>`;
+        document.querySelectorAll('#detailBody img[data-cover]').forEach(img => {
+            img.onload = () => img.classList.add('loaded');
+            img.onerror = () => img.remove();
+        });
+        document.querySelectorAll('#detailBody [data-copy]').forEach(b => b.addEventListener('click', () => copyText(b.dataset.copy)));
+        document.getElementById('detailDialog').classList.add('show');
+    }
+
+    function detailAlbum() { return detailRecord ? detailRecord.album : ''; }
+
+    function pathBlock(path, exists, label) {
+        return `<div class="path-line"><code>${esc(path)}</code>
+                <button class="icon-action" data-copy="${esc(path)}" title="${esc(T('records.copy'))}">${ICON_COPY}</button></div>
+            <div class="exists ${exists ? 'yes' : 'no'}">${exists ? '✓' : '!'} ${esc(label)}</div>`;
+    }
+
+    function closeDetail() {
+        document.getElementById('detailDialog').classList.remove('show');
+        detailRecord = null;
+    }
+
+    // ---------------- 确认框 ----------------
+    let confirmResolver = null;
+
+    function ask(title, bodyHtml, okLabel, danger) {
+        document.getElementById('confirmTitle').textContent = title;
+        document.getElementById('confirmBody').innerHTML = bodyHtml;
+        const ok = document.getElementById('confirmOkBtn');
+        ok.textContent = okLabel;
+        ok.className = 'btn ' + (danger ? 'danger' : 'primary');
+        document.getElementById('confirmDialog').classList.add('show');
+        setTimeout(() => ok.focus(), 30);
+        return new Promise(resolve => { confirmResolver = resolve; });
+    }
+
+    function closeConfirm(result) {
+        document.getElementById('confirmDialog').classList.remove('show');
+        if (confirmResolver) { confirmResolver(result); confirmResolver = null; }
+    }
+
+    function isDialogOpen() {
+        return document.querySelector('.overlay.show') !== null;
+    }
+
+    // ---------------- 工具 ----------------
+    async function copyText(text) {
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                // 局域网 http 访问时没有 Clipboard API，退回到 execCommand
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.opacity = '0';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                ta.remove();
+            }
+            toast(T('records.copied'));
+        } catch (e) { toast(T('records.copy.failed')); }
+    }
+
+    function locale() { return I18n.language === 'zh_CN' ? 'zh-CN' : 'en'; }
+
+    function formatNumber(n) { return Number(n || 0).toLocaleString(locale()); }
+
+    function parseTime(s) {
+        const m = s && s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+        return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
+    }
+
+    function relTime(s) {
+        const d = parseTime(s);
+        if (!d) return s || '—';
+        const sec = (d.getTime() - Date.now()) / 1000;
+        const abs = Math.abs(sec);
+        if (typeof Intl === 'undefined' || !Intl.RelativeTimeFormat) return s;
+        const rtf = new Intl.RelativeTimeFormat(locale(), { numeric: 'auto' });
+        if (abs < 60) return rtf.format(Math.round(sec), 'second');
+        if (abs < 3600) return rtf.format(Math.round(sec / 60), 'minute');
+        if (abs < 86400) return rtf.format(Math.round(sec / 3600), 'hour');
+        if (abs < 86400 * 7) return rtf.format(Math.round(sec / 86400), 'day');
+        return d.toLocaleDateString(locale());
+    }
+
+    function palette(seed) {
+        let h = 0;
+        for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+        const hue = h % 360;
+        return [`hsl(${hue}, 62%, 62%)`, `hsl(${(hue + 40) % 360}, 58%, 48%)`];
+    }
+
+    let toastTimer = null;
+    function toast(t) {
+        const e = document.getElementById('toast');
+        e.textContent = t;
+        e.style.display = 'block';
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => e.style.display = 'none', 5000);
+    }
+
+    function esc(t) {
+        return String(t == null ? '' : t)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    init();
+</script>
+</body>
+</html>

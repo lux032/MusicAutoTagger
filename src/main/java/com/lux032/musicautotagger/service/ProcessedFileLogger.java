@@ -24,8 +24,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 
 import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.model.ProcessedRecord;
 
 /**
  * 已处理文件日志服务 - 支持 SQLite（默认）、MySQL 和 文件模式
@@ -807,6 +813,366 @@ public class ProcessedFileLogger {
             } catch (IOException e) {
                 throw new RuntimeException("替换已处理日志失败", e);
             }
+        }
+    }
+
+    // ==================== 处理记录管理（搜索 / 分页 / 批量删除） ====================
+
+    /** LIKE 转义字符：不用反斜杠，因为 MySQL 字符串字面量里反斜杠本身还要再转义一次，两种方言写法不一致。 */
+    private static final char LIKE_ESCAPE = '!';
+    private static final int IN_BATCH = 500;
+
+    private static String sqlList(Set<String> values) {
+        return values.stream().sorted().map(v -> "'" + v + "'")
+            .collect(java.util.stream.Collectors.joining(", "));
+    }
+
+    private static final String FAILED_SQL = "recording_id IN (" + sqlList(ProcessedRecord.FAILED_IDS) + ")";
+    private static final String OTHER_SQL = "recording_id IN (" + sqlList(ProcessedRecord.OTHER_IDS) + ")";
+    private static final String SUCCESS_SQL = "(recording_id IS NULL OR recording_id NOT IN ("
+        + sqlList(ProcessedRecord.FAILED_IDS) + ", " + sqlList(ProcessedRecord.OTHER_IDS) + "))";
+
+    private static String likePattern(String keyword) {
+        StringBuilder sb = new StringBuilder("%");
+        for (char c : keyword.toLowerCase(Locale.ROOT).toCharArray()) {
+            if (c == LIKE_ESCAPE || c == '%' || c == '_') sb.append(LIKE_ESCAPE);
+            sb.append(c);
+        }
+        return sb.append('%').toString();
+    }
+
+    /** 关键字 + 专辑条件（不含状态）。 */
+    private String baseWhere(ProcessedRecordQuery q, List<Object> params) {
+        StringBuilder where = new StringBuilder(" WHERE 1=1");
+        String keyword = q.normalizedKeyword();
+        if (keyword != null) {
+            String pattern = likePattern(keyword);
+            where.append(" AND (");
+            String[] cols = {"file_path", "artist", "title", "album"};
+            for (int i = 0; i < cols.length; i++) {
+                if (i > 0) where.append(" OR ");
+                where.append("LOWER(").append(cols[i]).append(") LIKE ? ESCAPE '").append(LIKE_ESCAPE).append("'");
+                params.add(pattern);
+            }
+            where.append(")");
+        }
+        String album = q.normalizedAlbum();
+        if (album != null) {
+            where.append(" AND album = ?");
+            params.add(album);
+        }
+        return where.toString();
+    }
+
+    private static String statusSql(ProcessedRecord.Status status) {
+        if (status == null) return null;
+        switch (status) {
+            case FAILED: return FAILED_SQL;
+            case OTHER: return OTHER_SQL;
+            default: return SUCCESS_SQL;
+        }
+    }
+
+    private String orderBy(ProcessedRecordQuery.Sort sort) {
+        String nc = isSqlite ? " COLLATE NOCASE" : "";
+        switch (sort) {
+            case TIME_ASC: return " ORDER BY processed_time ASC, file_path ASC";
+            case ALBUM: return " ORDER BY album" + nc + " ASC, file_path ASC";
+            case ARTIST: return " ORDER BY artist" + nc + " ASC, album" + nc + " ASC, file_path ASC";
+            case TITLE: return " ORDER BY title" + nc + " ASC, file_path ASC";
+            case PATH: return " ORDER BY file_path ASC";
+            default: return " ORDER BY processed_time DESC, file_path ASC";
+        }
+    }
+
+    private static void bind(PreparedStatement pstmt, List<Object> params) throws SQLException {
+        for (int i = 0; i < params.size(); i++) {
+            Object p = params.get(i);
+            if (p instanceof Integer) pstmt.setInt(i + 1, (Integer) p);
+            else pstmt.setString(i + 1, (String) p);
+        }
+    }
+
+    private String selectColumns() {
+        return "file_path, file_name, recording_id, artist, title, album, processed_time"
+            + (releaseGroupIdColumnAvailable ? ", release_group_id" : "")
+            + (targetFilePathColumnAvailable ? ", target_file_path" : "");
+    }
+
+    private ProcessedRecord mapRow(ResultSet rs) throws SQLException {
+        ProcessedRecord r = new ProcessedRecord();
+        r.filePath = rs.getString("file_path");
+        r.fileName = rs.getString("file_name");
+        r.recordingId = rs.getString("recording_id");
+        r.artist = rs.getString("artist");
+        r.title = rs.getString("title");
+        r.album = rs.getString("album");
+        Timestamp ts = rs.getTimestamp("processed_time");
+        r.processedTime = ts == null ? null : ts.toLocalDateTime().format(dateFormatter);
+        if (releaseGroupIdColumnAvailable) r.releaseGroupId = emptyToNull(rs.getString("release_group_id"));
+        if (targetFilePathColumnAvailable) r.targetFilePath = emptyToNull(rs.getString("target_file_path"));
+        r.status = ProcessedRecord.classify(r.recordingId);
+        return r;
+    }
+
+    /**
+     * 分页查询处理记录。SQLite / MySQL 走 SQL，文件模式在内存中过滤排序。
+     */
+    public ProcessedRecordQuery.Page queryRecords(ProcessedRecordQuery q) {
+        ProcessedRecordQuery.Page page = new ProcessedRecordQuery.Page();
+        page.offset = q.safeOffset();
+        page.limit = q.safeLimit();
+
+        if (!isDbMode) {
+            List<ProcessedRecord> base = filterFileRecords(q);
+            fillCounts(page.counts, base);
+            List<ProcessedRecord> filtered = base.stream()
+                .filter(r -> q.status == null || r.status == q.status)
+                .sorted(fileComparator(q.sort))
+                .toList();
+            page.total = filtered.size();
+            page.items = new ArrayList<>(filtered.subList(
+                Math.min(page.offset, filtered.size()),
+                Math.min(page.offset + page.limit, filtered.size())));
+            return page;
+        }
+
+        try (Connection conn = databaseService.getConnection()) {
+            List<Object> params = new ArrayList<>();
+            String where = baseWhere(q, params);
+            String countSql = "SELECT COUNT(*) AS all_count, "
+                + "SUM(CASE WHEN " + FAILED_SQL + " THEN 1 ELSE 0 END) AS failed_count, "
+                + "SUM(CASE WHEN " + OTHER_SQL + " THEN 1 ELSE 0 END) AS other_count "
+                + "FROM processed_files" + where;
+            try (PreparedStatement pstmt = conn.prepareStatement(countSql)) {
+                bind(pstmt, params);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next()) {
+                        long all = rs.getLong("all_count");
+                        long failed = rs.getLong("failed_count");
+                        long other = rs.getLong("other_count");
+                        page.counts.put("ALL", all);
+                        page.counts.put("FAILED", failed);
+                        page.counts.put("OTHER", other);
+                        page.counts.put("SUCCESS", all - failed - other);
+                    }
+                }
+            }
+            page.total = page.counts.getOrDefault(q.status == null ? "ALL" : q.status.name(), 0L);
+
+            String status = statusSql(q.status);
+            String sql = "SELECT " + selectColumns() + " FROM processed_files" + where
+                + (status != null ? " AND " + status : "")
+                + orderBy(q.sort) + " LIMIT ? OFFSET ?";
+            List<Object> pageParams = new ArrayList<>(params);
+            pageParams.add(page.limit);
+            pageParams.add(page.offset);
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                bind(pstmt, pageParams);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) page.items.add(mapRow(rs));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("查询处理记录失败: " + e.getMessage(), e);
+        }
+        return page;
+    }
+
+    /**
+     * 返回符合条件的所有记录（不分页，最多 max 条），用于「选择全部匹配结果」的批量操作与 CSV 导出。
+     */
+    public List<ProcessedRecord> findRecords(ProcessedRecordQuery q, int max) {
+        if (!isDbMode) {
+            return filterFileRecords(q).stream()
+                .filter(r -> q.status == null || r.status == q.status)
+                .sorted(fileComparator(q.sort))
+                .limit(max)
+                .toList();
+        }
+        List<ProcessedRecord> result = new ArrayList<>();
+        List<Object> params = new ArrayList<>();
+        String where = baseWhere(q, params);
+        String status = statusSql(q.status);
+        String sql = "SELECT " + selectColumns() + " FROM processed_files" + where
+            + (status != null ? " AND " + status : "") + orderBy(q.sort) + " LIMIT ?";
+        params.add(max);
+        try (Connection conn = databaseService.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            bind(pstmt, params);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) result.add(mapRow(rs));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("查询处理记录失败: " + e.getMessage(), e);
+        }
+        return result;
+    }
+
+    /** 按路径精确查找记录（不存在的路径会被忽略）。 */
+    public List<ProcessedRecord> findRecordsByPaths(Collection<String> paths) {
+        List<ProcessedRecord> result = new ArrayList<>();
+        if (paths == null || paths.isEmpty()) return result;
+        Set<String> wanted = dedupe(paths);
+
+        if (!isDbMode) {
+            for (ProcessedRecord r : readFileRecords()) {
+                if (wanted.contains(r.filePath)) result.add(r);
+            }
+            return result;
+        }
+        List<String> list = new ArrayList<>(wanted);
+        try (Connection conn = databaseService.getConnection()) {
+            for (int i = 0; i < list.size(); i += IN_BATCH) {
+                List<String> chunk = list.subList(i, Math.min(i + IN_BATCH, list.size()));
+                String sql = "SELECT " + selectColumns() + " FROM processed_files WHERE file_path IN ("
+                    + String.join(", ", java.util.Collections.nCopies(chunk.size(), "?")) + ")";
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    for (int j = 0; j < chunk.size(); j++) pstmt.setString(j + 1, chunk.get(j));
+                    try (ResultSet rs = pstmt.executeQuery()) {
+                        while (rs.next()) result.add(mapRow(rs));
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("查询处理记录失败: " + e.getMessage(), e);
+        }
+        return result;
+    }
+
+    /** 保持输入顺序、去掉空值的去重集合。 */
+    private static Set<String> dedupe(Collection<String> values) {
+        Set<String> set = new java.util.LinkedHashSet<>();
+        for (String v : values) if (v != null && !v.isEmpty()) set.add(v);
+        return set;
+    }
+
+    /**
+     * 批量删除处理记录（按记录中保存的原始路径精确匹配）。
+     * @return 实际被删除的记录数（文件模式下按不同路径计数）
+     */
+    public int removeProcessedRecords(Collection<String> paths) {
+        if (paths == null || paths.isEmpty()) return 0;
+        Set<String> targets = dedupe(paths);
+        if (targets.isEmpty()) return 0;
+
+        if (isDbMode) {
+            List<String> list = new ArrayList<>(targets);
+            int removed = 0;
+            try (Connection conn = databaseService.getConnection()) {
+                for (int i = 0; i < list.size(); i += IN_BATCH) {
+                    List<String> chunk = list.subList(i, Math.min(i + IN_BATCH, list.size()));
+                    String sql = "DELETE FROM processed_files WHERE file_path IN ("
+                        + String.join(", ", java.util.Collections.nCopies(chunk.size(), "?")) + ")";
+                    try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                        for (int j = 0; j < chunk.size(); j++) pstmt.setString(j + 1, chunk.get(j));
+                        removed += pstmt.executeUpdate();
+                    }
+                }
+            } catch (SQLException e) {
+                throw new RuntimeException("删除处理记录失败: " + e.getMessage(), e);
+            }
+            return removed;
+        }
+
+        synchronized (fileWriteLock) {
+            File logFile = new File(config.getProcessedFileLogPath());
+            if (!logFile.exists()) return 0;
+            File tempFile = new File(logFile.getAbsolutePath() + ".remove.tmp");
+            Set<String> removedPaths = new HashSet<>();
+            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
+                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    int sep = line.indexOf('|');
+                    String path = sep < 0 ? line : line.substring(0, sep);
+                    if (targets.contains(path)) {
+                        removedPaths.add(path);
+                        continue;
+                    }
+                    writer.write(line);
+                    writer.newLine();
+                }
+            } catch (IOException e) {
+                tempFile.delete();
+                throw new RuntimeException("重写已处理日志失败", e);
+            }
+            try {
+                Files.move(tempFile.toPath(), logFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                tempFile.delete();
+                throw new RuntimeException("替换已处理日志失败", e);
+            }
+            return removedPaths.size();
+        }
+    }
+
+    /** 文件模式：读取全部记录，同一路径以最后一次写入为准（与数据库 UPSERT 语义一致）。 */
+    private List<ProcessedRecord> readFileRecords() {
+        Map<String, ProcessedRecord> byPath = new LinkedHashMap<>();
+        for (String[] parts : readLogRows()) {
+            ProcessedRecord r = new ProcessedRecord();
+            r.filePath = parts[0];
+            r.fileName = new File(parts[0]).getName();
+            r.recordingId = emptyToNull(parts[1]);
+            r.artist = emptyToNull(parts[2]);
+            r.title = emptyToNull(parts[3]);
+            r.album = emptyToNull(parts[4]);
+            r.processedTime = emptyToNull(parts[5]);
+            r.releaseGroupId = parts.length >= 7 ? emptyToNull(parts[6]) : null;
+            r.targetFilePath = parts.length >= 8 ? emptyToNull(parts[7]) : null;
+            r.status = ProcessedRecord.classify(r.recordingId);
+            byPath.remove(r.filePath);
+            byPath.put(r.filePath, r);
+        }
+        return new ArrayList<>(byPath.values());
+    }
+
+    private List<ProcessedRecord> filterFileRecords(ProcessedRecordQuery q) {
+        String keyword = q.normalizedKeyword();
+        String kw = keyword == null ? null : keyword.toLowerCase(Locale.ROOT);
+        String album = q.normalizedAlbum();
+        List<ProcessedRecord> result = new ArrayList<>();
+        for (ProcessedRecord r : readFileRecords()) {
+            if (album != null && !album.equals(r.album)) continue;
+            if (kw != null && !(containsIgnoreCase(r.filePath, kw) || containsIgnoreCase(r.artist, kw)
+                    || containsIgnoreCase(r.title, kw) || containsIgnoreCase(r.album, kw))) {
+                continue;
+            }
+            result.add(r);
+        }
+        return result;
+    }
+
+    private static boolean containsIgnoreCase(String value, String lowerKeyword) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(lowerKeyword);
+    }
+
+    private static void fillCounts(Map<String, Long> counts, List<ProcessedRecord> records) {
+        long failed = 0, other = 0;
+        for (ProcessedRecord r : records) {
+            if (r.status == ProcessedRecord.Status.FAILED) failed++;
+            else if (r.status == ProcessedRecord.Status.OTHER) other++;
+        }
+        counts.put("ALL", (long) records.size());
+        counts.put("FAILED", failed);
+        counts.put("OTHER", other);
+        counts.put("SUCCESS", records.size() - failed - other);
+    }
+
+    private static Comparator<ProcessedRecord> fileComparator(ProcessedRecordQuery.Sort sort) {
+        Comparator<String> text = Comparator.nullsFirst(String.CASE_INSENSITIVE_ORDER);
+        Comparator<String> time = Comparator.nullsFirst(Comparator.<String>naturalOrder());
+        Comparator<ProcessedRecord> byPath = Comparator.comparing(r -> r.filePath);
+        switch (sort) {
+            case TIME_ASC: return Comparator.comparing((ProcessedRecord r) -> r.processedTime, time).thenComparing(byPath);
+            case ALBUM: return Comparator.comparing((ProcessedRecord r) -> r.album, text).thenComparing(byPath);
+            case ARTIST: return Comparator.comparing((ProcessedRecord r) -> r.artist, text)
+                .thenComparing(r -> r.album, text).thenComparing(byPath);
+            case TITLE: return Comparator.comparing((ProcessedRecord r) -> r.title, text).thenComparing(byPath);
+            case PATH: return byPath;
+            default: return Comparator.comparing((ProcessedRecord r) -> r.processedTime, time).reversed()
+                .thenComparing(byPath);
         }
     }
 

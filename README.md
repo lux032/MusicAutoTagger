@@ -29,6 +29,7 @@ The built-in real-time monitoring dashboard provides:
 - 📋 Live system logs with auto-scroll
 - ⚙️ System configuration and status overview
 - ✅ Pending review queue and manual re-identification pages, sharing one design system
+- 🗂️ Processed records page: search/filter history, re-identify or forget single files or whole albums, export CSV
 
 ## 🆕 What's New in 1.4.0
 
@@ -171,6 +172,8 @@ db.sqlite.path=data/music-tagger.db
 ```
 
 **Upgrading from file mode**: if you never set `db.type` explicitly, you are switched to SQLite on upgrade. On first start, the old log at `logging.processedFileLogPath` is imported once, so already-processed files are not identified again; the original log file is left untouched. To stay on file mode, set `db.type=file`.
+
+**Viewing and editing records**: everyday tasks (search, re-identify files, delete records, export) are handled on the **Records** page of the web dashboard, for all three storage modes. "Re-identify" immediately re-queues files that are still in the monitored folder and never deletes or moves audio files. For lower-level edits, stop the app and open `data/music-tagger.db` with DB Browser for SQLite or `sqlite3`.
 
 **Backup**: stop the app and copy the whole `data/` directory. The `music-tagger.db-wal` / `-shm` files that appear while running are normal and should be copied too.
 
