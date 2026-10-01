@@ -143,7 +143,7 @@ class ProcessedRecordQueryTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"sqlite", "file"})
-    void serviceReidentifyRemovesRecordsAndReportsUnqueued(String mode) throws Exception {
+    void serviceReidentifyRejectsUnavailableConsumerWithoutRemovingRecords(String mode) throws Exception {
         ProcessedFileLogger logger = logger(mode);
         seed(logger);
         MusicConfig config = newConfig();
@@ -157,10 +157,8 @@ class ProcessedRecordQueryTest {
         assertEquals(2, preview.get("total"));
         assertEquals(2, preview.get("requeueable"));
 
-        var result = service.reidentify(targets);
-        assertEquals(2, result.get("removed"));
-        assertEquals(0, result.get("queued"), "监控未运行时不入队，但记录仍被删除");
-        assertEquals(3, logger.queryRecords(q()).total);
+        assertThrows(IllegalStateException.class, () -> service.reidentify(targets));
+        assertEquals(5, logger.queryRecords(q()).total, "Unavailable consumer must preserve records");
 
         ProcessedRecordQuery.Page page = service.list(q());
         assertTrue(page.items.stream().allMatch(r -> Boolean.TRUE.equals(r.sourceExists)));

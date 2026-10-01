@@ -253,6 +253,10 @@ public class ApplicationLifecycleManager {
     /**
      * 检查监控是否运行中
      */
+    public java.util.Map<String, Object> getMonitoringHealth() {
+        return fileMonitor != null ? fileMonitor.getHealthSnapshot() : java.util.Map.of();
+    }
+
     public boolean isMonitoringRunning() {
         return fileMonitor != null && fileMonitor.isRunning();
     }

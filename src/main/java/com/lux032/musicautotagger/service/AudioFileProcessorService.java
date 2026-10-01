@@ -706,6 +706,7 @@ public class AudioFileProcessorService {
             // 4. 获取封面图片(多层降级策略)
             byte[] coverArtData = coverArtService.getCoverArtWithFallback(
                 originalAudioFile, detailedMetadata, lockedReleaseGroupId, isLooseFileInMonitorRoot);
+            MonitorTaskHealth.stage("processing");
             
             if (coverArtData != null && coverArtData.length > 0) {
                 log.info("✓ 成功获取封面图片");

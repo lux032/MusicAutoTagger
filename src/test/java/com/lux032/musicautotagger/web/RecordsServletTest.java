@@ -134,9 +134,11 @@ class RecordsServletTest {
         assertEquals(3, preview.get("requeueable").getAsInt());
         assertFalse(preview.get("monitoringActive").getAsBoolean());
 
-        JsonObject reid = gson.fromJson(post("/api/records/reidentify", albumFilter, "tok").body(), JsonObject.class);
-        assertTrue(reid.get("success").getAsBoolean());
-        assertEquals(3, reid.get("removed").getAsInt());
+        HttpResponse<String> rejected = post("/api/records/reidentify", albumFilter, "tok");
+        assertEquals(500, rejected.statusCode());
+        JsonObject reid = gson.fromJson(rejected.body(), JsonObject.class);
+        assertEquals("records.operation.failed", reid.get("error").getAsString());
+        assertTrue(reid.get("message").getAsString().contains("consumer unavailable"));
 
         String gone = new File(tempDir.toFile(), "gone.mp3").getAbsolutePath();
         JsonObject missingPreview = gson.fromJson(post("/api/records/preview",
@@ -148,7 +150,7 @@ class RecordsServletTest {
         assertEquals(1, forget.get("removed").getAsInt());
 
         JsonObject after = gson.fromJson(get("/api/records/list").body(), JsonObject.class);
-        assertEquals(0, after.get("total").getAsInt());
+        assertEquals(3, after.get("total").getAsInt(), "Rejected reidentify preserves the three album records");
     }
 
     @Test

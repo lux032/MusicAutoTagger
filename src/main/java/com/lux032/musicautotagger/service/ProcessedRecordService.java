@@ -128,16 +128,19 @@ public class ProcessedRecordService {
             }
         }
 
-        int removed = logger.removeProcessedRecords(paths(targets));
-
-        // 文件夹级缓存里可能还留着上次（可能是错误的）识别结果，不清掉的话会被直接复用
-        for (String root : albumRoots) {
-            if (folderAlbumCache != null) folderAlbumCache.clearFolderCache(root);
-            if (coverArtService != null) coverArtService.clearFolderCache(root);
-        }
-
         FileMonitorService monitor = monitorSupplier != null ? monitorSupplier.get() : null;
-        int queued = monitor != null ? monitor.requeueFiles(requeue) : 0;
+        if (monitor == null || !monitor.isConsumerAvailable())
+            throw new IllegalStateException("File consumer unavailable; records unchanged");
+        int[] removedCount = {0};
+        int queued = monitor.requeueFiles(requeue, () -> {
+            // Clear caches before deleting records: failures must not leave forgotten records unqueued.
+            for (String root : albumRoots) {
+                if (folderAlbumCache != null) folderAlbumCache.clearFolderCache(root);
+                if (coverArtService != null) coverArtService.clearFolderCache(root);
+            }
+            removedCount[0] = logger.removeProcessedRecords(paths(targets));
+        });
+        int removed = removedCount[0];
         log.info("通过处理记录页重新识别：删除 {} 条记录，{} 个文件已入队", removed, queued);
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -150,7 +153,7 @@ public class ProcessedRecordService {
 
     public boolean isMonitoringActive() {
         FileMonitorService monitor = monitorSupplier != null ? monitorSupplier.get() : null;
-        return monitor != null && monitor.isRunning();
+        return monitor != null && monitor.isConsumerAvailable();
     }
 
     public boolean isMonitoringPaused() {

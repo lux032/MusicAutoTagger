@@ -34,6 +34,7 @@ public class ControlServlet extends HttpServlet {
         status.put("monitoringRunning", lifecycleManager.isMonitoringRunning());
         status.put("monitoringPaused", lifecycleManager.isMonitoringPaused());
 
+        status.putAll(lifecycleManager.getMonitoringHealth());
         resp.getWriter().write(gson.toJson(status));
     }
 

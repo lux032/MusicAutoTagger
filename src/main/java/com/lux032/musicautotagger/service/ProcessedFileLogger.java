@@ -308,6 +308,16 @@ public class ProcessedFileLogger {
      */
     public void markFileAsProcessed(File file, String recordingId, String artist, String title,
                                     String album, String releaseGroupId, String targetFilePath) {
+        writeProcessedRecord(file, recordingId, artist, title, album, releaseGroupId, targetFilePath, false);
+    }
+
+    /** Consumer failure records must report persistence failure to their caller. */
+    public void markFailureAsProcessed(File file, String reason) {
+        writeProcessedRecord(file, "FAILED", reason, file.getName(), "Unknown Album", null, null, true);
+    }
+
+    private void writeProcessedRecord(File file, String recordingId, String artist, String title,
+                                     String album, String releaseGroupId, String targetFilePath, boolean strict) {
         String filePath = file.getAbsolutePath();
         String absoluteTargetPath = targetFilePath == null || targetFilePath.isBlank()
             ? null : new File(targetFilePath).getAbsolutePath();
@@ -362,6 +372,7 @@ public class ProcessedFileLogger {
                     pstmt.executeUpdate();
                 }
             } catch (IOException | SQLException e) {
+                if (strict) throw new IllegalStateException("FAILED record persistence failed", e);
                 log.error(I18nUtil.getMessage("logger.db.record.failed"), e);
             }
         } else {
@@ -377,6 +388,7 @@ public class ProcessedFileLogger {
                     writer.write(line);
                     writer.newLine();
                 } catch (IOException e) {
+                    if (strict) throw new IllegalStateException("FAILED record persistence failed", e);
                     log.error(I18nUtil.getMessage("logger.write.log.failed"), e);
                 }
             }

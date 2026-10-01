@@ -28,13 +28,18 @@ public class FileMonitorService {
     private final Set<String> supportedExtensions;
     private final ProcessedFileLogger processedLogger;
     private final Map<WatchKey, Path> watchKeys;
+    private final MonitorTaskHealth health = new MonitorTaskHealth();
+    private final Map<String, Future<?>> taskFutures = new ConcurrentHashMap<>();
+    private final Object admissionLock = new Object();
+    private final Object processingLock = new Object();
+    private final Map<File, RuntimeException> unrecordedFailures = new ConcurrentHashMap<>();
+    private volatile boolean closed;
     private volatile boolean running;
     private volatile boolean paused;  // 暂停状态标志
     // 每个文件处理间隔。MusicBrainz 客户端自带请求级限流，AcoustID / 歌词每首仅一次请求，
     // 这里只需留一点余量，不必再用 5 秒
     private static final long PROCESS_INTERVAL = 2000;
     private final int maxFileRetries; // 单个文件最大重试次数（从配置读取）
-    private static final long RETRY_QUEUE_CHECK_INTERVAL = 60000; // 重试队列检查间隔60秒
     
     public FileMonitorService(MusicConfig config, ProcessedFileLogger processedLogger) throws IOException {
         this.config = config;
@@ -56,18 +61,17 @@ public class FileMonitorService {
     /**
      * 启动文件监控
      */
-    public void start() {
-        if (running) {
+    public synchronized void start() {
+        if (closed) throw new IllegalStateException("Stopped monitor cannot be restarted");
+        if (running || !taskFutures.isEmpty()) {
             log.warn(I18nUtil.getMessage("monitor.already.running"));
             return;
         }
         
-        running = true;
-        
         try {
             // 注册监控目录
             Path monitorPath = Paths.get(config.getMonitorDirectory());
-            if (!Files.exists(monitorPath)) {
+            if (!Files.isDirectory(monitorPath)) {
                 log.error(I18nUtil.getMessage("monitor.directory.not.exist"), monitorPath);
                 return;
             }
@@ -77,33 +81,37 @@ public class FileMonitorService {
             
             log.info(I18nUtil.getMessage("monitor.start.monitoring"), monitorPath);
             
+            running = true;
+            log.info("JVM maxMemory={} bytes", Runtime.getRuntime().maxMemory());
             // 首次扫描现有文件
             scanExistingFiles(monitorPath);
             
             // 启动监控线程
-            watcherExecutorService.submit(this::watchLoop);
+            submitTask("watcher", this::watchLoop);
             
             // 启动文件处理队列线程
-            watcherExecutorService.submit(this::processFileQueue);
+            submitTask("consumer", this::processFileQueue);
             
             // 启动失败文件重试线程
-            watcherExecutorService.submit(this::processFailedFileQueue);
+            submitTask("retry", this::processFailedFileQueue);
             
-        } catch (IOException e) {
-            log.error("启动文件监控失败", e);
+        } catch (IOException | RuntimeException e) {
             running = false;
+            health.update("watcher", "FAULTED", null, "startup", e);
+            log.error("启动文件监控失败", e);
         }
     }
     
     /**
      * 停止文件监控
      */
-    public void stop() {
-        if (!running) {
-            return;
+    public synchronized void stop() {
+        synchronized (admissionLock) {
+            if (closed) return;
+            closed = true;
+            running = false;
         }
-        
-        running = false;
+        watcherExecutorService.shutdownNow();
         
         try {
             watchService.close();
@@ -120,8 +128,11 @@ public class FileMonitorService {
                 watcherExecutorService.shutdownNow();
             }
             log.info(I18nUtil.getMessage("monitor.service.stopped"));
-        } catch (IOException | InterruptedException e) {
+        } catch (IOException e) {
             log.error("停止文件监控失败", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("停止文件监控被中断", e);
         }
     }
 
@@ -203,6 +214,7 @@ public class FileMonitorService {
                     WatchEvent<Path> ev = (WatchEvent<Path>) event;
                     Path filename = ev.context();
                     Path dir = watchKeys.get(key);
+                    if (dir == null) continue;
                     Path fullPath = dir.resolve(filename);
                     
                     // 如果是新建的目录,递归注册监控
@@ -254,7 +266,11 @@ public class FileMonitorService {
             log.info(I18nUtil.getMessage("monitor.new.file"), filePath.getFileName());
             // 添加到队列,由专门的线程按顺序处理
             // 新文件需要等待写入完成
-            fileCheckExecutorService.submit(() -> addToQueue(filePath, true));
+            try {
+                fileCheckExecutorService.submit(() -> addToQueue(filePath, true));
+            } catch (RejectedExecutionException e) {
+                if (running) throw e;
+            }
         } else if (kind == StandardWatchEventKinds.ENTRY_MODIFY) {
             log.debug("文件被修改: {}", filePath.getFileName());
         }
@@ -298,11 +314,14 @@ public class FileMonitorService {
             }
             
             // 添加到队列
+            if (!running || Thread.currentThread().isInterrupted()) return;
             fileQueue.offer(file);
             log.info(I18nUtil.getMessage("monitor.file.queued"),
                 filePath.getFileName(), fileQueue.size());
             
-        } catch (IOException | InterruptedException e) {
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException e) {
             log.error("添加文件到队列失败: {}", filePath, e);
         }
     }
@@ -315,29 +334,28 @@ public class FileMonitorService {
         
         while (running) {
             try {
+                if (health.state("retry").equals("FAULTED")) {
+                    Thread.sleep(1000);
+                    continue;
+                }
                 // 检查是否暂停
                 if (paused) {
+                    health.update("consumer", "PAUSED", null, null, null);
                     Thread.sleep(1000);
                     continue;
                 }
 
                 // 从队列取出文件(阻塞等待)
+                health.update("consumer", "RUNNING", null, null, null);
                 File file = fileQueue.poll(1, TimeUnit.SECONDS);
                 if (file == null) {
                     continue;
                 }
                 
-                log.info(I18nUtil.getMessage("monitor.processing.file"),
-                    file.getName(), fileQueue.size());
-                
-                // 触发实际处理，并捕获结果
-                ProcessResult result = notifyFileReadyWithResult(file);
-                
-                // 根据处理结果决定后续操作
-                if (result.shouldRetry()) {
-                    // 只有网络错误才增加重试计数，临时文件检测等情况不增加
-                    int initialRetryCount = result.shouldIncrementRetryCount() ? 1 : 0;
-                    addToFailedQueue(file, initialRetryCount);
+                try {
+                    processOne("consumer", file, 0);
+                } catch (RuntimeException e) {
+                    if (running && !Thread.currentThread().isInterrupted()) recordFileFailure(file, e);
                 }
                 
                 // 等待指定间隔后再处理下一个文件
@@ -363,10 +381,19 @@ public class FileMonitorService {
 
         while (running) {
             try {
+                if (health.state("consumer").equals("FAULTED")) {
+                    Thread.sleep(1000);
+                    continue;
+                }
+                health.update("retry", paused ? "PAUSED" : "RUNNING", null, null, null);
+                if (paused) {
+                    Thread.sleep(1000);
+                    continue;
+                }
                 // 先检查队列是否有内容
                 if (failedFileQueue.isEmpty()) {
                     // 队列为空时才等待
-                    Thread.sleep(RETRY_QUEUE_CHECK_INTERVAL);
+                    Thread.sleep(1000);
                     continue;
                 }
 
@@ -378,11 +405,11 @@ public class FileMonitorService {
 
                 log.info(I18nUtil.getMessage("monitor.processing.retry.queue"), failedFileQueue.size());
                 
-                // 取出所有失败文件进行重试
-                List<FailedFile> filesToRetry = new ArrayList<>();
-                failedFileQueue.drainTo(filesToRetry);
-                
-                for (FailedFile failedFile : filesToRetry) {
+                // Take one at a time: a fatal exit must not discard the rest of the retry queue.
+                FailedFile failedFile = failedFileQueue.poll();
+                if (failedFile != null) {
+                    if (!running || Thread.currentThread().isInterrupted()) break;
+                    try {
                     if (failedFile.getRetryCount() >= maxFileRetries) {
                         log.warn(I18nUtil.getMessage("monitor.retry.max.reached"),
                             failedFile.getFile().getName(), maxFileRetries);
@@ -401,21 +428,10 @@ public class FileMonitorService {
                             failedFile.getFile().getName());
                     }
                     
-                    ProcessResult result = notifyFileReadyWithResult(failedFile.getFile());
-                    
-                    if (result.shouldRetry()) {
-                        // 根据结果类型决定是否增加重试计数
-                        int newRetryCount = failedFile.getRetryCount();
-                        if (result.shouldIncrementRetryCount()) {
-                            newRetryCount++;
-                        }
-                        // 重试失败，重新加入队列
-                        addToFailedQueue(failedFile.getFile(), newRetryCount);
-                    } else if (result.isSuccess()) {
-                        log.info(I18nUtil.getMessage("monitor.retry.success"), failedFile.getFile().getName());
+                    processOne("retry", failedFile.getFile(), failedFile.getRetryCount());
+                    } catch (RuntimeException e) {
+                        recordFileFailure(failedFile.getFile(), e);
                     }
-                    // PERMANENT_FAIL 情况下不需要额外处理，文件已在 processAudioFile 中被记录
-                    
                     // 重试之间也需要间隔
                     Thread.sleep(PROCESS_INTERVAL);
                 }
@@ -466,10 +482,9 @@ public class FileMonitorService {
         
         try {
             List<Path> musicFiles = new ArrayList<>();
-            Files.walk(directory)
-                .filter(Files::isRegularFile)
-                .filter(this::isMusicFile)
-                .forEach(musicFiles::add);
+            try (java.util.stream.Stream<Path> paths = Files.walk(directory)) {
+                paths.filter(Files::isRegularFile).filter(this::isMusicFile).forEach(musicFiles::add);
+            }
             
             log.info(I18nUtil.getMessage("monitor.scan.complete"), musicFiles.size());
             
@@ -539,8 +554,14 @@ public class FileMonitorService {
      * @return 实际入队的文件数（监控未运行、文件不存在或不是支持的格式时不入队）
      */
     public int requeueFiles(java.util.Collection<File> files) {
-        if (!running || files == null) {
-            return 0;
+        return requeueFiles(files, () -> {});
+    }
+
+    /** Record removal and admission share the stop/fault lock. */
+    public int requeueFiles(java.util.Collection<File> files, Runnable beforeEnqueue) {
+        synchronized (admissionLock) {
+        if (!isConsumerAvailable() || files == null) {
+            throw new IllegalStateException("File consumer unavailable");
         }
         Map<String, List<Path>> byFolder = new java.util.TreeMap<>();
         for (File file : files) {
@@ -549,12 +570,13 @@ public class FileMonitorService {
                 byFolder.computeIfAbsent(path.getParent().toString(), k -> new ArrayList<>()).add(path);
             }
         }
+        beforeEnqueue.run();
         int queued = 0;
         for (List<Path> folderFiles : byFolder.values()) {
             folderFiles.sort(null);
             for (Path path : folderFiles) {
                 processedFiles.remove(path.toString());
-                fileCheckExecutorService.submit(() -> addToQueue(path, false));
+                fileQueue.offer(path.toFile());
                 queued++;
             }
         }
@@ -563,6 +585,115 @@ public class FileMonitorService {
             LogCollector.addLog("INFO", "手动重新识别：已将 " + queued + " 个文件加入处理队列");
         }
         return queued;
+        }
+    }
+
+    public boolean isConsumerAvailable() {
+        String state = health.state("consumer");
+        return running && !closed && !health.state("retry").equals("FAULTED")
+            && !state.equals("FAULTED") && !state.equals("STOPPED")
+            && !state.equals("NOT_STARTED");
+    }
+
+    public Map<String, Object> getHealthSnapshot() {
+        Map<String, Map<String, Object>> tasks = health.snapshot();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("mainQueueSize", fileQueue.size());
+        result.put("retryQueueSize", failedFileQueue.size());
+        result.put("tasks", tasks);
+        result.put("unrecordedFailureCount", unrecordedFailures.size());
+        Map<String, Object> active = tasks.get("consumer");
+        if (!active.containsKey("currentFile")) active = tasks.get("retry");
+        for (String key : List.of("currentFile", "currentStage", "currentStartedAt", "lastActivityAt"))
+            result.put(key, active.get(key));
+        Object lastFault = null;
+        long latest = -1;
+        for (Map<String, Object> task : tasks.values()) {
+            if (task.get("lastFault") instanceof Map<?, ?> fault && (Long) fault.get("at") > latest) {
+                latest = (Long) fault.get("at");
+                lastFault = fault;
+            }
+        }
+        result.put("lastFault", lastFault);
+        return Collections.unmodifiableMap(result);
+    }
+
+    private void submitTask(String task, Runnable body) {
+        health.update(task, "RUNNING", null, null, null);
+        taskFutures.put(task, watcherExecutorService.submit(() -> {
+            try {
+                body.run();
+                if (running && !Thread.currentThread().isInterrupted())
+                    throw new IllegalStateException("Long-running task returned unexpectedly");
+                synchronized (admissionLock) {
+                    health.update(task, "STOPPED", null, null, null);
+                }
+            } catch (RuntimeException | Error failure) {
+                Map<String, Object> previous = health.snapshot().get(task);
+                String file = (String) previous.get("currentFile");
+                synchronized (admissionLock) {
+                    boolean faulted = failure instanceof Error || (running && !Thread.currentThread().isInterrupted());
+                    health.update(task, faulted ? "FAULTED" : "STOPPED", file,
+                        (String) previous.get("currentStage"), faulted ? failure : null);
+                }
+                if (health.state(task).equals("STOPPED")) return;
+                try {
+                    Runtime rt = Runtime.getRuntime();
+                    log.error("Monitor task={} file={} mainQueue={} retryQueue={} heap max={} total={} free={}",
+                        task, file, fileQueue.size(), failedFileQueue.size(), rt.maxMemory(), rt.totalMemory(), rt.freeMemory(), failure);
+                    LogCollector.addLog("ERROR", "Monitor task " + task + " exited: " + failure.getClass().getName());
+                } catch (RuntimeException | Error loggingFailure) {
+                    // State is published first; logging under memory pressure is best effort.
+                }
+                throw failure;
+            }
+        }));
+    }
+
+    private void processOne(String task, File file, int retryCount) {
+        synchronized (processingLock) {
+        if (!running || Thread.currentThread().isInterrupted()
+            || health.state("consumer").equals("FAULTED") || health.state("retry").equals("FAULTED")) return;
+        String relative = getRelativePathFromMonitorDir(file);
+        health.update(task, "PROCESSING", relative, "processing", null);
+        MonitorTaskHealth.bind(stage -> health.update(task, "PROCESSING", relative, stage, null));
+        try {
+            try {
+                ProcessResult result = Objects.requireNonNull(notifyFileReadyWithResult(file), "Null processing result");
+                if (running && !Thread.currentThread().isInterrupted() && result.shouldRetry())
+                    addToFailedQueue(file, retryCount + (result.shouldIncrementRetryCount() ? 1 : 0));
+            } finally {
+                MonitorTaskHealth.clear();
+            }
+        } catch (RuntimeException e) {
+            if (running && !Thread.currentThread().isInterrupted()) recordFileFailure(file, e);
+        } catch (Error e) {
+            synchronized (admissionLock) {
+                health.update(task, "FAULTED", relative,
+                    (String) health.snapshot().get(task).get("currentStage"), e);
+            }
+            throw e;
+        }
+        health.update(task, "RUNNING", null, null, null);
+        }
+    }
+
+    private void recordFileFailure(File file, RuntimeException failure) {
+        unrecordedFailures.put(file, failure);
+        try {
+            if (processedLogger == null) throw new IllegalStateException("No processed file logger");
+            processedLogger.markFailureAsProcessed(file, failure.getClass().getSimpleName());
+            unrecordedFailures.remove(file);
+        } catch (RuntimeException recordingFailure) {
+            try {
+                log.error("Cannot persist FAILED record for {} (retained in memory)", file, recordingFailure);
+                LogCollector.addLog("ERROR", "FAILED record could not be persisted; file retained for manual recovery");
+            } catch (RuntimeException loggingFailure) { /* retention remains observable */ }
+        }
+        try {
+            log.error("File processing failed: {}", file, failure);
+            LogCollector.addLog("ERROR", "File processing failed: " + file.getName());
+        } catch (RuntimeException loggingFailure) { /* do not mask processing outcome */ }
     }
 
     /**
@@ -655,16 +786,10 @@ public class FileMonitorService {
         // 记录到数据库，标记为处理失败（无论是否配置失败目录，都必须记录）
         if (processedLogger != null) {
             try {
-                processedLogger.markFileAsProcessed(
-                    file,
-                    "FAILED",
-                    "重试失败",
-                    file.getName(),
-                    "Unknown Album"
-                );
+                processedLogger.markFailureAsProcessed(file, "重试失败");
                 log.info(I18nUtil.getMessage("monitor.failed.file.recorded"), file.getName());
-            } catch (Exception e) {
-                log.error(I18nUtil.getMessage("monitor.record.failed.error"), file.getName(), e.getMessage());
+            } catch (RuntimeException e) {
+                recordFileFailure(file, e);
             }
         }
 

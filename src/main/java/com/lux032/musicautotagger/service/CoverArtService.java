@@ -67,6 +67,7 @@ public class CoverArtService {
      */
     public byte[] getCoverArtWithFallback(File audioFile, MusicMetadata metadata, 
                                            String lockedReleaseGroupId, boolean isLooseFile) {
+        MonitorTaskHealth.stage("cover");
         byte[] coverArtData = null;
         String folderPath = audioFile.getParentFile().getAbsolutePath();
 
@@ -88,7 +89,7 @@ public class CoverArtService {
 
         // 策略0.5: 如果有锁定的专辑ID，检查 CoverArtCache 中是否已经为这个专辑获取过封面
         if (lockedReleaseGroupId != null) {
-            coverArtData = coverArtCache.getCachedCoverByReleaseGroupId(lockedReleaseGroupId);
+            coverArtData = ImageCompressor.compressImage(coverArtCache.getCachedCoverByReleaseGroupId(lockedReleaseGroupId));
 
             if (coverArtData != null && coverArtData.length > 0) {
                 log.info("策略0.5: 使用已缓存的锁定专辑封面 (Release Group ID: {})", lockedReleaseGroupId);
@@ -200,7 +201,7 @@ public class CoverArtService {
     private byte[] downloadCoverFromNetwork(String coverArtUrl) {
         try {
             // 首先检查缓存
-            byte[] coverArtData = coverArtCache.getCachedCover(coverArtUrl);
+            byte[] coverArtData = ImageCompressor.compressImage(coverArtCache.getCachedCover(coverArtUrl));
             
             if (coverArtData != null) {
                 log.info("从缓存获取封面");
@@ -216,7 +217,7 @@ public class CoverArtService {
                 coverArtData = ImageCompressor.compressImage(rawCoverArt);
                 
                 // 保存到缓存
-                coverArtCache.cacheCover(coverArtUrl, coverArtData);
+                if (coverArtData != null) coverArtCache.cacheCover(coverArtUrl, coverArtData);
                 return coverArtData;
             }
         } catch (Exception e) {
@@ -257,6 +258,10 @@ public class CoverArtService {
         File file = findCoverFileInDirectory(directory);
         if (file == null) return null;
         try {
+            if (Files.size(file.toPath()) > ImageCompressor.MAX_INPUT_BYTES) {
+                log.warn("Directory cover exceeds 64MiB: {}", file.getName());
+                return null;
+            }
             byte[] imageData = Files.readAllBytes(file.toPath());
             if (imageData.length > 0) {
                 log.info("找到封面文件: {}", file.getName());
@@ -300,12 +305,13 @@ public class CoverArtService {
      * @return 封面数据，如果获取失败返回 null
      */
     public byte[] getCoverArtByReleaseGroupId(String releaseGroupId, String folderPath) {
+        MonitorTaskHealth.stage("cover");
         if (releaseGroupId == null || releaseGroupId.isEmpty()) {
             return null;
         }
         
         // 策略1: 检查 Release Group ID 级别的缓存
-        byte[] coverArtData = coverArtCache.getCachedCoverByReleaseGroupId(releaseGroupId);
+        byte[] coverArtData = ImageCompressor.compressImage(coverArtCache.getCachedCoverByReleaseGroupId(releaseGroupId));
         if (coverArtData != null && coverArtData.length > 0) {
             log.info("策略1: 从缓存获取锁定专辑封面 (Release Group ID: {})", releaseGroupId);
             // 更新文件夹级别缓存

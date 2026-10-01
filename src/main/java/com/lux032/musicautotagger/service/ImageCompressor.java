@@ -1,178 +1,101 @@
 package com.lux032.musicautotagger.service;
 
 import lombok.extern.slf4j.Slf4j;
-
-import javax.imageio.IIOImage;
-import javax.imageio.ImageIO;
-import javax.imageio.ImageWriteParam;
-import javax.imageio.ImageWriter;
-import javax.imageio.stream.ImageOutputStream;
-import java.awt.Graphics2D;
-import java.awt.Image;
+import javax.imageio.*;
+import javax.imageio.stream.MemoryCacheImageInputStream;
+import javax.imageio.stream.MemoryCacheImageOutputStream;
+import java.awt.*;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.util.Iterator;
 
-/**
- * 图片压缩服务
- * 用于压缩封面图片,控制嵌入音频文件的图片大小
- */
+/** Bounded cover decoding. Subsampling reduces risk; it cannot eliminate all JVM/native OOMs. */
 @Slf4j
 public class ImageCompressor {
-    
-    private static final int MAX_SIZE_BYTES = 2 * 1024 * 1024; // 2MB
-    private static final int MAX_DIMENSION = 1200; // 最大宽高
-    private static final float INITIAL_QUALITY = 0.85f; // 初始压缩质量
-    private static final float MIN_QUALITY = 0.5f; // 最低质量
-    private static final float QUALITY_STEP = 0.05f; // 质量递减步长
-    
-    /**
-     * 压缩图片数据,确保不超过指定大小
-     * @param imageData 原始图片数据
-     * @return 压缩后的图片数据
-     */
-    public static byte[] compressImage(byte[] imageData) {
-        if (imageData == null || imageData.length == 0) {
-            return imageData;
+    static final int MAX_INPUT_BYTES = 64 * 1024 * 1024;
+    static final long MAX_PIXELS = 50_000_000L;
+    // Some readers allocate full source rows before subsampling; pixel count alone is insufficient.
+    static final int MAX_SOURCE_DIMENSION = 32768;
+    private static final int MAX_SIZE_BYTES = 2 * 1024 * 1024;
+    private static final int MAX_DIMENSION = 1200;
+
+    /** Returns null when this source is unsafe or cannot be decoded; never returns unsafe original bytes. */
+    public static byte[] compressImage(byte[] data) {
+        if (data == null || data.length == 0 || data.length > MAX_INPUT_BYTES) {
+            log.warn("Cover input rejected (empty or over 64MiB)");
+            return null;
         }
-        
-        // 如果图片已经小于2MB,直接返回
-        if (imageData.length <= MAX_SIZE_BYTES) {
-            log.info("图片大小: {} KB,无需压缩", imageData.length / 1024);
-            return imageData;
-        }
-        
-        log.info("原始图片大小: {} KB,开始压缩...", imageData.length / 1024);
-        
-        try {
-            // 读取图片
-            BufferedImage originalImage = ImageIO.read(new ByteArrayInputStream(imageData));
-            if (originalImage == null) {
-                log.warn("无法读取图片,返回原始数据");
-                return imageData;
+        ImageReader reader = null;
+        long start = System.nanoTime();
+        try (MemoryCacheImageInputStream input = new MemoryCacheImageInputStream(new ByteArrayInputStream(data))) {
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
+            if (!readers.hasNext()) {
+                log.warn("Unknown cover image format");
+                return null;
             }
-            
-            int originalWidth = originalImage.getWidth();
-            int originalHeight = originalImage.getHeight();
-            log.info("原始图片尺寸: {}x{}", originalWidth, originalHeight);
-            
-            // 1. 首先尝试缩放图片尺寸
-            BufferedImage scaledImage = originalImage;
-            if (originalWidth > MAX_DIMENSION || originalHeight > MAX_DIMENSION) {
-                scaledImage = scaleImage(originalImage, MAX_DIMENSION);
-                log.info("缩放后尺寸: {}x{}", scaledImage.getWidth(), scaledImage.getHeight());
+            reader = readers.next();
+            reader.setInput(input, true, true);
+            int width = reader.getWidth(0), height = reader.getHeight(0);
+            if (width <= 0 || height <= 0 || Math.max(width, height) > MAX_SOURCE_DIMENSION
+                || (long) width * height > MAX_PIXELS) {
+                log.warn("Cover dimensions rejected: {}x{}", width, height);
+                return null;
             }
-            
-            // 2. 调整压缩质量直到满足大小要求
-            byte[] compressedData = null;
-            float quality = INITIAL_QUALITY;
-            
-            while (quality >= MIN_QUALITY) {
-                compressedData = compressToJPEG(scaledImage, quality);
-                
-                if (compressedData.length <= MAX_SIZE_BYTES) {
-                    log.info("压缩成功! 最终大小: {} KB, 质量: {}%", 
-                        compressedData.length / 1024, (int)(quality * 100));
-                    return compressedData;
+            int subsample = Math.max(1, (int) Math.ceil((double) Math.max(width, height) / MAX_DIMENSION));
+            ImageReadParam param = reader.getDefaultReadParam();
+            param.setSourceSubsampling(subsample, subsample, 0, 0);
+            BufferedImage decoded = reader.read(0, param);
+            if (decoded == null) return null;
+            // Always validate/decode even small inputs; a highly compressed raster may be enormous.
+            BufferedImage rgb = scaleImage(decoded, MAX_DIMENSION);
+            for (int dimension = MAX_DIMENSION; dimension >= 100; dimension -= 100) {
+                if (dimension != MAX_DIMENSION) rgb = scaleImage(rgb, dimension);
+                for (int quality = 85; quality >= 50; quality -= 5) {
+                    byte[] output = jpeg(rgb, quality / 100f);
+                    if (output.length <= MAX_SIZE_BYTES) {
+                        log.info("Cover bytes={} dimensions={}x{} format={} subsample={} output={} elapsedMs={}",
+                            data.length, width, height, reader.getFormatName(), subsample, output.length,
+                            (System.nanoTime() - start) / 1_000_000);
+                        return output;
+                    }
                 }
-                
-                quality -= QUALITY_STEP;
             }
-            
-            // 如果最低质量仍然太大,进一步缩小尺寸
-            log.warn("最低质量仍超过2MB,进一步缩小尺寸");
-            int newMaxDimension = MAX_DIMENSION;
-            
-            while (newMaxDimension > 400 && compressedData.length > MAX_SIZE_BYTES) {
-                newMaxDimension -= 100;
-                scaledImage = scaleImage(originalImage, newMaxDimension);
-                compressedData = compressToJPEG(scaledImage, MIN_QUALITY);
-                log.info("尺寸: {}x{}, 大小: {} KB", 
-                    scaledImage.getWidth(), scaledImage.getHeight(), 
-                    compressedData.length / 1024);
-            }
-            
-            if (compressedData.length <= MAX_SIZE_BYTES) {
-                log.info("压缩成功! 最终大小: {} KB", compressedData.length / 1024);
-                return compressedData;
-            } else {
-                log.warn("无法将图片压缩到2MB以内,使用最小化版本");
-                return compressedData;
-            }
-            
-        } catch (IOException e) {
-            log.error("图片压缩失败,返回原始数据", e);
-            return imageData;
-        }
-    }
-    
-    /**
-     * 缩放图片
-     */
-    private static BufferedImage scaleImage(BufferedImage original, int maxDimension) {
-        int originalWidth = original.getWidth();
-        int originalHeight = original.getHeight();
-        
-        // 计算缩放比例(保持宽高比)
-        double scale;
-        if (originalWidth > originalHeight) {
-            scale = (double) maxDimension / originalWidth;
-        } else {
-            scale = (double) maxDimension / originalHeight;
-        }
-        
-        int scaledWidth = (int) (originalWidth * scale);
-        int scaledHeight = (int) (originalHeight * scale);
-        
-        // 创建缩放后的图片
-        Image scaledImage = original.getScaledInstance(
-            scaledWidth, scaledHeight, Image.SCALE_SMOOTH);
-        
-        BufferedImage bufferedScaledImage = new BufferedImage(
-            scaledWidth, scaledHeight, BufferedImage.TYPE_INT_RGB);
-        
-        Graphics2D g2d = bufferedScaledImage.createGraphics();
-        g2d.drawImage(scaledImage, 0, 0, null);
-        g2d.dispose();
-        
-        return bufferedScaledImage;
-    }
-    
-    /**
-     * 将图片压缩为JPEG格式
-     */
-    private static byte[] compressToJPEG(BufferedImage image, float quality) throws IOException {
-        // 确保图片是RGB格式(JPEG不支持透明度)
-        BufferedImage rgbImage = new BufferedImage(
-            image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_RGB);
-        Graphics2D g = rgbImage.createGraphics();
-        g.drawImage(image, 0, 0, null);
-        g.dispose();
-        
-        // 获取JPEG写入器
-        Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpg");
-        if (!writers.hasNext()) {
-            throw new IOException("没有可用的JPEG写入器");
-        }
-        
-        ImageWriter writer = writers.next();
-        ImageWriteParam writeParam = writer.getDefaultWriteParam();
-        
-        // 设置压缩质量
-        writeParam.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
-        writeParam.setCompressionQuality(quality);
-        
-        // 写入到字节数组
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (ImageOutputStream ios = ImageIO.createImageOutputStream(baos)) {
-            writer.setOutput(ios);
-            writer.write(null, new IIOImage(rgbImage, null, null), writeParam);
+            log.warn("Cover cannot fit 2MiB budget");
+        } catch (IOException | RuntimeException e) {
+            log.warn("Cover decode rejected", e);
         } finally {
-            writer.dispose();
+            if (reader != null) reader.dispose();
         }
-        
-        return baos.toByteArray();
+        return null;
+    }
+
+    private static BufferedImage scaleImage(BufferedImage image, int maximum) {
+        double scale = Math.min(1d, (double) maximum / Math.max(image.getWidth(), image.getHeight()));
+        int width = Math.max(1, (int) Math.floor(image.getWidth() * scale));
+        int height = Math.max(1, (int) Math.floor(image.getHeight() * scale));
+        BufferedImage rgb = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = rgb.createGraphics();
+        try {
+            graphics.setColor(Color.WHITE);
+            graphics.fillRect(0, 0, width, height);
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            graphics.drawImage(image, 0, 0, width, height, null);
+        } finally { graphics.dispose(); }
+        return rgb;
+    }
+
+    private static byte[] jpeg(BufferedImage image, float quality) throws IOException {
+        Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpeg");
+        if (!writers.hasNext()) throw new IOException("No JPEG writer");
+        ImageWriter writer = writers.next();
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (MemoryCacheImageOutputStream output = new MemoryCacheImageOutputStream(bytes)) {
+            writer.setOutput(output);
+            ImageWriteParam param = writer.getDefaultWriteParam();
+            param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+            param.setCompressionQuality(quality);
+            writer.write(null, new IIOImage(image, null, null), param);
+        } finally { writer.dispose(); }
+        return bytes.toByteArray();
     }
 }
