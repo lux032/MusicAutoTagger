@@ -4,12 +4,14 @@ import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.ProcessResult;
 import com.lux032.musicautotagger.util.I18nUtil;
+import com.lux032.musicautotagger.util.FileSystemUtils;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Predicate;
 
 /**
  * 文件监控服务
@@ -33,6 +35,7 @@ public class FileMonitorService {
     private final Object admissionLock = new Object();
     private final Object processingLock = new Object();
     private final Map<File, RuntimeException> unrecordedFailures = new ConcurrentHashMap<>();
+    private volatile Predicate<File> autoProcessingSkipPredicate;
     private volatile boolean closed;
     private volatile boolean running;
     private volatile boolean paused;  // 暂停状态标志
@@ -290,6 +293,8 @@ public class FileMonitorService {
                 return;
             }
             
+            if (shouldSkipForReview(file)) return;
+
             // 只有新文件需要等待写入稳定,现有文件直接入队
             if (waitForStable) {
                 // 等待文件完全写入（简单的重试机制）
@@ -332,6 +337,7 @@ public class FileMonitorService {
     private void processFileQueue() {
         log.info(I18nUtil.getMessage("monitor.queue.thread.started"));
         
+        int reviewSkipped = 0;
         while (running) {
             try {
                 if (health.state("retry").equals("FAULTED")) {
@@ -349,15 +355,27 @@ public class FileMonitorService {
                 health.update("consumer", "RUNNING", null, null, null);
                 File file = fileQueue.poll(1, TimeUnit.SECONDS);
                 if (file == null) {
+                    logReviewSkips(reviewSkipped);
+                    reviewSkipped = 0;
                     continue;
                 }
-                
+
+                boolean skippedForReview = false;
                 try {
-                    processOne("consumer", file, 0);
+                    skippedForReview = processOne("consumer", file, 0);
                 } catch (RuntimeException e) {
                     if (running && !Thread.currentThread().isInterrupted()) recordFileFailure(file, e);
                 }
                 
+                if (skippedForReview) {
+                    if (++reviewSkipped >= 100) {
+                        logReviewSkips(reviewSkipped);
+                        reviewSkipped = 0;
+                    }
+                    continue;
+                }
+                logReviewSkips(reviewSkipped);
+                reviewSkipped = 0;
                 // 等待指定间隔后再处理下一个文件
                 if (!fileQueue.isEmpty()) {
                     log.info(I18nUtil.getMessage("monitor.wait.interval"), PROCESS_INTERVAL);
@@ -370,6 +388,7 @@ public class FileMonitorService {
             }
         }
         
+        logReviewSkips(reviewSkipped);
         log.info(I18nUtil.getMessage("monitor.queue.thread.stopped"));
     }
     
@@ -379,6 +398,7 @@ public class FileMonitorService {
     private void processFailedFileQueue() {
         log.info(I18nUtil.getMessage("monitor.retry.thread.started"));
 
+        int reviewSkipped = 0;
         while (running) {
             try {
                 if (health.state("consumer").equals("FAULTED")) {
@@ -392,6 +412,8 @@ public class FileMonitorService {
                 }
                 // 先检查队列是否有内容
                 if (failedFileQueue.isEmpty()) {
+                    logReviewSkips(reviewSkipped);
+                    reviewSkipped = 0;
                     // 队列为空时才等待
                     Thread.sleep(1000);
                     continue;
@@ -403,35 +425,46 @@ public class FileMonitorService {
                     continue;
                 }
 
-                log.info(I18nUtil.getMessage("monitor.processing.retry.queue"), failedFileQueue.size());
-                
                 // Take one at a time: a fatal exit must not discard the rest of the retry queue.
                 FailedFile failedFile = failedFileQueue.poll();
                 if (failedFile != null) {
-                    if (!running || Thread.currentThread().isInterrupted()) break;
+                    boolean skippedForReview = false;
                     try {
-                    if (failedFile.getRetryCount() >= maxFileRetries) {
-                        log.warn(I18nUtil.getMessage("monitor.retry.max.reached"),
-                            failedFile.getFile().getName(), maxFileRetries);
-                        // 移动到失败文件目录
-                        moveToFailedDirectory(failedFile.getFile());
+                        synchronized (processingLock) {
+                            if (!canProcess()) {
+                                // Preserve the original item/count across a stop or fault race.
+                                // The interval below and top-of-loop fault gate prevent busy re-polling.
+                                failedFileQueue.offer(failedFile);
+                            } else if (shouldSkipForReview(failedFile.getFile())) {
+                                skippedForReview = true;
+                            } else if (failedFile.getRetryCount() >= maxFileRetries) {
+                                log.warn(I18nUtil.getMessage("monitor.retry.max.reached"),
+                                    failedFile.getFile().getName(), maxFileRetries);
+                                moveToFailedDirectory(failedFile.getFile());
+                            } else {
+                                log.info(I18nUtil.getMessage("monitor.processing.retry.queue"), failedFileQueue.size() + 1);
+                                if (failedFile.getRetryCount() > 0) {
+                                    log.info(I18nUtil.getMessage("monitor.retry.file"),
+                                        failedFile.getFile().getName(), failedFile.getRetryCount(), maxFileRetries);
+                                } else {
+                                    log.info(I18nUtil.getMessage("monitor.delay.retry.file"), failedFile.getFile().getName());
+                                }
+                                processOneChecked("retry", failedFile.getFile(), failedFile.getRetryCount());
+                            }
+                        }
+                    } catch (RuntimeException e) {
+                        if (running && !Thread.currentThread().isInterrupted())
+                            recordFileFailure(failedFile.getFile(), e);
+                    }
+                    if (skippedForReview) {
+                        if (++reviewSkipped >= 100) {
+                            logReviewSkips(reviewSkipped);
+                            reviewSkipped = 0;
+                        }
                         continue;
                     }
-                    
-                    // 只有真正的重试（retryCount > 0）才显示重试日志
-                    if (failedFile.getRetryCount() > 0) {
-                        log.info(I18nUtil.getMessage("monitor.retry.file"),
-                            failedFile.getFile().getName(), failedFile.getRetryCount(), maxFileRetries);
-                    } else {
-                        // retryCount = 0 表示这是延迟重试（如临时文件检测），使用不同的日志
-                        log.info(I18nUtil.getMessage("monitor.delay.retry.file"),
-                            failedFile.getFile().getName());
-                    }
-                    
-                    processOne("retry", failedFile.getFile(), failedFile.getRetryCount());
-                    } catch (RuntimeException e) {
-                        recordFileFailure(failedFile.getFile(), e);
-                    }
+                    logReviewSkips(reviewSkipped);
+                    reviewSkipped = 0;
                     // 重试之间也需要间隔
                     Thread.sleep(PROCESS_INTERVAL);
                 }
@@ -442,6 +475,7 @@ public class FileMonitorService {
             }
         }
         
+        logReviewSkips(reviewSkipped);
         log.info(I18nUtil.getMessage("monitor.retry.thread.stopped"));
     }
     
@@ -500,6 +534,9 @@ public class FileMonitorService {
             // 统计已处理和待处理的文件数
             int totalSkipped = 0;
             int totalQueued = 0;
+            int reviewFiles = 0;
+            Set<String> reviewAlbums = new HashSet<>();
+            FileSystemUtils fileSystemUtils = new FileSystemUtils(config);
             
             // 按文件夹逐个处理
             for (Map.Entry<String, List<Path>> entry : filesByFolder.entrySet()) {
@@ -520,25 +557,45 @@ public class FileMonitorService {
                 }
                 
                 totalSkipped += skippedInFolder;
-                totalQueued += unprocessedFiles.size();
                 
                 if (unprocessedFiles.isEmpty()) {
                     log.debug(I18nUtil.getMessage("monitor.folder.all.processed"), new File(folderPath).getName());
                     continue;
                 }
                 
+                if (shouldSkipForReview(unprocessedFiles.get(0).toFile())) {
+                    reviewFiles += unprocessedFiles.size();
+                    try {
+                        File albumRoot = fileSystemUtils.getAlbumRootDirectory(unprocessedFiles.get(0).toFile());
+                        if (albumRoot != null) reviewAlbums.add(albumRoot.getAbsolutePath());
+                    } catch (RuntimeException e) {
+                        log.debug("Cannot resolve skipped album for scan statistics: {}", folderPath, e);
+                    }
+                    continue;
+                }
+
                 log.info(I18nUtil.getMessage("monitor.folder.status"),
                     new File(folderPath).getName(), unprocessedFiles.size(), skippedInFolder);
                 
                 // 将该文件夹的所有待处理文件按顺序加入队列
                 for (Path path : unprocessedFiles) {
-                    fileCheckExecutorService.submit(() -> addToQueue(path, false));
+                    try {
+                        if (!running || Thread.currentThread().isInterrupted()) continue;
+                        if (Files.size(path) == 0) {
+                            log.warn(I18nUtil.getMessage("monitor.file.size.zero"), path);
+                            continue;
+                        }
+                        fileQueue.offer(path.toFile());
+                        totalQueued++;
+                    } catch (IOException e) {
+                        log.error("添加文件到队列失败: {}", path, e);
+                    }
                 }
             }
             
             log.info("========================================");
-            log.info(I18nUtil.getMessage("monitor.scan.summary"),
-                totalSkipped, totalQueued);
+            log.info(I18nUtil.getMessage("monitor.scan.review.summary"),
+                totalSkipped, totalQueued, reviewAlbums.size(), reviewFiles);
             log.info(I18nUtil.getMessage("monitor.process.strategy"));
             log.info("========================================");
             
@@ -650,10 +707,45 @@ public class FileMonitorService {
         }));
     }
 
-    private void processOne(String task, File file, int retryCount) {
+    /** Only a positive live review check may waive the processing interval. */
+    private boolean processOne(String task, File file, int retryCount) {
         synchronized (processingLock) {
-        if (!running || Thread.currentThread().isInterrupted()
-            || health.state("consumer").equals("FAULTED") || health.state("retry").equals("FAULTED")) return;
+            if (!canProcess()) return false;
+            if (shouldSkipForReview(file)) return true;
+            processOneChecked(task, file, retryCount);
+            return false;
+        }
+    }
+
+    private boolean canProcess() {
+        return running && !Thread.currentThread().isInterrupted()
+            && !health.state("consumer").equals("FAULTED") && !health.state("retry").equals("FAULTED");
+    }
+
+    /** Optional live PENDING_REVIEW lookup; RuntimeException falls back to normal processing. */
+    public void setAutoProcessingSkipPredicate(Predicate<File> predicate) {
+        autoProcessingSkipPredicate = predicate;
+    }
+
+    private boolean shouldSkipForReview(File file) {
+        Predicate<File> predicate = autoProcessingSkipPredicate;
+        if (predicate == null) return false;
+        try {
+            boolean skip = predicate.test(file);
+            if (skip) log.debug(I18nUtil.getMessage("monitor.review.file.skipped"), file);
+            return skip;
+        } catch (RuntimeException e) {
+            log.debug("Review check failed; retaining normal processing for {}", file, e);
+            return false;
+        }
+    }
+
+    private void logReviewSkips(int count) {
+        if (count > 0) log.info(I18nUtil.getMessage("monitor.review.skip.summary"), count);
+    }
+
+    /** Caller holds processingLock and has checked lifecycle and review state. */
+    private void processOneChecked(String task, File file, int retryCount) {
         String relative = getRelativePathFromMonitorDir(file);
         health.update(task, "PROCESSING", relative, "processing", null);
         MonitorTaskHealth.bind(stage -> health.update(task, "PROCESSING", relative, stage, null));
@@ -675,7 +767,6 @@ public class FileMonitorService {
             throw e;
         }
         health.update(task, "RUNNING", null, null, null);
-        }
     }
 
     private void recordFileFailure(File file, RuntimeException failure) {

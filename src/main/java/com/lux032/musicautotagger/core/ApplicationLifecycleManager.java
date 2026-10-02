@@ -193,6 +193,10 @@ public class ApplicationLifecycleManager {
         log.info(I18nUtil.getMessage("app.init.file.monitor"));
         fileMonitor = new FileMonitorService(config, processedLogger);
         fileMonitor.setFileReadyCallbackWithResult(audioFileProcessorService::processAudioFile);
+        fileMonitor.setAutoProcessingSkipPredicate(file -> {
+            java.io.File albumRoot = fileSystemUtils.getAlbumRootDirectory(file);
+            return albumRoot != null && reviewQueueService.isFolderUnderReview(albumRoot.getAbsolutePath());
+        });
 
         // 处理记录管理（Web 「处理记录」页面）
         processedRecordService = new ProcessedRecordService(config, processedLogger, folderAlbumCache,
