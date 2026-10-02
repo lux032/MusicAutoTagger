@@ -70,4 +70,50 @@ class TagWriterServiceNoClobberTest {
         File src2again = wav("src2again.wav", 6, (byte) 4);
         assertEquals(dir.resolve("01 a (2).wav").toFile(), writer.copyWithoutClobbering(src2again, target));
     }
+
+    @Test
+    void recoveryPreservesSameDurationAndRestoresDefaultAfterException() throws Exception {
+        File target = wav("same.wav", 3, (byte) 1);
+        File src = wav("new.wav", 3, (byte) 2);
+        assertThrows(IllegalStateException.class, () -> {
+            try (var scope = writer.recoveryWorkspace(dir.toFile())) {
+                assertEquals(TagWriterService.withConflictSuffix(target, 2), writer.copyWithoutClobbering(src, target));
+                throw new IllegalStateException("test");
+            }
+        });
+        assertEquals(1, Files.readAllBytes(target.toPath())[100]);
+        assertEquals(target, writer.copyWithoutClobbering(src, target));
+        assertEquals(2, Files.readAllBytes(target.toPath())[100]);
+    }
+
+    @Test
+    void nestedAndExceptionalScopesRestoreRootAndPolicy() throws Exception {
+        File src = wav("nested.wav", 3, (byte) 1);
+        var md = new com.lux032.musicautotagger.model.MusicMetadata();
+        File outer = dir.resolve("outer").toFile();
+        File inner = dir.resolve("inner").toFile();
+        writer.setThreadOutputRoot(outer);
+        try {
+            assertThrows(IllegalStateException.class, () -> {
+                try (var scope = writer.recoveryWorkspace(inner)) {
+                    var first = writer.processFileToRootWithResult(src, md, null, outer);
+                    assertTrue(first.isSuccess());
+                    assertEquals(outer.toPath(), first.getTargetFile().toPath().getParent());
+                    var second = writer.processFileWithResult(src, md, null);
+                    assertTrue(second.isSuccess());
+                    assertEquals(inner.toPath(), second.getTargetFile().toPath().getParent());
+                    try (var nested = writer.recoveryWorkspace(outer)) {
+                        assertTrue(writer.processFileWithResult(src, md, null).getTargetFile().getName().contains("(2)"));
+                    }
+                    assertTrue(writer.processFileWithResult(src, md, null).getTargetFile().getName().contains("(2)"));
+                    throw new IllegalStateException("test");
+                }
+            });
+            var restored = writer.processFileWithResult(src, md, null);
+            assertTrue(restored.isSuccess());
+            assertEquals(outer.toPath().resolve("nested.wav"), restored.getTargetFile().toPath());
+        } finally {
+            writer.clearThreadOutputRoot();
+        }
+    }
 }

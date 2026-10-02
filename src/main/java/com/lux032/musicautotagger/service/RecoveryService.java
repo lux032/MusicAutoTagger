@@ -291,7 +291,8 @@ public class RecoveryService implements AutoCloseable {
         // 普通 review 条目没有物理隔离副本；确认联网候选时可以正常写入输出，
         // 但收尾阶段不能把它的原始 folderPath 当成 recovery 副本移进回收站。
         if (item.isOnlineEvidenceStale()) throw new IOException("online.evidence.stale");
-        ReviewItem.OnlineCandidate chosen = item.getOnlineCandidates().stream()
+        ReviewItem.OnlineCandidate chosen = (item.getOnlineCandidates() == null
+            ? List.<ReviewItem.OnlineCandidate>of() : item.getOnlineCandidates()).stream()
             .filter(c -> candidateId != null && candidateId.equals(c.getId())).findFirst()
             .orElseThrow(() -> new IOException("online.candidate.not.found"));
 
@@ -400,7 +401,8 @@ public class RecoveryService implements AutoCloseable {
             }
         }
 
-        try {
+        Map<String, Path> outputByOriginalPath = new LinkedHashMap<>();
+        try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(workRoot)) {
             for (File file : files) {
                 MusicMetadata original = tagWriter.readTags(file);
                 MusicMetadata md = original == null ? new MusicMetadata() : original;
@@ -417,16 +419,25 @@ public class RecoveryService implements AutoCloseable {
                     if (track.getDiscNo() > 0) md.setDiscNo(String.valueOf(track.getDiscNo()));
                     if (track.getTrackNo() > 0) md.setTrackNo(String.valueOf(track.getTrackNo()));
                 }
-                if (!tagWriter.processFileToRoot(file, md, cover, workRoot)) {
+                TagWriterService.TagProcessResult result =
+                    tagWriter.processFileToRootWithResult(file, md, cover, workRoot);
+                if (!result.isSuccess() || result.getTargetFile() == null) {
                     throw new IOException("online.atomic.write.failed");
                 }
+                outputByOriginalPath.put(matchedPath, workRoot.toPath().toAbsolutePath()
+                    .relativize(result.getTargetFile().toPath()));
             }
 
             // 归档目录名可能带版本号，与 TagWriter 依据专辑名生成的目录不同。
             // 先在工作区内改名，提交阶段就能统一按相对路径镜像，不必特判某一层目录。
             Path built = workRoot.toPath().resolve(artistDir).resolve(FileNameSanitizer.sanitize(finalAlbum));
             if (Files.isDirectory(built) && !albumDir.equals(built.getFileName().toString())) {
-                Files.move(built, built.resolveSibling(albumDir));
+                Path renamed = built.resolveSibling(albumDir);
+                Files.move(built, renamed);
+                Path oldRelative = workRoot.toPath().relativize(built);
+                Path newRelative = workRoot.toPath().relativize(renamed);
+                outputByOriginalPath.replaceAll((original, relative) -> relative.startsWith(oldRelative)
+                    ? newRelative.resolve(oldRelative.relativize(relative)) : relative);
             }
             committed = commitWorkspace(workRoot.toPath(), files.size(), item.getId());
         } catch (IOException e) {
@@ -444,19 +455,10 @@ public class RecoveryService implements AutoCloseable {
         item.setCommittedOutputPaths(committed.stream().map(Path::toString).toList());
         reviewQueue.update(item);
 
-        List<Path> committedAudio = new ArrayList<>();
-        for (Path unit : committed) {
-            if (Files.isDirectory(unit)) {
-                committedAudio.addAll(listFiles(unit).stream()
-                    .filter(p -> fileSystemUtils.isMusicFile(p.toFile())).toList());
-            } else if (fileSystemUtils.isMusicFile(unit.toFile())) {
-                committedAudio.add(unit);
-            }
-        }
-        committedAudio.sort(Path::compareTo);
-        for (int i = 0; i < originalFiles.size(); i++) {
-            File file = originalFiles.get(i);
-            String targetPath = i < committedAudio.size() ? committedAudio.get(i).toFile().getAbsolutePath() : null;
+        for (File file : originalFiles) {
+            Path relative = outputByOriginalPath.get(file.getAbsolutePath());
+            String targetPath = Path.of(config.getOutputDirectory()).resolve(relative)
+                .toFile().getAbsolutePath();
             processedLogger.markFileAsProcessed(file, "ONLINE_SEARCH", finalArtist,
                 file.getName(), finalAlbum, null, targetPath);
         }
@@ -681,20 +683,20 @@ public class RecoveryService implements AutoCloseable {
             File reidentifyWorkRoot = resolveWorkRoot().resolve("reidentify-" + job.id).toFile();
             if (reidentifyWorkRoot.exists()) deleteRecursively(reidentifyWorkRoot.toPath());
             Files.createDirectories(reidentifyWorkRoot.toPath());
-            tagWriter.setThreadOutputRoot(reidentifyWorkRoot);
-            for (File audioFile : audioFiles) {
-                ProcessResult result = processor.processRecoveryFile(audioFile, processingTarget);
-                if (result == ProcessResult.SUCCESS) {
-                    succeeded++;
-                } else {
-                    failed++;
-                    // 专辑识别失败时现有流程会把整个目录标记为 processed，继续循环没有意义。
-                    if (target.isDirectory()) {
-                        break;
+            try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(reidentifyWorkRoot)) {
+                for (File audioFile : audioFiles) {
+                    ProcessResult result = processor.processRecoveryFile(audioFile, processingTarget);
+                    if (result == ProcessResult.SUCCESS) {
+                        succeeded++;
+                    } else {
+                        failed++;
+                        // 专辑识别失败时现有流程会把整个目录标记为 processed，继续循环没有意义。
+                        if (target.isDirectory()) {
+                            break;
+                        }
                     }
                 }
             }
-            tagWriter.clearThreadOutputRoot();
             job.successCount = succeeded;
             job.failedCount = failed;
 
@@ -728,7 +730,6 @@ public class RecoveryService implements AutoCloseable {
                     "重新识别仍未全部成功（成功 " + succeeded + "，失败 " + failed + "），文件已保留");
             }
         } catch (Exception e) {
-            tagWriter.clearThreadOutputRoot();
             log.error("人工恢复任务失败: {}", target, e);
             if (singleFileWorkspace != null && (reviewQueue == null
                 || !reviewQueue.isFolderUnderReview(singleFileWorkspace.getAbsolutePath()))) {

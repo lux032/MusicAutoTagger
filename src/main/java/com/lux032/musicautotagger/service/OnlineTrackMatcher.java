@@ -7,6 +7,9 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.text.Normalizer;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -61,7 +64,8 @@ public class OnlineTrackMatcher {
         }
         pairs.sort((a, b) -> Double.compare(b.score, a.score));
 
-        Set<ReviewItem.OnlineTrack> usedTracks = new HashSet<>();
+        // OnlineTrack 的 Lombok hashCode 包含随后会修改的匹配字段，必须按身份去重。
+        Set<ReviewItem.OnlineTrack> usedTracks = Collections.newSetFromMap(new IdentityHashMap<>());
         Set<String> usedFiles = new HashSet<>();
         int confident = 0;
         for (Pair pair : pairs) {
@@ -105,8 +109,8 @@ public class OnlineTrackMatcher {
         }
 
         String trackTitle = normalize(track.getTitle());
+        double best = 0;
         if (!trackTitle.isEmpty()) {
-            double best = 0;
             String localTitle = normalize(local.title());
             if (!localTitle.isEmpty()) {
                 best = similarity(trackTitle, localTitle);
@@ -114,7 +118,8 @@ public class OnlineTrackMatcher {
             // 文件名常常比标签更可靠（标签可能为空或是乱码）
             String fileName = normalize(stripExtension(local.file().getName()));
             if (!fileName.isEmpty()) {
-                double byName = fileName.contains(trackTitle) ? 1.0 : similarity(trackTitle, fileName);
+                // 允许艺术家前缀，但不能把「原曲 - TV size」当作原曲的精确匹配。
+                double byName = fileName.endsWith(trackTitle) ? 1.0 : similarity(trackTitle, fileName);
                 best = Math.max(best, byName);
             }
             if (best > 0) {
@@ -130,6 +135,11 @@ public class OnlineTrackMatcher {
             if (delta <= tolerance) {
                 hasEvidence = true;
                 score += 0.20 * (1 - delta / tolerance);
+                // 标题精确一致且时长仅有编码/取整误差时，两项独立证据已足够。
+                // 仍保留曲号/碟号冲突的惩罚，不降低全局置信度门槛。
+                if (best == 1.0 && delta <= Math.max(2, track.getDuration() * 0.01)) {
+                    score += 0.05;
+                }
             } else {
                 score -= 0.25;
             }
@@ -161,7 +171,8 @@ public class OnlineTrackMatcher {
     /** 归一化：去掉大小写、空白与标点，避免全半角/连字符差异干扰比对 */
     private String normalize(String value) {
         if (value == null) return "";
-        return value.toLowerCase(Locale.ROOT).replaceAll("[\\p{Punct}\\s\\u3000-\\u303F\\uFF00-\\uFFEF]+", "");
+        return Normalizer.normalize(value, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT)
+            .replaceAll("[\\p{P}\\p{Punct}\\s\\u3000-\\u303F]+", "");
     }
 
     /** 归一化编辑距离相似度，低于 0.5 视为不相关 */

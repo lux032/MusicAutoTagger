@@ -337,6 +337,11 @@
             </div>`).join('');
     }
 
+    function humanError(message) {
+        const mismatch = /^recovery\.workspace\.count\.mismatch:(\d+)\/(\d+)$/.exec(message || '');
+        return mismatch ? TF('recovery.workspace.count.mismatch', mismatch[1], mismatch[2]) : message;
+    }
+
     function renderJobs(jobs) {
         const el = document.getElementById('jobs');
         if (!jobs.length) { el.innerHTML = `<div class="empty">${esc(T('recovery.no.jobs'))}</div>`; return; }
@@ -345,7 +350,7 @@
                 <span class="job-name">${esc(j.relativePath)}</span>
                 <span class="badge">${esc(j.useLlm ? T('recovery.job.llm') : T('recovery.job.reidentify'))}</span>
                 <span class="job-status">${esc(status(j.status))}</span>
-                <div class="meta">${esc(j.message || T('recovery.job.processing'))}</div>
+                <div class="meta">${esc(humanError(j.message) || T('recovery.job.processing'))}</div>
             </div>`).join('');
     }
 

@@ -168,10 +168,31 @@ class SystemSuggestionCalculatorTest {
         assertSuggestion(item(), "TRY_ONLINE_SEARCH", "ONLINE_SEARCH");
     }
 
+    @Test
+    void oldInflatedCoverageUsesUniqueReliableLocalPathsWithoutMutation() {
+        var item = item();
+        var candidate = online("old", "Album", 1, 1);
+        candidate.getTracks().forEach(t -> t.setMatchedFilePath("file-0"));
+        candidate.getTracks().get(0).setMatchConfidence(0.59);
+        item.setOnlineCandidates(List.of(candidate));
+        assertEquals(0.1, SystemSuggestionCalculator.reliableCoverage(item, candidate));
+        assertEquals(0.1, evaluate(item).get("onlineScore"));
+        assertEquals(1, candidate.getTrackCoverage());
+        item.setFiles(List.of());
+        assertEquals(0, SystemSuggestionCalculator.reliableCoverage(item, candidate));
+        candidate.setTracks(List.of());
+        assertEquals(0, SystemSuggestionCalculator.reliableCoverage(item, candidate));
+    }
+
     private static ReviewItem item() {
         ReviewItem item = new ReviewItem();
         item.setStatus(ReviewItem.Status.PENDING_REVIEW);
         item.setFiles(new ArrayList<>());
+        for (int i = 0; i < 10; i++) {
+            var file = new ReviewItem.FileEntry();
+            file.setOriginalPath("file-" + i);
+            item.getFiles().add(file);
+        }
         item.setCandidates(new ArrayList<>());
         item.setOnlineCandidates(new ArrayList<>());
         return item;
@@ -194,6 +215,14 @@ class SystemSuggestionCalculatorTest {
         candidate.setTitle(title);
         candidate.setConfidence(confidence);
         candidate.setTrackCoverage(coverage);
+        var tracks = new ArrayList<ReviewItem.OnlineTrack>();
+        for (int i = 0; i < Math.round(coverage * 10); i++) {
+            var track = new ReviewItem.OnlineTrack();
+            track.setMatchedFilePath("file-" + i);
+            track.setMatchConfidence(0.9);
+            tracks.add(track);
+        }
+        candidate.setTracks(tracks);
         return candidate;
     }
 

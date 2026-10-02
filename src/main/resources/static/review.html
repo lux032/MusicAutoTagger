@@ -347,6 +347,10 @@
     };
 
     function humanError(message) {
+        const coverage = /^online\.track\.coverage\.insufficient:(\d+)\/(\d+)$/.exec(message || '');
+        if (coverage) return tf('review.error.online.coverage.insufficient', coverage[1], coverage[2]);
+        const mismatch = /^recovery\.workspace\.count\.mismatch:(\d+)\/(\d+)$/.exec(message || '');
+        if (mismatch) return tf('recovery.workspace.count.mismatch', mismatch[1], mismatch[2]);
         const key = ERROR_KEYS[message];
         return key ? t(key) : message;
     }
@@ -512,8 +516,12 @@
             </div>`;
 
         const onlineRows = (item.onlineCandidates || []).map(c => {
-            const matchedTracks = (c.tracks || []).filter(t => (t.matchConfidence || 0) >= 0.6).length;
+            const localPaths = new Set((item.files || []).map(f => f.originalPath).filter(Boolean));
+            const matchedTracks = new Set((c.tracks || [])
+                .filter(t => t.matchConfidence >= 0.6 && localPaths.has(t.matchedFilePath))
+                .map(t => t.matchedFilePath)).size;
             const totalLocal = (item.files || []).length;
+            const coverage = totalLocal ? matchedTracks / totalLocal : 0;
             const trackRows = (c.tracks || []).filter(t => t.matchedFilePath).map(t => `
                 <div class="hint">${t.discNo || 1}-${t.trackNo || '-'} ${escapeHtml(t.title || '')}
                     → ${escapeHtml(baseName(t.matchedFilePath))} · ${escapeHtml(tf('review.match', percent(t.matchConfidence)))}</div>`).join('');
@@ -523,7 +531,7 @@
             <div class="item-signals">
                 <span class="signal online">${escapeHtml(tf('review.signal.source.self', percent(c.confidence)))}</span>
                 <span class="signal">${escapeHtml(tf('review.signal.reliable.match', matchedTracks, totalLocal))}</span>
-                <span class="signal">${escapeHtml(tf('review.signal.local.coverage', percent(c.trackCoverage)))}</span>
+                <span class="signal">${escapeHtml(tf('review.signal.local.coverage', percent(coverage)))}</span>
             </div>
             <div class="hint">${escapeHtml(c.reason || '')}</div>
             <div class="hint">${escapeHtml(tf('review.tracklist.summary', (c.tracks||[]).length, (c.sources||[]).length))}</div>

@@ -318,7 +318,7 @@ public class ReviewServlet extends HttpServlet {
         if (item.getOnlineCandidates() != null) {
             for (ReviewItem.OnlineCandidate candidate : item.getOnlineCandidates()) {
                 bestOnlineSourceConfidence = Math.max(bestOnlineSourceConfidence, candidate.getConfidence());
-                bestOnlineTrackCoverage = Math.max(bestOnlineTrackCoverage, candidate.getTrackCoverage());
+                bestOnlineTrackCoverage = Math.max(bestOnlineTrackCoverage, SystemSuggestionCalculator.reliableCoverage(item, candidate));
             }
         }
         map.put("bestOnlineSourceConfidence", bestOnlineSourceConfidence);

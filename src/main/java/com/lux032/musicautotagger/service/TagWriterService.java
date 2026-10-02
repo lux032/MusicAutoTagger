@@ -58,6 +58,33 @@ public class TagWriterService {
      * RecoveryService.commitWorkspace 的文件数校验是针对这种情况的运行时兵库。
      */
     private final ThreadLocal<Path> outputRootOverride = new ThreadLocal<>();
+    public enum CollisionPolicy { REPLACE_SAME_AUDIO, PRESERVE_ALL }
+    private final ThreadLocal<CollisionPolicy> collisionPolicyOverride = new ThreadLocal<>();
+
+    /** Same-thread scope; nested scopes restore both values, including on exceptions. */
+    public final class OutputScope implements AutoCloseable {
+        private final Path previousRoot = outputRootOverride.get();
+        private final CollisionPolicy previousPolicy = collisionPolicyOverride.get();
+        private boolean closed;
+
+        private OutputScope(File root, CollisionPolicy policy) {
+            setThreadOutputRoot(root);
+            collisionPolicyOverride.set(policy);
+        }
+
+        @Override public void close() {
+            if (closed) return;
+            closed = true;
+            if (previousRoot == null) outputRootOverride.remove();
+            else outputRootOverride.set(previousRoot);
+            if (previousPolicy == null) collisionPolicyOverride.remove();
+            else collisionPolicyOverride.set(previousPolicy);
+        }
+    }
+
+    public OutputScope recoveryWorkspace(File root) {
+        return new OutputScope(root, CollisionPolicy.PRESERVE_ALL);
+    }
 
     public TagWriterService(MusicConfig config) {
         this.config = config;
@@ -187,6 +214,10 @@ public class TagWriterService {
                 }
             }
 
+            if (collisionPolicyOverride.get() == CollisionPolicy.PRESERVE_ALL) {
+                candidate = withConflictSuffix(targetFile, attempt + 1);
+                continue;
+            }
             if (!sourceDurationRead) {
                 sourceDuration = readPreciseDuration(sourceFile);
                 sourceDurationRead = true;
@@ -324,11 +355,13 @@ public class TagWriterService {
      * 避免逐首直接写入最终 outputDirectory。
      */
     public boolean processFileToRoot(File sourceFile, MusicMetadata metadata, byte[] coverArtData, File rootDirectory) {
-        setThreadOutputRoot(rootDirectory);
-        try {
-            return processFile(sourceFile, metadata, coverArtData);
-        } finally {
-            clearThreadOutputRoot();
+        return processFileToRootWithResult(sourceFile, metadata, coverArtData, rootDirectory).isSuccess();
+    }
+
+    public TagProcessResult processFileToRootWithResult(File sourceFile, MusicMetadata metadata,
+                                                       byte[] coverArtData, File rootDirectory) {
+        try (OutputScope scope = new OutputScope(rootDirectory, collisionPolicyOverride.get())) {
+            return processFileWithResult(sourceFile, metadata, coverArtData);
         }
     }
 

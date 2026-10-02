@@ -50,8 +50,8 @@ public final class SystemSuggestionCalculator {
         ReviewItem.CandidateSnapshot bestLocal = bestExecutableLocal(item, candidates);
         boolean hasReleaseLevelCandidate = bestLocal != null;
         Double localScore = localScore(item, bestLocal);
-        ReviewItem.OnlineCandidate bestOnline = bestOnline(onlineCandidates);
-        Double onlineScore = bestOnline == null ? null : onlineScore(bestOnline);
+        ReviewItem.OnlineCandidate bestOnline = bestOnline(item, onlineCandidates);
+        Double onlineScore = bestOnline == null ? null : onlineScore(item, bestOnline);
         boolean neverSearchedOnline = item.getOnlineSearchedAt() <= 0L;
         boolean stale = item.isOnlineEvidenceStale();
         boolean allConfirmedNoRelease = !candidates.isEmpty()
@@ -179,15 +179,29 @@ public final class SystemSuggestionCalculator {
             .findFirst().orElse(null);
     }
 
-    private static ReviewItem.OnlineCandidate bestOnline(List<ReviewItem.OnlineCandidate> candidates) {
+    private static ReviewItem.OnlineCandidate bestOnline(ReviewItem item, List<ReviewItem.OnlineCandidate> candidates) {
         return candidates.stream().max(Comparator
-            .comparingDouble(SystemSuggestionCalculator::onlineScore)
+            .comparingDouble((ReviewItem.OnlineCandidate c) -> onlineScore(item, c))
             .thenComparing(c -> c.getId() == null ? "" : c.getId())).orElse(null);
     }
 
-    private static double onlineScore(ReviewItem.OnlineCandidate candidate) {
+    private static double onlineScore(ReviewItem item, ReviewItem.OnlineCandidate candidate) {
         // Use the weaker dimension: a source is only strong when both source confidence and local-track coverage are strong.
-        return Math.min(clamp(candidate.getConfidence()), clamp(candidate.getTrackCoverage()));
+        return Math.min(clamp(candidate.getConfidence()), reliableCoverage(item, candidate));
+    }
+
+    /** Read-only projection: do not trust coverage persisted by older matchers. */
+    public static double reliableCoverage(ReviewItem item, ReviewItem.OnlineCandidate candidate) {
+        if (item.getFiles() == null || item.getFiles().isEmpty() || candidate.getTracks() == null) return 0;
+        java.util.Set<String> localPaths = new java.util.HashSet<>();
+        for (ReviewItem.FileEntry file : item.getFiles()) {
+            if (hasText(file.getOriginalPath())) localPaths.add(file.getOriginalPath());
+        }
+        long matched = candidate.getTracks().stream()
+            .filter(track -> track.getMatchConfidence() >= com.lux032.musicautotagger.service.OnlineTrackMatcher.MIN_CONFIDENCE)
+            .map(ReviewItem.OnlineTrack::getMatchedFilePath)
+            .filter(localPaths::contains).distinct().count();
+        return matched / (double) item.getFiles().size();
     }
 
     private static double clamp(double value) {
