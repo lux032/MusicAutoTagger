@@ -42,6 +42,7 @@ public class FailedFileHandler {
     private final AudioFormatNormalizer audioFormatNormalizer;
     private final ArtistMatchingService artistMatchingService;
     private final AlbumArtistPolicy albumArtistPolicy;
+    private final AutoArchiveRegistry autoArchiveRegistry;
     
     public FailedFileHandler(MusicConfig config, TagWriterService tagWriter,
                              CoverArtService coverArtService, ProcessedFileLogger processedLogger,
@@ -54,6 +55,7 @@ public class FailedFileHandler {
         this.audioFormatNormalizer = new AudioFormatNormalizer(config);
         this.artistMatchingService = new ArtistMatchingService(config);
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
+        this.autoArchiveRegistry = AutoArchiveRegistry.forReviewQueuePath(config.getReviewQueuePath());
     }
 
     /**
@@ -69,6 +71,12 @@ public class FailedFileHandler {
      * 将文件复制到部分识别目录，保留原始的文件夹结构，并尝试内嵌文件夹封面
      */
     public PartialHandlingResult handlePartialRecognitionFile(File audioFile, File processingFile) {
+        return handlePartialRecognitionFile(audioFile, processingFile, archived -> { });
+    }
+
+    /** @param onArchived LLM 自动归档成功时回调归档后的输出路径 */
+    private PartialHandlingResult handlePartialRecognitionFile(File audioFile, File processingFile,
+                                                               java.util.function.Consumer<Path> onArchived) {
         if (config.getPartialDirectory() == null || config.getPartialDirectory().isEmpty()) {
             return PartialHandlingResult.NOT_HANDLED; // 未配置部分识别目录，跳过
         }
@@ -161,8 +169,10 @@ public class FailedFileHandler {
             }
 
             // LLM 匹配逻辑：如果启用且源文件有艺术家标签，尝试匹配并移动到 outputDirectory
-            if (config.isEnableLLMMatching() && tryLLMMatchAndMove(audioFile, targetFile)) {
+            Path archivedFile = config.isEnableLLMMatching() ? tryLLMMatchAndMove(audioFile, targetFile) : null;
+            if (archivedFile != null) {
                 log.info("LLM 匹配成功，文件已移动到 outputDirectory");
+                onArchived.accept(archivedFile);
                 return PartialHandlingResult.ARCHIVED;
             }
 
@@ -183,6 +193,12 @@ public class FailedFileHandler {
      * 将整个专辑文件夹复制到部分识别目录，并为每个文件内嵌封面
      */
     public PartialHandlingResult handlePartialRecognitionAlbum(File albumRootDir) {
+        return handlePartialRecognitionAlbum(albumRootDir, archived -> { });
+    }
+
+    /** @param onArchived LLM 自动归档成功时回调归档后的专辑目录 */
+    private PartialHandlingResult handlePartialRecognitionAlbum(File albumRootDir,
+                                                                java.util.function.Consumer<Path> onArchived) {
         if (config.getPartialDirectory() == null || config.getPartialDirectory().isEmpty()) {
             return PartialHandlingResult.NOT_HANDLED; // 未配置部分识别目录，跳过
         }
@@ -333,8 +349,11 @@ public class FailedFileHandler {
 
             // LLM 匹配逻辑：如果启用且源文件有艺术家标签，尝试匹配并移动到 outputDirectory
             log.info("LLM 匹配配置检查: enabled={}", config.isEnableLLMMatching());
-            if (config.isEnableLLMMatching() && !audioFiles.isEmpty() && tryLLMMatchAndMoveAlbum(audioFiles.get(0), targetFolder)) {
+            Path archivedFolder = config.isEnableLLMMatching() && !audioFiles.isEmpty()
+                ? tryLLMMatchAndMoveAlbum(audioFiles.get(0), targetFolder) : null;
+            if (archivedFolder != null) {
                 log.info("LLM 匹配成功，专辑已移动到 outputDirectory");
+                onArchived.accept(archivedFolder);
                 return PartialHandlingResult.ARCHIVED;
             }
 
@@ -472,20 +491,21 @@ public class FailedFileHandler {
             return false;
         }
         if (partialItem.isFile()) {
-            return tryLLMMatchAndMove(partialItem, partialItem);
+            return tryLLMMatchAndMove(partialItem, partialItem) != null;
         }
         List<File> audioFiles = new ArrayList<>();
         collectAudioFiles(partialItem, audioFiles);
-        return !audioFiles.isEmpty() && tryLLMMatchAndMoveAlbum(audioFiles.get(0), partialItem);
+        return !audioFiles.isEmpty() && tryLLMMatchAndMoveAlbum(audioFiles.get(0), partialItem) != null;
     }
 
-    private boolean tryLLMMatchAndMove(File sourceFile, File partialFile) {
+    /** @return 归档后的文件路径；未匹配或无法安全归档时返回 null，文件保持原位 */
+    private Path tryLLMMatchAndMove(File sourceFile, File partialFile) {
         try {
             // 读取源文件的艺术家标签
             com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(sourceFile);
             if (metadata == null || metadata.getArtist() == null || metadata.getArtist().trim().isEmpty()) {
                 log.debug("源文件没有艺术家标签，跳过 LLM 匹配");
-                return false;
+                return null;
             }
 
             String sourceArtist = metadata.getArtist();
@@ -495,7 +515,7 @@ public class FailedFileHandler {
             ArtistMatchingService.MatchResult matchResult = artistMatchingService.matchArtist(sourceArtist);
             if (matchResult == null) {
                 log.info("LLM 未找到匹配的艺术家");
-                return false;
+                return null;
             }
 
             String matchedArtist = matchResult.getMatchedArtist();
@@ -507,19 +527,26 @@ public class FailedFileHandler {
 
             File artistDir = new File(config.getOutputDirectory(), FileNameSanitizer.sanitize(matchedArtist));
             File albumDir = new File(artistDir, albumName);
-            albumDir.mkdirs();
-
             File finalFile = new File(albumDir, partialFile.getName());
 
-            // 移动文件
-            Files.move(partialFile.toPath(), finalFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            // 同名文件可能是另一首歌或用户整理过的版本，自动流程不能覆盖它。
+            if (finalFile.exists()) {
+                log.warn("LLM 匹配目标文件已存在，放弃自动归档以免覆盖: {}", finalFile.getAbsolutePath());
+                LogCollector.addLog("WARN", "LLM 匹配目标已存在，未自动归档: " + matchedArtist + "/" + albumName
+                    + "/" + partialFile.getName());
+                return null;
+            }
+            albumDir.mkdirs();
+
+            // 移动文件（不覆盖）
+            Files.move(partialFile.toPath(), finalFile.toPath());
             log.info("文件已移动到: {}", finalFile.getAbsolutePath());
             LogCollector.addLog("SUCCESS", "LLM 匹配成功，文件移动到: " + matchedArtist + "/" + albumName);
 
-            return true;
+            return finalFile.toPath();
         } catch (Exception e) {
             log.error("LLM 匹配处理失败: {}", e.getMessage(), e);
-            return false;
+            return null;
         }
     }
 
@@ -527,14 +554,14 @@ public class FailedFileHandler {
      * 尝试使用 LLM 匹配艺术家并移动整个专辑到 outputDirectory
      * @return true 如果匹配成功并移动，false 否则
      */
-    private boolean tryLLMMatchAndMoveAlbum(File sourceFile, File partialFolder) {
+    private Path tryLLMMatchAndMoveAlbum(File sourceFile, File partialFolder) {
         try {
             // 收集专辑中所有音频文件
             List<File> audioFiles = new ArrayList<>();
             collectAudioFiles(partialFolder, audioFiles);
 
             if (audioFiles.isEmpty()) {
-                return false;
+                return null;
             }
 
             // 检查是否有多个不同的艺术家
@@ -543,7 +570,7 @@ public class FailedFileHandler {
             if (artistSummary == null) {
                 // 没有艺术家标签，跳过
                 log.debug("源文件没有艺术家标签，跳过 LLM 匹配");
-                return false;
+                return null;
             }
 
             String matchedArtist;
@@ -556,7 +583,7 @@ public class FailedFileHandler {
                 ArtistMatchingService.MatchResult matchResult = artistMatchingService.matchArtist(artistSummary.albumArtist());
                 if (matchResult == null) {
                     log.info("LLM 未找到匹配的艺术家");
-                    return false;
+                    return null;
                 }
                 matchedArtist = matchResult.getMatchedArtist();
                 log.info("LLM 匹配到艺术家: {}", matchedArtist);
@@ -567,12 +594,23 @@ public class FailedFileHandler {
             String albumName = FileNameSanitizer.sanitize(metadata.getAlbum(), "Unknown Album");
 
             File artistDir = new File(config.getOutputDirectory(), FileNameSanitizer.sanitize(matchedArtist));
-            File albumDir = new File(artistDir, albumName);
-            albumDir.mkdirs();
-
-            // 移动整个文件夹
             File finalFolder = new File(artistDir, albumName);
-            fileSystemUtils.copyDirectoryRecursively(partialFolder.toPath(), finalFolder.toPath());
+
+            // 已存在的同名专辑目录可能是另一个版本或用户整理过的内容。
+            // 以前会直接把文件合并/覆盖进去，这里改为放弃自动归档，留给人工恢复处理。
+            if (finalFolder.exists()) {
+                log.warn("LLM 匹配目标专辑目录已存在，放弃自动归档以免合并: {}", finalFolder.getAbsolutePath());
+                LogCollector.addLog("WARN", "LLM 匹配目标目录已存在，未自动归档: " + matchedArtist + "/" + albumName);
+                return null;
+            }
+
+            // 复制整个文件夹；有文件没复制成功时撤销，避免留下半张专辑后又删掉部分识别副本
+            int[] counts = fileSystemUtils.copyDirectoryRecursively(partialFolder.toPath(), finalFolder.toPath());
+            if (counts[1] > 0) {
+                log.warn("LLM 归档复制不完整（失败 {} 个），已撤销: {}", counts[1], finalFolder.getAbsolutePath());
+                deleteDirectory(finalFolder);
+                return null;
+            }
 
             // 更新标签
             if (artistSummary.multiple()) {
@@ -589,10 +627,33 @@ public class FailedFileHandler {
             log.info("专辑已移动到: {}", finalFolder.getAbsolutePath());
             LogCollector.addLog("SUCCESS", "LLM 匹配成功，专辑移动到: " + matchedArtist + "/" + albumName);
 
-            return true;
+            return finalFolder.toPath();
         } catch (Exception e) {
             log.error("LLM 匹配处理失败: {}", e.getMessage(), e);
-            return false;
+            return null;
+        }
+    }
+
+    /**
+     * 自动归档后仍保留了 FAILED 复核副本时，记下它们的对应关系。
+     * 之后人工恢复成功会替换这份自动归档，而不是在音乐库里再放一份。
+     */
+    private void recordAutoArchiveLink(String failedRelativePath, Path archivedPath) {
+        try {
+            List<String> audio = new ArrayList<>();
+            if (Files.isDirectory(archivedPath)) {
+                List<File> files = new ArrayList<>();
+                collectAudioFiles(archivedPath.toFile(), files);
+                for (File file : files) {
+                    audio.add(archivedPath.relativize(file.toPath()).toString());
+                }
+            } else {
+                audio.add(archivedPath.getFileName().toString());
+            }
+            autoArchiveRegistry.record(failedRelativePath, archivedPath, audio);
+            log.info("已记录自动归档与失败副本的对应关系: {} -> {}", failedRelativePath, archivedPath);
+        } catch (Exception e) {
+            log.warn("记录自动归档对应关系失败: {} - {}", failedRelativePath, e.getMessage());
         }
     }
 
@@ -825,7 +886,9 @@ public class FailedFileHandler {
         
         // PARTIAL 是比 FAILED 更具体的处置结果。已进入部分识别（或已自动归档）后，
         // 不再额外制造一份 FAILED 副本，避免恢复页面出现同一项目的双重状态。
-        PartialHandlingResult partialResult = handlePartialRecognitionFile(audioFile, processingFile);
+        Path[] archived = new Path[1];
+        PartialHandlingResult partialResult = handlePartialRecognitionFile(audioFile, processingFile,
+            path -> archived[0] = path);
         
         // 未进入部分识别，或 LLM 已自动归档时仍保留 FAILED 副本作为复核/重试入口。
         // 自动归档不是人工确认，不能因为一次目录匹配就让项目从恢复页面彻底消失。
@@ -833,6 +896,9 @@ public class FailedFileHandler {
             && config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
             try {
                 copyFailedFileToFailedDirectory(audioFile);
+                if (archived[0] != null) {
+                    recordAutoArchiveLink(audioFile.getName(), archived[0]);
+                }
             } catch (Exception e) {
                 log.error("复制失败文件到失败目录时出错: {}", e.getMessage());
             }
@@ -855,13 +921,17 @@ public class FailedFileHandler {
         LogCollector.addLog("WARN", I18nUtil.getMessage("main.recognition.failed.album", albumRootDir.getName(), audioFile.getName()));
         
         // 尝试处理整个专辑的部分识别。PARTIAL 与 FAILED 互斥，不能同时保留两份副本。
-        PartialHandlingResult partialResult = handlePartialRecognitionAlbum(albumRootDir);
+        Path[] archived = new Path[1];
+        PartialHandlingResult partialResult = handlePartialRecognitionAlbum(albumRootDir, path -> archived[0] = path);
         
         // 未进入部分识别，或 LLM 已自动归档时仍保留 FAILED 副本作为复核/重试入口。
         if (partialResult != PartialHandlingResult.STORED
             && config.getFailedDirectory() != null && !config.getFailedDirectory().isEmpty()) {
             try {
                 copyFailedFolderToFailedDirectory(albumRootDir);
+                if (archived[0] != null) {
+                    recordAutoArchiveLink(albumRootDir.getName(), archived[0]);
+                }
             } catch (Exception e) {
                 log.error("复制失败文件夹到失败目录时出错: {}", e.getMessage());
             }

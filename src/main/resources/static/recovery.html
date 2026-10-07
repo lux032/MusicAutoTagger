@@ -259,7 +259,7 @@
                 <div>
                     <div class="name">${esc(i.relativePath || i.id)}</div>
                     <div class="meta">
-                        ${i.sourceType ? esc(i.sourceType) : esc(T('recovery.source.unknown'))} · ${esc(TF('recovery.audio.files', i.fileCount))} ·
+                        ${i.sourceType === 'OUTPUT' ? esc(T('recovery.source.output')) : i.sourceType ? esc(i.sourceType) : esc(T('recovery.source.unknown'))} · ${esc(TF('recovery.audio.files', i.fileCount))} ·
                         ${esc(TF('recovery.trashed.at', i.trashedAt && i.trashedAt < 8640000000000000 ? new Date(i.trashedAt).toLocaleString() : T('recovery.unknown')))}
                     </div>
                     ${i.restorable ? '' : `<div class="meta warn">${esc(T('recovery.manifest.broken'))}</div>`}
@@ -325,6 +325,7 @@
                 <div>
                     <div class="name">${esc(i.name)}</div>
                     <div class="meta">${esc(i.directory ? T('recovery.item.folder') : T('recovery.item.file'))} · ${esc(TF('recovery.audio.files', i.fileCount))} · ${esc(i.path)}</div>
+                    ${i.autoArchivedPath ? `<div class="meta">${esc(TF('recovery.auto.archived', i.autoArchivedPath))}</div>` : ''}
                 </div>
                 <div class="item-actions">
                     <button class="btn primary sm" ${i.running ? 'disabled' : ''}
@@ -338,6 +339,7 @@
     }
 
     function humanError(message) {
+        if (message === 'online.destination.exists') return T('review.error.destination.exists');
         const mismatch = /^recovery\.workspace\.count\.mismatch:(\d+)\/(\d+)$/.exec(message || '');
         return mismatch ? TF('recovery.workspace.count.mismatch', mismatch[1], mismatch[2]) : message;
     }

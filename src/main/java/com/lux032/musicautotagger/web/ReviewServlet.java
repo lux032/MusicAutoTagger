@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.CoverCandidateService;
+import com.lux032.musicautotagger.service.RecoveryService;
 import com.lux032.musicautotagger.service.ReviewQueueService;
 import com.lux032.musicautotagger.service.ReviewResolutionService;
 import jakarta.servlet.http.HttpServlet;
@@ -185,7 +186,7 @@ public class ReviewServlet extends HttpServlet {
                     ReviewItem item = recoveryService.confirmOnlineCandidate(id, str(body.get("candidateId")),
                         str(body.get("albumTitle")), str(body.get("albumArtist")), str(body.get("releaseDate")),
                         str(body.get("edition")), str(body.get("archiveDirectoryName")),
-                        str(body.get("selectedCoverSha256")));
+                        str(body.get("selectedCoverSha256")), duplicatePolicy(str(body.get("duplicatePolicy"))));
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
                     return;
                 }
@@ -202,6 +203,10 @@ public class ReviewServlet extends HttpServlet {
         } catch (ReviewResolutionService.ResolutionException e) {
             log.warn("待确认条目处置被拒绝: {} - {}", id, e.getMessage());
             respond(resp, e.getHttpStatus(), Map.of("error", e.getMessage()));
+        } catch (com.lux032.musicautotagger.service.DuplicateArchiveException e) {
+            // 什么都没提交；前端据此让用户选择「替换 / 保留两份 / 取消」后带 duplicatePolicy 重新提交
+            log.info("联网候选确认暂停，音乐库已有相同音频: {} - {}", id, e.describe());
+            respond(resp, 409, Map.of("error", e.getMessage(), "duplicates", e.getDuplicates()));
         } catch (java.io.IOException e) {
             log.warn("联网候选确认被拒绝: {} - {}", id, e.getMessage());
             respond(resp, 400, Map.of("error", e.getMessage() == null ? "online.confirm.failed" : e.getMessage()));
@@ -447,6 +452,15 @@ public class ReviewServlet extends HttpServlet {
             return data == null ? new HashMap<>() : data;
         } catch (Exception e) {
             return new HashMap<>();
+        }
+    }
+
+    private RecoveryService.DuplicatePolicy duplicatePolicy(String value) {
+        if (value == null || value.isBlank()) return RecoveryService.DuplicatePolicy.ASK;
+        try {
+            return RecoveryService.DuplicatePolicy.valueOf(value.trim());
+        } catch (IllegalArgumentException e) {
+            return RecoveryService.DuplicatePolicy.ASK;
         }
     }
 

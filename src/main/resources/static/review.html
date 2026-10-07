@@ -254,6 +254,20 @@
     </div>
 </div>
 
+<!-- 音乐库已有相同音频 -->
+<div class="overlay" id="duplicateDialog">
+    <div class="dialog" style="width: min(560px, 96vw);">
+        <div class="dialog-title" data-i18n="review.duplicate.title">音乐库中已有相同音频</div>
+        <div class="dialog-subtitle" data-i18n="review.duplicate.subtitle">尚未归档任何文件。请选择如何处理下列已存在的归档：</div>
+        <div id="duplicateList" class="dialog-stack" style="font-size: 13px;"></div>
+        <div class="dialog-actions">
+            <button class="btn ghost" onclick="resolveDuplicate(null)" data-i18n="web.cancel">取消</button>
+            <button class="btn soft" onclick="resolveDuplicate('KEEP_BOTH')" data-i18n="review.duplicate.keep.both">保留两份</button>
+            <button class="btn primary" id="duplicateReplaceBtn" onclick="resolveDuplicate('REPLACE')" data-i18n="review.duplicate.replace">替换旧归档</button>
+        </div>
+    </div>
+</div>
+
 <!-- 标记失败 / 忽略 -->
 <div class="overlay" id="rejectDialog">
     <div class="dialog">
@@ -319,7 +333,9 @@
         let data = {};
         try { data = await resp.json(); } catch (e) { /* ignore */ }
         if (!resp.ok) {
-            throw new Error(data.error || ('HTTP ' + resp.status));
+            const error = new Error(data.error || ('HTTP ' + resp.status));
+            error.data = data;
+            throw error;
         }
         return data;
     }
@@ -343,7 +359,9 @@
         'recovery.already.running': 'review.error.online.already.running',
         'item.not.found': 'review.error.item.not.found',
         'recovery.no.audio.files': 'review.error.no.audio.files',
-        'cover.selection.expired': 'review.error.cover.expired'
+        'cover.selection.expired': 'review.error.cover.expired',
+        'online.destination.exists': 'review.error.destination.exists',
+        'online.duplicate.exists': 'review.duplicate.title'
     };
 
     function humanError(message) {
@@ -767,7 +785,37 @@
             return;
         }
         closeOnlineDialog();
-        await runAction('/api/review/online-confirm', payload);
+        await submitOnlinePayload(payload);
+    }
+
+    let pendingDuplicatePayload = null;
+
+    async function submitOnlinePayload(payload) {
+        await runAction('/api/review/online-confirm', payload, e => {
+            if (e.message !== 'online.duplicate.exists' || !e.data || !Array.isArray(e.data.duplicates)) return false;
+            showDuplicateDialog(payload, e.data.duplicates);
+            return true;
+        });
+    }
+
+    function showDuplicateDialog(payload, duplicates) {
+        pendingDuplicatePayload = payload;
+        document.getElementById('duplicateList').innerHTML = duplicates.map(d => `
+            <div>
+                <div><strong>${escapeHtml(d.path)}</strong></div>
+                <div class="hint">${escapeHtml(tf('review.duplicate.matched', d.matched, d.total))} ·
+                    ${escapeHtml(d.replaceable ? t('review.duplicate.replaceable') : t('review.duplicate.kept'))}</div>
+            </div>`).join('');
+        document.getElementById('duplicateReplaceBtn').disabled = !duplicates.some(d => d.replaceable);
+        document.getElementById('duplicateDialog').classList.add('show');
+    }
+
+    async function resolveDuplicate(policy) {
+        document.getElementById('duplicateDialog').classList.remove('show');
+        const payload = pendingDuplicatePayload;
+        pendingDuplicatePayload = null;
+        if (!policy || !payload) return;
+        await runAction('/api/review/online-confirm', { ...payload, duplicatePolicy: policy });
     }
 
     async function confirmCandidate(releaseId, releaseGroupId) {
@@ -833,7 +881,7 @@
         await runAction('/api/review/reject', { id: currentId, note });
     }
 
-    async function runAction(path, body) {
+    async function runAction(path, body, onError) {
         try {
             const data = await api(path, { method: 'POST', body: JSON.stringify(body) });
             // 部分失败时后端会把条目保留在 PENDING_REVIEW，不能报「成功」
@@ -852,6 +900,7 @@
             renderDetail(data.item);
             loadList();
         } catch (e) {
+            if (onError && onError(e)) return;
             toast(tf('review.action.failed', humanError(e.message)));
         }
     }

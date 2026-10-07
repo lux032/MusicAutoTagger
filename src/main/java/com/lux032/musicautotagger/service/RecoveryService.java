@@ -40,6 +40,14 @@ public class RecoveryService implements AutoCloseable {
     public enum SourceType { PARTIAL, FAILED }
     public enum JobStatus { RUNNING, SUCCEEDED, WAITING_REVIEW, FAILED }
     public enum RecoveryMode { REIDENTIFY, ONLINE_SEARCH, LOCAL_ARTIST_MATCH }
+    /**
+     * 音乐库里已有相同音频时怎么办。
+     * ASK：不提交，抛 {@link DuplicateArchiveException} 让用户选；
+     * REPLACE：把完全被本次输入覆盖的旧归档单元移入回收站后再提交；
+     * KEEP_BOTH：照常提交，两份并存。
+     * 与失败副本关联的 LLM 自动归档不受此策略影响，始终被替换。
+     */
+    public enum DuplicatePolicy { ASK, REPLACE, KEEP_BOTH }
 
     private final MusicConfig config;
     private final AudioFileProcessorService processor;
@@ -53,6 +61,8 @@ public class RecoveryService implements AutoCloseable {
     private final AudioFingerprintService fingerprintService;
     private final OnlineTrackMatcher trackMatcher;
     private final CoverCandidateService coverCandidateService;
+    private final AutoArchiveRegistry autoArchiveRegistry;
+    private final ArchiveDuplicateDetector duplicateDetector;
     private final Gson gson = new Gson();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "manual-recovery");
@@ -83,6 +93,8 @@ public class RecoveryService implements AutoCloseable {
         this.fingerprintService = fingerprintService;
         this.trackMatcher = new OnlineTrackMatcher(tagWriter);
         this.coverCandidateService = coverCandidateService;
+        this.autoArchiveRegistry = AutoArchiveRegistry.forReviewQueuePath(config.getReviewQueuePath());
+        this.duplicateDetector = new ArchiveDuplicateDetector(fileSystemUtils::isMusicFile);
         this.onlineIdentificationService = new OnlineIdentificationService(
             config, reviewQueue, tagWriter, fingerprintService);
         cleanupExpiredTrash();
@@ -196,12 +208,16 @@ public class RecoveryService implements AutoCloseable {
                 Map<String, Object> entry = new LinkedHashMap<>();
                 String sourceType = null;
                 String relativePath = null;
+                boolean outputKind = false;
                 Path manifest = path.resolveSibling(path.getFileName() + ".json");
                 if (Files.isRegularFile(manifest)) {
                     try {
                         JsonObject json = gson.fromJson(Files.readString(manifest), JsonObject.class);
                         if (json != null) {
-                            if (json.has("sourceType")) sourceType = json.get("sourceType").getAsString();
+                            outputKind = json.has("kind") && TRASH_KIND_OUTPUT.equals(json.get("kind").getAsString())
+                                && json.has("originalPath");
+                            if (outputKind) sourceType = TRASH_KIND_OUTPUT;
+                            else if (json.has("sourceType")) sourceType = json.get("sourceType").getAsString();
                             if (json.has("relativePath")) relativePath = json.get("relativePath").getAsString();
                         }
                     } catch (Exception ignored) {
@@ -239,6 +255,10 @@ public class RecoveryService implements AutoCloseable {
         String relativePath;
         try {
             JsonObject json = gson.fromJson(Files.readString(manifest), JsonObject.class);
+            if (json.has("kind") && TRASH_KIND_OUTPUT.equals(json.get("kind").getAsString())) {
+                restoreOutputFromTrash(entry, manifest, json.get("originalPath").getAsString());
+                return;
+            }
             sourceType = json.get("sourceType").getAsString();
             relativePath = json.get("relativePath").getAsString();
         } catch (Exception e) {
@@ -251,6 +271,18 @@ public class RecoveryService implements AutoCloseable {
         moveAcrossDevices(entry, target.toPath());
         Files.deleteIfExists(manifest);
         LogCollector.addLog("SUCCESS", "已从回收站恢复: " + relativePath + " → " + sourceType);
+    }
+
+    /** 被替换的旧归档搬回音乐库原位；只允许还原到输出目录内且目标未被占用。 */
+    private void restoreOutputFromTrash(Path entry, Path manifest, String originalPath) throws IOException {
+        Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
+        Path target = Path.of(originalPath).toAbsolutePath().normalize();
+        if (!target.startsWith(outputRoot) || target.equals(outputRoot)) throw new IOException("trash.manifest.invalid");
+        if (Files.exists(target)) throw new IOException("trash.restore.target.exists");
+        Files.createDirectories(target.getParent());
+        moveAcrossDevices(entry, target);
+        Files.deleteIfExists(manifest);
+        LogCollector.addLog("SUCCESS", "已从回收站还原到音乐库: " + displayOutputPath(target));
     }
 
     /** 立即彻底删除回收站条目。 */
@@ -278,6 +310,16 @@ public class RecoveryService implements AutoCloseable {
                                                            String releaseDate, String edition,
                                                            String archiveDirectoryName,
                                                            String selectedCoverSha256) throws IOException {
+        return confirmOnlineCandidate(itemId, candidateId, albumTitle, albumArtist, releaseDate, edition,
+            archiveDirectoryName, selectedCoverSha256, DuplicatePolicy.ASK);
+    }
+
+    public synchronized ReviewItem confirmOnlineCandidate(String itemId, String candidateId,
+                                                           String albumTitle, String albumArtist,
+                                                           String releaseDate, String edition,
+                                                           String archiveDirectoryName,
+                                                           String selectedCoverSha256,
+                                                           DuplicatePolicy duplicatePolicy) throws IOException {
         ReviewItem item = reviewQueue.get(itemId);
         if (item == null) throw new IOException("item.not.found");
         if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) throw new IOException("item.already.resolved");
@@ -439,7 +481,9 @@ public class RecoveryService implements AutoCloseable {
                 outputByOriginalPath.replaceAll((original, relative) -> relative.startsWith(oldRelative)
                     ? newRelative.resolve(oldRelative.relativize(relative)) : relative);
             }
-            committed = commitWorkspace(workRoot.toPath(), files.size(), item.getId());
+            String linkKey = SourceType.FAILED.name().equals(item.getRecoverySourceType()) ? source.getName() : null;
+            committed = commitReplacingDuplicates(workRoot.toPath(), files.size(), item.getId(),
+                linkKey, duplicatePolicy);
         } catch (IOException e) {
             deleteRecursively(workRoot.toPath());
             throw e;
@@ -517,6 +561,132 @@ public class RecoveryService implements AutoCloseable {
         }
         deleteRecursively(workspace);
         return committed;
+    }
+
+    /** 被替换掉的旧输出：原位置 + 回收站条目（提交失败时据此搬回）。 */
+    private record RetiredOutput(Path original, Path trashEntry) { }
+
+    /**
+     * 带重复音频保护的提交。
+     *
+     * 1. 失败副本关联了 LLM 自动归档且归档未被改动过 → 无条件替换（它就是同一份输入）。
+     * 2. 其余目标艺术家目录里的相同音频按 {@link DuplicatePolicy} 处理。
+     * 旧输出先移入回收站再提交（新旧目录可能同名），提交失败则搬回原位。
+     *
+     * @param failedRelativePath 来源为 FAILED 副本时的条目名，用于查自动归档链接；否则为 null
+     */
+    List<Path> commitReplacingDuplicates(Path workspace, int expectedAudioCount, String taskId,
+                                                 String failedRelativePath, DuplicatePolicy policy) throws IOException {
+        if (policy == null) policy = DuplicatePolicy.ASK;
+        Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
+
+        List<Path> toRetire = new ArrayList<>();
+        validAutoArchive(failedRelativePath, outputRoot).ifPresent(toRetire::add);
+
+        List<Path> incoming = Files.isDirectory(workspace)
+            ? listFiles(workspace).stream().filter(p -> fileSystemUtils.isMusicFile(p.toFile())).toList()
+            : List.of();
+        Set<Path> searchRoots = new LinkedHashSet<>();
+        for (Path file : incoming) {
+            Path relative = workspace.relativize(file);
+            if (relative.getNameCount() >= 2) searchRoots.add(outputRoot.resolve(relative.getName(0)));
+        }
+        List<ArchiveDuplicateDetector.DuplicateGroup> duplicates =
+            duplicateDetector.find(incoming, outputRoot, searchRoots, toRetire);
+        if (!duplicates.isEmpty()) {
+            switch (policy) {
+                case ASK -> throw new DuplicateArchiveException(
+                    duplicates.stream().map(d -> d.toView(outputRoot)).toList());
+                case REPLACE -> duplicates.stream()
+                    .filter(ArchiveDuplicateDetector.DuplicateGroup::replaceable)
+                    .map(ArchiveDuplicateDetector.DuplicateGroup::path)
+                    .forEach(toRetire::add);
+                case KEEP_BOTH -> log.info("音乐库已有相同音频，按用户选择保留两份: {}",
+                    duplicates.stream().map(d -> d.path().toString()).toList());
+            }
+        }
+
+        List<RetiredOutput> retired = retireOutputs(toRetire, taskId);
+        List<Path> committed;
+        try {
+            committed = commitWorkspace(workspace, expectedAudioCount, taskId);
+        } catch (IOException e) {
+            restoreRetired(retired);
+            throw e;
+        }
+        if (failedRelativePath != null) {
+            autoArchiveRegistry.remove(failedRelativePath);
+        }
+        for (RetiredOutput r : retired) {
+            log.info("已用本次恢复结果替换旧归档（可在回收站还原）: {}", r.original());
+            LogCollector.addLog("INFO", "已替换重复的旧归档，原目录已移入回收站: "
+                + outputRoot.relativize(r.original()));
+        }
+        return committed;
+    }
+
+    /**
+     * 只有自动归档仍是当时的样子才允许无条件替换：位于输出目录内，
+     * 且没有出现登记清单之外的音频（用户或其他流程往里添了曲目就不再替换，交给重复检测询问用户）。
+     */
+    private java.util.Optional<Path> validAutoArchive(String failedRelativePath, Path outputRoot) {
+        if (failedRelativePath == null) return java.util.Optional.empty();
+        AutoArchiveRegistry.Link link = autoArchiveRegistry.find(failedRelativePath).orElse(null);
+        if (link == null || link.getArchivedPath() == null) return java.util.Optional.empty();
+        Path archived = Path.of(link.getArchivedPath()).toAbsolutePath().normalize();
+        if (!archived.startsWith(outputRoot) || archived.equals(outputRoot) || !Files.exists(archived)) {
+            return java.util.Optional.empty();
+        }
+        if (Files.isDirectory(archived)) {
+            Set<String> recorded = new java.util.HashSet<>(link.getAudioFiles());
+            List<String> current = collectAudioFiles(archived.toFile()).stream()
+                .map(f -> archived.relativize(f.toPath().toAbsolutePath().normalize()).toString()).toList();
+            if (current.isEmpty() || !recorded.containsAll(current)) {
+                log.info("自动归档目录已被改动，不再自动替换: {}", archived);
+                return java.util.Optional.empty();
+            }
+        } else if (!fileSystemUtils.isMusicFile(archived.toFile())) {
+            return java.util.Optional.empty();
+        }
+        return java.util.Optional.of(archived);
+    }
+
+    private List<RetiredOutput> retireOutputs(List<Path> paths, String taskId) throws IOException {
+        List<RetiredOutput> retired = new ArrayList<>();
+        Set<Path> distinct = new LinkedHashSet<>();
+        for (Path path : paths) {
+            Path normalized = path.toAbsolutePath().normalize();
+            // 父目录已在清单里时不重复移动子项
+            if (distinct.stream().noneMatch(normalized::startsWith)) distinct.add(normalized);
+        }
+        try {
+            for (Path path : distinct) {
+                if (!Files.exists(path)) continue;
+                Path entry = moveOutputToTrash(path, taskId);
+                retired.add(new RetiredOutput(path, entry));
+                if (processedLogger != null) processedLogger.clearTargetPathsUnder(path.toString());
+            }
+        } catch (IOException e) {
+            restoreRetired(retired);
+            throw e;
+        }
+        return retired;
+    }
+
+    private void restoreRetired(List<RetiredOutput> retired) {
+        for (RetiredOutput r : retired) {
+            try {
+                if (Files.exists(r.original())) {
+                    log.error("无法还原被替换的旧归档，原位置已被占用，保留在回收站: {}", r.trashEntry());
+                    continue;
+                }
+                Files.createDirectories(r.original().getParent());
+                moveAcrossDevices(r.trashEntry(), r.original());
+                Files.deleteIfExists(r.trashEntry().resolveSibling(r.trashEntry().getFileName() + ".json"));
+            } catch (IOException e) {
+                log.error("提交失败后还原旧归档受阻，可在回收站手动还原: {}", r.trashEntry(), e);
+            }
+        }
     }
 
     /**
@@ -711,7 +881,8 @@ public class RecoveryService implements AutoCloseable {
                 complete(job, JobStatus.WAITING_REVIEW, "重新识别后进入待人工确认队列，文件已转交待确认页");
             } else if (failed == 0 && succeeded == audioFiles.size()) {
                 try {
-                    commitWorkspace(reidentifyWorkRoot.toPath(), audioFiles.size(), job.id);
+                    commitReplacingDuplicates(reidentifyWorkRoot.toPath(), audioFiles.size(), job.id,
+                        job.sourceType == SourceType.FAILED ? job.relativePath : null, DuplicatePolicy.ASK);
                 } catch (IOException commitError) {
                     deleteRecursively(reidentifyWorkRoot.toPath());
                     throw commitError;
@@ -730,7 +901,11 @@ public class RecoveryService implements AutoCloseable {
                     "重新识别仍未全部成功（成功 " + succeeded + "，失败 " + failed + "），文件已保留");
             }
         } catch (Exception e) {
-            log.error("人工恢复任务失败: {}", target, e);
+            if (e instanceof DuplicateArchiveException duplicate) {
+                log.warn("人工恢复未提交，音乐库已有相同音频: {} - {}", target, duplicate.describe());
+            } else {
+                log.error("人工恢复任务失败: {}", target, e);
+            }
             if (singleFileWorkspace != null && (reviewQueue == null
                 || !reviewQueue.isFolderUnderReview(singleFileWorkspace.getAbsolutePath()))) {
                 try {
@@ -739,7 +914,8 @@ public class RecoveryService implements AutoCloseable {
                     log.debug("清理恢复工作目录失败: {}", cleanupError.getMessage());
                 }
             }
-            complete(job, JobStatus.FAILED, e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+            complete(job, JobStatus.FAILED, e instanceof DuplicateArchiveException duplicate ? duplicate.describe()
+                : e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         } finally {
             runningPaths.remove(runningKey);
         }
@@ -783,6 +959,13 @@ public class RecoveryService implements AutoCloseable {
             item.put("fileCount", audioFiles.size());
             item.put("modifiedAt", child.lastModified());
             item.put("running", isRunning(child));
+            if (type == SourceType.FAILED) {
+                // 已被 LLM 自动归档过的复核副本：告诉用户音乐库里已经有一份，恢复成功后会替换它
+                autoArchiveRegistry.find(child.getName())
+                    .map(AutoArchiveRegistry.Link::getArchivedPath)
+                    .filter(p -> new File(p).exists())
+                    .ifPresent(p -> item.put("autoArchivedPath", displayOutputPath(Path.of(p))));
+            }
             result.add(item);
         }
     }
@@ -921,6 +1104,38 @@ public class RecoveryService implements AutoCloseable {
         manifest.addProperty("relativePath", relativePath);
         manifest.addProperty("trashedAt", trashedAt);
         Files.writeString(target.resolveSibling(target.getFileName() + ".json"), gson.toJson(manifest));
+    }
+
+    /**
+     * 把音乐库里的旧归档移入回收站。manifest 记录原绝对路径，还原时搬回音乐库而不是隔离目录。
+     * 与隔离副本不同，这里忽略「保留 0 天即直接删除」：提交失败时还要靠它回滚。
+     */
+    private Path moveOutputToTrash(Path original, String jobId) throws IOException {
+        Path root = trashRoot();
+        Files.createDirectories(root);
+        String safeName = original.getFileName().toString().replaceAll("[^\\p{L}\\p{N}._ -]", "_");
+        long trashedAt = System.currentTimeMillis();
+        Path target = root.resolve(trashedAt + "_" + jobId + "_" + TRASH_KIND_OUTPUT + "_" + safeName);
+        moveAcrossDevices(original, target);
+
+        JsonObject manifest = new JsonObject();
+        manifest.addProperty("kind", TRASH_KIND_OUTPUT);
+        manifest.addProperty("originalPath", original.toAbsolutePath().toString());
+        manifest.addProperty("relativePath", displayOutputPath(original));
+        manifest.addProperty("trashedAt", trashedAt);
+        Files.writeString(target.resolveSibling(target.getFileName() + ".json"), gson.toJson(manifest));
+        return target;
+    }
+
+    private static final String TRASH_KIND_OUTPUT = "OUTPUT";
+
+    private String displayOutputPath(Path path) {
+        try {
+            return Path.of(config.getOutputDirectory()).toAbsolutePath().normalize()
+                .relativize(path.toAbsolutePath().normalize()).toString();
+        } catch (IllegalArgumentException e) {
+            return path.toString();
+        }
     }
 
     private void cleanupExpiredTrash() {
