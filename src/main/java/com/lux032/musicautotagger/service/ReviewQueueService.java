@@ -20,6 +20,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -51,7 +53,7 @@ public class ReviewQueueService {
     private final Path stagingRoot;
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
-    /** id -> item，保持插入顺序，便于面板按时间展示 */
+    /** id -> item，保持插入顺序；查询时按入队时间倒序，时间相同时后入队的优先。 */
     private final Map<String, ReviewItem> items = new LinkedHashMap<>();
 
     public ReviewQueueService(MusicConfig config) {
@@ -79,6 +81,7 @@ public class ReviewQueueService {
 
     // ==================== 查询 ====================
 
+    /** 返回新入队优先的列表，不以更新时间排序，避免搜索或处置让旧条目跳到顶部。 */
     public synchronized List<ReviewItem> list(ReviewItem.Status statusFilter) {
         List<ReviewItem> result = new ArrayList<>();
         for (ReviewItem item : items.values()) {
@@ -86,6 +89,10 @@ public class ReviewQueueService {
                 result.add(item);
             }
         }
+        // 先反转插入顺序，再稳定地按创建时间排序：同毫秒入队、或旧数据缺少时间时，后加入的在前。
+        // 只排序查询结果，不改变内部队列及其持久化顺序。
+        Collections.reverse(result);
+        result.sort(Comparator.comparingLong(ReviewItem::getCreatedAt).reversed());
         return result;
     }
 
