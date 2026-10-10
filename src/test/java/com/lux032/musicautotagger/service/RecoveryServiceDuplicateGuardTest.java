@@ -59,6 +59,20 @@ class RecoveryServiceDuplicateGuardTest {
     }
 
     @Test
+    void recoveryCommitWaitsForLibraryTransactionGuard() throws Exception {
+        var executor=java.util.concurrent.Executors.newSingleThreadExecutor();
+        try (RecoveryService recovery=service()) {
+            Path ws=workspace("guard",1);
+            java.util.concurrent.Future<List<Path>> future;
+            try (var guard=LibraryWriteGuard.acquire()) {
+                future=executor.submit(()->recovery.commitReplacingDuplicates(ws,1,"guard",null,RecoveryService.DuplicatePolicy.KEEP_BOTH));
+                Thread.sleep(100); assertFalse(future.isDone()); assertTrue(Files.exists(ws));
+            }
+            assertFalse(future.get(2,java.util.concurrent.TimeUnit.SECONDS).isEmpty());
+        } finally { executor.shutdownNow(); }
+    }
+
+    @Test
     void linkedAutoArchiveIsReplacedInsteadOfDuplicated() throws Exception {
         Path autoArchive = write(output.resolve("ナナヲアカリ/ぴ/01. ぴ.flac"), flac(1)).getParent();
         registry().record("ナナヲアカリ — ぴ", autoArchive, List.of("01. ぴ.flac"));

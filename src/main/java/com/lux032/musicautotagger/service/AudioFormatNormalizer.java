@@ -87,42 +87,44 @@ public class AudioFormatNormalizer {
      * 输出将始终为 .flac，targetFile 仅作为基名/目录参考。
      */
     public boolean normalizeToTargetIfNeeded(File sourceFile, File targetFile) {
-        if (!config.isAudioNormalizeEnabled()) {
-            LogCollector.addLog("INFO", I18nUtil.getMessage("audio.normalize.disabled", sourceFile.getName()));
-            return false;
-        }
-
-        AudioSpecs specs = readSpecs(sourceFile);
-        if (!specs.isKnown()) {
-            return false;
-        }
-        if (!needsNormalization(specs.sampleRate, specs.bitDepth)) {
-            return false;
-        }
-
-        try {
-            File outputFile = buildFlacOutputFile(targetFile, targetFile.getParentFile());
-            boolean ok = runFfmpeg(sourceFile, outputFile, specs.bitDepth);
-            if (ok) {
-                LogCollector.addLog(
-                    "INFO",
-                    I18nUtil.getMessage(
-                        "audio.normalize.success",
-                        sourceFile.getName(),
-                        specs.sampleRate,
-                        specs.bitDepth > 0 ? specs.bitDepth : 0,
-                        TARGET_SAMPLE_RATE,
-                        TARGET_BIT_DEPTH
-                    )
-                );
-            } else {
-                LogCollector.addLog("WARN", I18nUtil.getMessage("audio.normalize.failed", sourceFile.getName()));
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            if (!config.isAudioNormalizeEnabled()) {
+                LogCollector.addLog("INFO", I18nUtil.getMessage("audio.normalize.disabled", sourceFile.getName()));
+                return false;
             }
-            return ok;
-        } catch (IOException e) {
-            log.warn("Failed to normalize audio for partial output: {} - {}", sourceFile.getName(), e.getMessage());
-            LogCollector.addLog("WARN", I18nUtil.getMessage("audio.normalize.failed", sourceFile.getName()));
-            return false;
+
+            AudioSpecs specs = readSpecs(sourceFile);
+            if (!specs.isKnown()) {
+                return false;
+            }
+            if (!needsNormalization(specs.sampleRate, specs.bitDepth)) {
+                return false;
+            }
+
+            try {
+                File outputFile = buildFlacOutputFile(targetFile, targetFile.getParentFile());
+                boolean ok = runFfmpeg(sourceFile, outputFile, specs.bitDepth);
+                if (ok) {
+                    LogCollector.addLog(
+                        "INFO",
+                        I18nUtil.getMessage(
+                            "audio.normalize.success",
+                            sourceFile.getName(),
+                            specs.sampleRate,
+                            specs.bitDepth > 0 ? specs.bitDepth : 0,
+                            TARGET_SAMPLE_RATE,
+                            TARGET_BIT_DEPTH
+                        )
+                    );
+                } else {
+                    LogCollector.addLog("WARN", I18nUtil.getMessage("audio.normalize.failed", sourceFile.getName()));
+                }
+                return ok;
+            } catch (IOException e) {
+                log.warn("Failed to normalize audio for partial output: {} - {}", sourceFile.getName(), e.getMessage());
+                LogCollector.addLog("WARN", I18nUtil.getMessage("audio.normalize.failed", sourceFile.getName()));
+                return false;
+            }
         }
     }
 

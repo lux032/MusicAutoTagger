@@ -151,6 +151,11 @@ public class WebServer {
             servletHandler.addServlet(new ServletHolder(reviewServlet), "/api/review/*");
         }
 
+        if (lifecycleManager != null && lifecycleManager.getLyricsBackfillService() != null) {
+            servletHandler.addServlet(new ServletHolder(new LyricsBackfillServlet(lifecycleManager.getLyricsBackfillService())),
+                "/api/lyrics-backfill/*");
+        }
+
         // 注册历史封面回填 API
         if (coverBackfillService != null) {
             servletHandler.addServlet(new ServletHolder(new BackfillServlet(coverBackfillService)),

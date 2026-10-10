@@ -332,7 +332,7 @@ public class MetadataUtils {
      *
      * 策略：
      * - 歌曲名、专辑名、专辑艺术家：使用新识别的数据（来自快速扫描或指纹识别）
-     * - 作曲家、作词家、编曲、歌词、风格：优先使用新识别的数据，如果新数据为空则保留源文件的
+     * - 作曲家、作词家、编曲、风格：优先使用新识别的数据；歌词始终源文件优先
      *
      * @param sourceMetadata 源文件已有的元数据
      * @param newMetadata 新识别的元数据
@@ -388,11 +388,12 @@ public class MetadataUtils {
             merged.setArranger(sourceMetadata.getArranger());
         }
 
-        // 保留源文件中的歌词（如果新数据没有）
-        if ((merged.getLyrics() == null || merged.getLyrics().isEmpty()) &&
-            (sourceMetadata.getLyrics() != null && !sourceMetadata.getLyrics().isEmpty())) {
+        // 已有歌词始终优先，不用自动检索结果覆盖
+        if (!isBlank(sourceMetadata.getLyrics())) {
             log.info("保留源文件的歌词信息");
             merged.setLyrics(sourceMetadata.getLyrics());
+            merged.setAutomaticLyrics(sourceMetadata.getAutomaticLyrics());
+            merged.setLocalPreciseDuration(sourceMetadata.getLocalPreciseDuration());
         }
 
         // 保留源文件中的风格信息（如果新数据没有）
@@ -429,6 +430,8 @@ public class MetadataUtils {
         }
         if (isBlank(target.getLyrics()) && !isBlank(from.getLyrics())) {
             target.setLyrics(from.getLyrics());
+            target.setAutomaticLyrics(from.getAutomaticLyrics());
+            target.setLocalPreciseDuration(from.getLocalPreciseDuration());
         }
         if ((target.getGenres() == null || target.getGenres().isEmpty())
             && from.getGenres() != null && !from.getGenres().isEmpty()) {
@@ -457,8 +460,10 @@ public class MetadataUtils {
         if (!isBlank(from.getArranger())) {
             target.setArranger(from.getArranger());
         }
-        if (!isBlank(from.getLyrics())) {
+        if (isBlank(target.getLyrics()) && !isBlank(from.getLyrics())) {
             target.setLyrics(from.getLyrics());
+            target.setAutomaticLyrics(from.getAutomaticLyrics());
+            target.setLocalPreciseDuration(from.getLocalPreciseDuration());
         }
         if (from.getGenres() != null && !from.getGenres().isEmpty()) {
             target.setGenres(from.getGenres());
@@ -467,7 +472,7 @@ public class MetadataUtils {
     }
 
     private static boolean isBlank(String value) {
-        return value == null || value.isEmpty();
+        return value == null || value.isBlank();
     }
 
     /**
@@ -536,6 +541,8 @@ public class MetadataUtils {
             log.info("使用锁定的专辑艺术家: {}", artistToUse);
         }
 
+        detailedMetadata.setWeakLyricsIdentity(sourceTagsForFallback == null
+            || isBlank(sourceTagsForFallback.getTitle()) || isBlank(sourceTagsForFallback.getArtist()));
         detailedMetadata.setTitle(titleToUse);
         detailedMetadata.setArtist(artistToUse);
         detailedMetadata.setAlbumArtist(lockedAlbumArtist);

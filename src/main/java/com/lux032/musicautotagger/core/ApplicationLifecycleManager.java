@@ -29,6 +29,7 @@ public class ApplicationLifecycleManager {
     private MusicBrainzClient musicBrainzClient;
     private TagWriterService tagWriter;
     private LyricsService lyricsService;
+    private LyricsBackfillService lyricsBackfillService;
     private ProcessedFileLogger processedLogger;
     private CoverArtCache coverArtCache;
     private FolderAlbumCache folderAlbumCache;
@@ -87,6 +88,7 @@ public class ApplicationLifecycleManager {
         musicBrainzClient = new MusicBrainzClient(config);
         lyricsService = new LyricsService(config);
         tagWriter = new TagWriterService(config);
+        lyricsBackfillService = new LyricsBackfillService(config, lyricsService, tagWriter);
         
         // 初始化时长序列匹配服务
         durationSequenceService = new DurationSequenceService();
@@ -343,6 +345,11 @@ public class ApplicationLifecycleManager {
                 }
             }
             
+            if (lyricsBackfillService != null) lyricsBackfillService.close();
+            if (lyricsService != null) {
+                try { lyricsService.close(); }
+                catch (IOException e) { log.warn("关闭歌词服务失败", e); }
+            }
             if (fileMonitor != null) {
                 fileMonitor.stop();
             }
@@ -370,10 +377,6 @@ public class ApplicationLifecycleManager {
                 } catch (IOException e) {
                     log.warn(I18nUtil.getMessage("app.shutdown.musicbrainz.error"), e);
                 }
-            }
-
-            if (lyricsService != null) {
-                lyricsService.close();
             }
 
             if (coverArtCache != null) {

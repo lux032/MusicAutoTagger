@@ -41,8 +41,50 @@ class FlacId3StripperTest {
         tag[7] = (byte) ((payloadLength >> 14) & 0x7F);
         tag[8] = (byte) ((payloadLength >> 7) & 0x7F);
         tag[9] = (byte) (payloadLength & 0x7F);
-        Arrays.fill(tag, 10, tag.length, (byte) 0x55);
+        // Valid zero padding, rather than unparseable synthetic frames.
         return tag;
+    }
+
+    @Test
+    void lyricsAndUnknownId3RemainByteIdentical() throws Exception {
+        for (String frameId : new String[] {"USLT", "SYLT"}) {
+            byte[] tag = id3(40, 0);
+            System.arraycopy(frameId.getBytes(StandardCharsets.US_ASCII), 0, tag, 10, 4);
+            tag[17] = 5;
+            byte[] original = concat(tag, flacBody());
+            Path file = dir.resolve(frameId + ".flac"); Files.write(file, original);
+            assertEquals(FlacId3Stripper.Result.SKIPPED_UNSAFE, FlacId3Stripper.stripId3FromFlac(file));
+            assertArrayEquals(original, Files.readAllBytes(file));
+        }
+        for (int kind = 0; kind < 3; kind++) {
+            byte[] tag = id3(30, 0);
+            if (kind == 0) tag[3] = 5; // unsupported version
+            if (kind == 1) tag[5] = (byte) 0x80; // unsynchronization unknown
+            if (kind == 2) Arrays.fill(tag, 10, tag.length, (byte) 0x55); // malformed frame
+            byte[] original = concat(tag, flacBody());
+            Path file = dir.resolve("unknown" + kind + ".flac"); Files.write(file, original);
+            assertEquals(FlacId3Stripper.Result.SKIPPED_UNSAFE, FlacId3Stripper.stripId3FromFlac(file));
+            assertArrayEquals(original, Files.readAllBytes(file));
+        }
+    }
+
+    @Test
+    void multipleFramesIncludingBlankLyricsAndAllWriterEntrypointsAreProtected() throws Exception {
+        byte[] tag = id3(40, 0);
+        System.arraycopy("TIT2".getBytes(StandardCharsets.US_ASCII), 0, tag, 10, 4); tag[17] = 2;
+        tag[20] = 3; tag[21] = 'a';
+        System.arraycopy("USLT".getBytes(StandardCharsets.US_ASCII), 0, tag, 22, 4); tag[29] = 5;
+        // blank lyrics payload still must never be destroyed
+        byte[] original = concat(tag, flacBody()); Path file = dir.resolve("multiple.flac"); Files.write(file, original);
+        var ctor = com.lux032.musicautotagger.config.MusicConfig.class.getDeclaredConstructor(); ctor.setAccessible(true);
+        var config = ctor.newInstance(); config.setOutputDirectory(dir.resolve("out").toString());
+        var writer = new com.lux032.musicautotagger.service.TagWriterService(config);
+        var md = new com.lux032.musicautotagger.model.MusicMetadata(); md.setTitle("title"); md.setArtist("artist");
+        org.junit.jupiter.api.Assertions.assertFalse(writer.processFile(file.toFile(), md, null));
+        org.junit.jupiter.api.Assertions.assertFalse(writer.updateTagsOnExistingFile(file.toFile(), md, null));
+        org.junit.jupiter.api.Assertions.assertFalse(writer.embedFolderCover(file.toFile(), new byte[] {1}));
+        assertEquals(com.lux032.musicautotagger.service.TagWriterService.LyricsState.UNKNOWN, writer.embeddedLyricsState(file.toFile()));
+        assertArrayEquals(original, Files.readAllBytes(file));
     }
 
     /** 按 Aimer 样本构造：TAG + 标题/艺术家/专辑 30 字节 0 填充 + 年份 + 注释 + 流派。 */

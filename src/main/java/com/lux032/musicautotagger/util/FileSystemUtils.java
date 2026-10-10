@@ -498,36 +498,39 @@ public class FileSystemUtils {
      * @return int[2] - [复制成功数, 跳过数]
      */
     public int[] copyDirectoryRecursively(Path source, Path target) throws IOException {
-        int[] counts = new int[2]; // [copiedCount, skippedCount]
-        
-        Files.walkFileTree(source, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                Path targetDir = target.resolve(source.relativize(dir));
-                try {
-                    Files.createDirectories(targetDir);
-                } catch (IOException e) {
-                    log.warn("无法创建目录: {} - {}", targetDir, e.getMessage());
+        try (var libraryWrite = com.lux032.musicautotagger.service.LibraryWriteGuard.acquire()) {
+            int[] counts = new int[2]; // [copiedCount, skippedCount]
+
+            Files.walkFileTree(source, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                    Path targetDir = target.resolve(source.relativize(dir));
+                    try {
+                        Files.createDirectories(targetDir);
+                    } catch (IOException e) {
+                        log.warn("无法创建目录: {} - {}", targetDir, e.getMessage());
+                    }
+                    return FileVisitResult.CONTINUE;
                 }
-                return FileVisitResult.CONTINUE;
-            }
-            
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                Path targetFile = target.resolve(source.relativize(file));
-                try {
-                    Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
-                    counts[0]++; // copiedCount
-                    log.debug("已复制: {}", file.getFileName());
-                } catch (IOException e) {
-                    log.warn("复制文件失败: {} - {}", file.getFileName(), e.getMessage());
-                    counts[1]++; // skippedCount
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    Path targetFile = target.resolve(source.relativize(file));
+                    try {
+                        Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
+                        counts[0]++; // copiedCount
+                        log.debug("已复制: {}", file.getFileName());
+                    } catch (IOException e) {
+                        log.warn("复制文件失败: {} - {}", file.getFileName(), e.getMessage());
+                        counts[1]++; // skippedCount
+                    }
+                    return FileVisitResult.CONTINUE;
                 }
-                return FileVisitResult.CONTINUE;
-            }
-        });
-        
-        return counts;
+            });
+
+            return counts;
+
+        }
     }
     
     /**

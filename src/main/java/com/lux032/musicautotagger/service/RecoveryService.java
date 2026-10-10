@@ -275,14 +275,16 @@ public class RecoveryService implements AutoCloseable {
 
     /** 被替换的旧归档搬回音乐库原位；只允许还原到输出目录内且目标未被占用。 */
     private void restoreOutputFromTrash(Path entry, Path manifest, String originalPath) throws IOException {
-        Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
-        Path target = Path.of(originalPath).toAbsolutePath().normalize();
-        if (!target.startsWith(outputRoot) || target.equals(outputRoot)) throw new IOException("trash.manifest.invalid");
-        if (Files.exists(target)) throw new IOException("trash.restore.target.exists");
-        Files.createDirectories(target.getParent());
-        moveAcrossDevices(entry, target);
-        Files.deleteIfExists(manifest);
-        LogCollector.addLog("SUCCESS", "已从回收站还原到音乐库: " + displayOutputPath(target));
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
+            Path target = Path.of(originalPath).toAbsolutePath().normalize();
+            if (!target.startsWith(outputRoot) || target.equals(outputRoot)) throw new IOException("trash.manifest.invalid");
+            if (Files.exists(target)) throw new IOException("trash.restore.target.exists");
+            Files.createDirectories(target.getParent());
+            moveAcrossDevices(entry, target);
+            Files.deleteIfExists(manifest);
+            LogCollector.addLog("SUCCESS", "已从回收站还原到音乐库: " + displayOutputPath(target));
+        }
     }
 
     /** 立即彻底删除回收站条目。 */
@@ -525,42 +527,45 @@ public class RecoveryService implements AutoCloseable {
      * （例如 ThreadLocal 输出根失效），或被同名覆盖，此时必须整体失败。
      */
     private List<Path> commitWorkspace(Path workspace, int expectedAudioCount, String taskId) throws IOException {
-        if (!Files.isDirectory(workspace)) throw new IOException("recovery.workspace.missing");
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            if (!Files.isDirectory(workspace)) throw new IOException("recovery.workspace.missing");
 
-        List<Path> allFiles = listFiles(workspace);
-        long audioCount = allFiles.stream().filter(p -> fileSystemUtils.isMusicFile(p.toFile())).count();
-        if (audioCount != expectedAudioCount) {
-            throw new IOException("recovery.workspace.count.mismatch:" + audioCount + "/" + expectedAudioCount);
-        }
-
-        // 提交单元：有专辑层时以 artist/album 整个目录为单位，否则退化到单文件。
-        // 以目录为单位才能用一次 rename 完成提交，避免逐文件写入时中途失败留下半张专辑。
-        Path outputRoot = Path.of(config.getOutputDirectory());
-        Set<Path> units = new LinkedHashSet<>();
-        for (Path file : allFiles) {
-            Path relative = workspace.relativize(file);
-            units.add(relative.getNameCount() >= 3 ? relative.subpath(0, 2) : relative);
-        }
-        for (Path unit : units) {
-            if (Files.exists(outputRoot.resolve(unit))) throw new IOException("online.destination.exists");
-        }
-
-        List<Path> committed = new ArrayList<>();
-        try {
-            for (Path unit : units) {
-                Path destination = outputRoot.resolve(unit);
-                Files.createDirectories(destination.getParent());
-                Path source = workspace.resolve(unit);
-                commitUnit(source, destination, taskId);
-                processedLogger.rebaseTargetPaths(source.toString(), destination.toString());
-                committed.add(destination);
+            List<Path> allFiles = listFiles(workspace);
+            long audioCount = allFiles.stream().filter(p -> fileSystemUtils.isMusicFile(p.toFile())).count();
+            if (audioCount != expectedAudioCount) {
+                throw new IOException("recovery.workspace.count.mismatch:" + audioCount + "/" + expectedAudioCount);
             }
-        } catch (IOException failure) {
-            rollbackCommitted(committed, workspace, outputRoot, failure);
-            throw failure;
+
+            // 提交单元：有专辑层时以 artist/album 整个目录为单位，否则退化到单文件。
+            // 以目录为单位才能用一次 rename 完成提交，避免逐文件写入时中途失败留下半张专辑。
+            Path outputRoot = Path.of(config.getOutputDirectory());
+            Set<Path> units = new LinkedHashSet<>();
+            for (Path file : allFiles) {
+                Path relative = workspace.relativize(file);
+                units.add(relative.getNameCount() >= 3 ? relative.subpath(0, 2) : relative);
+            }
+            for (Path unit : units) {
+                if (Files.exists(outputRoot.resolve(unit))) throw new IOException("online.destination.exists");
+            }
+
+            List<Path> committed = new ArrayList<>();
+            try {
+                for (Path unit : units) {
+                    Path destination = outputRoot.resolve(unit);
+                    Files.createDirectories(destination.getParent());
+                    Path source = workspace.resolve(unit);
+                    commitUnit(source, destination, taskId);
+                    processedLogger.rebaseTargetPaths(source.toString(), destination.toString());
+                    committed.add(destination);
+                }
+            } catch (IOException failure) {
+                rollbackCommitted(committed, workspace, outputRoot, failure);
+                throw failure;
+            }
+            deleteRecursively(workspace);
+            return committed;
+
         }
-        deleteRecursively(workspace);
-        return committed;
     }
 
     /** 被替换掉的旧输出：原位置 + 回收站条目（提交失败时据此搬回）。 */
@@ -577,52 +582,55 @@ public class RecoveryService implements AutoCloseable {
      */
     List<Path> commitReplacingDuplicates(Path workspace, int expectedAudioCount, String taskId,
                                                  String failedRelativePath, DuplicatePolicy policy) throws IOException {
-        if (policy == null) policy = DuplicatePolicy.ASK;
-        Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            if (policy == null) policy = DuplicatePolicy.ASK;
+            Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
 
-        List<Path> toRetire = new ArrayList<>();
-        validAutoArchive(failedRelativePath, outputRoot).ifPresent(toRetire::add);
+            List<Path> toRetire = new ArrayList<>();
+            validAutoArchive(failedRelativePath, outputRoot).ifPresent(toRetire::add);
 
-        List<Path> incoming = Files.isDirectory(workspace)
-            ? listFiles(workspace).stream().filter(p -> fileSystemUtils.isMusicFile(p.toFile())).toList()
-            : List.of();
-        Set<Path> searchRoots = new LinkedHashSet<>();
-        for (Path file : incoming) {
-            Path relative = workspace.relativize(file);
-            if (relative.getNameCount() >= 2) searchRoots.add(outputRoot.resolve(relative.getName(0)));
-        }
-        List<ArchiveDuplicateDetector.DuplicateGroup> duplicates =
-            duplicateDetector.find(incoming, outputRoot, searchRoots, toRetire);
-        if (!duplicates.isEmpty()) {
-            switch (policy) {
-                case ASK -> throw new DuplicateArchiveException(
-                    duplicates.stream().map(d -> d.toView(outputRoot)).toList());
-                case REPLACE -> duplicates.stream()
-                    .filter(ArchiveDuplicateDetector.DuplicateGroup::replaceable)
-                    .map(ArchiveDuplicateDetector.DuplicateGroup::path)
-                    .forEach(toRetire::add);
-                case KEEP_BOTH -> log.info("音乐库已有相同音频，按用户选择保留两份: {}",
-                    duplicates.stream().map(d -> d.path().toString()).toList());
+            List<Path> incoming = Files.isDirectory(workspace)
+                ? listFiles(workspace).stream().filter(p -> fileSystemUtils.isMusicFile(p.toFile())).toList()
+                : List.of();
+            Set<Path> searchRoots = new LinkedHashSet<>();
+            for (Path file : incoming) {
+                Path relative = workspace.relativize(file);
+                if (relative.getNameCount() >= 2) searchRoots.add(outputRoot.resolve(relative.getName(0)));
             }
-        }
+            List<ArchiveDuplicateDetector.DuplicateGroup> duplicates =
+                duplicateDetector.find(incoming, outputRoot, searchRoots, toRetire);
+            if (!duplicates.isEmpty()) {
+                switch (policy) {
+                    case ASK -> throw new DuplicateArchiveException(
+                        duplicates.stream().map(d -> d.toView(outputRoot)).toList());
+                    case REPLACE -> duplicates.stream()
+                        .filter(ArchiveDuplicateDetector.DuplicateGroup::replaceable)
+                        .map(ArchiveDuplicateDetector.DuplicateGroup::path)
+                        .forEach(toRetire::add);
+                    case KEEP_BOTH -> log.info("音乐库已有相同音频，按用户选择保留两份: {}",
+                        duplicates.stream().map(d -> d.path().toString()).toList());
+                }
+            }
 
-        List<RetiredOutput> retired = retireOutputs(toRetire, taskId);
-        List<Path> committed;
-        try {
-            committed = commitWorkspace(workspace, expectedAudioCount, taskId);
-        } catch (IOException e) {
-            restoreRetired(retired);
-            throw e;
+            List<RetiredOutput> retired = retireOutputs(toRetire, taskId);
+            List<Path> committed;
+            try {
+                committed = commitWorkspace(workspace, expectedAudioCount, taskId);
+            } catch (IOException e) {
+                restoreRetired(retired);
+                throw e;
+            }
+            if (failedRelativePath != null) {
+                autoArchiveRegistry.remove(failedRelativePath);
+            }
+            for (RetiredOutput r : retired) {
+                log.info("已用本次恢复结果替换旧归档（可在回收站还原）: {}", r.original());
+                LogCollector.addLog("INFO", "已替换重复的旧归档，原目录已移入回收站: "
+                    + outputRoot.relativize(r.original()));
+            }
+            return committed;
+
         }
-        if (failedRelativePath != null) {
-            autoArchiveRegistry.remove(failedRelativePath);
-        }
-        for (RetiredOutput r : retired) {
-            log.info("已用本次恢复结果替换旧归档（可在回收站还原）: {}", r.original());
-            LogCollector.addLog("INFO", "已替换重复的旧归档，原目录已移入回收站: "
-                + outputRoot.relativize(r.original()));
-        }
-        return committed;
     }
 
     /**
@@ -733,17 +741,20 @@ public class RecoveryService implements AutoCloseable {
 
     /** 多单元提交中途失败时，把已落地的单元搬回工作区，避免输出目录残留半成品。 */
     private void rollbackCommitted(List<Path> committed, Path workspace, Path outputRoot, IOException cause) {
-        for (Path destination : committed) {
-            try {
-                Path back = workspace.resolve(outputRoot.relativize(destination));
-                Files.createDirectories(back.getParent());
-                Files.move(destination, back);
-                processedLogger.clearTargetPathsUnder(destination.toString());
-            } catch (IOException e) {
-                processedLogger.clearTargetPathsUnder(destination.toString());
-                log.error("提交失败后回滚受阻，输出目录可能残留部分内容，需人工清理: {}（原因: {}）",
-                    destination, cause.getMessage(), e);
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            for (Path destination : committed) {
+                try {
+                    Path back = workspace.resolve(outputRoot.relativize(destination));
+                    Files.createDirectories(back.getParent());
+                    Files.move(destination, back);
+                    processedLogger.clearTargetPathsUnder(destination.toString());
+                } catch (IOException e) {
+                    processedLogger.clearTargetPathsUnder(destination.toString());
+                    log.error("提交失败后回滚受阻，输出目录可能残留部分内容，需人工清理: {}（原因: {}）",
+                        destination, cause.getMessage(), e);
+                }
             }
+
         }
     }
 
@@ -1020,27 +1031,30 @@ public class RecoveryService implements AutoCloseable {
      * "Invalid cross-device link"。复制后校验再删源，避免半途失败丢数据。
      */
     private void moveAcrossDevices(Path source, Path target) throws IOException {
-        try {
-            Files.move(source, target);
-            return;
-        } catch (IOException crossDevice) {
-            log.debug("跨设备移动，改为复制后删除: {} -> {}", source, target);
-        }
-        if (Files.isDirectory(source)) {
-            fileSystemUtils.copyDirectoryRecursively(source, target);
-            if (listFiles(target).size() != listFiles(source).size()) {
-                deleteRecursively(target);
-                throw new IOException("recovery.move.copy.incomplete");
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            try {
+                Files.move(source, target);
+                return;
+            } catch (IOException crossDevice) {
+                log.debug("跨设备移动，改为复制后删除: {} -> {}", source, target);
             }
-        } else {
-            Files.createDirectories(target.getParent());
-            Files.copy(source, target);
-            if (Files.size(target) != Files.size(source)) {
-                Files.deleteIfExists(target);
-                throw new IOException("recovery.move.copy.incomplete");
+            if (Files.isDirectory(source)) {
+                fileSystemUtils.copyDirectoryRecursively(source, target);
+                if (listFiles(target).size() != listFiles(source).size()) {
+                    deleteRecursively(target);
+                    throw new IOException("recovery.move.copy.incomplete");
+                }
+            } else {
+                Files.createDirectories(target.getParent());
+                Files.copy(source, target);
+                if (Files.size(target) != Files.size(source)) {
+                    Files.deleteIfExists(target);
+                    throw new IOException("recovery.move.copy.incomplete");
+                }
             }
+            deleteRecursively(source);
+
         }
-        deleteRecursively(source);
     }
 
     private Path trashRoot() {

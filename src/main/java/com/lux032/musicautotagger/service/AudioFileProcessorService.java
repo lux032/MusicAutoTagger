@@ -714,20 +714,12 @@ public class AudioFileProcessorService {
                 log.info(I18nUtil.getMessage("main.cover.not.found"));
             }
             
-            // 4.5 获取歌词 (LrcLib)
-            log.info(I18nUtil.getMessage("main.getting.lyrics"));
-            String lyrics = lyricsService.getLyrics(
-                detailedMetadata.getTitle(),
-                detailedMetadata.getArtist(),
-                detailedMetadata.getAlbum(),
-                0
-            );
-            if (lyrics != null && !lyrics.isEmpty()) {
-                detailedMetadata.setLyrics(lyrics);
-            } else {
-                log.info(I18nUtil.getMessage("main.lyrics.not.found"));
+            // Local precision is independent of the integer duration used for album matching.
+            detailedMetadata.setLocalPreciseDuration(TagWriterService.readPreciseDuration(originalAudioFile));
+            if (tagWriter.embeddedLyricsState(originalAudioFile) == TagWriterService.LyricsState.ABSENT) {
+                lyricsService.enrich(detailedMetadata);
             }
-            
+
             // 4.9 按锁定专辑写入：授权检查与写入放在同一把文件夹锁里。
             // 识别期间（联网请求较慢）另一线程可能已把文件夹判为未确定 / 缺曲；
             // 判定也要拿这把锁，因此不会出现「检查通过后、写入前被判缺曲」的窗口。

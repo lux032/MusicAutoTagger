@@ -2,158 +2,198 @@ package com.lux032.musicautotagger.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
+import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.model.MusicMetadata;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.config.RequestConfig;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
-import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
-import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.classic.*;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.util.Timeout;
-import com.lux032.musicautotagger.config.MusicConfig;
-
 import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.concurrent.*;
 
-/**
- * 歌词服务
- * 使用 LrcLib API 获取歌词
- */
-@Slf4j
-public class LyricsService {
-
-    private static final String LRCLIB_API_URL = "https://lrclib.net/api/get";
-    private static final int MAX_RETRIES = 3; // 最大重试次数
-    private static final long RETRY_DELAY_MS = 10000; // 重试间隔10秒
+/** Application-owned shared client. Failures defer lyrics, never delay archival for a long cooldown. */
+public class LyricsService implements AutoCloseable {
+    public enum Status { FOUND, NOT_FOUND, INSTRUMENTAL, UNSAFE, DEFERRED, CANCELLED }
+    public record Result(Status status, String lyrics, Long recordId) {
+        static Result of(Status status) { return new Result(status, null, null); }
+    }
+    static final int MAX_REQUESTS = 6;
+    static final long BUDGET_MS = 18000;
     private final MusicConfig config;
-    private final CloseableHttpClient httpClient;
-    private final ObjectMapper objectMapper;
+    private final String baseUrl;
+    private final CloseableHttpClient client;
+    private final ObjectMapper mapper = new ObjectMapper();
+    private final Set<HttpGet> active = ConcurrentHashMap.newKeySet();
+    private volatile boolean closed;
+    private volatile long cooldownUntil;
+    private int consecutiveFailures;
 
-    public LyricsService(MusicConfig config) {
+    public LyricsService(MusicConfig config) { this(config, "https://lrclib.net/api"); }
+    LyricsService(MusicConfig config, String baseUrl) {
         this.config = config;
-        this.httpClient = createHttpClient(config);
-        this.objectMapper = new ObjectMapper();
+        this.baseUrl = baseUrl;
+        HttpClientBuilder builder = HttpClients.custom().disableAutomaticRetries()
+            .setDefaultRequestConfig(RequestConfig.custom()
+                .setConnectTimeout(Timeout.ofSeconds(2))
+                .setConnectionRequestTimeout(Timeout.ofSeconds(1))
+                .setResponseTimeout(Timeout.ofSeconds(2)).build());
+        if (config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isBlank())
+            builder.setProxy(new HttpHost(config.getProxyHost(), config.getProxyPort()));
+        client = builder.build();
     }
 
-    /**
-     * 创建 HttpClient,支持代理配置
-     */
-    private CloseableHttpClient createHttpClient(MusicConfig config) {
-        HttpClientBuilder builder = HttpClients.custom();
-        
-        // 设置超时
-        RequestConfig requestConfig = RequestConfig.custom()
-            .setConnectionRequestTimeout(Timeout.ofSeconds(10))
-            .setResponseTimeout(Timeout.ofSeconds(10))
-            .build();
-        builder.setDefaultRequestConfig(requestConfig);
-        
-        // 配置代理
-        if (config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isEmpty()) {
-            HttpHost proxy = new HttpHost(config.getProxyHost(), config.getProxyPort());
-            builder.setProxy(proxy);
-            log.debug("LyricsService 使用代理: {}:{}", config.getProxyHost(), config.getProxyPort());
-        }
-        
-        return builder.build();
+    /** Legacy adapter; callers with local precision should use lookup or enrich. */
+    public String getLyrics(String title, String artist, String album, int seconds) {
+        return lookup(title, artist, album, (double) seconds, true).lyrics();
     }
-
-    /**
-     * 获取歌词(带重试机制)
-     * @param title 标题
-     * @param artist 艺术家
-     * @param album 专辑
-     * @param durationSeconds 时长(秒)
-     * @return 歌词文本(优先返回同步歌词，没有则返回纯文本)
-     */
-    public String getLyrics(String title, String artist, String album, int durationSeconds) {
-        if (title == null || artist == null) {
-            return null;
+    public void enrich(MusicMetadata metadata) {
+        if (metadata == null || (metadata.getLyrics() != null && !metadata.getLyrics().isBlank())) return;
+        Result result = lookup(metadata.getTitle(), metadata.getArtist(), metadata.getAlbum(),
+            metadata.getLocalPreciseDuration(), !metadata.isWeakLyricsIdentity());
+        if (result.status() == Status.FOUND) {
+            metadata.setLyrics(result.lyrics());
+            metadata.setAutomaticLyrics(new MusicMetadata.AutomaticLyrics("lrclib", result.recordId(),
+                metadata.getRecordingId(), metadata.getTitle(), metadata.getArtist(), metadata.getLocalPreciseDuration(),
+                List.copyOf(LyricsMatcher.versions(metadata.getTitle()))));
         }
-
-        int retryCount = 0;
-        
-        while (retryCount <= MAX_RETRIES) {
-            try {
-                // 构建查询参数
-                StringBuilder urlBuilder = new StringBuilder(LRCLIB_API_URL);
-                urlBuilder.append("?artist_name=").append(URLEncoder.encode(artist, StandardCharsets.UTF_8.toString()));
-                urlBuilder.append("&track_name=").append(URLEncoder.encode(title, StandardCharsets.UTF_8.toString()));
-                
-                if (album != null && !album.isEmpty()) {
-                    urlBuilder.append("&album_name=").append(URLEncoder.encode(album, StandardCharsets.UTF_8.toString()));
-                }
-                
-                if (durationSeconds > 0) {
-                    urlBuilder.append("&duration=").append(durationSeconds);
-                }
-
-                String url = urlBuilder.toString();
-                log.debug("正在请求 LrcLib 获取歌词: {}", url);
-
-                HttpGet httpGet = new HttpGet(url);
-                httpGet.setHeader("User-Agent", "MusicTagTool/1.0 ( https://github.com/your/project )");
-
-                try (CloseableHttpResponse response = httpClient.execute(httpGet)) {
-                    int statusCode = response.getCode();
-                    if (statusCode == 404) {
-                        log.info("LrcLib 未找到歌词: {} - {}", artist, title);
-                        return null;
-                    }
-                    
-                    if (statusCode != 200) {
-                        log.warn("LrcLib API 请求失败: {}", statusCode);
-                        // 非200状态码不重试(除了网络异常)
-                        return null;
-                    }
-
-                    String json = EntityUtils.toString(response.getEntity());
-                    JsonNode root = objectMapper.readTree(json);
-
-                    // 优先获取同步歌词
-                    String syncedLyrics = root.path("syncedLyrics").asText(null);
-                    if (syncedLyrics != null && !syncedLyrics.isEmpty()) {
-                        log.info("成功获取同步歌词: {} - {}", artist, title);
-                        return syncedLyrics;
-                    }
-
-                    // 其次获取纯文本歌词
-                    String plainLyrics = root.path("plainLyrics").asText(null);
-                    if (plainLyrics != null && !plainLyrics.isEmpty()) {
-                        log.info("成功获取纯文本歌词: {} - {}", artist, title);
-                        return plainLyrics;
-                    }
-                }
-                // 请求成功但未找到歌词,不需要重试
-                return null;
-
-            } catch (Exception e) {
-                retryCount++;
-                
-                if (retryCount <= MAX_RETRIES) {
-                    log.warn("获取歌词失败(第{}/{}次尝试): {} - {} - {}秒后重试",
-                        retryCount, MAX_RETRIES, artist, title, RETRY_DELAY_MS / 1000);
-                    
-                    try {
-                        Thread.sleep(RETRY_DELAY_MS);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        log.error("重试等待被中断");
-                        return null;
-                    }
-                } else {
-                    log.error("获取歌词失败,已达最大重试次数({}/{}): {} - {}", retryCount, MAX_RETRIES, artist, title);
+    }
+    public Result lookup(String title, String artist, String album, Double duration, boolean strongIdentity) {
+        if (!LyricsMatcher.reliableDuration(duration) || LyricsMatcher.normalize(title).isEmpty()
+            || LyricsMatcher.normalize(artist).isEmpty()) return Result.of(Status.UNSAFE);
+        if (LyricsMatcher.instrumental(title)) return Result.of(Status.INSTRUMENTAL);
+        if (closed || Thread.currentThread().isInterrupted()) return Result.of(Status.CANCELLED);
+        if (System.currentTimeMillis() < cooldownUntil) return Result.of(Status.DEFERRED);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BUDGET_MS);
+        ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "lyrics-deadline"); t.setDaemon(true); return t;
+        });
+        Set<HttpGet> requests = ConcurrentHashMap.newKeySet();
+        timer.schedule(() -> requests.forEach(HttpGet::cancel), BUDGET_MS, TimeUnit.MILLISECONDS);
+        Thread owner = Thread.currentThread();
+        timer.scheduleAtFixedRate(() -> {
+            if (owner.isInterrupted()) requests.forEach(HttpGet::cancel);
+        }, 50, 50, TimeUnit.MILLISECONDS);
+        int[] count = {0};
+        try {
+            String query = "?track_name=" + encode(title) + "&artist_name=" + encode(artist);
+            String getQuery = query + "&duration=" + duration;
+            Reply reply = request("/get" + getQuery + (album == null || album.isBlank() ? "" : "&album_name=" + encode(album)), deadline, count, requests);
+            if (reply.status != Status.NOT_FOUND && reply.node == null) return Result.of(reply.status);
+            if (reply.node != null) {
+                Result result = evaluate(reply.node, title, artist, duration);
+                if (result.status != Status.NOT_FOUND) return result;
+            }
+            if (reply.status == Status.NOT_FOUND && album != null && !album.isBlank()) {
+                reply = request("/get" + getQuery, deadline, count, requests);
+                if (reply.node == null && reply.status != Status.NOT_FOUND) return Result.of(reply.status);
+                if (reply.node != null) {
+                    Result result = evaluate(reply.node, title, artist, duration);
+                    if (result.status != Status.NOT_FOUND) return result;
                 }
             }
+            if (!strongIdentity) return Result.of(Status.UNSAFE);
+            reply = request("/search" + query, deadline, count, requests);
+            if (reply.node == null) return Result.of(reply.status);
+            if (!reply.node.isArray() || reply.node.size() >= 20) return Result.of(Status.UNSAFE);
+            return selectSearch(reply.node, title, artist, duration);
+        } finally { timer.shutdownNow(); }
+    }
+    private Result selectSearch(JsonNode array, String title, String artist, double duration) {
+        Map<Long, JsonNode> originals = new HashMap<>();
+        List<JsonNode> unique = new ArrayList<>();
+        for (JsonNode node : array) {
+            JsonNode id = node.path("id");
+            if (validId(id)) {
+                JsonNode previous = originals.putIfAbsent(id.asLong(), node);
+                if (previous != null) {
+                    if (!previous.equals(node)) return Result.of(Status.UNSAFE);
+                    continue;
+                }
+            }
+            unique.add(node);
         }
-
-        return null;
+        JsonNode representative = null, equivalent = null;
+        for (JsonNode node : unique) {
+            if (!LyricsMatcher.matches(node, title, artist, duration)) continue;
+            if (!node.isObject() || !validId(node.path("id")) || !validInstrumental(node)) return Result.of(Status.UNSAFE);
+            com.fasterxml.jackson.databind.node.ObjectNode comparison = node.deepCopy();
+            comparison.remove("id");
+            for (String field : List.of("plainLyrics", "syncedLyrics")) {
+                JsonNode text = node.get(field);
+                if (text != null && !text.isNull() && !text.isTextual()) return Result.of(Status.UNSAFE);
+                String normalized = normalizedLyrics(text == null ? null : text.asText(null));
+                if (normalized == null) comparison.putNull(field); else comparison.put(field, normalized);
+            }
+            if (equivalent != null && !equivalent.equals(comparison)) return Result.of(Status.UNSAFE);
+            equivalent = comparison;
+            if (representative == null || node.path("id").asLong() < representative.path("id").asLong()) representative = node;
+        }
+        return representative == null ? Result.of(Status.NOT_FOUND) : evaluate(representative, title, artist, duration);
     }
-
-    public void close() throws IOException {
-        httpClient.close();
+    private static boolean validId(JsonNode id) { return id.isIntegralNumber() && id.canConvertToLong() && id.asLong() > 0; }
+    private static boolean validInstrumental(JsonNode node) { return !node.has("instrumental") || node.get("instrumental").isBoolean(); }
+    private static String normalizedLyrics(String text) {
+        if (text == null || text.isBlank()) return null;
+        String[] lines = text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
+        for (int i = 0; i < lines.length; i++) lines[i] = lines[i].stripTrailing();
+        int start = 0, end = lines.length;
+        while (start < end && lines[start].isEmpty()) start++;
+        while (end > start && lines[end - 1].isEmpty()) end--;
+        return String.join("\n", Arrays.copyOfRange(lines, start, end));
     }
+    private Result evaluate(JsonNode node, String title, String artist, double duration) {
+        if (!LyricsMatcher.matches(node, title, artist, duration) || !validId(node.path("id")) || !validInstrumental(node)) return Result.of(Status.UNSAFE);
+        if (node.path("instrumental").asBoolean()) return Result.of(Status.INSTRUMENTAL);
+        String text = LyricsMatcher.text(node, duration);
+        return text == null ? Result.of(Status.NOT_FOUND) : new Result(Status.FOUND, text, node.path("id").isIntegralNumber() ? node.path("id").asLong() : null);
+    }
+    private record Reply(Status status, JsonNode node) {}
+    private Reply request(String path, long deadline, int[] count, Set<HttpGet> requests) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (closed || Thread.currentThread().isInterrupted()) return new Reply(Status.CANCELLED, null);
+            if (count[0] >= MAX_REQUESTS || System.nanoTime() >= deadline || System.currentTimeMillis() < cooldownUntil)
+                return new Reply(Status.DEFERRED, null);
+            count[0]++;
+            HttpGet get = new HttpGet(baseUrl + path);
+            get.setHeader("User-Agent", config.getUserAgent());
+            active.add(get); requests.add(get);
+            try (CloseableHttpResponse response = client.execute(get)) {
+                int code = response.getCode();
+                if (code == 200) { healthy(); return new Reply(Status.FOUND, mapper.readTree(EntityUtils.toString(response.getEntity()))); }
+                if (code == 404) { healthy(); return new Reply(Status.NOT_FOUND, null); }
+                if (code != 429 && code < 500) return new Reply(Status.DEFERRED, null);
+                failed();
+                if (response.getFirstHeader("Retry-After") != null) {
+                    long delay = retryAfter(response.getFirstHeader("Retry-After").getValue());
+                    if (delay > 0) { cooldownUntil = System.currentTimeMillis() + Math.min(delay, 3600000); return new Reply(Status.DEFERRED, null); }
+                }
+            } catch (Exception e) {
+                if (closed || Thread.currentThread().isInterrupted()) return new Reply(Status.CANCELLED, null);
+                failed();
+            } finally { active.remove(get); requests.remove(get); }
+            if (attempt < 2) {
+                try { Thread.sleep(ThreadLocalRandom.current().nextLong(100, 301)); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); return new Reply(Status.CANCELLED, null); }
+            }
+        }
+        return new Reply(Status.DEFERRED, null);
+    }
+    private synchronized void healthy() { consecutiveFailures = 0; }
+    private synchronized void failed() { if (++consecutiveFailures >= 3) cooldownUntil = System.currentTimeMillis() + 30000; }
+    static long retryAfter(String value) {
+        try { return Math.max(0, Math.multiplyExact(Long.parseLong(value.trim()), 1000)); }
+        catch (RuntimeException e) {
+            try { return Math.max(0, ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() - System.currentTimeMillis()); }
+            catch (RuntimeException ignored) { return 0; }
+        }
+    }
+    private static String encode(String value) { return URLEncoder.encode(value, StandardCharsets.UTF_8); }
+    public void close() throws IOException { closed = true; active.forEach(HttpGet::cancel); client.close(); }
 }

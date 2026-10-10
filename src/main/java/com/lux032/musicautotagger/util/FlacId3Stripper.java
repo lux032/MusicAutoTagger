@@ -55,6 +55,14 @@ public final class FlacId3Stripper {
     private FlacId3Stripper() {
     }
 
+    /** Read-only guard for every caller, including lookup before normalization. */
+    public static boolean hasUnsafeId3(File file) {
+        if (file == null || !isFlac(file.toPath())) return false;
+        try (FileChannel in = FileChannel.open(file.toPath(), StandardOpenOption.READ)) {
+            return locateFlacMarker(in, in.size(), file.toPath()) < 0;
+        } catch (IOException e) { return true; }
+    }
+
     public static Result stripId3FromFlac(File file) {
         return file == null ? Result.NOT_FLAC : stripId3FromFlac(file.toPath());
     }
@@ -225,6 +233,11 @@ public final class FlacId3Stripper {
             }
             long payload = ((long) b0 << 21) | ((long) b1 << 14) | ((long) b2 << 7) | b3;
             long total = ID3_HEADER_LENGTH + payload + ((flags & ID3_FLAG_FOOTER) != 0 ? ID3_FOOTER_LENGTH : 0);
+            if (payload > 16 * 1024 * 1024 || offset + total > fileSize
+                || !id3PayloadSafe(in, offset + ID3_HEADER_LENGTH, payload, major, flags, fileSize)) {
+                log.warn("FLAC ID3 歌词存在或解析未知，保留原文件并跳过标签写入: {}", file);
+                return -1;
+            }
             offset += total;
             log.debug("检测到 FLAC 头部 ID3v2.{}.{} (flags=0x{}, 长度 {} 字节): {}",
                 major, revision, Integer.toHexString(flags), total, file);
@@ -235,6 +248,38 @@ public final class FlacId3Stripper {
         }
         log.warn("FLAC 文件头部堆叠的 ID3v2 块过多，保持原样: {}", file);
         return -1;
+    }
+
+    /** Only simple, fully validated frames can prove that removing the ID3 block is safe. */
+    private static boolean id3PayloadSafe(FileChannel in, long start, long length, int version, int flags, long fileSize) throws IOException {
+        if (version < 2 || version > 4 || (flags & ~(version == 4 ? 0x10 : 0)) != 0) return false;
+        byte[] data = readAt(in, start, (int) length, fileSize);
+        if (data.length != length) return false;
+        int p = 0, header = version == 2 ? 6 : 10, idLength = version == 2 ? 3 : 4;
+        while (p < data.length) {
+            if (data[p] == 0) {
+                for (int i = p; i < data.length; i++) if (data[i] != 0) return false;
+                return true;
+            }
+            if (data.length - p < header) return false;
+            for (int i = 0; i < idLength; i++) {
+                int c = data[p + i];
+                if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) return false;
+            }
+            String id = new String(data, p, idLength, java.nio.charset.StandardCharsets.US_ASCII);
+            long size = 0;
+            for (int i = idLength; i < (version == 2 ? 6 : 8); i++) {
+                int value = data[p + i] & 255;
+                if (version == 4 && value > 127) return false;
+                size = (size << (version == 4 ? 7 : 8)) | value;
+            }
+            if (version != 2 && (data[p + 8] != 0 || data[p + 9] != 0)) return false;
+            if (size <= 0 || size > data.length - p - header) return false;
+            // Keep even blank/empty lyric frames: detecting their presence cannot justify deleting them.
+            if (java.util.Set.of("USLT", "SYLT", "ULT", "SLT").contains(id)) return false;
+            p += header + (int) size;
+        }
+        return true;
     }
 
     private static Result rewriteRange(Path target, long audioOffset, long audioEnd, long fileSize) {

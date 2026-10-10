@@ -111,6 +111,7 @@ public class AudioFingerprintService {
         
         AudioFingerprint fingerprint = new AudioFingerprint();
         fingerprint.setDuration(root.path("duration").asInt());
+        fingerprint.setPreciseDuration(root.path("duration").isNumber() ? root.path("duration").asDouble() : null);
         fingerprint.setFingerprint(root.path("fingerprint").asText());
         
         log.info("成功生成音频指纹 - 文件: {}, 时长: {}秒",
@@ -389,6 +390,7 @@ public class AudioFingerprintService {
         
         // 3. 保存文件时长到结果中（用于后续时长匹配）
         result.setDuration(fingerprint.getDuration());
+        result.setPreciseDuration(fingerprint.getPreciseDuration());
         
         if (result.getRecordings() != null && !result.getRecordings().isEmpty()) {
             RecordingInfo bestMatch = result.getRecordings().get(0);
@@ -443,6 +445,7 @@ public class AudioFingerprintService {
     @Data
     public static class AudioFingerprint {
         private int duration; // 时长（秒）
+        private Double preciseDuration; // Preserve fpcalc JSON precision; not assumed accurate for lyrics.
         private String fingerprint; // 指纹字符串
     }
     
@@ -456,6 +459,7 @@ public class AudioFingerprintService {
         private String acoustId;
         private List<RecordingInfo> recordings;
         private int duration; // 音频文件时长（秒），用于后续时长匹配
+        private Double preciseDuration;
     }
     
     /**

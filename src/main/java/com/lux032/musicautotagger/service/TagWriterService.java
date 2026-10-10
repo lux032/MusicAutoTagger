@@ -124,57 +124,65 @@ public class TagWriterService {
 
     /** 处理音频文件，并返回实际写入的目标文件。 */
     public TagProcessResult processFileWithResult(File sourceFile, MusicMetadata metadata, byte[] coverArtData) {
-        if (!sourceFile.exists()) {
-            log.error("源文件不存在: {}", sourceFile.getAbsolutePath());
-            return new TagProcessResult(false, null);
-        }
-
-        File targetFile = null;
-        try {
-            // 1. 确定目标文件路径
-            targetFile = determineTargetFile(sourceFile, metadata);
-
-            // 2. 创建目标目录
-            if (!targetFile.getParentFile().exists()) {
-                targetFile.getParentFile().mkdirs();
-                ensureWritablePermissions(targetFile.getParentFile().toPath(), true);
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            if (!sourceFile.exists()) {
+                log.error("源文件不存在: {}", sourceFile.getAbsolutePath());
+                return new TagProcessResult(false, null);
             }
 
-            // 3. 复制文件（目标已存在且不是同一首歌时不覆盖，改名另存）
-            targetFile = copyWithoutClobbering(sourceFile, targetFile);
-            ensureWritablePermissions(targetFile.toPath(), false);
+            if (FlacId3Stripper.hasUnsafeId3(sourceFile)) {
+                log.warn("跳过无法安全保护 ID3 歌词的 FLAC: {}", sourceFile);
+                return new TagProcessResult(false, null);
+            }
+            metadata.discardStaleAutomaticLyrics();
+            File targetFile = null;
+            try {
+                // 1. 确定目标文件路径
+                targetFile = determineTargetFile(sourceFile, metadata);
 
-            // 3.1 剥离 FLAC 头部 ID3v2 / 尾部 ID3v1，确保 jaudiotagger 读写的是以 fLaC 开头的纯净文件
-            FlacId3Stripper.stripId3FromFlac(targetFile);
+                // 2. 创建目标目录
+                if (!targetFile.getParentFile().exists()) {
+                    targetFile.getParentFile().mkdirs();
+                    ensureWritablePermissions(targetFile.getParentFile().toPath(), true);
+                }
 
-            // 4. 更新标签
-            log.info("开始更新标签: {}", targetFile.getName());
-            AudioFile audioFileObj = AudioFileIO.read(targetFile);
-            Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
+                // 3. 复制文件（目标已存在且不是同一首歌时不覆盖，改名另存）
+                targetFile = copyWithoutClobbering(sourceFile, targetFile);
+                ensureWritablePermissions(targetFile.toPath(), false);
 
-            // 更新文本标签
-            updateTextTags(tag, metadata);
+                // 3.1 剥离 FLAC 头部 ID3v2 / 尾部 ID3v1，确保 jaudiotagger 读写的是以 fLaC 开头的纯净文件
+                FlacId3Stripper.stripId3FromFlac(targetFile);
 
-            // 更新封面
-            if (coverArtData != null && coverArtData.length > 0) {
-                log.info("写入封面图片...");
-                applyArtwork(tag, coverArtData);
+                // 4. 更新标签
+                log.info("开始更新标签: {}", targetFile.getName());
+                AudioFile audioFileObj = AudioFileIO.read(targetFile);
+                Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
+
+                // 更新文本标签
+                updateTextTags(tag, metadata);
+
+                // 更新封面
+                if (coverArtData != null && coverArtData.length > 0) {
+                    log.info("写入封面图片...");
+                    applyArtwork(tag, coverArtData);
+                }
+
+                // 保存更改
+                audioFileObj.commit();
+                log.info("文件处理完成: {}", targetFile.getName());
+
+                // 如果配置开启,导出歌词到独立文件
+                if (config.isExportLyricsToFile() && metadata.getLyrics() != null && !metadata.getLyrics().isEmpty()) {
+                    exportLyricsToFile(targetFile, metadata.getLyrics());
+                }
+
+                return new TagProcessResult(true, targetFile.getAbsoluteFile());
+
+            } catch (Exception e) {
+                log.error("处理文件失败: {}", sourceFile.getName(), e);
+                return new TagProcessResult(false, targetFile == null ? null : targetFile.getAbsoluteFile());
             }
 
-            // 保存更改
-            audioFileObj.commit();
-            log.info("文件处理完成: {}", targetFile.getName());
-
-            // 如果配置开启,导出歌词到独立文件
-            if (config.isExportLyricsToFile() && metadata.getLyrics() != null && !metadata.getLyrics().isEmpty()) {
-                exportLyricsToFile(targetFile, metadata.getLyrics());
-            }
-
-            return new TagProcessResult(true, targetFile.getAbsoluteFile());
-
-        } catch (Exception e) {
-            log.error("处理文件失败: {}", sourceFile.getName(), e);
-            return new TagProcessResult(false, targetFile == null ? null : targetFile.getAbsoluteFile());
         }
     }
 
@@ -256,10 +264,10 @@ public class TagWriterService {
         return new File(targetFile.getParentFile(), base + " (" + n + ")" + ext);
     }
 
-    private static Double readPreciseDuration(File file) {
+    public static Double readPreciseDuration(File file) {
         try {
             double seconds = AudioFileIO.read(file).getAudioHeader().getPreciseTrackLength();
-            return seconds > 0 ? seconds : null;
+            return Double.isFinite(seconds) && seconds > 0 ? seconds : null;
         } catch (Exception e) {
             log.debug("读取音频时长失败: {} - {}", file.getName(), e.getMessage());
             return null;
@@ -636,7 +644,8 @@ public class TagWriterService {
         }
 
         // 写入歌词
-        if (metadata.getLyrics() != null && !metadata.getLyrics().isEmpty()) {
+        metadata.discardStaleAutomaticLyrics();
+        if (lyricsState(tag) == LyricsState.ABSENT && metadata.getLyrics() != null && !metadata.getLyrics().isBlank()) {
             tag.setField(FieldKey.LYRICS, metadata.getLyrics());
         }
     }
@@ -726,22 +735,26 @@ public class TagWriterService {
      * 更新已存在文件的标签（不复制文件）
      */
     public boolean updateTagsOnExistingFile(File targetFile, MusicMetadata metadata, byte[] coverArtData) {
-        try {
-            FlacId3Stripper.stripId3FromFlac(targetFile);
-            AudioFile audioFileObj = AudioFileIO.read(targetFile);
-            Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            try {
+                if (FlacId3Stripper.hasUnsafeId3(targetFile)) return false;
+                FlacId3Stripper.stripId3FromFlac(targetFile);
+                AudioFile audioFileObj = AudioFileIO.read(targetFile);
+                Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
 
-            updateTextTags(tag, metadata);
+                updateTextTags(tag, metadata);
 
-            if (coverArtData != null && coverArtData.length > 0) {
-                applyArtwork(tag, coverArtData);
+                if (coverArtData != null && coverArtData.length > 0) {
+                    applyArtwork(tag, coverArtData);
+                }
+
+                audioFileObj.commit();
+                return true;
+            } catch (Exception e) {
+                log.error("更新标签失败: {}", targetFile.getName(), e);
+                return false;
             }
 
-            audioFileObj.commit();
-            return true;
-        } catch (Exception e) {
-            log.error("更新标签失败: {}", targetFile.getName(), e);
-            return false;
         }
     }
 
@@ -793,14 +806,14 @@ public class TagWriterService {
             String baseFilePath = lastDotIndex > 0 ? audioFilePath.substring(0, lastDotIndex) : audioFilePath;
 
             // 创建歌词文件路径（.lrc扩展名）
-            File lyricsFile = new File(baseFilePath + ".lrc");
+            File lyricsFile = new File(baseFilePath + (LyricsMatcher.validSynced(lyrics, 3600) ? ".lrc" : ".txt"));
 
-            // 写入歌词内容
-            try (java.io.BufferedWriter writer = new java.io.BufferedWriter(
-                    new java.io.OutputStreamWriter(
-                            new java.io.FileOutputStream(lyricsFile),
-                            java.nio.charset.StandardCharsets.UTF_8))) {
-                writer.write(lyrics);
+            // CREATE_NEW also closes the check/create race; never overwrite a sidecar.
+            try {
+                Files.writeString(lyricsFile.toPath(), lyrics, java.nio.charset.StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE_NEW);
+            } catch (java.nio.file.FileAlreadyExistsException e) {
+                return;
             }
             ensureWritablePermissions(lyricsFile.toPath(), false);
 
@@ -925,6 +938,45 @@ public class TagWriterService {
         return value == null || value.trim().isEmpty() ? null : value;
     }
 
+    public enum LyricsState { PRESENT, ABSENT, UNKNOWN }
+
+    public LyricsState embeddedLyricsState(File file) {
+        if (FlacId3Stripper.hasUnsafeId3(file)) return LyricsState.UNKNOWN;
+        try { return lyricsState(AudioFileIO.read(file).getTag()); }
+        catch (Exception e) { return LyricsState.UNKNOWN; }
+    }
+
+    static LyricsState lyricsState(Tag tag) {
+        if (tag == null) return LyricsState.ABSENT;
+        try {
+            Tag actual = tag instanceof FlacTag flac ? flac.getVorbisCommentTag() : tag;
+            java.util.Iterator<TagField> fields = actual.getFields();
+            while (fields.hasNext()) {
+                TagField field = fields.next();
+                String id = field.getId().toUpperCase(java.util.Locale.ROOT);
+                // ID3 frame existence is sufficient, including any language/description or SYLT.
+                if (Set.of("USLT", "SYLT", "ULT", "SLT").contains(id)) return LyricsState.PRESENT;
+                if (Set.of("LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS", "©LYR").contains(id)
+                    && !field.isEmpty()) return LyricsState.PRESENT;
+            }
+            String standard = actual.getFirst(FieldKey.LYRICS);
+            return standard == null || standard.isBlank() ? LyricsState.ABSENT : LyricsState.PRESENT;
+        } catch (Exception e) { return LyricsState.UNKNOWN; }
+    }
+
+    static String readEmbeddedLyrics(Tag tag) {
+        Tag actual = tag instanceof FlacTag flac ? flac.getVorbisCommentTag() : tag;
+        String standard = actual.getFirst(FieldKey.LYRICS);
+        if (standard != null && !standard.isBlank()) return standard;
+        if (actual instanceof VorbisCommentTag) {
+            for (String id : List.of("LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS")) {
+                String value = actual.getFirst(id);
+                if (value != null && !value.isBlank()) return value;
+            }
+        }
+        return null;
+    }
+
     /**
      * 读取现有标签（完整版本，包含作曲、作词、歌词等）
      */
@@ -998,7 +1050,8 @@ public class TagWriterService {
             }
 
             // 读取歌词
-            String lyrics = tag.getFirst(FieldKey.LYRICS);
+            metadata.setLocalPreciseDuration(audioFileObj.getAudioHeader().getPreciseTrackLength());
+            String lyrics = readEmbeddedLyrics(tag);
             if (lyrics != null && !lyrics.isEmpty()) {
                 metadata.setLyrics(lyrics);
             }
@@ -1088,26 +1141,30 @@ public class TagWriterService {
      * @return true表示成功
      */
     public boolean embedFolderCover(File audioFile, byte[] folderCoverData) {
-        if (folderCoverData == null || folderCoverData.length == 0) {
-            return false;
-        }
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            if (folderCoverData == null || folderCoverData.length == 0) {
+                return false;
+            }
 
-        try {
-            log.info("内嵌文件夹封面到: {}", audioFile.getName());
-            FlacId3Stripper.stripId3FromFlac(audioFile);
-            AudioFile audioFileObj = AudioFileIO.read(audioFile);
-            Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
+            try {
+                log.info("内嵌文件夹封面到: {}", audioFile.getName());
+                if (FlacId3Stripper.hasUnsafeId3(audioFile)) return false;
+                FlacId3Stripper.stripId3FromFlac(audioFile);
+                AudioFile audioFileObj = AudioFileIO.read(audioFile);
+                Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
 
-            applyArtwork(tag, folderCoverData);
+                applyArtwork(tag, folderCoverData);
 
-            // 保存更改
-            audioFileObj.commit();
-            log.info("封面内嵌成功: {}", audioFile.getName());
-            return true;
+                // 保存更改
+                audioFileObj.commit();
+                log.info("封面内嵌成功: {}", audioFile.getName());
+                return true;
 
-        } catch (Exception e) {
-            log.error("内嵌封面失败: {}", audioFile.getName(), e);
-            return false;
+            } catch (Exception e) {
+                log.error("内嵌封面失败: {}", audioFile.getName(), e);
+                return false;
+            }
+
         }
     }
 

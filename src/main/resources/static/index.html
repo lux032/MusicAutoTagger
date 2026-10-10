@@ -950,6 +950,17 @@
                     <div class="form-section-title" data-i18n="settings.section.tools">维护工具</div>
                     <div class="tool-card">
                         <div class="tool-head">
+                            <div><div class="tool-title" data-i18n="tool.lyrics.title">歌词回填</div>
+                            <div class="tool-desc" data-i18n="tool.lyrics.desc">扫描输出音乐库，只补缺失歌词。运行前暂停外部音乐库写入工具。</div></div>
+                            <button type="button" class="btn ghost" id="lyricsPreviewBtn" onclick="startLyricsBackfill(true)" data-i18n="tool.lyrics.preview">预演</button>
+                            <button type="button" class="btn primary" id="lyricsStartBtn" onclick="startLyricsBackfill(false)" data-i18n="tool.backfill.start">开始回填</button>
+                            <button type="button" class="btn ghost" id="lyricsCancelBtn" onclick="cancelLyricsBackfill()" disabled data-i18n="tool.backfill.stop">停止</button>
+                        </div>
+                        <div class="tool-hint" data-i18n="tool.lyrics.hint">已有内嵌或同名非空 .lrc/.txt 均跳过；排除 WAV、OGG/Opus、监控目录与符号链接。不确定或无法证明安全时跳过。预演联网但不写音频、旁置或负缓存。</div>
+                        <div class="tool-status" id="lyricsBackfillStatus" aria-live="polite"></div>
+                    </div>
+                    <div class="tool-card">
+                        <div class="tool-head">
                             <div>
                                 <div class="tool-title" data-i18n="tool.backfill.title">回填历史记录的封面</div>
                                 <div class="tool-desc" data-i18n="tool.backfill.desc">
@@ -2354,11 +2365,47 @@
             switchTab('tab-basic');
             loadConfig();
             loadBackfillStatus();
+            loadLyricsBackfillStatus();
         }
 
         function closeSettings() {
             document.getElementById('settingsOverlay').style.display = 'none';
             stopBackfillPolling();
+            clearTimeout(lyricsTimer);
+        }
+
+        let lyricsTimer = null;
+        async function loadLyricsBackfillStatus() {
+            clearTimeout(lyricsTimer);
+            try {
+                const response = await authFetch('/api/lyrics-backfill/status');
+                if (!response.ok) throw new Error(t('tool.backfill.unavailable'));
+                const data = await response.json();
+                document.getElementById('lyricsPreviewBtn').disabled = !!data.running;
+                document.getElementById('lyricsStartBtn').disabled = !!data.running;
+                document.getElementById('lyricsCancelBtn').disabled = !data.running;
+                document.getElementById('lyricsBackfillStatus').textContent = tf('tool.lyrics.progress',
+                    data.preview ? t('tool.lyrics.preview') : t('tool.backfill.start'), data.scanned,
+                    data.matched, data.updated, data.skipped, data.deferred) + ' · ' + data.message
+                    + (data.currentFile ? ' · ' + data.currentFile : '')
+                    + (data.skipReason ? ' · ' + data.skipReason : '');
+                if (data.running && document.getElementById('settingsOverlay').style.display !== 'none')
+                    lyricsTimer = setTimeout(loadLyricsBackfillStatus, 2000);
+            } catch (err) { document.getElementById('lyricsBackfillStatus').textContent = err.message; }
+        }
+        async function startLyricsBackfill(preview) {
+            try {
+                const response = await authFetch('/api/lyrics-backfill/' + (preview ? 'preview' : 'start'), {method: 'POST'});
+                if (!response.ok) throw new Error(t('tool.backfill.start.failed'));
+                await loadLyricsBackfillStatus();
+            } catch (err) { alert(err.message); }
+        }
+        async function cancelLyricsBackfill() {
+            try {
+                const response = await authFetch('/api/lyrics-backfill/cancel', {method: 'POST'});
+                if (!response.ok) throw new Error(t('tool.backfill.stop.failed'));
+                await loadLyricsBackfillStatus();
+            } catch (err) { alert(err.message); }
         }
 
         // ==================== 历史封面回填 ====================

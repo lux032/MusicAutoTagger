@@ -304,7 +304,9 @@ public class FailedFileHandler {
                     normalizedCount++;
                     if (!targetAudioFile.equals(flacTargetFile)) {
                         try {
-                            Files.deleteIfExists(targetAudioFile.toPath());
+                            try (var libraryWrite = LibraryWriteGuard.acquire()) {
+                                Files.deleteIfExists(targetAudioFile.toPath());
+                            }
                         } catch (IOException e) {
                             log.debug("Failed to delete non-flac target file: {} - {}", targetAudioFile.getAbsolutePath(), e.getMessage());
                         }
@@ -539,7 +541,9 @@ public class FailedFileHandler {
             albumDir.mkdirs();
 
             // 移动文件（不覆盖）
-            Files.move(partialFile.toPath(), finalFile.toPath());
+            try (var libraryWrite = LibraryWriteGuard.acquire()) {
+                Files.move(partialFile.toPath(), finalFile.toPath());
+            }
             log.info("文件已移动到: {}", finalFile.getAbsolutePath());
             LogCollector.addLog("SUCCESS", "LLM 匹配成功，文件移动到: " + matchedArtist + "/" + albumName);
 

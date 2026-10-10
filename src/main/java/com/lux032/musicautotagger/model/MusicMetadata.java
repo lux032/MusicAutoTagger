@@ -51,6 +51,23 @@ public class MusicMetadata {
     private String lyricist;
     private String arranger;
     private String lyrics;
+    /** Reliable local audio length only; never populated from MusicBrainz. */
+    private Double localPreciseDuration;
+    private boolean weakLyricsIdentity;
+    /** Immutable provenance survives queue JSON and copies, and is checked immediately before writing. */
+    private AutomaticLyrics automaticLyrics;
+    public record AutomaticLyrics(String source, Long recordId, String recordingId, String title,
+                                  String artist, Double duration, List<String> versions) {}
+
+    public void discardStaleAutomaticLyrics() {
+        if (automaticLyrics == null) return;
+        boolean same = java.util.Objects.equals(recordingId, automaticLyrics.recordingId())
+            && com.lux032.musicautotagger.service.LyricsMatcher.sameIdentity(title, artist,
+                automaticLyrics.title(), automaticLyrics.artist())
+            && java.util.Objects.equals(localPreciseDuration, automaticLyrics.duration());
+        if (!same) { lyrics = null; automaticLyrics = null; }
+    }
+
     private String discNo;
     private String trackNo;
     private Integer duration; // 时长（秒）
@@ -108,6 +125,9 @@ public class MusicMetadata {
         copy.lyricist = lyricist;
         copy.arranger = arranger;
         copy.lyrics = lyrics;
+        copy.localPreciseDuration = localPreciseDuration;
+        copy.weakLyricsIdentity = weakLyricsIdentity;
+        copy.automaticLyrics = automaticLyrics;
         copy.discNo = discNo;
         copy.trackNo = trackNo;
         copy.duration = duration;
