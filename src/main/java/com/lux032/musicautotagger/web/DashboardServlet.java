@@ -81,6 +81,7 @@ public class DashboardServlet extends HttpServlet {
         
         // 处理统计
         Map<String, Object> processStats = processedLogger.getStatistics();
+        processStats.put("daily", processedLogger.getDailyCounts(14));
         stats.put("processed", processStats);
         
         // 封面缓存统计

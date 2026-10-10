@@ -9,10 +9,10 @@
     <style>
         /* ---- 概览（仪表板）专用 ---- */
 
-        /* 健康条：监控状态 + 三个核心数字，一行读完 */
+        /* 健康条：监控状态 / 已处理 / 等待人工 / 缓存，一行读完 */
         .health {
             display: grid;
-            grid-template-columns: minmax(0, 1.3fr) repeat(3, minmax(0, 1fr));
+            grid-template-columns: minmax(0, 1.25fr) repeat(3, minmax(0, 1fr));
             padding: 0;
             margin-bottom: 18px;
         }
@@ -23,21 +23,41 @@
             font-size: 28px;
             font-weight: 750;
             letter-spacing: -.5px;
-            line-height: 1.15;
+            line-height: 1.1;
             margin-top: 4px;
             font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
+        .h-value small { font-size: 13px; font-weight: 600; color: var(--text-mute); margin-left: 5px; letter-spacing: 0; }
+        .h-value.is-hot { color: var(--warn); }
         .h-foot { font-size: 12px; color: var(--text-mute); margin-top: 6px; font-variant-numeric: tabular-nums; }
+        .h-foot:empty { display: none; }
+        .waiting-go { margin-top: 10px; }
 
-        .monitor-cell { display: flex; flex-direction: column; gap: 12px; justify-content: center; }
+        /* 近 14 天每日处理量 */
+        .day-bars { display: flex; align-items: flex-end; gap: 3px; height: 34px; margin-top: 8px; }
+        .day-bars i { flex: 1; min-width: 0; background: var(--primary-line); border-radius: 2px; }
+        .day-bars i.zero { background: var(--border); }
+        .day-bars i.now { background: var(--primary); }
+
+        .monitor-cell { display: flex; flex-direction: column; gap: 10px; }
         .monitor-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
         .monitor-dot {
-            width: 10px; height: 10px; flex: 0 0 10px; border-radius: 50%;
-            background: var(--success); box-shadow: 0 0 0 4px var(--success-soft);
+            width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%;
+            background: var(--success); box-shadow: 0 0 0 3px var(--success-soft);
         }
-        .monitor-cell.paused .monitor-dot { background: var(--warn); box-shadow: 0 0 0 4px var(--warn-soft); }
-        .monitor-state { font-size: 18px; font-weight: 700; white-space: nowrap; }
-        .monitor-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+        .monitor-cell.paused .monitor-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+        .monitor-state { font-size: 17px; font-weight: 700; white-space: nowrap; }
+        .path-pill {
+            min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+            background: var(--bg-soft); color: var(--text-soft); border: 1px solid var(--border);
+        }
+        .monitor-desc { font-size: 12.5px; color: var(--text-mute); }
+        .monitor-desc:empty { display: none; }
+        .monitor-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
         /* 图标包裹 span 默认是 inline，svg 会按基线对齐导致图标偏移 */
         .monitor-actions .btn > span { display: inline-flex; align-items: center; }
         .monitor-actions .btn > span > svg { display: block; }
@@ -53,33 +73,37 @@
             .health-cell:last-child { border-bottom: 0; }
         }
 
+        /* 概览卡片：标题栏带分隔线，内容贴边（与设计稿一致） */
+        .dash-card { padding: 0; }
+        .dash-card > .card-head { padding: 12px 16px; margin: 0; border-bottom: 1px solid var(--border); min-height: 52px; }
+        .attn-total {
+            font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px;
+            background: var(--warn-soft); color: var(--warn); font-variant-numeric: tabular-nums;
+        }
+        .attn-total.bad { background: var(--danger-soft); color: var(--danger); }
+        .btn.icon-only { padding: 0 7px; }
+
         .dash-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: start; }
         .dash-main, .dash-side { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; min-width: 0; }
         .dash-main > *, .dash-side > * { min-width: 0; }
         /* 窄屏单列时「等你处理」排在日志前面：首屏先回答有什么要处理 */
-        @media (max-width: 1100px) { .dash-grid { grid-template-columns: minmax(0, 1fr); } .dash-side { order: -1; } }
-
-        .info-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-            padding: 9px 0;
-            border-bottom: 1px solid var(--border);
-            font-size: 13px;
+        @media (max-width: 1100px) {
+            .dash-grid { grid-template-columns: minmax(0, 1fr); }
+            .dash-main, .dash-side { display: contents; }
+            .attn-card { order: -1; }
         }
-        .info-row:last-child { border-bottom: none; padding-bottom: 0; }
-        .info-row:first-child { padding-top: 0; }
-        .info-label { color: var(--text-mute); flex: 0 0 auto; }
-        .info-value { color: var(--text); font-weight: 600; text-align: right; word-break: break-all; font-variant-numeric: tabular-nums; }
+
+        .kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 9px 14px; padding: 14px 16px; font-size: 13px; margin: 0; }
+        .kv dt { color: var(--text-mute); white-space: nowrap; }
+        .kv dd { margin: 0; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
         /* 等你处理 */
-        .attention { display: grid; margin: -4px -18px -16px; }
+        .attention { display: grid; }
         .attn-row {
             display: flex;
             align-items: center;
             gap: 12px;
-            padding: 11px 18px;
+            padding: 11px 16px;
             border-top: 1px solid var(--border);
             color: inherit;
             text-decoration: none;
@@ -109,7 +133,7 @@
         .files-viewport::after {
             content: '';
             position: absolute;
-            top: 0; right: 0; bottom: 10px;
+            top: 0; right: 0; bottom: 4px;
             width: 40px;
             pointer-events: none;
             background: linear-gradient(to right, rgba(255, 255, 255, 0), #fff);
@@ -117,17 +141,35 @@
             transition: opacity .2s ease;
         }
         .files-viewport.has-overflow::after { opacity: 1; }
+        /*
+         * 封面按卡片宽度等分铺满一行（设计稿是 7 列）。列数随容器宽度增加，
+         * 封面保持在 ~140–180px；放不下的专辑横向滚动查看。
+         */
+        .files-wrap { container-type: inline-size; padding: 16px; }
         .files-strip {
-            display: flex;
+            --cols: 3;
+            display: grid;
+            grid-auto-flow: column;
+            grid-auto-columns: calc((100% - (var(--cols) - 1) * 14px) / var(--cols));
             gap: 14px;
-            padding: 2px 2px 10px;
+            padding-bottom: 4px;
             overflow-x: auto;
             overflow-y: hidden;
             scroll-snap-type: x proximity;
             overscroll-behavior-x: contain;
         }
+        .files-strip.is-empty { display: block; }
+        @container (min-width: 480px)  { .files-strip { --cols: 4; } }
+        @container (min-width: 640px)  { .files-strip { --cols: 5; } }
+        @container (min-width: 800px)  { .files-strip { --cols: 6; } }
+        @container (min-width: 960px)  { .files-strip { --cols: 7; } }
+        @container (min-width: 1120px) { .files-strip { --cols: 8; } }
+        @container (min-width: 1280px) { .files-strip { --cols: 9; } }
+        @container (min-width: 1440px) { .files-strip { --cols: 10; } }
+        @container (min-width: 1600px) { .files-strip { --cols: 11; } }
+        @container (min-width: 1760px) { .files-strip { --cols: 12; } }
         .files-strip::-webkit-scrollbar { height: 8px; }
-        .file-tile { flex: 0 0 128px; width: 128px; min-width: 0; scroll-snap-align: start; }
+        .file-tile { min-width: 0; scroll-snap-align: start; }
         .file-cover {
             position: relative;
             width: 100%;
@@ -428,9 +470,13 @@
                         <p class="page-desc"><span id="lastUpdate" style="display: none;"></span></p>
                     </div>
                     <div class="page-actions">
-                        <button class="btn ghost" onclick="loadData(); loadLogs(); loadReviewStats(); loadRecoveryStats();">
+                        <button class="btn plain" onclick="loadData(); loadLogs(); loadReviewStats(); loadRecoveryStats();">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                             <span id="refreshStatsText">刷新统计数据</span>
+                        </button>
+                        <button class="btn ghost" id="restartBtn" onclick="restartService()" style="display: none;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+                            <span data-i18n="control.restart">重启服务</span>
                         </button>
                     </div>
                 </div>
@@ -448,7 +494,9 @@
                             <div class="monitor-top">
                                 <span class="monitor-dot"></span>
                                 <span class="monitor-state" id="monitorStatusText" data-i18n="control.monitoring">监控中</span>
+                                <span class="path-pill" id="monitorDirPill" style="display: none;"></span>
                             </div>
+                            <div class="monitor-desc" id="monitorDesc"></div>
                             <div class="monitor-actions">
                                 <button class="btn ghost sm" id="pauseResumeBtn" onclick="toggleMonitoring()">
                                     <span id="pauseResumeIcon">
@@ -456,36 +504,37 @@
                                     </span>
                                     <span id="pauseResumeText" data-i18n="control.pause">暂停监控</span>
                                 </button>
-                                <button class="btn plain sm" onclick="restartService()">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                                    <span data-i18n="control.restart">重启服务</span>
-                                </button>
+                                <a class="btn plain sm" href="records.html" data-i18n="dash.view.records">全部记录</a>
                             </div>
                         </div>
                         <div class="health-cell">
                             <div class="h-label" data-i18n="stat.total.processed">已处理文件数</div>
                             <div class="h-value" id="totalProcessed">0</div>
+                            <div class="day-bars" id="dailyBars" style="display: none;"></div>
+                            <div class="h-foot" id="dailyFoot" style="display: none;"></div>
+                        </div>
+                        <div class="health-cell">
+                            <div class="h-label" data-i18n="dash.waiting.title">等待人工</div>
+                            <div class="h-value" id="waitingValue">0<small id="waitingUnit"></small></div>
+                            <div class="h-foot" id="waitingFoot"></div>
+                            <a class="btn ghost sm waiting-go" id="waitingGo" href="review.html" style="display: none;" data-i18n="dash.waiting.go">去处理</a>
                         </div>
                         <div class="health-cell">
                             <div class="h-label" data-i18n="card.cover.cache">封面缓存</div>
-                            <div class="h-value" id="coverCached">0</div>
-                            <div class="h-foot"><span data-i18n="stat.cache.size">占用存储</span> <span id="coverSizeValue">0</span> <span id="coverSizeUnit">MB</span></div>
-                        </div>
-                        <div class="health-cell">
-                            <div class="h-label" data-i18n="card.folder.cache">文件夹缓存</div>
-                            <div class="h-value" id="folderCached">0</div>
-                            <div class="h-foot"><span data-i18n="stat.collecting">统计中</span> <span id="pendingFiles">0</span></div>
+                            <div class="h-value"><span id="coverCached">0</span><small><span id="coverSizeValue">0</span> <span id="coverSizeUnit">MB</span></small></div>
+                            <div class="h-foot"><span data-i18n="card.folder.cache">文件夹缓存</span> <span id="folderCached">0</span> · <span data-i18n="stat.collecting">统计中</span> <span id="pendingFiles">0</span></div>
                         </div>
                     </section>
 
                     <div class="dash-grid">
                         <div class="dash-main">
-                            <section class="card">
+                            <section class="card dash-card">
                                 <div class="card-head">
                                     <h2 class="card-title" data-i18n="card.recent.albums">最近整理的专辑</h2>
+                                    <span class="card-sub" id="recentSummary"></span>
                                     <a class="btn plain sm spacer" href="records.html" data-i18n="dash.view.records">全部记录</a>
                                 </div>
-                                <div class="files-viewport" id="recentFilesViewport"><div class="files-strip" id="recentFiles"></div></div>
+                                <div class="files-wrap"><div class="files-viewport" id="recentFilesViewport"><div class="files-strip" id="recentFiles"></div></div></div>
                             </section>
 
                             <section class="card log-card">
@@ -501,9 +550,8 @@
                                             <input type="checkbox" id="autoScroll" checked>
                                             <span data-i18n="web.auto.scroll">自动滚动</span>
                                         </label>
-                                        <button class="btn ghost sm" onclick="loadLogs()">
+                                        <button class="btn plain sm icon-only" onclick="loadLogs()" data-i18n-title="web.refresh" title="刷新" aria-label="刷新">
                                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                                            <span data-i18n="web.refresh">刷新</span>
                                         </button>
                                         <button class="btn danger-soft sm" onclick="clearLogs()" data-i18n="web.clear">清空</button>
                                     </div>
@@ -513,17 +561,18 @@
                         </div>
 
                         <div class="dash-side">
-                            <section class="card">
+                            <section class="card dash-card attn-card">
                                 <div class="card-head">
                                     <h2 class="card-title" data-i18n="dash.attention.title">等你处理</h2>
+                                    <span class="attn-total" id="attentionTotal" style="display: none;"></span>
                                 </div>
                                 <div class="attention" id="attentionList"></div>
                             </section>
-                            <section class="card">
+                            <section class="card dash-card">
                                 <div class="card-head">
                                     <h2 class="card-title" data-i18n="card.system.info">系统信息</h2>
                                 </div>
-                                <div id="systemInfo"></div>
+                                <div class="kv" id="systemInfo"></div>
                             </section>
                         </div>
                     </div>
@@ -1144,6 +1193,7 @@
                 authBar.style.display = 'block';
                 navBar.style.display = '';
                 monitorCard.style.display = '';
+                document.getElementById('restartBtn').style.display = '';
                 loadControlStatus();
                 loadReviewStats();
                 loadRecoveryStats();
@@ -1151,6 +1201,7 @@
                 authBar.style.display = 'none';
                 navBar.style.display = 'none';
                 monitorCard.style.display = 'none';
+                document.getElementById('restartBtn').style.display = 'none';
                 closeUserMenu();
             }
         }
@@ -1228,6 +1279,7 @@
         }
 
         function renderAttention(stats) {
+            renderWaiting(stats);
             const list = document.getElementById('attentionList');
             if (!list) return;
             list.innerHTML = '';
@@ -1241,6 +1293,40 @@
             list.appendChild(attentionRow('recovery.html', ICON_REDO, t('web.recovery'),
                 rc ? tf('dash.attention.recovery.counts', rc.partial, rc.failed) : t('dash.attention.recovery.desc'),
                 rc ? rc.partial + rc.failed : null, rc && rc.failed > 0));
+        }
+
+        // 健康条「等待人工」：待确认为主数字，重新识别放在脚注；待确认入口关闭时改为展示重新识别。
+        // 「等你处理」卡片头的总数也在这里算，两处口径一致。
+        function renderWaiting(stats) {
+            const valueEl = document.getElementById('waitingValue');
+            if (!valueEl) return;
+            const unitEl = document.getElementById('waitingUnit');
+            const footEl = document.getElementById('waitingFoot');
+            const goEl = document.getElementById('waitingGo');
+            const rcTotal = recoveryStats ? recoveryStats.partial + recoveryStats.failed : 0;
+            const pending = stats ? (Number(stats.pending) || 0) : 0;
+
+            let main, unit, href;
+            if (stats) {
+                main = pending; unit = t('web.review'); href = 'review.html';
+                footEl.textContent = rcTotal > 0 ? tf('dash.waiting.foot.recovery', rcTotal)
+                    : (pending > 0 ? '' : t('dash.waiting.foot.none'));
+            } else {
+                main = rcTotal; unit = t('web.recovery'); href = 'recovery.html';
+                footEl.textContent = rcTotal > 0 ? '' : t('dash.waiting.foot.none');
+            }
+            valueEl.firstChild.nodeValue = String(main);
+            unitEl.textContent = unit;
+            valueEl.classList.toggle('is-hot', main > 0);
+            goEl.href = href;
+            goEl.style.display = main > 0 || rcTotal > 0 ? '' : 'none';
+            if (stats && pending === 0 && rcTotal > 0) goEl.href = 'recovery.html';
+
+            const total = pending + rcTotal;
+            const pill = document.getElementById('attentionTotal');
+            pill.textContent = total > 99 ? '99+' : String(total);
+            pill.style.display = total > 0 ? '' : 'none';
+            pill.classList.toggle('bad', !!(recoveryStats && recoveryStats.failed > 0));
         }
 
         // 重新识别积压：部分识别 + 识别失败（回收站不算积压）
@@ -1320,6 +1406,47 @@
                 btnText.setAttribute('data-i18n', 'control.pause');
                 btnIcon.innerHTML = ICON_PAUSE;
             }
+            updateMonitorDesc();
+        }
+
+        let dashConfig = null;
+        function updateMonitorDesc() {
+            const desc = document.getElementById('monitorDesc');
+            if (!desc) return;
+            if (monitoringPaused) {
+                desc.textContent = t('dash.monitor.desc.paused');
+            } else {
+                desc.textContent = dashConfig && dashConfig.scanInterval
+                    ? tf('dash.monitor.desc.running', dashConfig.scanInterval) : '';
+            }
+        }
+
+        // 近 14 天每日处理量：只有数据库模式有数据，没有就整块不显示
+        function renderDailyBars(daily) {
+            const bars = document.getElementById('dailyBars');
+            const foot = document.getElementById('dailyFoot');
+            if (!Array.isArray(daily) || daily.length === 0) {
+                bars.style.display = 'none';
+                foot.style.display = 'none';
+                return;
+            }
+            const max = Math.max(1, ...daily);
+            const today = new Date();
+            bars.innerHTML = '';
+            daily.forEach((n, i) => {
+                const bar = document.createElement('i');
+                const day = new Date(today);
+                day.setDate(today.getDate() - (daily.length - 1 - i));
+                const label = (day.getMonth() + 1) + '/' + day.getDate();
+                bar.style.height = n > 0 ? Math.max(8, Math.round(n / max * 100)) + '%' : '3px';
+                if (i === daily.length - 1) bar.className = 'now';
+                if (n === 0) bar.classList.add('zero');
+                bar.title = tf('dash.daily.bar', label, n);
+                bars.appendChild(bar);
+            });
+            foot.textContent = tf('dash.daily.foot', daily[daily.length - 1]);
+            bars.style.display = '';
+            foot.style.display = '';
         }
 
         // 切换监控状态
@@ -1385,6 +1512,11 @@
             document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
                 const key = el.getAttribute('data-i18n-placeholder');
                 el.setAttribute('placeholder', t(key, el.getAttribute('placeholder') || ''));
+            });
+            document.querySelectorAll('[data-i18n-title]').forEach(el => {
+                const label = t(el.getAttribute('data-i18n-title'), el.getAttribute('title') || '');
+                el.setAttribute('title', label);
+                el.setAttribute('aria-label', label);
             });
             // 供应商列表等动态渲染块需要在语言就绪后重画
             if (typeof renderLlmProviders === 'function') renderLlmProviders();
@@ -1663,6 +1795,16 @@
 
                 // 更新处理统计
                 document.getElementById('totalProcessed').textContent = data.processed?.totalProcessed ?? 0;
+                renderDailyBars(data.processed?.daily);
+
+                // 监控目录 + 扫描间隔
+                dashConfig = data.config || null;
+                const dirPill = document.getElementById('monitorDirPill');
+                const dir = dashConfig && dashConfig.monitorDirectory;
+                dirPill.textContent = dir || '';
+                dirPill.title = dir || '';
+                dirPill.style.display = dir ? '' : 'none';
+                updateMonitorDesc();
 
                 // 更新封面缓存统计
                 if (data.coverCache) {
@@ -1683,23 +1825,16 @@
                 // 更新系统信息（安全方式）
                 const systemInfo = document.getElementById('systemInfo');
                 systemInfo.innerHTML = '';
-                if (data.system) {
-                    for (const [key, value] of Object.entries(data.system)) {
-                        const row = document.createElement('div');
-                        row.className = 'info-row';
-
-                        const label = document.createElement('span');
-                        label.className = 'info-label';
-                        label.textContent = formatLabel(key);
-
-                        const val = document.createElement('span');
-                        val.className = 'info-value';
-                        val.textContent = value;
-
-                        row.appendChild(label);
-                        row.appendChild(val);
-                        systemInfo.appendChild(row);
-                    }
+                const sysRows = Object.entries(data.system || {});
+                if (dashConfig) {
+                    if (dashConfig.dbType) sysRows.push(['dbType', String(dashConfig.dbType).toUpperCase() === 'SQLITE' ? 'SQLite' : dashConfig.dbType]);
+                    if (dashConfig.outputDirectory) sysRows.push(['outputDirectory', dashConfig.outputDirectory]);
+                }
+                for (const [key, value] of sysRows) {
+                    systemInfo.appendChild(createTextElement('dt', formatLabel(key)));
+                    const dd = createTextElement('dd', value);
+                    dd.title = String(value);
+                    systemInfo.appendChild(dd);
                 }
 
                 renderRecentAlbums(data.recentAlbums);
@@ -1750,11 +1885,16 @@
         function renderRecentAlbums(albums) {
             const strip = document.getElementById('recentFiles');
             strip.innerHTML = '';
+            strip.classList.toggle('is-empty', !albums || albums.length === 0);
+            const summary = document.getElementById('recentSummary');
+            summary.textContent = albums && albums.length
+                ? tf('dash.recent.summary', albums.length,
+                    albums.reduce((sum, a) => sum + (Number(a.trackCount) || 0), 0))
+                : '';
 
             if (!albums || albums.length === 0) {
                 const empty = document.createElement('div');
                 empty.className = 'empty';
-                empty.style.flex = '1';
                 empty.textContent = t('web.no.albums');
                 strip.appendChild(empty);
                 updateStripOverflow();

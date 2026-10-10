@@ -1272,6 +1272,39 @@ public class ProcessedFileLogger {
     }
 
     /**
+     * 最近 days 天每天处理的文件数，按日期从旧到新排列，最后一个元素是今天。
+     * 只在数据库模式下可用（文件模式没有可靠的时间索引），不可用时返回空列表。
+     * 按天聚合放在 Java 侧，避免 MySQL / SQLite 日期函数不一致。
+     */
+    public List<Integer> getDailyCounts(int days) {
+        if (!isDbMode || days <= 0) {
+            return List.of();
+        }
+        java.time.LocalDate today = java.time.LocalDate.now();
+        java.time.LocalDate first = today.minusDays(days - 1L);
+        int[] counts = new int[days];
+        String sql = "SELECT processed_time FROM processed_files WHERE processed_time >= ?";
+        try (Connection conn = databaseService.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setTimestamp(1, Timestamp.valueOf(first.atStartOfDay()));
+            try (ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    Timestamp ts = rs.getTimestamp(1);
+                    if (ts == null) continue;
+                    long idx = java.time.temporal.ChronoUnit.DAYS.between(first, ts.toLocalDateTime().toLocalDate());
+                    if (idx >= 0 && idx < days) counts[(int) idx]++;
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("获取每日处理统计失败: {}", e.getMessage());
+            return List.of();
+        }
+        List<Integer> result = new ArrayList<>(days);
+        for (int c : counts) result.add(c);
+        return result;
+    }
+
+    /**
      * 清理旧的日志记录
      * @param daysToKeep 保留最近多少天的记录
      */
