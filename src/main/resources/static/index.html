@@ -142,8 +142,8 @@
         }
         .files-viewport.has-overflow::after { opacity: 1; }
         /*
-         * 封面按卡片宽度等分铺满一行（设计稿是 7 列）。列数随容器宽度增加，
-         * 封面保持在 ~140–180px；放不下的专辑横向滚动查看。
+         * 封面按卡片宽度等分铺满一行，宽屏最多 7 列（与设计稿一致），
+         * 放不下的专辑横向滚动查看。
          */
         .files-wrap { container-type: inline-size; padding: 16px; }
         .files-strip {
@@ -159,15 +159,10 @@
             overscroll-behavior-x: contain;
         }
         .files-strip.is-empty { display: block; }
-        @container (min-width: 480px)  { .files-strip { --cols: 4; } }
-        @container (min-width: 640px)  { .files-strip { --cols: 5; } }
-        @container (min-width: 800px)  { .files-strip { --cols: 6; } }
-        @container (min-width: 960px)  { .files-strip { --cols: 7; } }
-        @container (min-width: 1120px) { .files-strip { --cols: 8; } }
-        @container (min-width: 1280px) { .files-strip { --cols: 9; } }
-        @container (min-width: 1440px) { .files-strip { --cols: 10; } }
-        @container (min-width: 1600px) { .files-strip { --cols: 11; } }
-        @container (min-width: 1760px) { .files-strip { --cols: 12; } }
+        @container (min-width: 520px)  { .files-strip { --cols: 4; } }
+        @container (min-width: 700px)  { .files-strip { --cols: 5; } }
+        @container (min-width: 860px)  { .files-strip { --cols: 6; } }
+        @container (min-width: 1000px) { .files-strip { --cols: 7; } }
         .files-strip::-webkit-scrollbar { height: 8px; }
         .file-tile { min-width: 0; scroll-snap-align: start; }
         .file-cover {
@@ -200,7 +195,7 @@
         .file-cover img.loaded { opacity: 1; }
         .file-cover .ph { color: rgba(255, 255, 255, .9); }
         .file-cover .ph svg { width: 32px; height: 32px; }
-        .file-name { margin-top: 8px; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .file-name { margin-top: 9px; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .file-sub { font-size: 12px; color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .file-status { display: inline-flex; align-items: center; gap: 4px; margin-top: 3px; font-size: 11.5px; color: var(--success); font-weight: 600; }
         .file-status svg { width: 13px; height: 13px; }
@@ -1841,6 +1836,7 @@
 
                 loading.style.display = 'none';
                 content.style.display = 'block';
+                requestAnimationFrame(fitLogPanel);
                 isFirstLoad = false;
 
                 updateConnectionStatus('', t('web.connected'));
@@ -1957,6 +1953,20 @@
             });
 
             updateStripOverflow();
+            requestAnimationFrame(fitLogPanel);
+        }
+
+        // 宽屏双栏时，日志窗口向下撑满到页脚，不在页面底部留一大块空白；
+        // 单列布局（≤1100px）日志后面还有系统信息，保持固定高度。
+        function fitLogPanel() {
+            const panel = document.getElementById('logContainer');
+            const dash = document.getElementById('dashView');
+            if (!panel || !dash || dash.style.display === 'none' || !panel.offsetParent) return;
+            if (window.innerWidth <= 1100) { panel.style.height = ''; return; }
+            const footer = document.querySelector('.main > .footer');
+            const top = panel.getBoundingClientRect().top + window.scrollY;
+            const reserve = (footer ? footer.offsetHeight + 24 : 0) + 28 + 18;
+            panel.style.height = Math.max(280, Math.floor(window.innerHeight - top - reserve)) + 'px';
         }
 
         // 右侧渐隐遮罩：只在真的滑不到头时显示
@@ -2436,6 +2446,7 @@
             const wasOpen = document.getElementById('settingsOverlay').style.display !== 'none';
             document.getElementById('settingsOverlay').style.display = 'none';
             document.getElementById('dashView').style.display = '';
+            requestAnimationFrame(fitLogPanel);
             setActiveNav('dash');
             if (!keepHash && location.hash === '#settings') history.replaceState(null, '', location.pathname + location.search);
             if (wasOpen) window.scrollTo(0, 0);
@@ -2725,6 +2736,7 @@
             window.addEventListener('hashchange', routeFromHash);
             document.getElementById('recentFiles').addEventListener('scroll', updateStripOverflow, { passive: true });
             window.addEventListener('resize', updateStripOverflow);
+            window.addEventListener('resize', fitLogPanel);
 
             // 点菜单外部 / 按 ESC 关闭下拉
             document.addEventListener('click', (event) => {
