@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>处理记录 - Music Auto Tagger</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=8">
+    <link rel="stylesheet" href="app.css?v=10">
     <script src="i18n.js?v=1"></script>
+    <script src="shell.js?v=1"></script>
     <style>
         /* ---------- 工具栏 ---------- */
         .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
@@ -32,36 +33,35 @@
         }
         .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: #f7dcb3; }
 
-        .tabs { display: flex; gap: 4px; padding: 4px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius); flex-wrap: wrap; }
+        .tabs { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; max-width: 100%; overflow-x: auto; }
         .tab {
             border: none; background: transparent; color: var(--text-soft); font: inherit; font-size: 13px; font-weight: 600;
-            padding: 7px 14px; border-radius: var(--radius-sm); cursor: pointer; transition: .15s; display: inline-flex; gap: 7px; align-items: center;
+            padding: 5px 12px; border-radius: 6px; cursor: pointer; transition: .15s; display: inline-flex; gap: 6px; align-items: center; white-space: nowrap;
         }
-        .tab:hover { background: #fff; color: var(--primary); }
-        .tab.active { background: var(--primary); color: #fff; box-shadow: 0 2px 6px rgba(29, 110, 240, .25); }
-        .tab .count { font-size: 11.5px; font-weight: 700; padding: 0 7px; border-radius: 999px; background: rgba(0,0,0,.06); line-height: 18px; }
-        .tab.active .count { background: rgba(255,255,255,.22); }
+        .tab:hover { color: var(--text); }
+        .tab.active { background: #fff; color: var(--text); box-shadow: var(--shadow-sm); }
+        .tab .count { font-size: 12px; font-weight: 500; color: var(--text-mute); font-variant-numeric: tabular-nums; }
 
         .filter-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
         .chip {
-            display: inline-flex; align-items: center; gap: 6px; background: var(--primary-soft); color: var(--primary);
+            display: inline-flex; align-items: center; gap: 6px; background: var(--primary-soft); color: var(--primary-dark);
             border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 12.5px; font-weight: 600; max-width: 100%;
         }
         .chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .chip button { border: none; background: rgba(29,110,240,.12); color: var(--primary); border-radius: 50%; width: 20px; height: 20px; cursor: pointer; flex: 0 0 auto; }
+        .chip button { border: none; background: rgba(29,110,240,.12); color: var(--primary-dark); border-radius: 50%; width: 20px; height: 20px; cursor: pointer; flex: 0 0 auto; }
         .chip button:hover { background: rgba(29,110,240,.22); }
 
         /* ---------- 批量操作栏 ---------- */
         .bulkbar {
             position: sticky; top: 8px; z-index: 50; display: none; align-items: center; gap: 10px; flex-wrap: wrap;
-            background: #16202f; color: #fff; border-radius: var(--radius); padding: 9px 12px 9px 16px; margin-bottom: 10px;
-            box-shadow: var(--shadow-lg); font-size: 13px;
+            background: var(--primary-soft); color: var(--primary-dark); border: 1px solid var(--primary-line); border-radius: var(--radius);
+            padding: 8px 10px 8px 14px; margin-bottom: 10px; box-shadow: var(--shadow); font-size: 13px; font-weight: 600;
         }
         .bulkbar.show { display: flex; }
         .bulkbar .grow { flex: 1; }
-        .bulkbar .link { background: none; border: none; color: #8fb8ff; font: inherit; cursor: pointer; text-decoration: underline; padding: 0; }
-        .bulkbar .btn.ghost { background: transparent; color: #dfe6f1; border-color: rgba(255,255,255,.28); }
-        .bulkbar .btn.ghost:hover { border-color: #fff; color: #fff; }
+        .bulkbar .link { background: none; border: none; color: var(--primary); font: inherit; font-weight: 500; cursor: pointer; text-decoration: underline; padding: 0; }
+        .bulkbar .btn.ghost { background: transparent; border-color: transparent; }
+        .bulkbar .btn.ghost:hover { background: rgba(255,255,255,.7); }
 
         /* ---------- 列表 ---------- */
         .list { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; transition: opacity .15s; }
@@ -165,42 +165,63 @@
     </style>
 </head>
 <body>
-<div class="app">
-    <header class="topbar">
-        <div class="topbar-main">
-            <div class="brand">
-                <img class="brand-logo" src="logo.png" alt="Music Auto Tagger">
-                <div>
-                    <div class="brand-title" data-i18n="records.page.title">处理记录</div>
-                    <div class="brand-subtitle" data-i18n="records.page.subtitle">搜索、查看和管理已处理文件的记录，可让文件重新识别</div>
-                </div>
-            </div>
+<div class="shell">
+<aside class="side" id="appSide">
+    <a class="side-brand" href="index.html">
+        <img src="logo.png" alt="Music Auto Tagger">
+        <span>
+            <span class="brand-title" data-i18n="web.brand">音乐自动标签器</span>
+            <span class="brand-subtitle" data-i18n="web.subtitle">实时监控 · 智能整理 · 数据统计</span>
+        </span>
+    </a>
+    <button class="side-toggle" onclick="Shell.toggleNav()" aria-label="menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        <span data-i18n="web.menu">菜单</span>
+    </button>
+    <nav class="side-nav" id="navBar">
+            <a class="side-link" href="index.html">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"></path></svg>
+                <span data-i18n="web.nav.overview">概览</span>
+            </a>
+            <div class="side-group" data-i18n="web.nav.group.work">需要处理</div>
+            <a class="side-link" href="review.html" id="navReview">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path><path d="M3 13h5l1 3h6l1-3h5"></path></svg>
+                <span data-i18n="web.review">待确认</span>
+                <span class="nav-count" id="reviewCount">0</span>
+            </a>
+            <a class="side-link" href="recovery.html" id="navRecovery">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>
+                <span data-i18n="web.recovery">重新识别</span>
+                <span class="nav-count" id="recoveryCount">0</span>
+            </a>
+            <div class="side-group" data-i18n="web.nav.group.library">资料</div>
+            <a class="side-link active" href="records.html" aria-current="page">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg>
+                <span data-i18n="web.records">处理记录</span>
+            </a>
+            <a class="side-link" href="index.html#settings">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.61.77 1.03 1.42 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <span data-i18n="web.settings">设置</span>
+            </a>
+    </nav>
+</aside>
+<main class="main">
+    <div class="page-head">
+        <div>
+            <h1 class="page-title" data-i18n="records.page.title">处理记录</h1>
+            <p class="page-desc" data-i18n="records.page.subtitle">搜索、查看和管理已处理文件的记录，可让文件重新识别</p>
         </div>
-        <nav class="navbar">
-            <button class="nav-toggle" onclick="document.getElementById('navGroup').classList.toggle('open')" aria-label="menu">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                <span data-i18n="web.menu">菜单</span>
+        <div class="page-actions">
+            <button class="btn ghost" onclick="load()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                <span data-i18n="records.nav.refresh">刷新</span>
             </button>
-            <div class="nav-group" id="navGroup">
-                <button class="nav-btn" onclick="load()">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                    <span data-i18n="records.nav.refresh">刷新</span>
-                </button>
-                <a class="nav-btn" id="exportLink" href="/api/records/export">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                    <span data-i18n="records.nav.export">导出 CSV</span>
-                </a>
-                <a class="nav-btn" href="recovery.html">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                    <span data-i18n="web.recovery">重新识别</span>
-                </a>
-                <a class="nav-btn active" href="index.html">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"></path><path d="M9 21V12h6v9"></path><path d="M5 10v11h14V10"></path></svg>
-                    <span data-i18n="recovery.nav.back">返回面板</span>
-                </a>
-            </div>
-        </nav>
-    </header>
+            <a class="btn ghost" id="exportLink" href="/api/records/export">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                <span data-i18n="records.nav.export">导出 CSV</span>
+            </a>
+        </div>
+    </div>
 
     <section class="card">
         <div class="toolbar">
@@ -276,6 +297,7 @@
             <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" rel="noopener">Music Auto Tagger</a>
         </div>
     </footer>
+</main>
 </div>
 
 <!-- 详情 -->
@@ -613,13 +635,13 @@
 
     function thumbHtml(r, big) {
         if (r.status === 'FAILED') return `<div class="thumb failed">${ICON_ALERT}</div>`;
-        const [c1, c2] = palette(r.album || r.fileName || '');
+        const [, c2] = palette(r.album || r.fileName || '');
         const q = [];
         if (r.releaseGroupId) q.push('rgid=' + encodeURIComponent(r.releaseGroupId));
         const p = r.targetExists ? r.targetFilePath : (r.sourceExists ? r.filePath : null);
         if (p) q.push('path=' + encodeURIComponent(p));
         const img = q.length ? `<img data-cover alt="" loading="lazy" src="/api/cover?${q.join('&')}">` : '';
-        return `<div class="thumb" style="background: linear-gradient(135deg, ${c1}, ${c2});">${ICON_NOTE}${img}</div>`;
+        return `<div class="thumb" style="background: ${c2};">${ICON_NOTE}${img}</div>`;
     }
 
     function statusBadges(r) {
@@ -926,8 +948,9 @@
     function palette(seed) {
         let h = 0;
         for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-        const hue = h % 360;
-        return [`hsl(${hue}, 62%, 62%)`, `hsl(${(hue + 40) % 360}, 58%, 48%)`];
+        // 只在蓝灰色相族里取色，避免和绿色「成功」、红色「失败」状态混淆
+        const light = 74 + (h % 9);
+        return [`hsl(216, 26%, ${light}%)`, `hsl(216, 26%, ${light - 18}%)`];
     }
 
     let toastTimer = null;

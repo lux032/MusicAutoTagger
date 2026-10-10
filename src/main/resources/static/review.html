@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>待人工确认 - Music Auto Tagger</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=8">
+    <link rel="stylesheet" href="app.css?v=10">
     <script src="i18n.js?v=1"></script>
+    <script src="shell.js?v=1"></script>
     <style>
         .layout {
             display: grid;
@@ -20,22 +21,21 @@
 
         .item {
             border: 1px solid var(--border);
-            border-left: 3px solid var(--warn);
             border-radius: var(--radius);
             padding: 12px 14px;
             cursor: pointer;
-            transition: background .15s ease, border-color .15s ease, transform .15s ease;
+            transition: background .15s ease, border-color .15s ease;
             background: #fff;
         }
-        .item:hover { background: var(--bg-soft); transform: translateX(2px); }
-        .item.active { border-color: var(--primary); border-left-color: var(--primary); background: var(--primary-soft); }
+        .item:hover { background: var(--bg-soft); }
+        .item.active { border-color: var(--primary-line); background: var(--primary-soft); box-shadow: 0 0 0 1px var(--primary-line); }
         .item .name { font-weight: 600; word-break: break-all; font-size: 13.5px; }
         .item .meta { font-size: 12px; color: var(--text-mute); margin-top: 5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
         .item-signals { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
         .signal { display: inline-flex; align-items: center; border-radius: 999px; padding: 2px 7px; font-size: 11px; font-weight: 600; background: var(--bg-soft); color: var(--text-soft); border: 1px solid var(--border); }
-        .signal.online { background: #eef6ff; color: #1d4ed8; border-color: #cfe1fb; }
+        .signal.online { background: var(--primary-soft); color: var(--primary-dark); border-color: var(--primary-line); }
         .signal.llm { background: #f5f0ff; color: #6d28d9; border-color: #ded0fb; }
-        .signal.stale { background: #fff1f2; color: var(--danger); border-color: #fecdd3; }
+        .signal.stale { background: var(--danger-soft); color: var(--danger); border-color: #f2c9cb; }
 
         .detail-head {
             display: flex;
@@ -77,8 +77,6 @@
             align-items: center;
             gap: 8px;
             flex-wrap: wrap;
-            padding-left: 10px;
-            border-left: 3px solid var(--primary);
         }
 
         .table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
@@ -91,17 +89,17 @@
             background: var(--bg-soft);
             margin: 10px 0;
         }
-        .panel.accent { background: #f7faff; border-color: #dbe6fb; }
+        .panel.accent { background: #f7faff; border-color: var(--primary-line); }
 
         .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; align-items: center; }
-        .suggestion-card { margin-top: 14px; padding: 16px; border: 1px solid #cbdcf8; border-left: 4px solid var(--primary); border-radius: var(--radius); background: #f7faff; }
-        .suggestion-card.conflict { border-left-color: var(--warn); background: #fffbea; }
-        .suggestion-card.archive { border-left-color: var(--danger); background: #fff7f7; }
-        .suggestion-title { font-size: 12px; color: var(--text-mute); font-weight: 700; }
-        .suggestion-conclusion { margin-top: 5px; font-size: 15px; font-weight: 700; }
+        .suggestion-card { margin-top: 14px; padding: 16px 18px; border: 1px solid var(--primary-line); border-radius: var(--radius); background: #f5f8ff; }
+        .suggestion-card.conflict { border-color: #f1d3a6; background: #fffaf0; }
+        .suggestion-card.archive { border-color: #f2c9cb; background: #fff7f7; }
+        .suggestion-title { font-size: 12px; color: var(--text-mute); font-weight: 600; }
+        .suggestion-conclusion { margin-top: 0; font-size: 15.5px; font-weight: 700; line-height: 1.45; }
         .suggestion-signals { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
         .suggestion-primary { margin-top: 12px; }
-        .online-search-recommended { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); font-weight: 700; }
+        .online-search-recommended { color: var(--primary-dark); border-color: var(--primary-line); background: var(--primary-soft); font-weight: 700; }
         .more-actions { width: 100%; margin-top: 4px; padding-top: 8px; border-top: 1px dashed var(--border); }
         .more-actions summary { font-weight: 600; }
         .more-actions-body { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
@@ -111,14 +109,21 @@
         .kind-tab { background: none; border: 0; border-bottom: 2px solid transparent; padding: 8px 12px; cursor: pointer;
             font-size: 13.5px; font-weight: 600; color: var(--text-mute); display: inline-flex; align-items: center; gap: 6px; }
         .kind-tab.active { color: var(--primary); border-bottom-color: var(--primary); }
-        .kind-tab .tab-count { min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--danger); color: #fff;
+        .kind-tab .tab-count { min-width: 18px; padding: 0 6px; border-radius: 9px; background: var(--warn-soft); color: var(--warn); font-weight: 700;
             font-size: 11px; line-height: 18px; text-align: center; display: none; }
         .kind-tab .tab-count.show { display: inline-block; }
         .panel.missing { background: #fffbea; border-color: #f3df9b; }
         .closest-badge { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 11px;
-            background: var(--primary-soft); color: var(--primary); font-weight: 700; }
+            background: var(--primary-soft); color: var(--primary-dark); font-weight: 700; }
 
         .diff-ok { color: var(--success); font-weight: 600; }
+        tr.best td { background: #f6f9ff; }
+        tr.best td:first-child { font-weight: 600; }
+        .meter { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .meter-bar { width: 64px; height: 6px; border-radius: 9px; background: var(--bg-soft); border: 1px solid var(--border); overflow: hidden; display: inline-block; }
+        .meter-bar i { display: block; height: 100%; background: var(--primary); border-radius: 9px; }
+        .meter-bar i.lo { background: #c3ccd9; }
+        @media (max-width: 560px) { .meter-bar { display: none; } }
         .diff-bad { color: var(--danger); font-weight: 600; }
 
         details { margin-top: 8px; }
@@ -128,38 +133,59 @@
     </style>
 </head>
 <body>
-<div class="app">
-    <header class="topbar">
-        <div class="topbar-main">
-            <div class="brand">
-                <img class="brand-logo" src="logo.png" alt="Music Auto Tagger">
-                <div>
-                    <div class="brand-title" data-i18n="review.page.title">待人工确认</div>
-                    <div class="brand-subtitle" data-i18n="review.page.subtitle">曲目已识别、专辑无法确定的文件夹，文件保持原样未写入标签</div>
-                </div>
-            </div>
+<div class="shell">
+<aside class="side" id="appSide">
+    <a class="side-brand" href="index.html">
+        <img src="logo.png" alt="Music Auto Tagger">
+        <span>
+            <span class="brand-title" data-i18n="web.brand">音乐自动标签器</span>
+            <span class="brand-subtitle" data-i18n="web.subtitle">实时监控 · 智能整理 · 数据统计</span>
+        </span>
+    </a>
+    <button class="side-toggle" onclick="Shell.toggleNav()" aria-label="menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        <span data-i18n="web.menu">菜单</span>
+    </button>
+    <nav class="side-nav" id="navBar">
+            <a class="side-link" href="index.html">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"></path></svg>
+                <span data-i18n="web.nav.overview">概览</span>
+            </a>
+            <div class="side-group" data-i18n="web.nav.group.work">需要处理</div>
+            <a class="side-link active" href="review.html" aria-current="page" id="navReview">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path><path d="M3 13h5l1 3h6l1-3h5"></path></svg>
+                <span data-i18n="web.review">待确认</span>
+                <span class="nav-count" id="reviewCount">0</span>
+            </a>
+            <a class="side-link" href="recovery.html" id="navRecovery">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>
+                <span data-i18n="web.recovery">重新识别</span>
+                <span class="nav-count" id="recoveryCount">0</span>
+            </a>
+            <div class="side-group" data-i18n="web.nav.group.library">资料</div>
+            <a class="side-link" href="records.html">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg>
+                <span data-i18n="web.records">处理记录</span>
+            </a>
+            <a class="side-link" href="index.html#settings">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.61.77 1.03 1.42 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <span data-i18n="web.settings">设置</span>
+            </a>
+    </nav>
+</aside>
+<main class="main">
+    <div class="page-head">
+        <div>
+            <h1 class="page-title" data-i18n="review.page.title">待人工确认</h1>
+            <p class="page-desc" data-i18n="review.page.subtitle">曲目已识别、专辑无法确定的文件夹，文件保持原样未写入标签</p>
         </div>
-        <nav class="navbar">
-            <button class="nav-toggle" onclick="document.getElementById('navGroup').classList.toggle('open')" aria-label="menu">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                <span data-i18n="web.menu">菜单</span>
+        <div class="page-actions">
+            <button class="btn ghost" onclick="loadList()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                <span data-i18n="review.nav.refresh">刷新</span>
             </button>
-            <div class="nav-group" id="navGroup">
-                <button class="nav-btn" onclick="loadList()">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                    <span data-i18n="review.nav.refresh">刷新</span>
-                </button>
-                <a class="nav-btn" href="recovery.html">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
-                    <span data-i18n="web.recovery">重新识别</span>
-                </a>
-                <a class="nav-btn active" href="index.html">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"></path><path d="M9 21V12h6v9"></path><path d="M5 10v11h14V10"></path></svg>
-                    <span data-i18n="review.nav.back">返回面板</span>
-                </a>
-            </div>
-        </nav>
-    </header>
+        </div>
+    </div>
 
     <div class="layout">
         <section class="card">
@@ -214,6 +240,7 @@
             <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" rel="noopener">Music Auto Tagger</a>
         </div>
     </footer>
+</main>
 </div>
 <!-- 确认联网候选：以前是五个连续的 prompt()，改成一个表单弹窗 -->
 <div class="overlay" id="onlineDialog">
@@ -428,6 +455,7 @@
 
     async function loadList() {
         const stats = await loadRejectedCount();
+        if (window.Shell) Shell.refreshReviewCount();
         if (!currentKind) {
             // 首次进入：哪个 Tab 有待处理就打开哪个，两个都有时优先「专辑待确认」
             currentKind = stats && !(stats.pendingAlbum > 0) && stats.pendingMissingTracks > 0
@@ -489,8 +517,14 @@
         const suggestion = item.systemSuggestion || {};
         const primaryAction = suggestion.primaryAction || 'NONE';
         const searchRecommended = suggestion.level === 'TRY_ONLINE_SEARCH';
-        const candidateRows = (item.candidates || []).map(c => {
-            const sim = c.durationSimilarity == null ? '-' : (c.durationSimilarity * 100).toFixed(1) + '%';
+        // 时长相似度最高的候选整行高亮（并列取第一个）；行内「确认」一律用次按钮，主按钮只留给上方系统建议卡
+        const sims = (item.candidates || []).map(c => c.durationSimilarity == null ? -1 : c.durationSimilarity);
+        const bestSim = sims.length ? Math.max(...sims) : -1;
+        const bestIndex = bestSim >= 0 ? sims.indexOf(bestSim) : -1;
+        const candidateRows = (item.candidates || []).map((c, i) => {
+            const isBest = i === bestIndex;
+            const sim = c.durationSimilarity == null ? '-'
+                : `<span class="meter"><span class="meter-bar"><i class="${isBest ? '' : 'lo'}" style="width:${Math.max(0, Math.min(100, c.durationSimilarity * 100)).toFixed(0)}%"></i></span>${(c.durationSimilarity * 100).toFixed(1)}%</span>`;
             const key = c.releaseId || '';
             const rg = c.releaseGroupId || '';
             const trackDelta = c.trackCount && item.fileCount
@@ -502,11 +536,11 @@
             // 后端同样做了硬校验，这里只是避免误导。
             const confirmCell = !pending ? ''
                 : (key
-                    ? `<button class="btn primary sm" onclick="confirmCandidate('${key}','${rg}')">${escapeHtml(t('review.confirm'))}</button>`
+                    ? `<button class="btn ghost sm" onclick="confirmCandidate('${key}','${rg}')">${escapeHtml(t('review.confirm'))}</button>`
                     : `<span class="hint">${escapeHtml(t('review.need.expand'))}</span>`);
             const closest = item.missingTracks && c.releaseId && c.releaseId === item.missingTracks.releaseId
                 ? `<span class="closest-badge">${escapeHtml(t('review.missing.closest.badge'))}</span>` : '';
-            return `<tr>
+            return `<tr class="${isBest ? 'best' : ''}">
                 <td>${escapeHtml(c.title || '')}${closest}<div class="hint">${escapeHtml(c.releaseId || c.releaseGroupId || '')}</div></td>
                 <td>${escapeHtml(c.mediaFormat || '-')}</td>
                 <td>${c.trackCount || '-'} ${deltaText}</td>
@@ -707,7 +741,6 @@
         }
         const cardClass = level === 'CONFLICT' ? ' conflict' : (level === 'SUGGEST_ARCHIVE_UNVERIFIED' ? ' archive' : '');
         return `<div class="suggestion-card${cardClass}">
-            <div class="suggestion-title">${escapeHtml(t('review.suggestion.title'))}</div>
             <div class="suggestion-conclusion">${escapeHtml(t('review.suggestion.level.' + level))}</div>
             ${note}
             ${signals.length ? `<div class="suggestion-signals">${signals.join('')}</div>` : ''}

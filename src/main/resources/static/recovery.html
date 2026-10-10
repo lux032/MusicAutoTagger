@@ -5,10 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>重新识别 - Music Auto Tagger</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=8">
+    <link rel="stylesheet" href="app.css?v=10">
     <script src="i18n.js?v=1"></script>
+    <script src="shell.js?v=1"></script>
     <style>
-        .tabs { display: flex; gap: 4px; padding: 4px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 14px; }
+        .tabs { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 14px; max-width: 100%; overflow-x: auto; }
 
         .tab {
             border: none;
@@ -17,21 +18,22 @@
             font: inherit;
             font-size: 13px;
             font-weight: 600;
-            padding: 8px 18px;
-            border-radius: var(--radius-sm);
+            padding: 6px 16px;
+            border-radius: 6px;
             cursor: pointer;
+            white-space: nowrap;
             transition: .15s;
         }
-        .tab:hover { background: #fff; color: var(--primary); }
-        .tab.active { background: var(--primary); color: #fff; box-shadow: 0 2px 6px rgba(29, 110, 240, .25); }
+        .tab:hover { color: var(--text); }
+        .tab.active { background: #fff; color: var(--text); box-shadow: var(--shadow-sm); }
 
         .notice {
             background: var(--primary-soft);
-            border: 1px solid #d6e4fd;
+            border: 1px solid var(--primary-line);
             border-radius: var(--radius);
             padding: 12px 14px;
             font-size: 12.5px;
-            color: #1e40af;
+            color: #24426f;
             line-height: 1.7;
             margin-bottom: 16px;
         }
@@ -40,7 +42,6 @@
 
         .item {
             border: 1px solid var(--border);
-            border-left: 3px solid var(--info);
             border-radius: var(--radius);
             padding: 14px 16px;
             display: flex;
@@ -51,8 +52,7 @@
             background: #fff;
             transition: box-shadow .15s ease;
         }
-        .item:hover { box-shadow: var(--shadow); }
-        .item.failed { border-left-color: var(--danger); }
+        .item:hover { box-shadow: var(--shadow); border-color: var(--border-strong); }
         .item .name { font-weight: 650; word-break: break-all; font-size: 13.5px; }
         .item .meta { font-size: 12px; color: var(--text-mute); margin-top: 5px; word-break: break-all; }
         .item .meta.warn { color: var(--danger); }
@@ -79,42 +79,59 @@
     </style>
 </head>
 <body>
-<div class="app">
-    <header class="topbar">
-        <div class="topbar-main">
-            <div class="brand">
-                <img class="brand-logo" src="logo.png" alt="Music Auto Tagger">
-                <div>
-                    <div class="brand-title" data-i18n="recovery.page.title">重新识别与辅助恢复</div>
-                    <div class="brand-subtitle" data-i18n="recovery.page.subtitle">手动重试部分识别与识别失败的文件夹，任务在后台执行</div>
-                </div>
-            </div>
+<div class="shell">
+<aside class="side" id="appSide">
+    <a class="side-brand" href="index.html">
+        <img src="logo.png" alt="Music Auto Tagger">
+        <span>
+            <span class="brand-title" data-i18n="web.brand">音乐自动标签器</span>
+            <span class="brand-subtitle" data-i18n="web.subtitle">实时监控 · 智能整理 · 数据统计</span>
+        </span>
+    </a>
+    <button class="side-toggle" onclick="Shell.toggleNav()" aria-label="menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        <span data-i18n="web.menu">菜单</span>
+    </button>
+    <nav class="side-nav" id="navBar">
+            <a class="side-link" href="index.html">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"></path></svg>
+                <span data-i18n="web.nav.overview">概览</span>
+            </a>
+            <div class="side-group" data-i18n="web.nav.group.work">需要处理</div>
+            <a class="side-link" href="review.html" id="navReview">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path><path d="M3 13h5l1 3h6l1-3h5"></path></svg>
+                <span data-i18n="web.review">待确认</span>
+                <span class="nav-count" id="reviewCount">0</span>
+            </a>
+            <a class="side-link active" href="recovery.html" aria-current="page" id="navRecovery">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>
+                <span data-i18n="web.recovery">重新识别</span>
+                <span class="nav-count" id="recoveryCount">0</span>
+            </a>
+            <div class="side-group" data-i18n="web.nav.group.library">资料</div>
+            <a class="side-link" href="records.html">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg>
+                <span data-i18n="web.records">处理记录</span>
+            </a>
+            <a class="side-link" href="index.html#settings">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.61.77 1.03 1.42 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <span data-i18n="web.settings">设置</span>
+            </a>
+    </nav>
+</aside>
+<main class="main">
+    <div class="page-head">
+        <div>
+            <h1 class="page-title" data-i18n="recovery.page.title">重新识别与辅助恢复</h1>
+            <p class="page-desc" data-i18n="recovery.page.subtitle">手动重试部分识别与识别失败的文件夹，任务在后台执行</p>
         </div>
-        <nav class="navbar">
-            <button class="nav-toggle" onclick="document.getElementById('navGroup').classList.toggle('open')" aria-label="menu">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                <span data-i18n="web.menu">菜单</span>
+        <div class="page-actions">
+            <button class="btn ghost" onclick="loadAll()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                <span data-i18n="recovery.nav.refresh">刷新</span>
             </button>
-            <div class="nav-group" id="navGroup">
-                <button class="nav-btn" onclick="loadAll()">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                    <span data-i18n="recovery.nav.refresh">刷新</span>
-                </button>
-                <a class="nav-btn" href="review.html">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
-                    <span data-i18n="web.review">待确认</span>
-                </a>
-                <a class="nav-btn" href="records.html">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg>
-                    <span data-i18n="web.records">处理记录</span>
-                </a>
-                <a class="nav-btn active" href="index.html">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"></path><path d="M9 21V12h6v9"></path><path d="M5 10v11h14V10"></path></svg>
-                    <span data-i18n="recovery.nav.back">返回面板</span>
-                </a>
-            </div>
-        </nav>
-    </header>
+        </div>
+    </div>
 
     <section class="card" style="margin-bottom: 18px;">
         <div class="tabs">
@@ -149,6 +166,7 @@
             <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" rel="noopener">Music Auto Tagger</a>
         </div>
     </footer>
+</main>
 </div>
 
 <!-- 通用确认弹窗：替代原来的 confirm()，可以放多行说明 -->
@@ -303,6 +321,7 @@
             onlineSearchAvailable = !!d.onlineSearchAvailable;
             render();
             renderJobs(d.jobs || []);
+            if (window.Shell) Shell.refreshRecoveryCount();
         } catch (e) { toast(TF('recovery.load.failed', e.message)); }
     }
 

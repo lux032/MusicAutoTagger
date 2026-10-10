@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-10T09:00:00Z",
+  "title": "Design System: Music Auto Tagger",
+  "extensions": {
+    "colorMeta": {
+      "primary": { "role": "primary", "displayName": "Signal Blue", "canonical": "#1d6ef0", "tonalRamp": ["#0b2a5e", "#103d87", "#1550c4", "#1d6ef0", "#5b95f4", "#9dbff8", "#c9dafc", "#e9f0fe"] },
+      "cool-ground": { "role": "neutral", "displayName": "Cool Ground", "canonical": "#f2f4f8", "tonalRamp": ["#121a26", "#2b3647", "#4a576b", "#5f6b80", "#a3adbd", "#d3d9e3", "#e3e7ee", "#f2f4f8"] },
+      "success": { "role": "status", "displayName": "Archive Green", "canonical": "#12703a" },
+      "warn": { "role": "status", "displayName": "Pending Amber", "canonical": "#b45309" },
+      "danger": { "role": "status", "displayName": "Failure Red", "canonical": "#c62f35" },
+      "info": { "role": "status", "displayName": "Teal Info", "canonical": "#0e7490" },
+      "log-ground": { "role": "neutral", "displayName": "Log Night", "canonical": "#141c27" }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Headline", "purpose": "Page titles." },
+      "metric": { "displayName": "Metric", "purpose": "Health-strip numbers on the overview." },
+      "title": { "displayName": "Title", "purpose": "Card titles." },
+      "body": { "displayName": "Body", "purpose": "Running text and table cells." },
+      "label": { "displayName": "Label", "purpose": "Hints, table heads, metadata." },
+      "mono": { "displayName": "Mono", "purpose": "Runtime log and file paths only." }
+    },
+    "shadows": [
+      { "name": "card", "value": "0 1px 2px rgba(18, 26, 38, .05), 0 2px 6px rgba(18, 26, 38, .04)", "purpose": "Resting cards, sidebar-adjacent surfaces." },
+      { "name": "overlay", "value": "0 24px 60px -12px rgba(18, 26, 38, .28)", "purpose": "Dialogs and toasts." }
+    ],
+    "motion": [
+      { "name": "state", "value": "150ms ease", "purpose": "Hover/background/border transitions." },
+      { "name": "enter", "value": "220ms cubic-bezier(.2, .8, .2, 1)", "purpose": "View switch, dialog and toast entrance; disabled under prefers-reduced-motion." }
+    ],
+    "breakpoints": [
+      { "name": "two-column", "value": "1100px" },
+      { "name": "sidebar-collapse", "value": "860px" },
+      { "name": "phone", "value": "560px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single main action of a view.",
+      "html": "<button class=\"ds-btn-primary\">保存配置</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; min-height: 34px; padding: 6px 14px; border: 1px solid #1d6ef0; border-radius: 7px; background: #1d6ef0; color: #fff; font: 600 13px -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; cursor: pointer; transition: background .15s, border-color .15s; } .ds-btn-primary:hover { background: #1550c4; border-color: #1550c4; } .ds-btn-primary:focus-visible { outline: 2px solid #1d6ef0; outline-offset: 2px; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Default for every non-primary action, including row-level confirm.",
+      "html": "<button class=\"ds-btn-ghost\">确认</button>",
+      "css": ".ds-btn-ghost { display: inline-flex; align-items: center; min-height: 34px; padding: 6px 14px; border: 1px solid #d3d9e3; border-radius: 7px; background: #fff; color: #121a26; font: 600 13px -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; cursor: pointer; transition: background .15s, border-color .15s; } .ds-btn-ghost:hover { background: #f7f8fb; border-color: #bcc5d3; } .ds-btn-ghost:focus-visible { outline: 2px solid #1d6ef0; outline-offset: 2px; }"
+    },
+    {
+      "name": "Danger Soft Button",
+      "kind": "button",
+      "refersTo": "button-danger-soft",
+      "description": "Clear / delete record actions.",
+      "html": "<button class=\"ds-btn-danger\">删除记录</button>",
+      "css": ".ds-btn-danger { display: inline-flex; align-items: center; min-height: 34px; padding: 6px 14px; border: 1px solid #efc6c8; border-radius: 7px; background: #fff; color: #c62f35; font: 600 13px -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; cursor: pointer; } .ds-btn-danger:hover { background: #fcebec; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Settings and search fields.",
+      "html": "<input class=\"ds-input\" placeholder=\"搜索文件名、艺术家、标题或专辑…\">",
+      "css": ".ds-input { width: 260px; min-height: 36px; padding: 8px 11px; border: 1px solid #d3d9e3; border-radius: 7px; background: #fff; color: #121a26; font: 13.5px -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; transition: border-color .15s, box-shadow .15s; } .ds-input::placeholder { color: #5f6b80; } .ds-input:focus { outline: none; border-color: #1d6ef0; box-shadow: 0 0 0 3px #e9f0fe; }"
+    },
+    {
+      "name": "Sidebar Navigation",
+      "kind": "nav",
+      "refersTo": "nav-link-active",
+      "description": "Shared left navigation with backlog counts.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-link on\" href=\"#\">概览</a><div class=\"ds-grp\">需要处理</div><a class=\"ds-link\" href=\"#\">待确认<span class=\"ds-cnt\">3</span></a><a class=\"ds-link\" href=\"#\">重新识别<span class=\"ds-cnt bad\">3</span></a></nav>",
+      "css": ".ds-nav { width: 204px; padding: 12px; background: #fff; border: 1px solid #e3e7ee; display: flex; flex-direction: column; gap: 2px; font: 14px -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; } .ds-grp { font-size: 11.5px; color: #5f6b80; padding: 12px 10px 4px; } .ds-link { display: flex; align-items: center; padding: 8px 10px; border-radius: 8px; color: #4a576b; text-decoration: none; font-weight: 500; } .ds-link:hover { background: #f7f8fb; color: #121a26; } .ds-link.on { background: #e9f0fe; color: #1550c4; font-weight: 600; } .ds-cnt { margin-left: auto; min-width: 20px; height: 20px; padding: 0 7px; border-radius: 999px; background: #fdf3e2; color: #b45309; font-size: 11.5px; font-weight: 700; line-height: 20px; text-align: center; } .ds-cnt.bad { background: #fcebec; color: #c62f35; }"
+    },
+    {
+      "name": "Segmented Control",
+      "kind": "chip",
+      "description": "Mutually exclusive filters (log level, record status).",
+      "html": "<div class=\"ds-seg\"><button class=\"on\">全部</button><button>警告</button><button>错误</button></div>",
+      "css": ".ds-seg { display: inline-flex; gap: 2px; padding: 2px; background: #f7f8fb; border: 1px solid #e3e7ee; border-radius: 8px; } .ds-seg button { border: 0; background: transparent; padding: 4px 11px; border-radius: 6px; font: 600 12.5px -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; color: #4a576b; cursor: pointer; } .ds-seg button:hover { color: #121a26; } .ds-seg button.on { background: #fff; color: #121a26; box-shadow: 0 1px 2px rgba(18,26,38,.05), 0 2px 6px rgba(18,26,38,.04); }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Base container for every work area.",
+      "html": "<section class=\"ds-card\"><h2>系统信息</h2><p>操作系统 · Linux</p></section>",
+      "css": ".ds-card { width: 280px; background: #fff; border: 1px solid #e3e7ee; border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 2px rgba(18,26,38,.05), 0 2px 6px rgba(18,26,38,.04); font: 13px -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; color: #121a26; } .ds-card h2 { margin: 0 0 12px; font-size: 14px; font-weight: 700; } .ds-card p { margin: 0; color: #5f6b80; }"
+    },
+    {
+      "name": "Attention Row",
+      "kind": "custom",
+      "description": "Overview 'waiting for you' link row with backlog count.",
+      "html": "<a class=\"ds-attn\" href=\"#\"><span class=\"ds-attn-ic\"></span><span class=\"ds-attn-t\"><b>专辑待确认</b><small>专辑无法确定的文件夹</small></span><span class=\"ds-attn-n\">2</span></a>",
+      "css": ".ds-attn { display: flex; align-items: center; gap: 12px; width: 300px; padding: 11px 18px; background: #fff; border: 1px solid #e3e7ee; color: #121a26; text-decoration: none; font: 13px -apple-system, 'Segoe UI', 'PingFang SC', sans-serif; transition: background .15s; } .ds-attn:hover { background: #f7f8fb; } .ds-attn-ic { width: 32px; height: 32px; border-radius: 8px; background: #f7f8fb; border: 1px solid #e3e7ee; } .ds-attn-t { flex: 1; } .ds-attn-t b, .ds-attn-t small { display: block; } .ds-attn-t small { font-size: 12px; color: #5f6b80; } .ds-attn-n { padding: 1px 8px; border-radius: 999px; background: #fdf3e2; color: #b45309; font-size: 12px; font-weight: 700; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Night-Shift Librarian",
+    "overview": "面板大部分时间无人看管，像一位值夜班的图书管理员：安静地把唱片归档，只把真正拿不准的几张放到台面上等人决定。界面因此分两种音量：日常状态（监控中、已处理多少）用中性灰与白卡片低声陈述；需要人处理的积压（待确认、重新识别）用琥珀与红色计数在侧栏和概览里直接点名。\n\n视觉语言是冷灰底上的白色卡片，一个蓝色只做主操作与选中。密度偏中等，信息靠细线分组而不是靠阴影和色块堆叠。所有页面共用同一条左侧导航，设置是一页而不是弹层。",
+    "keyCharacteristics": [
+      "冷灰底 + 白卡片 + 1px 细线，阴影只做轻微浮起",
+      "唯一强调色蓝色，只给主按钮、选中导航、焦点与进度",
+      "状态色只表达状态：绿=成功、琥珀=待处理、红=失败/危险",
+      "数字一律等宽数字（tabular-nums），日志与路径用等宽字体",
+      "中英双语，所有静态文案走 `data-i18n`"
+    ],
+    "rules": [
+      { "name": "The One Blue Rule", "body": "蓝色只属于主操作与选中。占位封面、装饰、分组标题都不得用蓝以外的彩色；封面占位只用蓝灰色相族。", "section": "colors" },
+      { "name": "The Status Means Status Rule", "body": "绿/琥珀/红只出现在它们代表的状态上。积压计数：有失败用红，否则用琥珀，为零时回到中性灰。", "section": "colors" },
+      { "name": "The Tabular Numbers Rule", "body": "计数、时长、大小、时间一律 `font-variant-numeric: tabular-nums`，刷新时数字不跳动。", "section": "typography" },
+      { "name": "The Hairline First Rule", "body": "分组先用 1px 细线和底色差，不够再加阴影；不使用彩色粗边条（>1px 的彩色左/右边框）来标记状态。", "section": "elevation" }
+    ],
+    "dos": [
+      "**Do** 每个视图只放一个 Primary 按钮，其余用 Ghost / Plain。",
+      "**Do** 用琥珀/红计数把积压带到侧栏和概览，为零时回到中性。",
+      "**Do** 所有新文案加 `data-i18n` 并同时补齐 `messages_zh_CN` 与 `messages_en_US`。",
+      "**Do** 新页面复用 `.shell / .side / .main / .page-head` 外壳与 `shell.js`。"
+    ],
+    "donts": [
+      "**Don't** 使用渐变色块、渐变文字或彩色占位封面。",
+      "**Don't** 用 >1px 的彩色左边框标记列表项或提示框。",
+      "**Don't** 在标题上方加小号说明标签（如「系统建议」）。",
+      "**Don't** 用 emoji 代替图标；图标统一 1.8 线宽的描边 SVG。",
+      "**Don't** 把设置或长表单重新做成弹层。"
+    ]
+  }
+}
