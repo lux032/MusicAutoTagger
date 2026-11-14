@@ -17,6 +17,9 @@ public class MusicMetadata {
     private String releaseDate;
     private String originalReleaseDate;
     private String originalYear;
+    // Structured credit names, independent of the formatted display credit.
+    private List<String> artists;
+    private List<String> albumArtists;
     private String artistId;
     private String albumArtistId;
     private String releaseTrackId;
@@ -101,6 +104,8 @@ public class MusicMetadata {
         copy.releaseDate = releaseDate;
         copy.originalReleaseDate = originalReleaseDate;
         copy.originalYear = originalYear;
+        copy.artists = artists == null ? null : List.copyOf(artists);
+        copy.albumArtists = albumArtists == null ? null : List.copyOf(albumArtists);
         copy.artistId = artistId;
         copy.albumArtistId = albumArtistId;
         copy.releaseTrackId = releaseTrackId;
@@ -140,8 +145,14 @@ public class MusicMetadata {
         return copy;
     }
 
-    /** 专辑艺术家模型字段只做赋值；业务归一化由 AlbumArtistPolicy 负责。 */
+    public void setArtist(String artist) {
+        if (!java.util.Objects.equals(this.artist, artist)) this.artists = null;
+        this.artist = artist;
+    }
+
+    /** Album policy is applied by the caller, not inferred from punctuation. */
     public void setAlbumArtist(String albumArtist) {
+        if (!java.util.Objects.equals(this.albumArtist, albumArtist)) this.albumArtists = null;
         this.albumArtist = albumArtist;
     }
 

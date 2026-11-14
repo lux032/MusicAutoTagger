@@ -514,6 +514,29 @@ public class TagWriterService {
     /**
      * 更新文本标签
      */
+    private static List<String> readArtistNames(Tag tag, FieldKey key) throws Exception {
+        List<String> names = new ArrayList<>();
+        for (String value : tag.getAll(key)) {
+            for (String name : value.split("[;\\u0000]")) {
+                if (!name.isBlank()) names.add(name.trim());
+            }
+        }
+        return names.isEmpty() ? null : List.copyOf(names);
+    }
+
+    private static void writeArtistNames(Tag tag, FieldKey key, List<String> names) throws Exception {
+        // Never leave a previous recording's structured credit alongside new text.
+        tag.deleteField(key);
+        if (names == null || names.isEmpty()) return;
+        String[] values = names.stream().filter(n -> n != null && !n.isBlank())
+            .map(String::trim).toArray(String[]::new);
+        if (values.length == 0) return;
+        // Preserve each person's name exactly, including punctuation. ID3v2.3
+        // and MP4 encode the list using their container-specific representation.
+        tag.setField(key, values[0]);
+        for (int i = 1; i < values.length; i++) tag.addField(key, values[i]);
+    }
+
     private void updateTextTags(Tag tag, MusicMetadata metadata) throws Exception {
         if (metadata.getTitle() != null && !metadata.getTitle().isEmpty()) {
             tag.setField(FieldKey.TITLE, metadata.getTitle());
@@ -521,11 +544,13 @@ public class TagWriterService {
 
         if (metadata.getArtist() != null && !metadata.getArtist().isEmpty()) {
             tag.setField(FieldKey.ARTIST, metadata.getArtist());
+            writeArtistNames(tag, FieldKey.ARTISTS, metadata.getArtists());
         }
 
         // 写入专辑艺术家标签
         if (metadata.getAlbumArtist() != null && !metadata.getAlbumArtist().isEmpty()) {
             tag.setField(FieldKey.ALBUM_ARTIST, metadata.getAlbumArtist());
+            writeArtistNames(tag, FieldKey.ALBUM_ARTISTS, metadata.getAlbumArtists());
         }
 
         if (metadata.getAlbum() != null && !metadata.getAlbum().isEmpty()) {
@@ -992,8 +1017,12 @@ public class TagWriterService {
             MusicMetadata metadata = new MusicMetadata();
             metadata.setTitle(tag.getFirst(FieldKey.TITLE));
             metadata.setArtist(tag.getFirst(FieldKey.ARTIST));
+            try { metadata.setArtists(readArtistNames(tag, FieldKey.ARTISTS)); }
+            catch (Exception e) { log.debug("Read structured artists: {}", e.getMessage()); }
             String albumArtist = tag.getFirst(FieldKey.ALBUM_ARTIST);
             metadata.setAlbumArtist(albumArtistFromTag(albumArtist));
+            try { metadata.setAlbumArtists(readArtistNames(tag, FieldKey.ALBUM_ARTISTS)); }
+            catch (Exception e) { log.debug("Read structured album artists: {}", e.getMessage()); }
             metadata.setAlbum(tag.getFirst(FieldKey.ALBUM));
             metadata.setReleaseDate(tag.getFirst(FieldKey.YEAR));
 

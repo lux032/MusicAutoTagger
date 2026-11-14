@@ -28,6 +28,39 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 class TagWriterServiceTest {
     @Test
+    void structuredArtistsSurviveAcrossContainersAndMetadataCopies() throws Exception {
+        MusicMetadata metadata = new MusicMetadata();
+        metadata.setArtist("Mori Calliope, 常闇トワ");
+        metadata.setArtists(List.of("Mori Calliope", "常闇トワ"));
+        metadata.setAlbumArtist("Various Artists");
+        assertEquals(metadata.getArtists(), metadata.copyWithoutHeavyFields().getArtists());
+        for (org.jaudiotagger.tag.Tag tag : List.of(new FlacTag(), new VorbisCommentTag(),
+                new ID3v23Tag(), new ID3v24Tag(), new Mp4Tag())) {
+            invokeUpdateTextTags(tag, metadata);
+            assertEquals(List.of("Mori Calliope", "常闇トワ"), tag.getAll(FieldKey.ARTISTS), tag.getClass().getSimpleName());
+            assertEquals("Mori Calliope, 常闇トワ", tag.getFirst(FieldKey.ARTIST));
+            MusicMetadata solo = new MusicMetadata();
+            solo.setArtist("Solo");
+            invokeUpdateTextTags(tag, solo);
+            assertEquals("", tag.getFirst(FieldKey.ARTISTS));
+        }
+    }
+
+    @Test
+    void musicBrainzNamesRemainStructuredEvenWithPunctuation() throws Exception {
+        JsonNode credits = new ObjectMapper().readTree("""
+            [{"artist":{"name":"Earth, Wind & Fire"}},
+             {"artist":{"name":"常闇トワ"}}]
+            """);
+        assertEquals(List.of("Earth, Wind & Fire", "常闇トワ"), MusicBrainzClient.artistNames(credits));
+        MusicMetadata metadata = new MusicMetadata();
+        metadata.setArtist("A, B");
+        metadata.setArtists(List.of("A", "B"));
+        metadata.setArtist("Solo");
+        assertNull(metadata.getArtists());
+    }
+
+    @Test
     void missingAlbumArtistTagRemainsNullInsteadOfBecomingVariousArtists() {
         assertNull(TagWriterService.albumArtistFromTag(""));
         assertNull(TagWriterService.albumArtistFromTag("   "));
