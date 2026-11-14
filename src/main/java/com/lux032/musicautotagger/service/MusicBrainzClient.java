@@ -1655,14 +1655,17 @@ public class MusicBrainzClient {
 
             if (!composers.isEmpty()) {
                 metadata.setComposer(String.join(", ", composers));
+                metadata.setComposers(List.copyOf(composers));
                 log.debug("找到作曲家: {}", metadata.getComposer());
             }
             if (!lyricists.isEmpty()) {
                 metadata.setLyricist(String.join(", ", lyricists));
+                metadata.setLyricists(List.copyOf(lyricists));
                 log.debug("找到作词家: {}", metadata.getLyricist());
             }
             if (!arrangers.isEmpty()) {
                 metadata.setArranger(String.join(", ", arrangers));
+                metadata.setArrangers(List.copyOf(arrangers));
                 log.debug("找到编曲: {}", metadata.getArranger());
             }
         } catch (Exception e) {

@@ -49,6 +49,7 @@ class MusicBrainzClientCreatorCreditsTest {
         assertEquals("Rec Arranger, Strings Arranger, Vocal Arranger, Orchestrator", md.getArranger());
         assertEquals("Work Composer", md.getComposer());
         assertEquals("Work Lyricist", md.getLyricist());
+        assertEquals(java.util.List.of("Rec Arranger", "Strings Arranger", "Vocal Arranger", "Orchestrator"), md.getArrangers());
     }
 
     @Test
@@ -68,6 +69,8 @@ class MusicBrainzClientCreatorCreditsTest {
 
         assertEquals("Anna, Ann", md.getComposer());
         assertEquals("Anna, Ann", md.getLyricist());
+        assertEquals(java.util.List.of("Anna", "Ann"), md.getComposers());
+        assertEquals(java.util.List.of("Anna", "Ann"), md.getLyricists());
         assertNull(md.getArranger());
     }
 

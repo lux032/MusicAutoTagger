@@ -53,6 +53,9 @@ public class MusicMetadata {
     private String composer;
     private String lyricist;
     private String arranger;
+    private List<String> composers;
+    private List<String> lyricists;
+    private List<String> arrangers;
     private String lyrics;
     /** Reliable local audio length only; never populated from MusicBrainz. */
     private Double localPreciseDuration;
@@ -129,6 +132,9 @@ public class MusicMetadata {
         copy.composer = composer;
         copy.lyricist = lyricist;
         copy.arranger = arranger;
+        copy.composers = composers == null ? null : List.copyOf(composers);
+        copy.lyricists = lyricists == null ? null : List.copyOf(lyricists);
+        copy.arrangers = arrangers == null ? null : List.copyOf(arrangers);
         copy.lyrics = lyrics;
         copy.localPreciseDuration = localPreciseDuration;
         copy.weakLyricsIdentity = weakLyricsIdentity;
@@ -143,6 +149,21 @@ public class MusicMetadata {
         copy.score = score;
         copy.trackCount = trackCount;
         return copy;
+    }
+
+    public void setComposer(String composer) {
+        if (!java.util.Objects.equals(this.composer, composer)) this.composers = null;
+        this.composer = composer;
+    }
+
+    public void setLyricist(String lyricist) {
+        if (!java.util.Objects.equals(this.lyricist, lyricist)) this.lyricists = null;
+        this.lyricist = lyricist;
+    }
+
+    public void setArranger(String arranger) {
+        if (!java.util.Objects.equals(this.arranger, arranger)) this.arrangers = null;
+        this.arranger = arranger;
     }
 
     public void setArtist(String artist) {

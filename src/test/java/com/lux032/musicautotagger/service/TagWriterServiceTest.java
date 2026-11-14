@@ -165,6 +165,32 @@ class TagWriterServiceTest {
     }
 
     @Test
+    void structuredCreatorsRoundTripAcrossContainersAndCopies() throws Exception {
+        MusicMetadata md = new MusicMetadata();
+        md.setComposer("Last, First, B"); md.setComposers(List.of("Last, First", "B"));
+        md.setLyricist("Berry Risa, Steph Sings!"); md.setLyricists(List.of("Berry Risa", "Steph Sings!"));
+        md.setArranger("紅音乃詩, STAND ALONE"); md.setArrangers(List.of("紅音乃詩", "STAND ALONE"));
+        assertEquals(md.getComposers(), md.copyWithoutHeavyFields().getComposers());
+        assertEquals(md.getLyricists(), md.copyWithoutHeavyFields().getLyricists());
+        assertEquals(md.getArrangers(), md.copyWithoutHeavyFields().getArrangers());
+        for (org.jaudiotagger.tag.Tag tag : List.of(new ID3v24Tag(), new ID3v23Tag(), new FlacTag(), new VorbisCommentTag(), new Mp4Tag())) {
+            invokeUpdateTextTags(tag, md);
+            TagWriterService writer = new TagWriterService(MusicConfig.getInstance());
+            Method read = TagWriterService.class.getDeclaredMethod("readCreatorNames", org.jaudiotagger.tag.Tag.class, FieldKey.class, String.class);
+            read.setAccessible(true);
+            assertEquals(md.getComposers(), read.invoke(writer, tag, FieldKey.COMPOSER, "COMPOSERS"), tag.getClass().getSimpleName());
+            assertEquals(md.getLyricists(), read.invoke(writer, tag, FieldKey.LYRICIST, "LYRICISTS"));
+            assertEquals(md.getArrangers(), read.invoke(writer, tag, FieldKey.ARRANGER, "ARRANGERS"));
+            MusicMetadata replacement = new MusicMetadata(); replacement.setComposer("Solo");
+            invokeUpdateTextTags(tag, replacement);
+            assertNull(read.invoke(writer, tag, FieldKey.COMPOSER, "COMPOSERS"));
+        }
+        md.setComposer("Different"); assertNull(md.getComposers());
+        md.setLyricist("Different"); assertNull(md.getLyricists());
+        md.setArranger("Different"); assertNull(md.getArrangers());
+    }
+
+    @Test
     void updateTextTagsLeavesExistingArrangerWhenMetadataHasNone() throws Exception {
         FlacTag tag = new FlacTag();
         tag.setField(FieldKey.ARRANGER, "Existing Arranger");

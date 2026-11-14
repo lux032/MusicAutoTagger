@@ -9,6 +9,12 @@
 - 原有姓名列表可从文件读回；重写艺人时移除过期 `ARTISTS`。
 - 原有 MusicBrainz Artist ID 标签继续保留。
 
+## 幕后署名
+
+MusicBrainz 作曲、作词、编曲列表现在贯穿元数据复制、审核快照和写标签。写入 COMPOSER / LYRICIST / ARRANGER 原生多值，并补 COMPOSERS / LYRICISTS / ARRANGERS 明确列表，避免单个人名里的逗号与旧式展示文字混淆；支持 FLAC、Vorbis、ID3v2.3/v2.4、MP4。重写时清除过期列表，读回时优先结构化数据。
+
+旧文件的幕后逗号拆分只由服务端用户手动触发兼容扫描，普通扫描不猜拆。无需重新刮削全库。
+
 ## 现有文件
 
 此修复不自动重写已经完成刮削的文件。032 Music Server 已配套支持旧 MusicAutoTagger 的“逗号展示名 + 分号 MBID”格式，可在有效 MBID 与人数严格对应时通过完整扫描恢复多人关系。

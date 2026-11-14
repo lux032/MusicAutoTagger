@@ -537,6 +537,57 @@ public class TagWriterService {
         for (int i = 1; i < values.length; i++) tag.addField(key, values[i]);
     }
 
+    private List<String> readCreatorNames(Tag tag, FieldKey key, String plural) throws Exception {
+        String explicit = null;
+        if (tag instanceof FlacTag flac) explicit = flac.getFirst(plural);
+        else if (tag instanceof VorbisCommentTag vorbis) explicit = vorbis.getFirst(plural);
+        else if (tag instanceof Mp4Tag mp4) explicit = mp4.getFirst("----:com.apple.iTunes:" + plural);
+        else if (tag instanceof AbstractID3v2Tag id3) {
+            List<TagField> frames = id3.getFrame("TXXX");
+            if (frames != null) for (TagField field : frames) {
+                if (field instanceof AbstractID3v2Frame frame && frame.getBody() instanceof FrameBodyTXXX body
+                    && plural.equalsIgnoreCase(body.getDescription())) explicit = body.getText();
+            }
+        }
+        if (explicit != null && !explicit.isBlank()) {
+            return java.util.Arrays.stream(explicit.split("[;\\u0000]"))
+                .map(String::trim).filter(n -> !n.isEmpty()).toList();
+        }
+        List<String> nativeValues = tag.getAll(key);
+        // A lone legacy value is display text, not a proven list.
+        return nativeValues.size() > 1 ? List.copyOf(nativeValues) : null;
+    }
+
+    private void writeCreatorNames(Tag tag, FieldKey key, String plural, List<String> names, String display) throws Exception {
+        if (display == null || display.isEmpty()) return;
+        if (names == null || names.isEmpty()) {
+            tag.deleteField(key);
+            tag.setField(key, display);
+        } else writeArtistNames(tag, key, names);
+        // Plural companion disambiguates a single name containing a comma,
+        // even when a container/reader flattens its native multiple values.
+        String value = names == null || names.isEmpty() ? null : String.join("; ", names);
+        if (tag instanceof FlacTag flac) {
+            flac.deleteField(plural);
+            if (value != null) flac.setField(plural, value);
+        } else if (tag instanceof VorbisCommentTag vorbis) {
+            vorbis.deleteField(plural);
+            if (value != null) vorbis.setField(plural, value);
+        } else if (tag instanceof AbstractID3v2Tag id3) {
+            removeTxxxByDescription(id3, plural);
+            if (value != null) {
+                AbstractID3v2Frame frame = id3.createFrame("TXXX");
+                byte encoding = id3.getMajorVersion() >= 4 ? TextEncoding.UTF_8 : TextEncoding.UTF_16;
+                frame.setBody(new FrameBodyTXXX(encoding, plural, value));
+                id3.setField(frame);
+            }
+        } else if (tag instanceof Mp4Tag mp4) {
+            String atom = "----:com.apple.iTunes:" + plural;
+            mp4.deleteField(atom);
+            if (value != null) mp4.setField(new Mp4TagReverseDnsField(atom, "com.apple.iTunes", plural, value));
+        }
+    }
+
     private void updateTextTags(Tag tag, MusicMetadata metadata) throws Exception {
         if (metadata.getTitle() != null && !metadata.getTitle().isEmpty()) {
             tag.setField(FieldKey.TITLE, metadata.getTitle());
@@ -655,17 +706,17 @@ public class TagWriterService {
 
         // 写入作曲家
         if (metadata.getComposer() != null && !metadata.getComposer().isEmpty()) {
-            tag.setField(FieldKey.COMPOSER, metadata.getComposer());
+            writeCreatorNames(tag, FieldKey.COMPOSER, "COMPOSERS", metadata.getComposers(), metadata.getComposer());
         }
 
         // 写入作词家 (使用 LYRICIST 字段)
         if (metadata.getLyricist() != null && !metadata.getLyricist().isEmpty()) {
-            tag.setField(FieldKey.LYRICIST, metadata.getLyricist());
+            writeCreatorNames(tag, FieldKey.LYRICIST, "LYRICISTS", metadata.getLyricists(), metadata.getLyricist());
         }
 
         // 写入编曲（部分容器可能不支持该字段，失败只记日志）
         if (metadata.getArranger() != null && !metadata.getArranger().isEmpty()) {
-            setFieldSafely(tag, FieldKey.ARRANGER, metadata.getArranger());
+            writeCreatorNames(tag, FieldKey.ARRANGER, "ARRANGERS", metadata.getArrangers(), metadata.getArranger());
         }
 
         // 写入歌词
@@ -1059,20 +1110,26 @@ public class TagWriterService {
             // 读取作曲家
             String composer = tag.getFirst(FieldKey.COMPOSER);
             if (composer != null && !composer.isEmpty()) {
-                metadata.setComposer(composer);
+                List<String> names = readCreatorNames(tag, FieldKey.COMPOSER, "COMPOSERS");
+                metadata.setComposer(names == null ? composer : String.join(", ", names));
+                metadata.setComposers(names);
             }
 
             // 读取作词家
             String lyricist = tag.getFirst(FieldKey.LYRICIST);
             if (lyricist != null && !lyricist.isEmpty()) {
-                metadata.setLyricist(lyricist);
+                List<String> names = readCreatorNames(tag, FieldKey.LYRICIST, "LYRICISTS");
+                metadata.setLyricist(names == null ? lyricist : String.join(", ", names));
+                metadata.setLyricists(names);
             }
 
             // 读取编曲（逐项隔离，不支持该键的容器不影响其它字段）
             try {
                 String arranger = tag.getFirst(FieldKey.ARRANGER);
                 if (arranger != null && !arranger.isEmpty()) {
-                    metadata.setArranger(arranger);
+                    List<String> names = readCreatorNames(tag, FieldKey.ARRANGER, "ARRANGERS");
+                    metadata.setArranger(names == null ? arranger : String.join(", ", names));
+                    metadata.setArrangers(names);
                 }
             } catch (Exception e) {
                 log.debug("读取编曲失败: {}", e.getMessage());
