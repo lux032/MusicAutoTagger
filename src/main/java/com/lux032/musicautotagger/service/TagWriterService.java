@@ -540,24 +540,32 @@ public class TagWriterService {
     private static final List<String> COMPOSER_MBID_KEYS = List.of("MUSICBRAINZ_COMPOSERID", "MUSICBRAINZ COMPOSER ID");
     private static final List<String> LYRICIST_MBID_KEYS = List.of("MUSICBRAINZ_LYRICISTID", "MUSICBRAINZ LYRICIST ID");
     private static final List<String> ARRANGER_MBID_KEYS = List.of("MUSICBRAINZ_ARRANGERID", "MUSICBRAINZ ARRANGER ID");
+    private static final List<String> MP4_CUSTOM_MEANS = List.of("com.apple.iTunes", "org.musicbrainz.iTunes");
     private static final java.util.regex.Pattern MBID_UUID_PATTERN =
         java.util.regex.Pattern.compile("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
 
-    private List<String> readCustomTextTagValues(Tag tag, String name) throws Exception {
-        List<String> values = new ArrayList<>();
+    private List<List<String>> readCustomTextTagGroups(Tag tag, String name) throws Exception {
+        List<List<String>> groups = new ArrayList<>();
         if (tag instanceof FlacTag || tag instanceof VorbisCommentTag) {
+            List<String> values = new ArrayList<>();
             for (TagField field : tag.getFields(name)) {
                 if (field instanceof org.jaudiotagger.tag.TagTextField textField && textField.getContent() != null) {
                     values.add(textField.getContent());
                 }
             }
+            if (!values.isEmpty()) groups.add(values);
         } else if (tag instanceof Mp4Tag mp4) {
-            for (TagField field : mp4.getFields("----:com.apple.iTunes:" + name)) {
-                if (field instanceof org.jaudiotagger.tag.TagTextField textField && textField.getContent() != null) {
-                    values.add(textField.getContent());
+            for (String mean : MP4_CUSTOM_MEANS) {
+                List<String> values = new ArrayList<>();
+                for (TagField field : mp4.getFields("----:" + mean + ":" + name)) {
+                    if (field instanceof org.jaudiotagger.tag.TagTextField textField && textField.getContent() != null) {
+                        values.add(textField.getContent());
+                    }
                 }
+                if (!values.isEmpty()) groups.add(values);
             }
         } else if (tag instanceof AbstractID3v2Tag id3) {
+            List<String> values = new ArrayList<>();
             List<TagField> frames = id3.getFrame("TXXX");
             if (frames != null) {
                 for (TagField field : frames) {
@@ -573,8 +581,9 @@ public class TagWriterService {
                     }
                 }
             }
+            if (!values.isEmpty()) groups.add(values);
         }
-        return values;
+        return groups;
     }
 
     private void writeCustomTextTag(Tag tag, String name, String value) throws Exception {
@@ -593,30 +602,47 @@ public class TagWriterService {
                 id3.setField(frame);
             }
         } else if (tag instanceof Mp4Tag mp4) {
-            String atom = "----:com.apple.iTunes:" + name;
-            mp4.deleteField(atom);
-            if (value != null) mp4.setField(new Mp4TagReverseDnsField(atom, "com.apple.iTunes", name, value));
+            for (String mean : MP4_CUSTOM_MEANS) {
+                mp4.deleteField("----:" + mean + ":" + name);
+            }
+            if (value != null) {
+                String atom = "----:com.apple.iTunes:" + name;
+                mp4.setField(new Mp4TagReverseDnsField(atom, "com.apple.iTunes", name, value));
+            }
         }
     }
 
     private List<String> readCreatorNames(Tag tag, FieldKey key, String plural) throws Exception {
-        List<String> explicitValues = readCustomTextTagValues(tag, plural);
-        if (!explicitValues.isEmpty()) {
-            List<String> names = new ArrayList<>();
-            for (String explicit : explicitValues) {
-                if (explicit == null || explicit.isBlank()) continue;
-                for (String part : explicit.split("[;\\u0000]")) {
-                    String trimmed = part.trim();
-                    if (!trimmed.isEmpty()) names.add(trimmed);
-                }
+        List<List<String>> groups = readCustomTextTagGroups(tag, plural);
+        if (!groups.isEmpty()) {
+            List<String> agreed = null;
+            for (List<String> group : groups) {
+                List<String> parsed = parseStrictCreatorNameSlots(group);
+                if (parsed == null) return null;
+                if (agreed == null) agreed = parsed;
+                else if (!agreed.equals(parsed)) return null;
             }
-            if (!names.isEmpty()) {
-                return List.copyOf(names);
-            }
+            return agreed;
         }
         List<String> nativeValues = tag.getAll(key);
         // A lone legacy value is display text, not a proven list.
         return nativeValues.size() > 1 ? List.copyOf(nativeValues) : null;
+    }
+
+    private static List<String> parseStrictCreatorNameSlots(List<String> rawValues) {
+        List<String> names = new ArrayList<>();
+        for (String raw : rawValues) {
+            if (raw == null) return null;
+            String cleaned = stripWhitespaceNotNul(raw);
+            if (cleaned.startsWith("\ufeff")) cleaned = stripWhitespaceNotNul(cleaned.substring(1));
+            for (String part : cleaned.split("[;\\u0000]", -1)) {
+                String trimmed = stripWhitespaceNotNul(part);
+                if (trimmed.startsWith("\ufeff")) trimmed = stripWhitespaceNotNul(trimmed.substring(1));
+                if (trimmed.isEmpty()) return null;
+                names.add(trimmed);
+            }
+        }
+        return names.isEmpty() ? null : List.copyOf(names);
     }
 
     private List<String> readCreatorIds(Tag tag, String mbidKey, List<String> names) throws Exception {
@@ -633,14 +659,15 @@ public class TagWriterService {
         if ((names == null || names.isEmpty()) && !singleNative) return null;
         List<String> agreed = null;
         for (String mbidKey : mbidKeys) {
-            List<String> rawValues = readCustomTextTagValues(tag, mbidKey);
-            if (rawValues.isEmpty()) continue;
-            List<String> parsed = parseStrictMbidList(rawValues);
-            if (parsed == null) return null;
-            if (agreed == null) {
-                agreed = parsed;
-            } else if (!agreed.equals(parsed)) {
-                return null;
+            List<List<String>> groups = readCustomTextTagGroups(tag, mbidKey);
+            for (List<String> group : groups) {
+                List<String> parsed = parseStrictMbidList(group);
+                if (parsed == null) return null;
+                if (agreed == null) {
+                    agreed = parsed;
+                } else if (!agreed.equals(parsed)) {
+                    return null;
+                }
             }
         }
         if (agreed == null) return null;
@@ -655,11 +682,11 @@ public class TagWriterService {
         java.util.Set<String> seen = new java.util.LinkedHashSet<>();
         for (String raw : rawValues) {
             if (raw == null) return null;
-            String cleaned = raw.trim();
-            if (cleaned.startsWith("\ufeff")) cleaned = cleaned.substring(1).trim();
-            for (String part : cleaned.replace('\u0000', ';').replace('/', ';').split(";", -1)) {
-                String candidate = part.trim();
-                if (candidate.startsWith("\ufeff")) candidate = candidate.substring(1).trim();
+            String cleaned = stripWhitespaceNotNul(raw);
+            if (cleaned.startsWith("\ufeff")) cleaned = stripWhitespaceNotNul(cleaned.substring(1));
+            for (String part : cleaned.split("[;\\u0000/]", -1)) {
+                String candidate = stripWhitespaceNotNul(part);
+                if (candidate.startsWith("\ufeff")) candidate = stripWhitespaceNotNul(candidate.substring(1));
                 String normalized = candidate.toLowerCase(java.util.Locale.ROOT);
                 if (!MBID_UUID_PATTERN.matcher(normalized).matches()
                     || "00000000-0000-0000-0000-000000000000".equals(normalized)
@@ -670,6 +697,18 @@ public class TagWriterService {
             }
         }
         return ids.isEmpty() ? null : List.copyOf(ids);
+    }
+
+    private static String stripWhitespaceNotNul(String value) {
+        int start = 0;
+        int end = value.length();
+        while (start < end && value.charAt(start) != '\u0000' && Character.isWhitespace(value.charAt(start))) {
+            start++;
+        }
+        while (end > start && value.charAt(end - 1) != '\u0000' && Character.isWhitespace(value.charAt(end - 1))) {
+            end--;
+        }
+        return value.substring(start, end);
     }
 
     private static boolean looksCompositeDisplay(String value) {
