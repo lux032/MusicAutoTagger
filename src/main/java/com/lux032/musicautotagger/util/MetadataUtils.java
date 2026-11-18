@@ -558,15 +558,7 @@ public class MetadataUtils {
 
         // 同时保留源文件的其他标签信息（作曲、作词、歌词、风格等）
         if (sourceTagsForFallback != null) {
-            if (sourceTagsForFallback.getComposer() != null && !sourceTagsForFallback.getComposer().isEmpty()) {
-                detailedMetadata.setComposer(sourceTagsForFallback.getComposer());
-            }
-            if (sourceTagsForFallback.getLyricist() != null && !sourceTagsForFallback.getLyricist().isEmpty()) {
-                detailedMetadata.setLyricist(sourceTagsForFallback.getLyricist());
-            }
-            if (sourceTagsForFallback.getArranger() != null && !sourceTagsForFallback.getArranger().isEmpty()) {
-                detailedMetadata.setArranger(sourceTagsForFallback.getArranger());
-            }
+            copyCreatorCreditsIfMissing(sourceTagsForFallback, detailedMetadata, false);
             if (sourceTagsForFallback.getLyrics() != null && !sourceTagsForFallback.getLyrics().isEmpty()) {
                 detailedMetadata.setLyrics(sourceTagsForFallback.getLyrics());
             }

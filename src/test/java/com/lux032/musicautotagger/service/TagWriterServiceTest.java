@@ -203,6 +203,34 @@ class TagWriterServiceTest {
     }
 
     @Test
+    void rewritingCreatorClearsSpaceAliasAndRejectsEmptyMbidSlots() throws Exception {
+        TagWriterService writer = new TagWriterService(MusicConfig.getInstance());
+        Method readIds = TagWriterService.class.getDeclaredMethod("readCreatorIds", org.jaudiotagger.tag.Tag.class, String.class, List.class);
+        readIds.setAccessible(true);
+
+        FlacTag flac = new FlacTag();
+        flac.setField("COMPOSER", "Old Composer");
+        flac.setField("MUSICBRAINZ COMPOSER ID", "11111111-1111-4111-8111-111111111111");
+        MusicMetadata replacement = new MusicMetadata();
+        replacement.setComposer("New Composer");
+        invokeUpdateTextTags(flac, replacement);
+        assertEquals("", flac.getFirst("MUSICBRAINZ COMPOSER ID"));
+
+        flac.setField("COMPOSERS", "A; B");
+        flac.setField("MUSICBRAINZ_COMPOSERID", "11111111-1111-4111-8111-111111111111;;22222222-2222-4222-8222-222222222222");
+        assertNull(readIds.invoke(writer, flac, "MUSICBRAINZ_COMPOSERID", List.of("A", "B")));
+
+        MusicMetadata source = new MusicMetadata();
+        source.setComposer("Last, First, B");
+        source.setComposers(List.of("Last, First", "B"));
+        source.setComposerIds(List.of("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"));
+        MusicMetadata quick = com.lux032.musicautotagger.util.MetadataUtils.createMetadataFromQuickScan(
+            source, "Album", "Album Artist", "rg-1", "2025", "01.flac");
+        assertEquals(source.getComposers(), quick.getComposers());
+        assertEquals(source.getComposerIds(), quick.getComposerIds());
+    }
+
+    @Test
     void updateTextTagsLeavesExistingArrangerWhenMetadataHasNone() throws Exception {
         FlacTag tag = new FlacTag();
         tag.setField(FieldKey.ARRANGER, "Existing Arranger");

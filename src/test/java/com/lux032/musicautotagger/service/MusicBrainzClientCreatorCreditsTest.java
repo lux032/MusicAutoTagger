@@ -171,4 +171,17 @@ class MusicBrainzClientCreatorCreditsTest {
         assertEquals(java.util.List.of("A", "B"), md.getComposers());
         assertNull(md.getComposerIds());
     }
+
+    @Test
+    void omitsCreatorMbidsWhenSameNameHasConflictingIds() throws Exception {
+        MusicMetadata md = parse("""
+            {"relations":[
+              {"type":"composer","artist":{"id":"11111111-1111-4111-8111-111111111111","name":"A"}},
+              {"type":"composer","artist":{"id":"22222222-2222-4222-8222-222222222222","name":"A"}}
+            ]}
+            """);
+
+        assertEquals(java.util.List.of("A"), md.getComposers());
+        assertNull(md.getComposerIds());
+    }
 }

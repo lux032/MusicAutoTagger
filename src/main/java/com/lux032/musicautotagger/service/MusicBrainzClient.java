@@ -1677,6 +1677,8 @@ public class MusicBrainzClient {
         }
     }
 
+    private static final String CREATOR_ID_CONFLICT = "__CREATOR_ID_CONFLICT__";
+
     private static void collectCredit(JsonNode relation, Set<String> acceptedTypes, Map<String, String> target) {
         String type = relation.path("type").asText("").trim().toLowerCase(Locale.ROOT);
         if (!acceptedTypes.contains(type)) {
@@ -1692,8 +1694,16 @@ public class MusicBrainzClient {
         }
         String id = artist.path("id").asText("").trim();
         String existing = target.get(name);
-        if (existing == null || (existing.isEmpty() && !id.isEmpty())) {
+        if (existing == null) {
             target.put(name, id);
+        } else if (CREATOR_ID_CONFLICT.equals(existing)) {
+            return;
+        } else if (existing.isEmpty()) {
+            if (!id.isEmpty()) {
+                target.put(name, id);
+            }
+        } else if (!id.isEmpty() && !existing.equalsIgnoreCase(id)) {
+            target.put(name, CREATOR_ID_CONFLICT);
         }
     }
 
@@ -1704,7 +1714,7 @@ public class MusicBrainzClient {
         List<String> ids = new ArrayList<>(credits.size());
         Set<String> seen = new LinkedHashSet<>();
         for (String id : credits.values()) {
-            if (id == null || id.isBlank()) {
+            if (id == null || id.isBlank() || CREATOR_ID_CONFLICT.equals(id)) {
                 return null;
             }
             String normalized = id.trim().toLowerCase(Locale.ROOT);
