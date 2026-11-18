@@ -141,4 +141,34 @@ class MusicBrainzClientCreatorCreditsTest {
         assertNull(md.getArranger());
         assertNull(md.getComposer());
     }
+
+    @Test
+    void extractsAlignedCreatorMbidsFromRecordingAndWorkRelations() throws Exception {
+        MusicMetadata md = parse("""
+            {"relations":[
+              {"type":"arranger","artist":{"id":"11111111-1111-4111-8111-111111111111","name":"Rec Arranger"}},
+              {"type":"performance","work":{"relations":[
+                {"type":"composer","artist":{"id":"22222222-2222-4222-8222-222222222222","name":"Work Composer"}},
+                {"type":"writer","artist":{"id":"33333333-3333-4333-8333-333333333333","name":"Co Writer"}}
+              ]}}
+            ]}
+            """);
+
+        assertEquals(java.util.List.of("11111111-1111-4111-8111-111111111111"), md.getArrangerIds());
+        assertEquals(java.util.List.of("22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"), md.getComposerIds());
+        assertEquals(java.util.List.of("33333333-3333-4333-8333-333333333333"), md.getLyricistIds());
+    }
+
+    @Test
+    void omitsCreatorMbidsWhenAnyPersonLacksId() throws Exception {
+        MusicMetadata md = parse("""
+            {"relations":[
+              {"type":"composer","artist":{"id":"22222222-2222-4222-8222-222222222222","name":"A"}},
+              {"type":"composer","artist":{"name":"B"}}
+            ]}
+            """);
+
+        assertEquals(java.util.List.of("A", "B"), md.getComposers());
+        assertNull(md.getComposerIds());
+    }
 }

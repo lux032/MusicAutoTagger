@@ -537,18 +537,49 @@ public class TagWriterService {
         for (int i = 1; i < values.length; i++) tag.addField(key, values[i]);
     }
 
-    private List<String> readCreatorNames(Tag tag, FieldKey key, String plural) throws Exception {
-        String explicit = null;
-        if (tag instanceof FlacTag flac) explicit = flac.getFirst(plural);
-        else if (tag instanceof VorbisCommentTag vorbis) explicit = vorbis.getFirst(plural);
-        else if (tag instanceof Mp4Tag mp4) explicit = mp4.getFirst("----:com.apple.iTunes:" + plural);
-        else if (tag instanceof AbstractID3v2Tag id3) {
+    private String readCustomTextTag(Tag tag, String name) throws Exception {
+        if (tag instanceof FlacTag flac) return flac.getFirst(name);
+        if (tag instanceof VorbisCommentTag vorbis) return vorbis.getFirst(name);
+        if (tag instanceof Mp4Tag mp4) return mp4.getFirst("----:com.apple.iTunes:" + name);
+        if (tag instanceof AbstractID3v2Tag id3) {
             List<TagField> frames = id3.getFrame("TXXX");
-            if (frames != null) for (TagField field : frames) {
-                if (field instanceof AbstractID3v2Frame frame && frame.getBody() instanceof FrameBodyTXXX body
-                    && plural.equalsIgnoreCase(body.getDescription())) explicit = body.getText();
+            if (frames != null) {
+                for (TagField field : frames) {
+                    if (field instanceof AbstractID3v2Frame frame
+                        && frame.getBody() instanceof FrameBodyTXXX body
+                        && name.equalsIgnoreCase(body.getDescription())) {
+                        return body.getText();
+                    }
+                }
             }
         }
+        return null;
+    }
+
+    private void writeCustomTextTag(Tag tag, String name, String value) throws Exception {
+        if (tag instanceof FlacTag flac) {
+            flac.deleteField(name);
+            if (value != null) flac.setField(name, value);
+        } else if (tag instanceof VorbisCommentTag vorbis) {
+            vorbis.deleteField(name);
+            if (value != null) vorbis.setField(name, value);
+        } else if (tag instanceof AbstractID3v2Tag id3) {
+            removeTxxxByDescription(id3, name);
+            if (value != null) {
+                AbstractID3v2Frame frame = id3.createFrame("TXXX");
+                byte encoding = id3.getMajorVersion() >= 4 ? TextEncoding.UTF_8 : TextEncoding.UTF_16;
+                frame.setBody(new FrameBodyTXXX(encoding, name, value));
+                id3.setField(frame);
+            }
+        } else if (tag instanceof Mp4Tag mp4) {
+            String atom = "----:com.apple.iTunes:" + name;
+            mp4.deleteField(atom);
+            if (value != null) mp4.setField(new Mp4TagReverseDnsField(atom, "com.apple.iTunes", name, value));
+        }
+    }
+
+    private List<String> readCreatorNames(Tag tag, FieldKey key, String plural) throws Exception {
+        String explicit = readCustomTextTag(tag, plural);
         if (explicit != null && !explicit.isBlank()) {
             return java.util.Arrays.stream(explicit.split("[;\\u0000]"))
                 .map(String::trim).filter(n -> !n.isEmpty()).toList();
@@ -558,7 +589,17 @@ public class TagWriterService {
         return nativeValues.size() > 1 ? List.copyOf(nativeValues) : null;
     }
 
-    private void writeCreatorNames(Tag tag, FieldKey key, String plural, List<String> names, String display) throws Exception {
+    private List<String> readCreatorIds(Tag tag, String mbidKey, List<String> names) throws Exception {
+        if (names == null || names.isEmpty()) return null;
+        String raw = readCustomTextTag(tag, mbidKey);
+        if (raw == null || raw.isBlank()) return null;
+        List<String> ids = java.util.Arrays.stream(raw.split("[;\\u0000]"))
+            .map(String::trim).filter(v -> !v.isEmpty()).toList();
+        return ids.size() == names.size() ? List.copyOf(ids) : null;
+    }
+
+    private void writeCreatorNames(Tag tag, FieldKey key, String plural, List<String> names, String display,
+                                   String mbidKey, List<String> mbids) throws Exception {
         if (display == null || display.isEmpty()) return;
         if (names == null || names.isEmpty()) {
             tag.deleteField(key);
@@ -567,25 +608,21 @@ public class TagWriterService {
         // Plural companion disambiguates a single name containing a comma,
         // even when a container/reader flattens its native multiple values.
         String value = names == null || names.isEmpty() ? null : String.join("; ", names);
-        if (tag instanceof FlacTag flac) {
-            flac.deleteField(plural);
-            if (value != null) flac.setField(plural, value);
-        } else if (tag instanceof VorbisCommentTag vorbis) {
-            vorbis.deleteField(plural);
-            if (value != null) vorbis.setField(plural, value);
-        } else if (tag instanceof AbstractID3v2Tag id3) {
-            removeTxxxByDescription(id3, plural);
-            if (value != null) {
-                AbstractID3v2Frame frame = id3.createFrame("TXXX");
-                byte encoding = id3.getMajorVersion() >= 4 ? TextEncoding.UTF_8 : TextEncoding.UTF_16;
-                frame.setBody(new FrameBodyTXXX(encoding, plural, value));
-                id3.setField(frame);
-            }
-        } else if (tag instanceof Mp4Tag mp4) {
-            String atom = "----:com.apple.iTunes:" + plural;
-            mp4.deleteField(atom);
-            if (value != null) mp4.setField(new Mp4TagReverseDnsField(atom, "com.apple.iTunes", plural, value));
+        writeCustomTextTag(tag, plural, value);
+        String mbidValue = alignedCreatorMbidValue(names, mbids);
+        writeCustomTextTag(tag, mbidKey, mbidValue);
+    }
+
+    private static String alignedCreatorMbidValue(List<String> names, List<String> mbids) {
+        if (names == null || names.isEmpty() || mbids == null || mbids.size() != names.size()) {
+            return null;
         }
+        List<String> cleaned = new ArrayList<>(mbids.size());
+        for (String id : mbids) {
+            if (id == null || id.isBlank()) return null;
+            cleaned.add(id.trim());
+        }
+        return String.join("; ", cleaned);
     }
 
     private void updateTextTags(Tag tag, MusicMetadata metadata) throws Exception {
@@ -706,17 +743,20 @@ public class TagWriterService {
 
         // 写入作曲家
         if (metadata.getComposer() != null && !metadata.getComposer().isEmpty()) {
-            writeCreatorNames(tag, FieldKey.COMPOSER, "COMPOSERS", metadata.getComposers(), metadata.getComposer());
+            writeCreatorNames(tag, FieldKey.COMPOSER, "COMPOSERS", metadata.getComposers(), metadata.getComposer(),
+                "MUSICBRAINZ_COMPOSERID", metadata.getComposerIds());
         }
 
         // 写入作词家 (使用 LYRICIST 字段)
         if (metadata.getLyricist() != null && !metadata.getLyricist().isEmpty()) {
-            writeCreatorNames(tag, FieldKey.LYRICIST, "LYRICISTS", metadata.getLyricists(), metadata.getLyricist());
+            writeCreatorNames(tag, FieldKey.LYRICIST, "LYRICISTS", metadata.getLyricists(), metadata.getLyricist(),
+                "MUSICBRAINZ_LYRICISTID", metadata.getLyricistIds());
         }
 
         // 写入编曲（部分容器可能不支持该字段，失败只记日志）
         if (metadata.getArranger() != null && !metadata.getArranger().isEmpty()) {
-            writeCreatorNames(tag, FieldKey.ARRANGER, "ARRANGERS", metadata.getArrangers(), metadata.getArranger());
+            writeCreatorNames(tag, FieldKey.ARRANGER, "ARRANGERS", metadata.getArrangers(), metadata.getArranger(),
+                "MUSICBRAINZ_ARRANGERID", metadata.getArrangerIds());
         }
 
         // 写入歌词
@@ -1113,6 +1153,7 @@ public class TagWriterService {
                 List<String> names = readCreatorNames(tag, FieldKey.COMPOSER, "COMPOSERS");
                 metadata.setComposer(names == null ? composer : String.join(", ", names));
                 metadata.setComposers(names);
+                metadata.setComposerIds(readCreatorIds(tag, "MUSICBRAINZ_COMPOSERID", names));
             }
 
             // 读取作词家
@@ -1121,6 +1162,7 @@ public class TagWriterService {
                 List<String> names = readCreatorNames(tag, FieldKey.LYRICIST, "LYRICISTS");
                 metadata.setLyricist(names == null ? lyricist : String.join(", ", names));
                 metadata.setLyricists(names);
+                metadata.setLyricistIds(readCreatorIds(tag, "MUSICBRAINZ_LYRICISTID", names));
             }
 
             // 读取编曲（逐项隔离，不支持该键的容器不影响其它字段）
@@ -1130,6 +1172,7 @@ public class TagWriterService {
                     List<String> names = readCreatorNames(tag, FieldKey.ARRANGER, "ARRANGERS");
                     metadata.setArranger(names == null ? arranger : String.join(", ", names));
                     metadata.setArrangers(names);
+                    metadata.setArrangerIds(readCreatorIds(tag, "MUSICBRAINZ_ARRANGERID", names));
                 }
             } catch (Exception e) {
                 log.debug("读取编曲失败: {}", e.getMessage());

@@ -168,26 +168,38 @@ class TagWriterServiceTest {
     void structuredCreatorsRoundTripAcrossContainersAndCopies() throws Exception {
         MusicMetadata md = new MusicMetadata();
         md.setComposer("Last, First, B"); md.setComposers(List.of("Last, First", "B"));
+        md.setComposerIds(List.of("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"));
         md.setLyricist("Berry Risa, Steph Sings!"); md.setLyricists(List.of("Berry Risa", "Steph Sings!"));
+        md.setLyricistIds(List.of("33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"));
         md.setArranger("紅音乃詩, STAND ALONE"); md.setArrangers(List.of("紅音乃詩", "STAND ALONE"));
+        md.setArrangerIds(List.of("55555555-5555-4555-8555-555555555555", "66666666-6666-4666-8666-666666666666"));
         assertEquals(md.getComposers(), md.copyWithoutHeavyFields().getComposers());
         assertEquals(md.getLyricists(), md.copyWithoutHeavyFields().getLyricists());
         assertEquals(md.getArrangers(), md.copyWithoutHeavyFields().getArrangers());
+        assertEquals(md.getComposerIds(), md.copyWithoutHeavyFields().getComposerIds());
+        assertEquals(md.getLyricistIds(), md.copyWithoutHeavyFields().getLyricistIds());
+        assertEquals(md.getArrangerIds(), md.copyWithoutHeavyFields().getArrangerIds());
         for (org.jaudiotagger.tag.Tag tag : List.of(new ID3v24Tag(), new ID3v23Tag(), new FlacTag(), new VorbisCommentTag(), new Mp4Tag())) {
             invokeUpdateTextTags(tag, md);
             TagWriterService writer = new TagWriterService(MusicConfig.getInstance());
             Method read = TagWriterService.class.getDeclaredMethod("readCreatorNames", org.jaudiotagger.tag.Tag.class, FieldKey.class, String.class);
             read.setAccessible(true);
+            Method readIds = TagWriterService.class.getDeclaredMethod("readCreatorIds", org.jaudiotagger.tag.Tag.class, String.class, List.class);
+            readIds.setAccessible(true);
             assertEquals(md.getComposers(), read.invoke(writer, tag, FieldKey.COMPOSER, "COMPOSERS"), tag.getClass().getSimpleName());
             assertEquals(md.getLyricists(), read.invoke(writer, tag, FieldKey.LYRICIST, "LYRICISTS"));
             assertEquals(md.getArrangers(), read.invoke(writer, tag, FieldKey.ARRANGER, "ARRANGERS"));
+            assertEquals(md.getComposerIds(), readIds.invoke(writer, tag, "MUSICBRAINZ_COMPOSERID", md.getComposers()), tag.getClass().getSimpleName());
+            assertEquals(md.getLyricistIds(), readIds.invoke(writer, tag, "MUSICBRAINZ_LYRICISTID", md.getLyricists()));
+            assertEquals(md.getArrangerIds(), readIds.invoke(writer, tag, "MUSICBRAINZ_ARRANGERID", md.getArrangers()));
             MusicMetadata replacement = new MusicMetadata(); replacement.setComposer("Solo");
             invokeUpdateTextTags(tag, replacement);
             assertNull(read.invoke(writer, tag, FieldKey.COMPOSER, "COMPOSERS"));
+            assertNull(readIds.invoke(writer, tag, "MUSICBRAINZ_COMPOSERID", List.of("Solo")));
         }
-        md.setComposer("Different"); assertNull(md.getComposers());
-        md.setLyricist("Different"); assertNull(md.getLyricists());
-        md.setArranger("Different"); assertNull(md.getArrangers());
+        md.setComposer("Different"); assertNull(md.getComposers()); assertNull(md.getComposerIds());
+        md.setLyricist("Different"); assertNull(md.getLyricists()); assertNull(md.getLyricistIds());
+        md.setArranger("Different"); assertNull(md.getArrangers()); assertNull(md.getArrangerIds());
     }
 
     @Test

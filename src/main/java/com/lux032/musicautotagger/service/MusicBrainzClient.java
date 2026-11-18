@@ -29,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -1633,9 +1634,9 @@ public class MusicBrainzClient {
                 return;
             }
 
-            Set<String> composers = new LinkedHashSet<>();
-            Set<String> lyricists = new LinkedHashSet<>();
-            Set<String> arrangers = new LinkedHashSet<>();
+            Map<String, String> composers = new LinkedHashMap<>();
+            Map<String, String> lyricists = new LinkedHashMap<>();
+            Map<String, String> arrangers = new LinkedHashMap<>();
 
             for (JsonNode relation : relations) {
                 collectCredit(relation, COMPOSER_RELATION_TYPES, composers);
@@ -1654,18 +1655,21 @@ public class MusicBrainzClient {
             }
 
             if (!composers.isEmpty()) {
-                metadata.setComposer(String.join(", ", composers));
-                metadata.setComposers(List.copyOf(composers));
+                metadata.setComposer(String.join(", ", composers.keySet()));
+                metadata.setComposers(List.copyOf(composers.keySet()));
+                metadata.setComposerIds(alignedCreatorIds(composers));
                 log.debug("找到作曲家: {}", metadata.getComposer());
             }
             if (!lyricists.isEmpty()) {
-                metadata.setLyricist(String.join(", ", lyricists));
-                metadata.setLyricists(List.copyOf(lyricists));
+                metadata.setLyricist(String.join(", ", lyricists.keySet()));
+                metadata.setLyricists(List.copyOf(lyricists.keySet()));
+                metadata.setLyricistIds(alignedCreatorIds(lyricists));
                 log.debug("找到作词家: {}", metadata.getLyricist());
             }
             if (!arrangers.isEmpty()) {
-                metadata.setArranger(String.join(", ", arrangers));
-                metadata.setArrangers(List.copyOf(arrangers));
+                metadata.setArranger(String.join(", ", arrangers.keySet()));
+                metadata.setArrangers(List.copyOf(arrangers.keySet()));
+                metadata.setArrangerIds(alignedCreatorIds(arrangers));
                 log.debug("找到编曲: {}", metadata.getArranger());
             }
         } catch (Exception e) {
@@ -1673,7 +1677,7 @@ public class MusicBrainzClient {
         }
     }
 
-    private static void collectCredit(JsonNode relation, Set<String> acceptedTypes, Set<String> target) {
+    private static void collectCredit(JsonNode relation, Set<String> acceptedTypes, Map<String, String> target) {
         String type = relation.path("type").asText("").trim().toLowerCase(Locale.ROOT);
         if (!acceptedTypes.contains(type)) {
             return;
@@ -1683,9 +1687,33 @@ public class MusicBrainzClient {
             return;
         }
         String name = artist.path("name").asText("").trim();
-        if (!name.isEmpty()) {
-            target.add(name);
+        if (name.isEmpty()) {
+            return;
         }
+        String id = artist.path("id").asText("").trim();
+        String existing = target.get(name);
+        if (existing == null || (existing.isEmpty() && !id.isEmpty())) {
+            target.put(name, id);
+        }
+    }
+
+    private static List<String> alignedCreatorIds(Map<String, String> credits) {
+        if (credits.isEmpty()) {
+            return null;
+        }
+        List<String> ids = new ArrayList<>(credits.size());
+        Set<String> seen = new LinkedHashSet<>();
+        for (String id : credits.values()) {
+            if (id == null || id.isBlank()) {
+                return null;
+            }
+            String normalized = id.trim().toLowerCase(Locale.ROOT);
+            if (!seen.add(normalized)) {
+                return null;
+            }
+            ids.add(normalized);
+        }
+        return List.copyOf(ids);
     }
 
     /**

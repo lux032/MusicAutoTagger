@@ -367,26 +367,7 @@ public class MetadataUtils {
             }
         }
 
-        // 保留源文件中的作曲家信息（如果新数据没有）
-        if ((merged.getComposer() == null || merged.getComposer().isEmpty()) &&
-            (sourceMetadata.getComposer() != null && !sourceMetadata.getComposer().isEmpty())) {
-            log.info("保留源文件的作曲家信息: {}", sourceMetadata.getComposer());
-            merged.setComposer(sourceMetadata.getComposer());
-        }
-
-        // 保留源文件中的作词家信息（如果新数据没有）
-        if ((merged.getLyricist() == null || merged.getLyricist().isEmpty()) &&
-            (sourceMetadata.getLyricist() != null && !sourceMetadata.getLyricist().isEmpty())) {
-            log.info("保留源文件的作词家信息: {}", sourceMetadata.getLyricist());
-            merged.setLyricist(sourceMetadata.getLyricist());
-        }
-
-        // 保留源文件中的编曲信息（如果新数据没有）
-        if ((merged.getArranger() == null || merged.getArranger().isEmpty()) &&
-            (sourceMetadata.getArranger() != null && !sourceMetadata.getArranger().isEmpty())) {
-            log.info("保留源文件的编曲信息: {}", sourceMetadata.getArranger());
-            merged.setArranger(sourceMetadata.getArranger());
-        }
+        copyCreatorCreditsIfMissing(sourceMetadata, merged, true);
 
         // 已有歌词始终优先，不用自动检索结果覆盖
         if (!isBlank(sourceMetadata.getLyrics())) {
@@ -419,15 +400,7 @@ public class MetadataUtils {
         if (from == null || target == null) {
             return target;
         }
-        if (isBlank(target.getComposer()) && !isBlank(from.getComposer())) {
-            target.setComposer(from.getComposer());
-        }
-        if (isBlank(target.getLyricist()) && !isBlank(from.getLyricist())) {
-            target.setLyricist(from.getLyricist());
-        }
-        if (isBlank(target.getArranger()) && !isBlank(from.getArranger())) {
-            target.setArranger(from.getArranger());
-        }
+        copyCreatorCreditsIfMissing(from, target, false);
         if (isBlank(target.getLyrics()) && !isBlank(from.getLyrics())) {
             target.setLyrics(from.getLyrics());
             target.setAutomaticLyrics(from.getAutomaticLyrics());
@@ -452,13 +425,13 @@ public class MetadataUtils {
             return target;
         }
         if (!isBlank(from.getComposer())) {
-            target.setComposer(from.getComposer());
+            copyComposer(from, target);
         }
         if (!isBlank(from.getLyricist())) {
-            target.setLyricist(from.getLyricist());
+            copyLyricist(from, target);
         }
         if (!isBlank(from.getArranger())) {
-            target.setArranger(from.getArranger());
+            copyArranger(from, target);
         }
         if (isBlank(target.getLyrics()) && !isBlank(from.getLyrics())) {
             target.setLyrics(from.getLyrics());
@@ -469,6 +442,39 @@ public class MetadataUtils {
             target.setGenres(from.getGenres());
         }
         return target;
+    }
+
+    private static void copyCreatorCreditsIfMissing(MusicMetadata from, MusicMetadata target, boolean logPreserve) {
+        if (isBlank(target.getComposer()) && !isBlank(from.getComposer())) {
+            if (logPreserve) log.info("保留源文件的作曲家信息: {}", from.getComposer());
+            copyComposer(from, target);
+        }
+        if (isBlank(target.getLyricist()) && !isBlank(from.getLyricist())) {
+            if (logPreserve) log.info("保留源文件的作词家信息: {}", from.getLyricist());
+            copyLyricist(from, target);
+        }
+        if (isBlank(target.getArranger()) && !isBlank(from.getArranger())) {
+            if (logPreserve) log.info("保留源文件的编曲信息: {}", from.getArranger());
+            copyArranger(from, target);
+        }
+    }
+
+    private static void copyComposer(MusicMetadata from, MusicMetadata target) {
+        target.setComposer(from.getComposer());
+        target.setComposers(from.getComposers() == null ? null : java.util.List.copyOf(from.getComposers()));
+        target.setComposerIds(from.getComposerIds() == null ? null : java.util.List.copyOf(from.getComposerIds()));
+    }
+
+    private static void copyLyricist(MusicMetadata from, MusicMetadata target) {
+        target.setLyricist(from.getLyricist());
+        target.setLyricists(from.getLyricists() == null ? null : java.util.List.copyOf(from.getLyricists()));
+        target.setLyricistIds(from.getLyricistIds() == null ? null : java.util.List.copyOf(from.getLyricistIds()));
+    }
+
+    private static void copyArranger(MusicMetadata from, MusicMetadata target) {
+        target.setArranger(from.getArranger());
+        target.setArrangers(from.getArrangers() == null ? null : java.util.List.copyOf(from.getArrangers()));
+        target.setArrangerIds(from.getArrangerIds() == null ? null : java.util.List.copyOf(from.getArrangerIds()));
     }
 
     private static boolean isBlank(String value) {

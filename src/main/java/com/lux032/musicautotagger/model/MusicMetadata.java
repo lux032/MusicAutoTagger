@@ -56,6 +56,9 @@ public class MusicMetadata {
     private List<String> composers;
     private List<String> lyricists;
     private List<String> arrangers;
+    private List<String> composerIds;
+    private List<String> lyricistIds;
+    private List<String> arrangerIds;
     private String lyrics;
     /** Reliable local audio length only; never populated from MusicBrainz. */
     private Double localPreciseDuration;
@@ -135,6 +138,9 @@ public class MusicMetadata {
         copy.composers = composers == null ? null : List.copyOf(composers);
         copy.lyricists = lyricists == null ? null : List.copyOf(lyricists);
         copy.arrangers = arrangers == null ? null : List.copyOf(arrangers);
+        copy.composerIds = composerIds == null ? null : List.copyOf(composerIds);
+        copy.lyricistIds = lyricistIds == null ? null : List.copyOf(lyricistIds);
+        copy.arrangerIds = arrangerIds == null ? null : List.copyOf(arrangerIds);
         copy.lyrics = lyrics;
         copy.localPreciseDuration = localPreciseDuration;
         copy.weakLyricsIdentity = weakLyricsIdentity;
@@ -152,17 +158,26 @@ public class MusicMetadata {
     }
 
     public void setComposer(String composer) {
-        if (!java.util.Objects.equals(this.composer, composer)) this.composers = null;
+        if (!java.util.Objects.equals(this.composer, composer)) {
+            this.composers = null;
+            this.composerIds = null;
+        }
         this.composer = composer;
     }
 
     public void setLyricist(String lyricist) {
-        if (!java.util.Objects.equals(this.lyricist, lyricist)) this.lyricists = null;
+        if (!java.util.Objects.equals(this.lyricist, lyricist)) {
+            this.lyricists = null;
+            this.lyricistIds = null;
+        }
         this.lyricist = lyricist;
     }
 
     public void setArranger(String arranger) {
-        if (!java.util.Objects.equals(this.arranger, arranger)) this.arrangers = null;
+        if (!java.util.Objects.equals(this.arranger, arranger)) {
+            this.arrangers = null;
+            this.arrangerIds = null;
+        }
         this.arranger = arranger;
     }
 
