@@ -241,7 +241,17 @@ class TagWriterServiceTest {
         flac.setField("MUSICBRAINZ_COMPOSERID", "\u000011111111-1111-4111-8111-111111111111");
         assertNull(readIds.invoke(writer, flac, "MUSICBRAINZ_COMPOSERID", List.of("A")));
 
-        // MP4 org.musicbrainz.iTunes namespace must be cleaned on rewrite and checked for conflict.
+        // Invalid COMPOSERS ("A;;B") with single native COMPOSER=A must NOT fall back to singleNative MBID.
+        flac.setField("COMPOSER", "A");
+        flac.setField("COMPOSERS", "A;;B");
+        flac.setField("MUSICBRAINZ_COMPOSERID", "11111111-1111-4111-8111-111111111111");
+        Method readIdsFull = TagWriterService.class.getDeclaredMethod(
+            "readCreatorIds", org.jaudiotagger.tag.Tag.class, FieldKey.class, String.class, List.class, List.class, String.class);
+        readIdsFull.setAccessible(true);
+        assertNull(readIdsFull.invoke(writer, flac, FieldKey.COMPOSER, "COMPOSERS",
+            List.of("MUSICBRAINZ_COMPOSERID", "MUSICBRAINZ COMPOSER ID"), null, "A"));
+
+        // MP4 org.musicbrainz.iTunes namespace and lowercase descriptors must be cleaned on rewrite and checked for conflict.
         Mp4Tag mp4 = new Mp4Tag();
         mp4.setField(new org.jaudiotagger.tag.mp4.field.Mp4TagReverseDnsField(
             "----:org.musicbrainz.iTunes:MUSICBRAINZ_COMPOSERID", "org.musicbrainz.iTunes", "MUSICBRAINZ_COMPOSERID",
@@ -251,8 +261,16 @@ class TagWriterServiceTest {
             "22222222-2222-4222-8222-222222222222"));
         assertNull(readIds.invoke(writer, mp4, "MUSICBRAINZ_COMPOSERID", List.of("A")));
 
+        mp4.setField(new org.jaudiotagger.tag.mp4.field.Mp4TagReverseDnsField(
+            "----:com.apple.iTunes:musicbrainz_composerid", "com.apple.iTunes", "musicbrainz_composerid",
+            "11111111-1111-4111-8111-111111111111"));
+        mp4.setField(new org.jaudiotagger.tag.mp4.field.Mp4TagReverseDnsField(
+            "----:org.musicbrainz.iTunes:musicbrainz_composerid", "org.musicbrainz.iTunes", "musicbrainz_composerid",
+            "22222222-2222-4222-8222-222222222222"));
         invokeUpdateTextTags(mp4, replacement);
         assertEquals("", mp4.getFirst("----:org.musicbrainz.iTunes:MUSICBRAINZ_COMPOSERID"));
+        assertEquals("", mp4.getFirst("----:com.apple.iTunes:musicbrainz_composerid"));
+        assertEquals("", mp4.getFirst("----:org.musicbrainz.iTunes:musicbrainz_composerid"));
     }
 
     @Test

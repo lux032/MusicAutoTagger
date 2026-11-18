@@ -555,15 +555,18 @@ public class TagWriterService {
             }
             if (!values.isEmpty()) groups.add(values);
         } else if (tag instanceof Mp4Tag mp4) {
-            for (String mean : MP4_CUSTOM_MEANS) {
-                List<String> values = new ArrayList<>();
-                for (TagField field : mp4.getFields("----:" + mean + ":" + name)) {
-                    if (field instanceof org.jaudiotagger.tag.TagTextField textField && textField.getContent() != null) {
-                        values.add(textField.getContent());
+            java.util.Map<String, List<String>> byMean = new java.util.LinkedHashMap<>();
+            for (TagField field : mp4.getAll()) {
+                if (field instanceof Mp4TagReverseDnsField rdns && isSupportedMp4Mean(rdns.getIssuer())
+                    && name.equalsIgnoreCase(rdns.getDescriptor())) {
+                    String content = rdns.getContent();
+                    if (content != null) {
+                        byMean.computeIfAbsent(rdns.getIssuer().toLowerCase(java.util.Locale.ROOT), k -> new ArrayList<>())
+                            .add(content);
                     }
                 }
-                if (!values.isEmpty()) groups.add(values);
             }
+            groups.addAll(byMean.values());
         } else if (tag instanceof AbstractID3v2Tag id3) {
             List<String> values = new ArrayList<>();
             List<TagField> frames = id3.getFrame("TXXX");
@@ -602,6 +605,16 @@ public class TagWriterService {
                 id3.setField(frame);
             }
         } else if (tag instanceof Mp4Tag mp4) {
+            List<String> toDelete = new ArrayList<>();
+            for (TagField field : mp4.getAll()) {
+                if (field instanceof Mp4TagReverseDnsField rdns && isSupportedMp4Mean(rdns.getIssuer())
+                    && name.equalsIgnoreCase(rdns.getDescriptor())) {
+                    toDelete.add(rdns.getId());
+                }
+            }
+            for (String id : toDelete) {
+                mp4.deleteField(id);
+            }
             for (String mean : MP4_CUSTOM_MEANS) {
                 mp4.deleteField("----:" + mean + ":" + name);
             }
@@ -610,6 +623,14 @@ public class TagWriterService {
                 mp4.setField(new Mp4TagReverseDnsField(atom, "com.apple.iTunes", name, value));
             }
         }
+    }
+
+    private static boolean isSupportedMp4Mean(String issuer) {
+        if (issuer == null) return false;
+        for (String mean : MP4_CUSTOM_MEANS) {
+            if (mean.equalsIgnoreCase(issuer)) return true;
+        }
+        return false;
     }
 
     private List<String> readCreatorNames(Tag tag, FieldKey key, String plural) throws Exception {
@@ -649,8 +670,9 @@ public class TagWriterService {
         return readCreatorIds(tag, List.of(mbidKey), names, null, false);
     }
 
-    private List<String> readCreatorIds(Tag tag, FieldKey key, List<String> mbidKeys, List<String> names, String singleDisplay) throws Exception {
-        boolean singleNative = names == null && singleDisplay != null && !singleDisplay.isBlank()
+    private List<String> readCreatorIds(Tag tag, FieldKey key, String plural, List<String> mbidKeys, List<String> names, String singleDisplay) throws Exception {
+        boolean hasStructured = !readCustomTextTagGroups(tag, plural).isEmpty();
+        boolean singleNative = !hasStructured && names == null && singleDisplay != null && !singleDisplay.isBlank()
             && tag.getAll(key).size() == 1 && !looksCompositeDisplay(singleDisplay);
         return readCreatorIds(tag, mbidKeys, names, singleDisplay, singleNative);
     }
@@ -1283,7 +1305,7 @@ public class TagWriterService {
                 List<String> names = readCreatorNames(tag, FieldKey.COMPOSER, "COMPOSERS");
                 metadata.setComposer(names == null ? composer : String.join(", ", names));
                 metadata.setComposers(names);
-                metadata.setComposerIds(readCreatorIds(tag, FieldKey.COMPOSER, COMPOSER_MBID_KEYS, names, composer));
+                metadata.setComposerIds(readCreatorIds(tag, FieldKey.COMPOSER, "COMPOSERS", COMPOSER_MBID_KEYS, names, composer));
             }
 
             // 读取作词家
@@ -1292,7 +1314,7 @@ public class TagWriterService {
                 List<String> names = readCreatorNames(tag, FieldKey.LYRICIST, "LYRICISTS");
                 metadata.setLyricist(names == null ? lyricist : String.join(", ", names));
                 metadata.setLyricists(names);
-                metadata.setLyricistIds(readCreatorIds(tag, FieldKey.LYRICIST, LYRICIST_MBID_KEYS, names, lyricist));
+                metadata.setLyricistIds(readCreatorIds(tag, FieldKey.LYRICIST, "LYRICISTS", LYRICIST_MBID_KEYS, names, lyricist));
             }
 
             // 读取编曲（逐项隔离，不支持该键的容器不影响其它字段）
@@ -1302,7 +1324,7 @@ public class TagWriterService {
                     List<String> names = readCreatorNames(tag, FieldKey.ARRANGER, "ARRANGERS");
                     metadata.setArranger(names == null ? arranger : String.join(", ", names));
                     metadata.setArrangers(names);
-                    metadata.setArrangerIds(readCreatorIds(tag, FieldKey.ARRANGER, ARRANGER_MBID_KEYS, names, arranger));
+                    metadata.setArrangerIds(readCreatorIds(tag, FieldKey.ARRANGER, "ARRANGERS", ARRANGER_MBID_KEYS, names, arranger));
                 }
             } catch (Exception e) {
                 log.debug("读取编曲失败: {}", e.getMessage());
