@@ -2287,7 +2287,7 @@
                 document.getElementById('cfgProxyPassword').value = cfg.proxyPassword || '';
                 document.getElementById('cfgLanguage').value = cfg.language || 'en_US';
                 document.getElementById('cfgExportLyricsToFile').checked = !!cfg.exportLyricsToFile;
-                document.getElementById('cfgCollapseAlbumArtistToVariousArtists').checked = cfg.collapseAlbumArtistToVariousArtists !== false;
+                document.getElementById('cfgCollapseAlbumArtistToVariousArtists').checked = !!cfg.collapseAlbumArtistToVariousArtists;
                 document.getElementById('cfgAudioNormalizeEnabled').checked = !!cfg.audioNormalizeEnabled;
                 document.getElementById('cfgAudioNormalizeFfmpegPath').value = cfg.audioNormalizeFfmpegPath || '';
                 document.getElementById('cfgCueSplitEnabled').checked = !!cfg.cueSplitEnabled;

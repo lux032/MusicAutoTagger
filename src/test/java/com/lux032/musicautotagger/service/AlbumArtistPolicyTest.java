@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class AlbumArtistPolicyTest {
     private MusicConfig config;
@@ -28,13 +28,13 @@ class AlbumArtistPolicyTest {
     }
 
     @Test
-    void defaultsToCollapsingForBackwardCompatibility() {
-        assertTrue(config.isCollapseAlbumArtistToVariousArtists());
+    void defaultsToPreservingCreditedAlbumArtists() {
+        assertFalse(config.isCollapseAlbumArtistToVariousArtists());
     }
 
     @Test
     void savesApprovedConfigurationKey() throws Exception {
-        config.setCollapseAlbumArtistToVariousArtists(false);
+        config.setCollapseAlbumArtistToVariousArtists(true);
         Path file = Files.createTempFile("music-config", ".properties");
         try {
             Method save = MusicConfig.class.getDeclaredMethod("saveToFile", Path.class);
@@ -44,7 +44,7 @@ class AlbumArtistPolicyTest {
             try (java.io.Reader reader = Files.newBufferedReader(file)) {
                 properties.load(reader);
             }
-            assertEquals("false", properties.getProperty("tag.albumArtist.collapseToVariousArtists"));
+            assertEquals("true", properties.getProperty("tag.albumArtist.collapseToVariousArtists"));
         } finally {
             Files.deleteIfExists(file);
         }

@@ -79,7 +79,7 @@ public class MusicConfig {
 
     // 歌词配置
     private boolean exportLyricsToFile; // 是否将歌词导出为独立文件
-    private volatile boolean collapseAlbumArtistToVariousArtists = true; // 多艺术家专辑是否折叠为 VA
+    private volatile boolean collapseAlbumArtistToVariousArtists = false; // 多艺术家专辑是否折叠为 VA
 
     // 音频规格规范化配置
     private boolean audioNormalizeEnabled; // 是否将高规格音频转换为24/48
@@ -205,7 +205,7 @@ public class MusicConfig {
         this.supportedFormats = new String[]{"mp3", "flac", "m4a", "ogg", "wav"};
         this.autoRename = true;
         this.createBackup = true;
-        this.collapseAlbumArtistToVariousArtists = true;
+        this.collapseAlbumArtistToVariousArtists = false;
         this.failedDirectory = null; // 默认不移动失败文件
         this.partialDirectory = null; // 默认不移动部分识别文件
         this.maxRetries = 3; // 默认重试3次

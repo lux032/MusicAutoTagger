@@ -76,7 +76,7 @@ file.autoRename=true
 
 # Album artist representation for releases credited to multiple artists.
 # true: write "Various Artists"; false: preserve the MusicBrainz credited names.
-tag.albumArtist.collapseToVariousArtists=true
+tag.albumArtist.collapseToVariousArtists=false
 
 # Create backup files (deprecated, now using copy mode)
 # The program will copy processed files to output directory, keeping originals unchanged
