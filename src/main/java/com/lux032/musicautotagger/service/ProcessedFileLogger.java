@@ -596,6 +596,25 @@ public class ProcessedFileLogger {
             ? newAbsolute + path.substring(oldAbsolute.length()) : path);
     }
 
+    /** Update exactly one media path across any records that point to it. */
+    void relocateTargetPath(Path source, Path target) throws IOException {
+        if (isDbMode) {
+            if (!targetFilePathColumnAvailable) return;
+            String sql = "UPDATE processed_files SET target_file_path = ? WHERE "
+                + (isSqlite ? "target_file_path = ?" : "BINARY target_file_path = BINARY ?");
+            try (Connection conn = databaseService.getConnection();
+                 PreparedStatement statement = conn.prepareStatement(sql)) {
+                statement.setString(1, target.toString());
+                statement.setString(2, source.toString());
+                statement.executeUpdate();
+            } catch (SQLException e) {
+                throw new IOException("Unable to update archive path", e);
+            }
+        } else {
+            rewriteTargetPathsStrict(path -> path.equals(source.toString()) ? target.toString() : path);
+        }
+    }
+
     /** 清除已不存在的临时目标路径，供恢复提交失败回滚使用。 */
     public void clearTargetPathsUnder(String prefix) {
         if (prefix == null) return;
@@ -619,29 +638,39 @@ public class ProcessedFileLogger {
     }
 
     private void rewriteTargetPaths(java.util.function.UnaryOperator<String> mapper) {
+        try {
+            rewriteTargetPathsStrict(mapper);
+        } catch (IOException e) {
+            log.error("更新目标路径日志失败", e);
+        }
+    }
+
+    private void rewriteTargetPathsStrict(java.util.function.UnaryOperator<String> mapper) throws IOException {
         synchronized (fileWriteLock) {
-            File logFile = new File(config.getProcessedFileLogPath());
-            if (!logFile.exists()) return;
-            File tempFile = new File(logFile.getAbsolutePath() + ".targets.tmp");
-            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
-                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    String[] parts = line.split("\\|", -1);
-                    if (parts.length >= 8 && !parts[7].isBlank()) parts[7] = mapper.apply(parts[7]);
-                    writer.write(String.join("|", parts));
-                    writer.newLine();
-                }
-            } catch (IOException e) {
-                tempFile.delete();
-                log.error("重写目标路径失败", e);
-                return;
-            }
+            Path logPath = Path.of(config.getProcessedFileLogPath()).toAbsolutePath();
+            if (!Files.exists(logPath)) return;
+            Path temp = Files.createTempFile(logPath.getParent(), ".processed-targets-", ".tmp");
             try {
-                Files.move(tempFile.toPath(), logFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException e) {
-                tempFile.delete();
-                log.error("替换目标路径日志失败", e);
+                var permissions = Files.getFileAttributeView(logPath, java.nio.file.attribute.PosixFileAttributeView.class);
+                if (permissions != null) Files.setPosixFilePermissions(temp, permissions.readAttributes().permissions());
+                boolean changed = false;
+                try (BufferedReader reader = new BufferedReader(new FileReader(logPath.toFile()));
+                     BufferedWriter writer = new BufferedWriter(new FileWriter(temp.toFile()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String[] parts = line.split("\\|", -1);
+                        if (parts.length >= 8 && !parts[7].isBlank()) {
+                            String path = mapper.apply(parts[7]);
+                            changed |= !parts[7].equals(path);
+                            parts[7] = path;
+                        }
+                        writer.write(String.join("|", parts));
+                        writer.newLine();
+                    }
+                }
+                if (changed) Files.move(temp, logPath, StandardCopyOption.REPLACE_EXISTING);
+            } finally {
+                Files.deleteIfExists(temp);
             }
         }
     }

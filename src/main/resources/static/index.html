@@ -1114,6 +1114,17 @@
                                     <div class="tool-status" id="backfillStatus"></div>
                                 </div>
                             </div>
+                            <div class="tool-card">
+                                <div class="tool-head">
+                                    <div>
+                                        <div class="tool-title" data-i18n="tool.album.artist.title">重新刮削 VA 专辑</div>
+                                        <div class="tool-desc" data-i18n="tool.album.artist.desc">重新查询输出库中写为 VA 或 Various Artists 的专辑艺术家，并将成功更新的音频移到新的归档目录。</div>
+                                    </div>
+                                    <button type="button" class="btn ghost" id="albumArtistStart" onclick="runAlbumArtistRefresh('start')" disabled data-i18n="tool.album.artist.start">开始刮削</button>
+                                    <button type="button" class="btn ghost" id="albumArtistCancel" onclick="runAlbumArtistRefresh('cancel')" disabled data-i18n="tool.backfill.stop">停止</button>
+                                </div>
+                                <div class="tool-status" id="albumArtistStatus" role="status" aria-live="polite"></div>
+                            </div>
                         </div>
                     </div>
                     <div class="modal-footer">
@@ -2451,6 +2462,7 @@
             loadConfig();
             loadBackfillStatus();
             loadLyricsBackfillStatus();
+            loadAlbumArtistRefreshStatus();
         }
 
         // keepHash：登录态失效时只隐藏视图、保留 #settings，重新登录后回到设置页
@@ -2464,6 +2476,8 @@
             if (wasOpen) window.scrollTo(0, 0);
             stopBackfillPolling();
             clearTimeout(lyricsTimer);
+            clearTimeout(albumArtistTimer);
+            albumArtistRequest++;
         }
 
         function routeFromHash() {
@@ -2472,6 +2486,75 @@
                 openSettings();
             } else {
                 closeSettings();
+            }
+        }
+
+        let albumArtistTimer = null;
+        let albumArtistRequest = 0;
+
+        function showAlbumArtistRefresh(data) {
+            document.getElementById('albumArtistStart').disabled = data.running;
+            document.getElementById('albumArtistCancel').disabled = !data.running || data.cancelling;
+            const status = document.getElementById('albumArtistStatus');
+            const phase = data.cancelling ? 'cancelling' : data.phase;
+            const done = data.updated + data.unchanged + data.skipped + data.failed;
+
+            let message = phase === 'idle' ? '' : t('tool.album.artist.phase.' + phase);
+            if (data.phase === 'scanning') {
+                message = tf('tool.album.artist.scanned', message, data.scanned);
+            } else if (data.total > 0) {
+                message = tf('tool.album.artist.progress', message, done, data.total,
+                    data.updated, data.unchanged, data.skipped, data.failed, data.filesUpdated);
+            } else if (phase === 'finished' && !data.readErrors) {
+                message = t('tool.album.artist.empty');
+            }
+            if (data.readErrors) message += ' · ' + tf('tool.album.artist.read.errors', data.readErrors);
+            if (data.current) message += ' · ' + tf('tool.album.artist.current', data.current);
+            if (data.lastIssue) message += ' · ' + tf('tool.album.artist.issue',
+                data.lastIssueAlbum, t('tool.album.artist.reason.' + data.lastIssue));
+            if (status.textContent !== message) status.textContent = message;
+            if (data.running && document.getElementById('settingsOverlay').style.display !== 'none') {
+                albumArtistTimer = setTimeout(loadAlbumArtistRefreshStatus, 2000);
+            }
+        }
+
+        async function loadAlbumArtistRefreshStatus() {
+            clearTimeout(albumArtistTimer);
+            const request = ++albumArtistRequest;
+            try {
+                const response = await authFetch('/api/album-artist-refresh/status');
+                if (!response.ok) throw new Error();
+                const data = await response.json();
+                if (request === albumArtistRequest) showAlbumArtistRefresh(data);
+            } catch (error) {
+                if (request !== albumArtistRequest) return;
+                document.getElementById('albumArtistStatus').textContent = t('tool.album.artist.status.failed');
+                if (document.getElementById('settingsOverlay').style.display !== 'none') {
+                    albumArtistTimer = setTimeout(loadAlbumArtistRefreshStatus, 4000);
+                }
+            }
+        }
+
+        async function runAlbumArtistRefresh(action) {
+            if (action === 'start' && !confirm(t('tool.album.artist.confirm'))) return;
+            clearTimeout(albumArtistTimer);
+            const request = ++albumArtistRequest;
+            document.getElementById('albumArtistStart').disabled = true;
+            document.getElementById('albumArtistCancel').disabled = true;
+            try {
+                const response = await authFetch('/api/album-artist-refresh/' + action, {method: 'POST'});
+                if (response.status === 409 && request === albumArtistRequest) {
+                    await loadAlbumArtistRefreshStatus();
+                    return;
+                }
+                if (!response.ok) throw new Error();
+                const data = await response.json();
+                if (request === albumArtistRequest) showAlbumArtistRefresh(data);
+            } catch (error) {
+                if (request !== albumArtistRequest) return;
+                document.getElementById('albumArtistStatus').textContent =
+                    t(action === 'start' ? 'tool.backfill.start.failed' : 'tool.backfill.stop.failed');
+                albumArtistTimer = setTimeout(loadAlbumArtistRefreshStatus, 4000);
             }
         }
 

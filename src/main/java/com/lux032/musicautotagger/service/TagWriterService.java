@@ -8,7 +8,9 @@ import com.lux032.musicautotagger.util.FlacId3Stripper;
 import com.lux032.musicautotagger.util.TagQualityEvaluator;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
+import org.jaudiotagger.audio.mp3.MP3File;
 import org.jaudiotagger.tag.FieldKey;
+import org.jaudiotagger.tag.wav.WavTag;
 import org.jaudiotagger.tag.Tag;
 import org.jaudiotagger.tag.TagField;
 import org.jaudiotagger.tag.flac.FlacTag;
@@ -30,12 +32,20 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.LinkOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.StandardCopyOption;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.HexFormat;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
@@ -1006,6 +1016,139 @@ public class TagWriterService {
             id3.removeFrame("TXXX");
         } else {
             id3.setFrame("TXXX", retained);
+        }
+    }
+
+    boolean sameAlbumArtistRefreshFile(Path root, Path file, BasicFileAttributes expected) throws IOException {
+        if (!LyricsBackfillService.safePath(root, file)) return false;
+        BasicFileAttributes actual = Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        return Objects.equals(expected.fileKey(), actual.fileKey())
+            && expected.size() == actual.size() && expected.lastModifiedTime().equals(actual.lastModifiedTime())
+            && expected.creationTime().equals(actual.creationTime());
+    }
+
+    /** Called under LibraryWriteGuard. Publish the verified copy; the caller retires a relocated source. */
+    void refreshAlbumArtist(Path root, Path file, Path target, BasicFileAttributes expected,
+                            MusicBrainzClient.ReleaseTagBundle credit)
+            throws IOException {
+        String name = file.getFileName().toString();
+        String extension = name.substring(name.lastIndexOf('.'));
+        if (!sameAlbumArtistRefreshFile(root, file, expected)
+                || LyricsOnlyWriter.hasFlacId3(file, extension.toLowerCase(Locale.ROOT))) {
+            throw new IOException("File changed or has unsupported FLAC metadata");
+        }
+        Path staged = Files.createTempFile(target.getParent(), ".album-artist-", extension);
+        try {
+            Files.copy(file, staged, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES,
+                LinkOption.NOFOLLOW_LINKS);
+            if (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Unsafe temporary file");
+            AudioFile original = AudioFileIO.read(staged.toFile());
+            Tag originalTag = original.getTag();
+            if (originalTag == null || !AlbumArtistRefreshService.isVa(AlbumArtistRefreshService.albumArtist(originalTag))) {
+                throw new IOException("Album artist changed during refresh");
+            }
+
+            Map<String, List<String>> before = unrelatedAlbumArtistFields(original);
+            String audioHash = albumArtistRefreshAudioHash(original, staged);
+            AudioFile edited = AudioFileIO.read(staged.toFile());
+            Tag tag = edited.getTag();
+            Tag creditTag = tag instanceof WavTag wav ? wav.getActiveTag() : tag;
+            tag.setField(FieldKey.ALBUM_ARTIST, credit.getAlbumArtistCredit());
+            writeArtistNames(tag, FieldKey.ALBUM_ARTISTS, credit.getAlbumArtists());
+            writeCustomTextTag(creditTag, ALBUM_ARTIST_CREDIT_TAG, credit.getOriginalAlbumArtistCredit());
+            replaceField(tag, FieldKey.MUSICBRAINZ_RELEASEARTISTID, credit.getAlbumArtistId());
+            replaceField(tag, FieldKey.ALBUM_ARTIST_SORT, credit.getAlbumArtistSort());
+            edited.commit();
+
+            AudioFile verified = AudioFileIO.read(staged.toFile());
+            Tag written = verified.getTag();
+            Tag writtenCredit = written instanceof WavTag wav ? wav.getActiveTag() : written;
+            if (!credit.getAlbumArtistCredit().equals(written.getFirst(FieldKey.ALBUM_ARTIST))
+                    || !credit.getAlbumArtists().equals(readArtistNames(written, FieldKey.ALBUM_ARTISTS))
+                    || !Objects.equals(credit.getOriginalAlbumArtistCredit(), readArtistCreditTag(writtenCredit, ALBUM_ARTIST_CREDIT_TAG))
+                    || !sameTagValue(written, FieldKey.MUSICBRAINZ_RELEASEARTISTID, credit.getAlbumArtistId())
+                    || !sameTagValue(written, FieldKey.ALBUM_ARTIST_SORT, credit.getAlbumArtistSort())
+                    || !before.equals(unrelatedAlbumArtistFields(verified))
+                    || !Objects.equals(audioHash, albumArtistRefreshAudioHash(verified, staged))) {
+                throw new IOException("Album artist update could not be verified");
+            }
+
+            var originalPosix = Files.getFileAttributeView(file, PosixFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+            if (originalPosix != null) {
+                var attributes = originalPosix.readAttributes();
+                var stagedPosix = Files.getFileAttributeView(staged, PosixFileAttributeView.class);
+                var stagedAttributes = stagedPosix.readAttributes();
+                if (!attributes.owner().equals(stagedAttributes.owner())) stagedPosix.setOwner(attributes.owner());
+                if (!attributes.group().equals(stagedAttributes.group())) stagedPosix.setGroup(attributes.group());
+                stagedPosix.setPermissions(attributes.permissions());
+            }
+            if (!sameAlbumArtistRefreshFile(root, file, expected)) throw new IOException("File changed during refresh");
+            if (file.equals(target)) {
+                Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.move(staged, target);
+            }
+        } catch (Exception e) {
+            if (e instanceof IOException io) throw io;
+            throw new IOException("Unable to write album artist tags", e);
+        } finally {
+            Files.deleteIfExists(staged);
+        }
+    }
+
+    private static void replaceField(Tag tag, FieldKey key, String value) throws Exception {
+        tag.deleteField(key);
+        if (value != null && !value.isBlank()) tag.setField(key, value);
+    }
+
+    private static boolean sameTagValue(Tag tag, FieldKey key, String value) {
+        String actual = tag.getFirst(key);
+        return Objects.equals(emptyToNull(actual), emptyToNull(value));
+    }
+
+    private static String albumArtistRefreshAudioHash(AudioFile audio, Path file) throws Exception {
+        if (audio instanceof MP3File mp3) return HexFormat.of().formatHex(mp3.getHash("SHA-256"));
+        Long start = audio.getAudioHeader().getAudioDataStartPosition();
+        Long end = audio.getAudioHeader().getAudioDataEndPosition();
+        if (start == null || end == null || start < 0 || end <= start || end > Files.size(file)) return null;
+        return LyricsOnlyWriter.hash(file, start, end - start);
+    }
+
+    private Map<String, List<String>> unrelatedAlbumArtistFields(AudioFile audio) throws Exception {
+        Tag tag = audio.getTag();
+        Tag creditTag = tag instanceof WavTag wav ? wav.getActiveTag() : tag;
+        for (FieldKey key : List.of(FieldKey.ALBUM_ARTIST, FieldKey.ALBUM_ARTISTS,
+                FieldKey.MUSICBRAINZ_RELEASEARTISTID, FieldKey.ALBUM_ARTIST_SORT)) {
+            tag.deleteField(key);
+        }
+        writeCustomTextTag(creditTag, ALBUM_ARTIST_CREDIT_TAG, null);
+
+        Map<String, List<String>> fields = new HashMap<>();
+        collectTagFields(fields, tag, "active");
+        if (tag instanceof WavTag wav) {
+            Tag other = creditTag == wav.getID3Tag() ? wav.getInfoTag() : wav.getID3Tag();
+            if (other != null) collectTagFields(fields, other, "wav-secondary");
+        } else if (audio instanceof MP3File mp3 && mp3.hasID3v1Tag() && tag != mp3.getID3v1Tag()) {
+            fields.put("mp3-id3v1", List.of(mp3.getID3v1Tag().toString()));
+        }
+        return fields;
+    }
+
+    private static void collectTagFields(Map<String, List<String>> target, Tag tag, String namespace) throws Exception {
+        Tag fieldsTag = tag instanceof FlacTag flac ? flac.getVorbisCommentTag() : tag;
+        var fields = fieldsTag.getFields();
+        while (fields.hasNext()) {
+            TagField field = fields.next();
+            byte[] raw = field.getRawContent();
+            target.computeIfAbsent(namespace + ":field:" + field.getId(), key -> new ArrayList<>())
+                .add(raw == null ? "" : Base64.getEncoder().encodeToString(raw));
+        }
+        for (Artwork artwork : tag.getArtworkList()) {
+            byte[] binary = artwork.getBinaryData();
+            target.computeIfAbsent(namespace + ":artwork", key -> new ArrayList<>())
+                .add(artwork.getMimeType() + ":" + artwork.getDescription() + ":"
+                    + artwork.getPictureType() + ":" + artwork.getImageUrl() + ":"
+                    + (binary == null ? "" : Base64.getEncoder().encodeToString(binary)));
         }
     }
 

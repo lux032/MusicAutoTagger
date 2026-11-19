@@ -1223,6 +1223,36 @@ public class MusicBrainzClient {
         }
     }
     
+    /** Returns all candidates within the bounded maintenance search, or none if it is incomplete. */
+    List<JsonNode> searchReleasesForAlbumArtistRefresh(String album, String releaseGroupId)
+            throws IOException, InterruptedException {
+        String url;
+        String countKey;
+        if (releaseGroupId.isEmpty()) {
+            String quotedAlbum = album.replace("\\", "\\\\").replace("\"", "\\\"");
+            String query = URLEncoder.encode("release:\"" + quotedAlbum + "\"", StandardCharsets.UTF_8);
+            url = String.format("%s/release?query=%s&fmt=json&limit=25", config.getMusicBrainzApiUrl(), query);
+            countKey = "count";
+        } else {
+            url = String.format("%s/release?release-group=%s&limit=100&fmt=json",
+                config.getMusicBrainzApiUrl(), releaseGroupId);
+            countKey = "release-count";
+        }
+        rateLimit();
+        try {
+            JsonNode response = objectMapper.readTree(executeRequest(url));
+            JsonNode releases = response.path("releases");
+            if (!releases.isArray() || response.path(countKey).asInt(-1) != releases.size()) {
+                return List.of();
+            }
+            List<JsonNode> candidates = new ArrayList<>();
+            releases.forEach(candidates::add);
+            return candidates;
+        } catch (ParseException e) {
+            throw new IOException("Invalid MusicBrainz album search response", e);
+        }
+    }
+
     private String normalizeReleaseType(String value) {
         return value == null || value.trim().isEmpty()
             ? null : value.trim().toLowerCase(java.util.Locale.ROOT);
@@ -1719,11 +1749,15 @@ public class MusicBrainzClient {
      * 获取完整的 Release 信息。缓存按具体 Release ID 隔离，避免整专逐曲重复请求。
      */
     JsonNode getFullReleaseById(String releaseId) throws IOException, InterruptedException {
+        return getFullReleaseById(releaseId, false);
+    }
+
+    JsonNode getFullReleaseById(String releaseId, boolean refresh) throws IOException, InterruptedException {
         if (releaseId == null || releaseId.isEmpty()) {
             return null;
         }
         JsonNode cached = fullReleaseCache.get(releaseId);
-        if (cached != null) {
+        if (!refresh && cached != null) {
             return cached;
         }
         String url = String.format("%s/release/%s?fmt=json&inc=recordings+artist-credits+labels+release-groups+media",

@@ -156,6 +156,11 @@ public class WebServer {
                 "/api/lyrics-backfill/*");
         }
 
+        if (lifecycleManager != null && lifecycleManager.getAlbumArtistRefreshService() != null) {
+            servletHandler.addServlet(new ServletHolder(new AlbumArtistRefreshServlet(lifecycleManager.getAlbumArtistRefreshService())),
+                "/api/album-artist-refresh/*");
+        }
+
         // 注册历史封面回填 API
         if (coverBackfillService != null) {
             servletHandler.addServlet(new ServletHolder(new BackfillServlet(coverBackfillService)),

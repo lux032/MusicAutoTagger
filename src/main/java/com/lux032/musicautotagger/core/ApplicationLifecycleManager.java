@@ -30,6 +30,7 @@ public class ApplicationLifecycleManager {
     private TagWriterService tagWriter;
     private LyricsService lyricsService;
     private LyricsBackfillService lyricsBackfillService;
+    private AlbumArtistRefreshService albumArtistRefreshService;
     private ProcessedFileLogger processedLogger;
     private CoverArtCache coverArtCache;
     private FolderAlbumCache folderAlbumCache;
@@ -89,6 +90,7 @@ public class ApplicationLifecycleManager {
         lyricsService = new LyricsService(config);
         tagWriter = new TagWriterService(config);
         lyricsBackfillService = new LyricsBackfillService(config, lyricsService, tagWriter);
+        albumArtistRefreshService = new AlbumArtistRefreshService(config, musicBrainzClient, tagWriter, processedLogger);
         
         // 初始化时长序列匹配服务
         durationSequenceService = new DurationSequenceService();
@@ -345,6 +347,7 @@ public class ApplicationLifecycleManager {
                 }
             }
             
+            if (albumArtistRefreshService != null) albumArtistRefreshService.close();
             if (lyricsBackfillService != null) lyricsBackfillService.close();
             if (lyricsService != null) {
                 try { lyricsService.close(); }
