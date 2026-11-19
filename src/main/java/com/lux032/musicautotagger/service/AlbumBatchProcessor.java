@@ -853,8 +853,38 @@ public class AlbumBatchProcessor {
                 processPendingFilesWithAlbum(folderPath, lockedInfo);
                 flushed = pendingCount;
             }
+            applyLockedReleaseTags(lockedInfo, metadata);
             processAndWriteFile(processingFile, originalFile, metadata, coverArtData, isQuickScanMode);
             return flushed;
+        }
+    }
+
+    private void applyLockedReleaseTags(FolderAlbumCache.CachedAlbumInfo lockedInfo, MusicMetadata metadata) {
+        if (lockedInfo == null || metadata == null || musicBrainzClient == null) {
+            return;
+        }
+        if (lockedInfo.getReleaseGroupId() == null || lockedInfo.getReleaseGroupId().isEmpty()) {
+            return;
+        }
+        String releaseId = lockedInfo.getReleaseId();
+        if (releaseId == null || releaseId.isEmpty()) {
+            releaseId = metadata.getReleaseId();
+        }
+        if (releaseId == null || releaseId.isEmpty()) {
+            return;
+        }
+        if (lockedInfo.getAlbumArtist() != null && !lockedInfo.getAlbumArtist().isEmpty()) {
+            metadata.setAlbumArtist(lockedInfo.getAlbumArtist());
+        }
+        metadata.setReleaseId(releaseId);
+        try {
+            MusicBrainzClient.ReleaseTagBundle releaseTags = musicBrainzClient.fetchReleaseTagBundle(releaseId);
+            if (releaseTags != null) {
+                metadata.setClearAlbumLevelTags(true);
+                releaseTags.applyTo(metadata);
+            }
+        } catch (Exception e) {
+            log.warn("获取锁定 Release 的专辑级标签失败，将保留当前元数据: {}", e.getMessage());
         }
     }
 

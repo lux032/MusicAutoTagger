@@ -356,4 +356,154 @@ class TagWriterServiceTest {
         assertEquals("2026-07-08", bundle.getOriginalReleaseDate());
         assertEquals("2026", bundle.getOriginalYear());
     }
+
+    @Test
+    void structuredAlbumArtistsSurviveAcrossContainersAndClearWhenCollapsedToVA() throws Exception {
+        MusicMetadata metadata = new MusicMetadata();
+        metadata.setArtist("Aiobahn +81, DEMONDICE");
+        metadata.setArtists(List.of("Aiobahn +81", "DEMONDICE"));
+        metadata.setAlbumArtist("Aiobahn +81 feat. DEMONDICE");
+        metadata.setAlbumArtists(List.of("Aiobahn +81", "DEMONDICE"));
+        assertEquals(metadata.getAlbumArtists(), metadata.copyWithoutHeavyFields().getAlbumArtists());
+
+        for (org.jaudiotagger.tag.Tag tag : List.of(new FlacTag(), new VorbisCommentTag(),
+                new ID3v23Tag(), new ID3v24Tag(), new Mp4Tag())) {
+            invokeUpdateTextTags(tag, metadata);
+            assertEquals(List.of("Aiobahn +81", "DEMONDICE"), tag.getAll(FieldKey.ALBUM_ARTISTS), tag.getClass().getSimpleName());
+            assertEquals("Aiobahn +81 feat. DEMONDICE", tag.getFirst(FieldKey.ALBUM_ARTIST), tag.getClass().getSimpleName());
+
+            MusicMetadata collapsed = new MusicMetadata();
+            collapsed.setAlbumArtist("Various Artists");
+            invokeUpdateTextTags(tag, collapsed);
+            assertEquals("", tag.getFirst(FieldKey.ALBUM_ARTISTS), tag.getClass().getSimpleName());
+        }
+    }
+
+    @Test
+    void parseRecordingResponsePopulatesStructuredAlbumArtistsWhenCollapseDisabled() throws Exception {
+        String recordingJson = """
+            {
+              "id": "b1e11e8f-4cab-43ac-b0a0-2424d8be935c",
+              "title": "DEMON'S SHOT",
+              "artist-credit": [
+                {"name": "Aiobahn +81", "joinphrase": " feat. ", "artist": {"id": "a39cf062-a860-4e22-ac59-1a8ebc65a8ff", "name": "Aiobahn +81", "sort-name": "Aiobahn +81"}},
+                {"name": "DEMONDICE", "joinphrase": "", "artist": {"id": "62d713c3-b081-4390-a9c7-0b8978d5b76a", "name": "DEMONDICE", "sort-name": "DEMONDICE"}}
+              ],
+              "releases": [
+                {
+                  "id": "35378b89-d4a7-44a4-a419-4c91596d1d43",
+                  "title": "DEMON'S SHOT",
+                  "status": "Official",
+                  "country": "XW",
+                  "date": "2026-09-30",
+                  "artist-credit": [
+                    {"name": "Aiobahn +81", "joinphrase": " feat. ", "artist": {"id": "a39cf062-a860-4e22-ac59-1a8ebc65a8ff", "name": "Aiobahn +81", "sort-name": "Aiobahn +81"}},
+                    {"name": "DEMONDICE", "joinphrase": "", "artist": {"id": "62d713c3-b081-4390-a9c7-0b8978d5b76a", "name": "DEMONDICE", "sort-name": "DEMONDICE"}}
+                  ],
+                  "release-group": {"id": "rg-1", "primary-type": "Single", "secondary-types": [], "first-release-date": "2026-09-30"},
+                  "media": [{"position": 1, "format": "Digital Media", "track-count": 1}]
+                }
+              ]
+            }
+            """;
+        JsonNode fullRelease = new ObjectMapper().readTree("""
+            {
+              "id": "35378b89-d4a7-44a4-a419-4c91596d1d43",
+              "title": "DEMON'S SHOT",
+              "status": "Official",
+              "country": "XW",
+              "date": "2026-09-30",
+              "artist-credit": [
+                {"name": "Aiobahn +81", "joinphrase": " feat. ", "artist": {"id": "a39cf062-a860-4e22-ac59-1a8ebc65a8ff", "name": "Aiobahn +81", "sort-name": "Aiobahn +81"}},
+                {"name": "DEMONDICE", "joinphrase": "", "artist": {"id": "62d713c3-b081-4390-a9c7-0b8978d5b76a", "name": "DEMONDICE", "sort-name": "DEMONDICE"}}
+              ],
+              "release-group": {"id": "rg-1", "primary-type": "Single", "secondary-types": [], "first-release-date": "2026-09-30"},
+              "media": [
+                {
+                  "position": 1,
+                  "format": "Digital Media",
+                  "tracks": [
+                    {
+                      "id": "track-1",
+                      "position": 1,
+                      "recording": {
+                        "id": "b1e11e8f-4cab-43ac-b0a0-2424d8be935c",
+                        "title": "DEMON'S SHOT",
+                        "artist-credit": [
+                          {"name": "Aiobahn +81", "joinphrase": " feat. ", "artist": {"id": "a39cf062-a860-4e22-ac59-1a8ebc65a8ff", "name": "Aiobahn +81", "sort-name": "Aiobahn +81"}},
+                          {"name": "DEMONDICE", "joinphrase": "", "artist": {"id": "62d713c3-b081-4390-a9c7-0b8978d5b76a", "name": "DEMONDICE", "sort-name": "DEMONDICE"}}
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+            """);
+
+        java.lang.reflect.Constructor<MusicConfig> ctor = MusicConfig.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        MusicConfig keepMultiConfig = ctor.newInstance();
+        keepMultiConfig.setCollapseAlbumArtistToVariousArtists(false);
+
+        MusicBrainzClient keepClient = new MusicBrainzClient(keepMultiConfig) {
+            @Override
+            JsonNode getFullReleaseById(String releaseId) {
+                return fullRelease;
+            }
+        };
+        Method parse = MusicBrainzClient.class.getDeclaredMethod(
+            "parseRecordingResponse", String.class, int.class, boolean.class, String.class, String.class, int.class, boolean.class);
+        parse.setAccessible(true);
+
+        MusicMetadata kept = (MusicMetadata) parse.invoke(keepClient, recordingJson, 1, true, null, null, 255, true);
+        assertEquals(List.of("Aiobahn +81", "DEMONDICE"), kept.getArtists());
+        assertEquals("Aiobahn +81 feat. DEMONDICE", kept.getAlbumArtist());
+        assertEquals(List.of("Aiobahn +81", "DEMONDICE"), kept.getAlbumArtists());
+
+        MusicConfig collapseConfig = ctor.newInstance();
+        collapseConfig.setCollapseAlbumArtistToVariousArtists(true);
+        MusicBrainzClient collapseClient = new MusicBrainzClient(collapseConfig) {
+            @Override
+            JsonNode getFullReleaseById(String releaseId) {
+                return fullRelease;
+            }
+        };
+        MusicMetadata collapsed = (MusicMetadata) parse.invoke(collapseClient, recordingJson, 1, true, null, null, 255, true);
+        assertEquals(List.of("Aiobahn +81", "DEMONDICE"), collapsed.getArtists());
+        assertEquals("Various Artists", collapsed.getAlbumArtist());
+        assertNull(collapsed.getAlbumArtists());
+    }
+
+    @Test
+    void releaseTagBundleMatchesBothFeatAndCommaJoinedAlbumArtist() throws Exception {
+        JsonNode release = new ObjectMapper().readTree("""
+            {
+              "artist-credit": [
+                {"name": "Aiobahn +81", "joinphrase": " feat. ", "artist": {"id": "a39cf062-a860-4e22-ac59-1a8ebc65a8ff", "name": "Aiobahn +81", "sort-name": "Aiobahn +81"}},
+                {"name": "DEMONDICE", "joinphrase": "", "artist": {"id": "62d713c3-b081-4390-a9c7-0b8978d5b76a", "name": "DEMONDICE", "sort-name": "DEMONDICE"}}
+              ]
+            }
+            """);
+        java.lang.reflect.Constructor<MusicConfig> ctor = MusicConfig.class.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        MusicConfig cfg = ctor.newInstance();
+        cfg.setCollapseAlbumArtistToVariousArtists(false);
+        MusicBrainzClient.ReleaseTagBundle bundle = new MusicBrainzClient(cfg).parseReleaseTagBundle(release);
+
+        MusicMetadata featMd = new MusicMetadata();
+        featMd.setAlbumArtist("Aiobahn +81 feat. DEMONDICE");
+        bundle.applyTo(featMd);
+        assertEquals(List.of("Aiobahn +81", "DEMONDICE"), featMd.getAlbumArtists());
+
+        MusicMetadata commaMd = new MusicMetadata();
+        commaMd.setAlbumArtist("Aiobahn +81, DEMONDICE");
+        bundle.applyTo(commaMd);
+        assertEquals(List.of("Aiobahn +81", "DEMONDICE"), commaMd.getAlbumArtists());
+
+        MusicMetadata vaMd = new MusicMetadata();
+        vaMd.setAlbumArtist("Various Artists");
+        bundle.applyTo(vaMd);
+        assertNull(vaMd.getAlbumArtists());
+    }
 }

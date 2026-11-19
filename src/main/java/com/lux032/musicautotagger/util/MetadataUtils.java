@@ -551,6 +551,10 @@ public class MetadataUtils {
             || isBlank(sourceTagsForFallback.getTitle()) || isBlank(sourceTagsForFallback.getArtist()));
         detailedMetadata.setTitle(titleToUse);
         detailedMetadata.setArtist(artistToUse);
+        if (sourceTagsForFallback != null && java.util.Objects.equals(artistToUse, sourceTagsForFallback.getArtist())
+                && sourceTagsForFallback.getArtists() != null && !sourceTagsForFallback.getArtists().isEmpty()) {
+            detailedMetadata.setArtists(java.util.List.copyOf(sourceTagsForFallback.getArtists()));
+        }
         detailedMetadata.setAlbumArtist(lockedAlbumArtist);
         detailedMetadata.setAlbum(lockedAlbumTitle);
         detailedMetadata.setReleaseGroupId(lockedReleaseGroupId);

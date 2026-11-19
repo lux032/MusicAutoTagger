@@ -1282,8 +1282,13 @@ public class MusicBrainzClient {
             // 艺术家信息
             JsonNode artistCredits = release.path("artist-credit");
             if (artistCredits.isArray() && artistCredits.size() > 0) {
-                metadata.setAlbumArtist(albumArtistPolicy.resolveFromCredits(artistCredits));
+                String resolvedAlbumArtist = albumArtistPolicy.resolveFromCredits(artistCredits);
+                metadata.setAlbumArtist(resolvedAlbumArtist);
+                if (resolvedAlbumArtist != null && !AlbumArtistPolicy.VARIOUS_ARTISTS.equals(resolvedAlbumArtist)) {
+                    metadata.setAlbumArtists(artistNames(artistCredits));
+                }
                 metadata.setArtist(resolveCreditedArtistText(artistCredits));
+                metadata.setArtists(artistNames(artistCredits));
             }
             
             // 曲目数
@@ -1419,18 +1424,28 @@ public class MusicBrainzClient {
             // 解析碟号和曲目号
             String releaseId = bestRelease.path("id").asText();
             JsonNode fullRelease = getFullReleaseById(releaseId);
+
+            // 获取专辑艺术家(Album Artist)——必须在 bundle.applyTo(metadata) 之前设置，
+            // 否则 applyTo 看到 albumArtist==null 且随后的 setAlbumArtist 会清空 albumArtists。
+            JsonNode releaseArtistCredits = bestRelease.path("artist-credit");
+            if ((!releaseArtistCredits.isArray() || releaseArtistCredits.isEmpty()) && fullRelease != null) {
+                releaseArtistCredits = fullRelease.path("artist-credit");
+            }
+            String resolvedAlbumArtist = albumArtistPolicy.resolveFromCredits(releaseArtistCredits);
+            metadata.setAlbumArtist(resolvedAlbumArtist != null
+                ? resolvedAlbumArtist : albumArtistPolicy.fallbackUnknown(metadata.getArtist()));
+
             if (fullRelease != null) {
-                ReleaseTagBundle bundle = fetchReleaseTagBundle(releaseId);
+                ReleaseTagBundle bundle = parseReleaseTagBundle(fullRelease);
                 if (bundle != null) bundle.applyTo(metadata);
                 findAndSetTrackPosition(fullRelease, recordingId, metadata, fileDurationSeconds);
             } else {
+                if (resolvedAlbumArtist != null && !AlbumArtistPolicy.VARIOUS_ARTISTS.equals(resolvedAlbumArtist)
+                        && releaseArtistCredits.isArray() && !releaseArtistCredits.isEmpty()) {
+                    metadata.setAlbumArtists(artistNames(releaseArtistCredits));
+                }
                 log.warn("Could not fetch full release details for release ID: {}. Disc and track number will be missing.", releaseId);
             }
-
-            // 获取专辑艺术家(Album Artist)
-            String resolvedAlbumArtist = albumArtistPolicy.resolveFromCredits(bestRelease.path("artist-credit"));
-            metadata.setAlbumArtist(resolvedAlbumArtist != null
-                ? resolvedAlbumArtist : albumArtistPolicy.fallbackUnknown(metadata.getArtist()));
             
             // 解析流派标签
             JsonNode tags = root.path("tags");
@@ -1729,7 +1744,7 @@ public class MusicBrainzClient {
     /**
      * 获取完整的 Release 信息。缓存按具体 Release ID 隔离，避免整专逐曲重复请求。
      */
-    private JsonNode getFullReleaseById(String releaseId) throws IOException, InterruptedException {
+    JsonNode getFullReleaseById(String releaseId) throws IOException, InterruptedException {
         if (releaseId == null || releaseId.isEmpty()) {
             return null;
         }
@@ -1781,9 +1796,13 @@ public class MusicBrainzClient {
 
         public void applyTo(MusicMetadata metadata) {
             // Respect the configured album-artist policy (e.g. Various Artists).
-            if (albumArtists != null && metadata.getAlbumArtist() != null
-                    && metadata.getAlbumArtist().equals(albumArtistCredit)
-                    && !AlbumArtistPolicy.VARIOUS_ARTISTS.equals(albumArtistCredit)) {
+            String currentAlbumArtist = metadata.getAlbumArtist();
+            boolean matchesStructuredCredit = albumArtists != null && !albumArtists.isEmpty()
+                    && currentAlbumArtist != null
+                    && !AlbumArtistPolicy.VARIOUS_ARTISTS.equalsIgnoreCase(currentAlbumArtist.trim())
+                    && (currentAlbumArtist.equals(albumArtistCredit)
+                        || currentAlbumArtist.equals(String.join(", ", albumArtists)));
+            if (matchesStructuredCredit) {
                 metadata.setAlbumArtists(List.copyOf(albumArtists));
             } else {
                 metadata.setAlbumArtists(null);

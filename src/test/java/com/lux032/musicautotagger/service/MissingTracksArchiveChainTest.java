@@ -16,6 +16,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -184,5 +185,42 @@ class MissingTracksArchiveChainTest {
         assertTrue(extraTrack == null || extraTrack.isEmpty(), "附加曲目不写曲目号");
         assertEquals(1, Files.readAllBytes(albumDir.resolve("1.01 藍井エイル - アトック.wav"))[100],
             "版本里的那首必须是真正的アトック，没有被其他歌覆盖");
+    }
+
+    @Test
+    void writeWithFolderLockAppliesReleaseTagBundleAlbumArtists() throws Exception {
+        config.setCollapseAlbumArtistToVariousArtists(false);
+        JsonNode featRelease = new ObjectMapper().readTree("""
+            {
+              "id": "r-feat",
+              "artist-credit": [
+                {"name": "Aiobahn +81", "joinphrase": " feat. ", "artist": {"id": "a39cf062-a860-4e22-ac59-1a8ebc65a8ff", "name": "Aiobahn +81", "sort-name": "Aiobahn +81"}},
+                {"name": "DEMONDICE", "joinphrase": "", "artist": {"id": "62d713c3-b081-4390-a9c7-0b8978d5b76a", "name": "DEMONDICE", "sort-name": "DEMONDICE"}}
+              ]
+            }
+            """);
+        MusicBrainzClient mbWithBundle = new StubClient(config) {
+            @Override
+            public ReleaseTagBundle fetchReleaseTagBundle(String releaseId) {
+                return "r-feat".equals(releaseId) ? parseReleaseTagBundle(featRelease) : null;
+            }
+        };
+        processor.setMusicBrainzClient(mbWithBundle);
+        cache.setFolderAlbum(folder.toString(), new FolderAlbumCache.CachedAlbumInfo("rg-feat", "r-feat",
+            "DEMON'S SHOT", "Aiobahn +81 feat. DEMONDICE", 1, "2026-09-30", "single", false, 0.99,
+            FolderAlbumCache.CacheSource.QUICK_SCAN));
+
+        File single = wav("01. DEMON'S SHOT.wav", 3, (byte) 5);
+        MusicMetadata md = new MusicMetadata();
+        md.setTitle("DEMON'S SHOT");
+        md.setArtist("Aiobahn +81, DEMONDICE");
+        md.setArtists(List.of("Aiobahn +81", "DEMONDICE"));
+        md.setAlbum("DEMON'S SHOT");
+        md.setAlbumArtist("Aiobahn +81 feat. DEMONDICE"); // simulates applyLockedAlbumInfo clearing albumArtists
+        assertEquals(null, md.getAlbumArtists());
+
+        assertEquals(0, processor.writeWithFolderLock(folder.toString(), single, single, md, null, true));
+        assertEquals(List.of("Aiobahn +81", "DEMONDICE"), md.getAlbumArtists());
+        assertEquals("a39cf062-a860-4e22-ac59-1a8ebc65a8ff; 62d713c3-b081-4390-a9c7-0b8978d5b76a", md.getAlbumArtistId());
     }
 }
