@@ -45,12 +45,7 @@ public final class AlbumArtistPolicy {
             JsonNode credit = artistCredits.get(i);
             String name = creditName(credit);
             if (name != null) joined.append(name);
-            String joinPhrase = credit.path("joinphrase").asText("");
-            if (!joinPhrase.isEmpty()) {
-                joined.append(joinPhrase);
-            } else if (i < artistCredits.size() - 1) {
-                joined.append(", ");
-            }
+            if (i < artistCredits.size() - 1) joined.append(credit.path("joinphrase").asText(", "));
         }
         return fallbackUnknown(joined.toString());
     }

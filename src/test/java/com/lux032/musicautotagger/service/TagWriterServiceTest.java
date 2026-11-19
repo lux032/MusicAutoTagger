@@ -359,23 +359,43 @@ class TagWriterServiceTest {
 
     @Test
     void structuredAlbumArtistsSurviveAcrossContainersAndClearWhenCollapsedToVA() throws Exception {
+        String display = "Aiobahn +81 feat. DEMONDICE";
+        JsonNode credits = new ObjectMapper().readTree("""
+            [
+              {"name":"Aiobahn +81","joinphrase":" feat. ","artist":{"name":"Aiobahn +81"}},
+              {"name":"DEMONDICE","joinphrase":"","artist":{"name":"DEMONDICE"}}
+            ]
+            """);
+        String sourceCredit = MusicBrainzClient.encodeArtistCredit(credits, display);
         MusicMetadata metadata = new MusicMetadata();
-        metadata.setArtist("Aiobahn +81, DEMONDICE");
+        metadata.setArtist(display);
         metadata.setArtists(List.of("Aiobahn +81", "DEMONDICE"));
-        metadata.setAlbumArtist("Aiobahn +81 feat. DEMONDICE");
+        metadata.setArtistCredit(sourceCredit);
+        metadata.setAlbumArtist(display);
         metadata.setAlbumArtists(List.of("Aiobahn +81", "DEMONDICE"));
-        assertEquals(metadata.getAlbumArtists(), metadata.copyWithoutHeavyFields().getAlbumArtists());
+        metadata.setAlbumArtistCredit(sourceCredit);
+        assertEquals(sourceCredit, metadata.copyWithoutHeavyFields().getAlbumArtistCredit());
 
+        var readCredit = TagWriterService.class.getDeclaredMethod(
+            "readArtistCreditTag", org.jaudiotagger.tag.Tag.class, String.class);
+        readCredit.setAccessible(true);
+        var writer = new TagWriterService(MusicConfig.getInstance());
         for (org.jaudiotagger.tag.Tag tag : List.of(new FlacTag(), new VorbisCommentTag(),
                 new ID3v23Tag(), new ID3v24Tag(), new Mp4Tag())) {
             invokeUpdateTextTags(tag, metadata);
             assertEquals(List.of("Aiobahn +81", "DEMONDICE"), tag.getAll(FieldKey.ALBUM_ARTISTS), tag.getClass().getSimpleName());
             assertEquals("Aiobahn +81 feat. DEMONDICE", tag.getFirst(FieldKey.ALBUM_ARTIST), tag.getClass().getSimpleName());
 
+            assertEquals(display, tag.getFirst(FieldKey.ARTIST));
+            assertEquals(sourceCredit, readCredit.invoke(writer, tag, "MUSICBRAINZ_ARTIST_CREDIT"));
+            assertEquals(sourceCredit, readCredit.invoke(writer, tag, "MUSICBRAINZ_ALBUM_ARTIST_CREDIT"));
+
             MusicMetadata collapsed = new MusicMetadata();
             collapsed.setAlbumArtist("Various Artists");
             invokeUpdateTextTags(tag, collapsed);
             assertEquals("", tag.getFirst(FieldKey.ALBUM_ARTISTS), tag.getClass().getSimpleName());
+            assertNull(readCredit.invoke(writer, tag, "MUSICBRAINZ_ALBUM_ARTIST_CREDIT"));
+            assertEquals(sourceCredit, readCredit.invoke(writer, tag, "MUSICBRAINZ_ARTIST_CREDIT"));
         }
     }
 
@@ -470,6 +490,9 @@ class TagWriterServiceTest {
             }
         };
         MusicMetadata collapsed = (MusicMetadata) parse.invoke(collapseClient, recordingJson, 1, true, null, null, 255, true);
+        assertEquals("Aiobahn +81 feat. DEMONDICE", collapsed.getArtist());
+        assertNotNull(collapsed.getArtistCredit());
+        assertNull(collapsed.getAlbumArtistCredit());
         assertEquals(List.of("Aiobahn +81", "DEMONDICE"), collapsed.getArtists());
         assertEquals("Various Artists", collapsed.getAlbumArtist());
         assertNull(collapsed.getAlbumArtists());
@@ -499,6 +522,7 @@ class TagWriterServiceTest {
         MusicMetadata commaMd = new MusicMetadata();
         commaMd.setAlbumArtist("Aiobahn +81, DEMONDICE");
         bundle.applyTo(commaMd);
+        assertEquals("Aiobahn +81 feat. DEMONDICE", commaMd.getAlbumArtist());
         assertEquals(List.of("Aiobahn +81", "DEMONDICE"), commaMd.getAlbumArtists());
 
         MusicMetadata vaMd = new MusicMetadata();

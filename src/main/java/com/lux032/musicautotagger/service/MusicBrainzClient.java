@@ -2,6 +2,7 @@ package com.lux032.musicautotagger.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
@@ -1286,9 +1287,9 @@ public class MusicBrainzClient {
                 metadata.setAlbumArtist(resolvedAlbumArtist);
                 if (resolvedAlbumArtist != null && !AlbumArtistPolicy.VARIOUS_ARTISTS.equals(resolvedAlbumArtist)) {
                     metadata.setAlbumArtists(artistNames(artistCredits));
+                    metadata.setAlbumArtistCredit(encodeArtistCredit(artistCredits, resolvedAlbumArtist));
                 }
-                metadata.setArtist(resolveCreditedArtistText(artistCredits));
-                metadata.setArtists(artistNames(artistCredits));
+                applyRecordingArtistCredit(metadata, artistCredits);
             }
             
             // 曲目数
@@ -1386,17 +1387,9 @@ public class MusicBrainzClient {
         // 解析艺术家
         JsonNode artistCredits = root.path("artist-credit");
         if (artistCredits.isArray() && artistCredits.size() > 0) {
-            StringBuilder artists = new StringBuilder();
-            for (JsonNode credit : artistCredits) {
-                if (artists.length() > 0) {
-                    artists.append(", ");
-                }
-                artists.append(credit.path("artist").path("name").asText());
-            }
-            metadata.setArtist(artists.toString());
+            applyRecordingArtistCredit(metadata, artistCredits);
             metadata.setArtistId(joinArtistValues(artistCredits, "id"));
             metadata.setArtistSort(joinArtistValues(artistCredits, "sort-name"));
-            metadata.setArtists(artistNames(artistCredits));
         }
         
         // 解析并选择最佳专辑
@@ -1443,6 +1436,7 @@ public class MusicBrainzClient {
                 if (resolvedAlbumArtist != null && !AlbumArtistPolicy.VARIOUS_ARTISTS.equals(resolvedAlbumArtist)
                         && releaseArtistCredits.isArray() && !releaseArtistCredits.isEmpty()) {
                     metadata.setAlbumArtists(artistNames(releaseArtistCredits));
+                    metadata.setAlbumArtistCredit(encodeArtistCredit(releaseArtistCredits, resolvedAlbumArtist));
                 }
                 log.warn("Could not fetch full release details for release ID: {}. Disc and track number will be missing.", releaseId);
             }
@@ -1579,26 +1573,6 @@ public class MusicBrainzClient {
                         log.info("✓ 时长匹配成功，更新标题: {}", matchedTitle);
                     }
 
-                    // 更新艺术家信息
-                    JsonNode artistCredits = matchedRecording.path("artist-credit");
-                    if (artistCredits.isArray() && artistCredits.size() > 0) {
-                        StringBuilder artists = new StringBuilder();
-                        for (JsonNode credit : artistCredits) {
-                            if (artists.length() > 0) {
-                                artists.append(", ");
-                            }
-                            artists.append(credit.path("artist").path("name").asText());
-                        }
-                        String matchedArtist = artists.toString();
-                        if (!matchedArtist.isEmpty()) {
-                            metadata.setArtist(matchedArtist);
-                            metadata.setArtists(artistNames(artistCredits));
-                            metadata.setArtistId(joinArtistValues(artistCredits, "id"));
-                            metadata.setArtistSort(joinArtistValues(artistCredits, "sort-name"));
-                            log.info("✓ 时长匹配成功，更新艺术家: {}", matchedArtist);
-                        }
-                    }
-
                     int matchedDurationSec = (effectiveTrackLengthMs(bestMatchTrack) + 500) / 1000;
                     log.info("✓ 通过时长匹配找到曲目位置: 碟号 {}, 曲目号 {} (文件时长: {}秒, 匹配曲目时长: {}秒, 差异: {}秒)",
                         discNumber, trackNumber, fileDurationSeconds, matchedDurationSec, bestDurationDiff);
@@ -1619,8 +1593,8 @@ public class MusicBrainzClient {
         metadata.setMediaFormat(blankToNull(medium.path("format").asText(null)));
         JsonNode credits = track.path("recording").path("artist-credit");
         if (!credits.isArray() || credits.isEmpty()) credits = track.path("artist-credit");
-        if (credits.isArray()) {
-            metadata.setArtists(artistNames(credits));
+        if (credits.isArray() && !credits.isEmpty()) {
+            applyRecordingArtistCredit(metadata, credits);
             metadata.setArtistId(joinArtistValues(credits, "id"));
             metadata.setArtistSort(joinArtistValues(credits, "sort-name"));
         }
@@ -1780,6 +1754,7 @@ public class MusicBrainzClient {
     public static class ReleaseTagBundle {
         private List<String> albumArtists;
         private String albumArtistCredit;
+        private String originalAlbumArtistCredit;
         private String albumArtistId;
         private String albumArtistSort;
         private String releaseStatus;
@@ -1803,9 +1778,12 @@ public class MusicBrainzClient {
                     && (currentAlbumArtist.equals(albumArtistCredit)
                         || currentAlbumArtist.equals(String.join(", ", albumArtists)));
             if (matchesStructuredCredit) {
+                metadata.setAlbumArtist(albumArtistCredit);
                 metadata.setAlbumArtists(List.copyOf(albumArtists));
+                metadata.setAlbumArtistCredit(originalAlbumArtistCredit);
             } else {
                 metadata.setAlbumArtists(null);
+                metadata.setAlbumArtistCredit(null);
             }
             metadata.setAlbumArtistId(albumArtistId);
             metadata.setAlbumArtistSort(albumArtistSort);
@@ -1837,6 +1815,7 @@ public class MusicBrainzClient {
         JsonNode credits = release.path("artist-credit");
         bundle.setAlbumArtists(artistNames(credits));
         bundle.setAlbumArtistCredit(albumArtistPolicy.resolveFromCredits(credits));
+        bundle.setOriginalAlbumArtistCredit(encodeArtistCredit(credits, bundle.getAlbumArtistCredit()));
         bundle.setAlbumArtistId(joinArtistValues(credits, "id"));
         bundle.setAlbumArtistSort(joinArtistValues(credits, "sort-name"));
         bundle.setReleaseStatus(lowerOrNull(release.path("status").asText(null)));
@@ -1874,12 +1853,37 @@ public class MusicBrainzClient {
                 String name = credit.path("name").asText("");
                 if (name.isEmpty()) name = credit.path("artist").path("name").asText("");
                 value.append(name);
-                String joinPhrase = credit.path("joinphrase").asText("");
-                if (!joinPhrase.isEmpty()) value.append(joinPhrase);
-                else if (i < credits.size() - 1) value.append(", ");
+                if (i < credits.size() - 1) value.append(credit.path("joinphrase").asText(", "));
             }
         }
         return value.toString();
+    }
+
+    private static void applyRecordingArtistCredit(MusicMetadata metadata, JsonNode credits) {
+        String display = resolveCreditedArtistText(credits).trim();
+        if (!display.isEmpty()) {
+            metadata.setArtist(display);
+            metadata.setArtists(artistNames(credits));
+            metadata.setArtistCredit(encodeArtistCredit(credits, display));
+        }
+    }
+
+    static String encodeArtistCredit(JsonNode credits, String display) {
+        List<String> names = artistNames(credits);
+        if (display == null || AlbumArtistPolicy.VARIOUS_ARTISTS.equalsIgnoreCase(display)
+                || names.size() < 2 || names.size() != credits.size()) {
+            return null;
+        }
+        var data = JsonNodeFactory.instance.objectNode();
+        data.put("display", display);
+        var nameValues = data.putArray("names");
+        names.forEach(nameValues::add);
+        var before = data.putArray("before");
+        before.add("");
+        for (int i = 0; i < credits.size() - 1; i++) {
+            before.add(credits.get(i).path("joinphrase").asText(", "));
+        }
+        return data.toString();
     }
 
     static List<String> artistNames(JsonNode credits) {
@@ -2229,15 +2233,7 @@ public class MusicBrainzClient {
             // 解析艺术家
             JsonNode artistCredits = recording.path("artist-credit");
             if (artistCredits.isArray() && artistCredits.size() > 0) {
-                StringBuilder artists = new StringBuilder();
-                for (JsonNode credit : artistCredits) {
-                    if (artists.length() > 0) {
-                        artists.append(", ");
-                    }
-                    artists.append(credit.path("artist").path("name").asText());
-                }
-                metadata.setArtist(artists.toString());
-                metadata.setArtists(artistNames(artistCredits));
+                applyRecordingArtistCredit(metadata, artistCredits);
                 metadata.setArtistId(joinArtistValues(artistCredits, "id"));
             }
             
@@ -2531,22 +2527,6 @@ public class MusicBrainzClient {
         JsonNode matchedRecording = track.path("recording");
         metadata.setRecordingId(matchedRecording.path("id").asText(""));
         metadata.setTitle(matchedRecording.path("title").asText(""));
-
-        JsonNode artistCredits = matchedRecording.path("artist-credit");
-        if (!artistCredits.isArray() || artistCredits.size() == 0) {
-            artistCredits = track.path("artist-credit");
-        }
-        if (artistCredits.isArray() && artistCredits.size() > 0) {
-            StringBuilder artists = new StringBuilder();
-            for (JsonNode credit : artistCredits) {
-                if (artists.length() > 0) artists.append(", ");
-                artists.append(credit.path("artist").path("name").asText());
-            }
-            metadata.setArtist(artists.toString());
-            metadata.setArtistId(joinArtistValues(artistCredits, "id"));
-            metadata.setArtistSort(joinArtistValues(artistCredits, "sort-name"));
-            metadata.setArtists(artistNames(artistCredits));
-        }
 
         metadata.setReleaseDate(release.path("date").asText(""));
         if (releaseId != null && !releaseId.isEmpty()) {

@@ -777,6 +777,14 @@ public class TagWriterService {
         return String.join("; ", cleaned);
     }
 
+    private static final String ARTIST_CREDIT_TAG = "MUSICBRAINZ_ARTIST_CREDIT";
+    private static final String ALBUM_ARTIST_CREDIT_TAG = "MUSICBRAINZ_ALBUM_ARTIST_CREDIT";
+
+    private String readArtistCreditTag(Tag tag, String name) throws Exception {
+        List<List<String>> fields = readCustomTextTagGroups(tag, name);
+        return fields.size() == 1 && fields.get(0).size() == 1 ? fields.get(0).get(0) : null;
+    }
+
     private void updateTextTags(Tag tag, MusicMetadata metadata) throws Exception {
         if (metadata.getTitle() != null && !metadata.getTitle().isEmpty()) {
             tag.setField(FieldKey.TITLE, metadata.getTitle());
@@ -785,12 +793,14 @@ public class TagWriterService {
         if (metadata.getArtist() != null && !metadata.getArtist().isEmpty()) {
             tag.setField(FieldKey.ARTIST, metadata.getArtist());
             writeArtistNames(tag, FieldKey.ARTISTS, metadata.getArtists());
+            writeCustomTextTag(tag, ARTIST_CREDIT_TAG, metadata.getArtistCredit());
         }
 
         // 写入专辑艺术家标签
         if (metadata.getAlbumArtist() != null && !metadata.getAlbumArtist().isEmpty()) {
             tag.setField(FieldKey.ALBUM_ARTIST, metadata.getAlbumArtist());
             writeArtistNames(tag, FieldKey.ALBUM_ARTISTS, metadata.getAlbumArtists());
+            writeCustomTextTag(tag, ALBUM_ARTIST_CREDIT_TAG, metadata.getAlbumArtistCredit());
         }
 
         if (metadata.getAlbum() != null && !metadata.getAlbum().isEmpty()) {
@@ -1260,11 +1270,17 @@ public class TagWriterService {
             MusicMetadata metadata = new MusicMetadata();
             metadata.setTitle(tag.getFirst(FieldKey.TITLE));
             metadata.setArtist(tag.getFirst(FieldKey.ARTIST));
-            try { metadata.setArtists(readArtistNames(tag, FieldKey.ARTISTS)); }
+            try {
+                metadata.setArtists(readArtistNames(tag, FieldKey.ARTISTS));
+                metadata.setArtistCredit(readArtistCreditTag(tag, ARTIST_CREDIT_TAG));
+            }
             catch (Exception e) { log.debug("Read structured artists: {}", e.getMessage()); }
             String albumArtist = tag.getFirst(FieldKey.ALBUM_ARTIST);
             metadata.setAlbumArtist(albumArtistFromTag(albumArtist));
-            try { metadata.setAlbumArtists(readArtistNames(tag, FieldKey.ALBUM_ARTISTS)); }
+            try {
+                metadata.setAlbumArtists(readArtistNames(tag, FieldKey.ALBUM_ARTISTS));
+                metadata.setAlbumArtistCredit(readArtistCreditTag(tag, ALBUM_ARTIST_CREDIT_TAG));
+            }
             catch (Exception e) { log.debug("Read structured album artists: {}", e.getMessage()); }
             metadata.setAlbum(tag.getFirst(FieldKey.ALBUM));
             metadata.setReleaseDate(tag.getFirst(FieldKey.YEAR));

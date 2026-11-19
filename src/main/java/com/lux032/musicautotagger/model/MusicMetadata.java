@@ -20,6 +20,8 @@ public class MusicMetadata {
     // Structured credit names, independent of the formatted display credit.
     private List<String> artists;
     private List<String> albumArtists;
+    private String artistCredit;
+    private String albumArtistCredit;
     private String artistId;
     private String albumArtistId;
     private String releaseTrackId;
@@ -112,6 +114,8 @@ public class MusicMetadata {
         copy.originalYear = originalYear;
         copy.artists = artists == null ? null : List.copyOf(artists);
         copy.albumArtists = albumArtists == null ? null : List.copyOf(albumArtists);
+        copy.artistCredit = artistCredit;
+        copy.albumArtistCredit = albumArtistCredit;
         copy.artistId = artistId;
         copy.albumArtistId = albumArtistId;
         copy.releaseTrackId = releaseTrackId;
@@ -182,13 +186,19 @@ public class MusicMetadata {
     }
 
     public void setArtist(String artist) {
-        if (!java.util.Objects.equals(this.artist, artist)) this.artists = null;
+        if (!java.util.Objects.equals(this.artist, artist)) {
+            this.artists = null;
+            this.artistCredit = null;
+        }
         this.artist = artist;
     }
 
     /** Album policy is applied by the caller, not inferred from punctuation. */
     public void setAlbumArtist(String albumArtist) {
-        if (!java.util.Objects.equals(this.albumArtist, albumArtist)) this.albumArtists = null;
+        if (!java.util.Objects.equals(this.albumArtist, albumArtist)) {
+            this.albumArtists = null;
+            this.albumArtistCredit = null;
+        }
         this.albumArtist = albumArtist;
     }
 

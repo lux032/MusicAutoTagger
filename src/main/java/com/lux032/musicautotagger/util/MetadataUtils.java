@@ -554,6 +554,7 @@ public class MetadataUtils {
         if (sourceTagsForFallback != null && java.util.Objects.equals(artistToUse, sourceTagsForFallback.getArtist())
                 && sourceTagsForFallback.getArtists() != null && !sourceTagsForFallback.getArtists().isEmpty()) {
             detailedMetadata.setArtists(java.util.List.copyOf(sourceTagsForFallback.getArtists()));
+            detailedMetadata.setArtistCredit(sourceTagsForFallback.getArtistCredit());
         }
         detailedMetadata.setAlbumArtist(lockedAlbumArtist);
         detailedMetadata.setAlbum(lockedAlbumTitle);
