@@ -157,6 +157,17 @@ public class ReviewServlet extends HttpServlet {
                         respond(resp, 501, Map.of("error", "recovery.unavailable"));
                         return;
                     }
+                    boolean analyzeCover = Boolean.TRUE.equals(body.get("analyzeCover"));
+                    com.lux032.musicautotagger.service.OnlineSearchQueueService queue = recoveryService.getSearchQueueService();
+                    if (queue != null) {
+                        var res = queue.enqueueReviewItem(id, analyzeCover);
+                        if (res.alreadyActive()) {
+                            respond(resp, 409, Map.of("error", "recovery.already.running", "task", res.task()));
+                            return;
+                        }
+                        respond(resp, 202, Map.of("success", true, "queued", true, "task", res.task()));
+                        return;
+                    }
                     ReviewItem item = reviewQueue.get(id);
                     if (item == null) {
                         respond(resp, 404, Map.of("error", "item.not.found"));
@@ -175,7 +186,6 @@ public class ReviewServlet extends HttpServlet {
                         return;
                     }
                     try {
-                        boolean analyzeCover = Boolean.TRUE.equals(body.get("analyzeCover"));
                         ReviewItem result = recoveryService.triggerOnlineSearchForReviewFolder(
                             new File(item.getFolderPath()), analyzeCover);
                         respond(resp, 200, Map.of("success", true, "item", toDetail(result)));
@@ -230,7 +240,14 @@ public class ReviewServlet extends HttpServlet {
             respond(resp, 409, Map.of("error", e.getMessage(), "duplicates", e.getDuplicates()));
         } catch (java.io.IOException e) {
             log.warn("待确认操作被拒绝: {} - {}", id, e.getMessage());
-            respond(resp, 400, Map.of("error", e.getMessage() == null ? "online.confirm.failed" : e.getMessage()));
+            String msg = e.getMessage() == null ? "online.confirm.failed" : e.getMessage();
+            int status = switch (msg) {
+                case "llm.web.search.unavailable" -> 503;
+                case "item.not.found" -> 404;
+                case "item.already.resolved", "recovery.already.running" -> 409;
+                default -> 400;
+            };
+            respond(resp, status, Map.of("error", msg));
         } catch (Exception e) {
             log.error("待确认条目处置失败: {}", id, e);
             respond(resp, 500, Map.of("error", String.valueOf(e.getMessage())));
@@ -383,6 +400,10 @@ public class ReviewServlet extends HttpServlet {
         map.put("bestOnlineTrackCoverage", bestOnlineTrackCoverage);
         map.put("onlineEvidenceStale", item.isOnlineEvidenceStale());
         map.put("onlineSearchedAt", item.getOnlineSearchedAt());
+        boolean searchActive = onlineSearchInFlight.contains(item.getId())
+            || (recoveryService != null && recoveryService.getSearchQueueService() != null
+                && recoveryService.getSearchQueueService().isReviewItemActive(item.getId()));
+        map.put("onlineSearchActive", searchActive);
         return map;
     }
 

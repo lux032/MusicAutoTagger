@@ -358,6 +358,8 @@ llm.webSearchEnabled=false
 llm.webSearch.maxTokens=4000
 # 联网搜索超时（秒）。搜索本身就要几十秒，且可能执行两轮。范围 30..900
 llm.webSearch.timeoutSeconds=180
+# 联网搜索队列最大并发数。默认 1（串行，避免触发 LLM / Tavily 限流）。范围 1..3
+llm.webSearch.maxConcurrency=1
 
 # ----------------------------------------
 # 联网搜索的实现来源：native | tavily

@@ -408,6 +408,9 @@ llm.webSearch.maxTokens=4000
 # Web search timeout in seconds. Search itself takes tens of seconds and may run two rounds.
 # Range 30..900
 llm.webSearch.timeoutSeconds=180
+# Max concurrent LLM web search tasks in the unified queue. Default 1 (serial) avoids rate limits.
+# Range 1..3
+llm.webSearch.maxConcurrency=1
 
 # ----------------------------------------
 # Web search backend: native | tavily

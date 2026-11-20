@@ -90,26 +90,60 @@ public class OnlineIdentificationService {
 
     public boolean isAvailable() { return searchClient().hasEnabledEndpoint(); }
 
+    public String activeProviderName() { return searchClient().name(); }
+
+    public record SearchProgress(
+        int stepIndex,
+        String stageCode,
+        int round,
+        int current,
+        int total,
+        int citations,
+        int percent,
+        String detail,
+        String reviewItemId,
+        int fileCount,
+        boolean round1Saved
+    ) {}
+
+    @FunctionalInterface
+    public interface SearchProgressListener {
+        void onProgress(SearchProgress progress);
+    }
+
     public ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover) throws Exception {
-        return search(albumRoot, sourceType, analyzeCover, null, null, null);
+        return search(albumRoot, sourceType, analyzeCover, null, null, null, null);
+    }
+
+    public ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover,
+                             SearchProgressListener progress) throws Exception {
+        return search(albumRoot, sourceType, analyzeCover, null, null, null, progress);
     }
 
     public ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover,
                              String displayName, File stagingDir) throws Exception {
-        return search(albumRoot, sourceType, analyzeCover, null, displayName, stagingDir);
+        return search(albumRoot, sourceType, analyzeCover, null, displayName, stagingDir, null);
     }
 
     /**
-     * 只为指定的已有条目搜索（后台自动搜索用）。条目已不在待确认时返回 null，绝不新建条目。
+     * 只为指定的已有条目搜索（后台自动搜索 / 待确认页队列用）。条目已不在待确认时返回 null，绝不新建条目。
      */
     public ReviewItem searchForExistingItem(String itemId, File albumRoot) throws Exception {
-        return search(albumRoot, null, false, itemId, null, null);
+        return search(albumRoot, null, false, itemId, null, null, null);
+    }
+
+    public ReviewItem searchForExistingItem(String itemId, File albumRoot, boolean analyzeCover,
+                                            SearchProgressListener progress) throws Exception {
+        return search(albumRoot, null, analyzeCover, itemId, null, null, progress);
     }
 
     private ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover,
-                              String targetItemId, String displayName, File stagingDir) throws Exception {
+                              String targetItemId, String displayName, File stagingDir,
+                              SearchProgressListener progress) throws Exception {
+        checkInterrupted();
         List<File> files = collect(albumRoot);
         if (files.isEmpty()) throw new IllegalArgumentException("recovery.no.audio.files");
+        emitProgress(progress, 0, "COLLECTING", 1, 0, files.size(), 0, 8, null, targetItemId, files.size(), false);
         String evidenceHash = evidenceHash(files);
         ReviewItem item = targetItemId != null
             ? reviewQueue.prepareOnlineSearchForItem(targetItemId, albumRoot.getAbsolutePath(), evidenceHash)
@@ -121,6 +155,8 @@ public class OnlineIdentificationService {
         }
 
         final String itemId = item.getId();
+        emitProgress(progress, 0, "COLLECTING", 1, files.size(), files.size(), 0, 14, null, itemId, files.size(), false);
+        checkInterrupted();
         List<Integer> durations = fingerprintService != null
             ? fingerprintService.extractDurationSequence(files)
             : List.of();
@@ -150,25 +186,48 @@ public class OnlineIdentificationService {
         // 第一轮结果立即持久化；只有证据不足才执行第二轮。
         // 同一次识别的两轮搜索必须用同一个实现：中途配置变更不应让第二轮换一套证据来源
         WebSearchClient client = searchClient();
-        WebSearchClient.SearchResponse first = client.search(SYSTEM, prompt);
+        checkInterrupted();
+        WebSearchClient.ProgressListener r1Progress = bridgeClientProgress(progress, 1, itemId, files.size(), false);
+        emitProgress(progress, 1, "tavily".equals(client.name()) ? "ROUND1_QUERIES" : "ROUND1_NATIVE_SEARCH",
+            1, 0, 0, 0, 22, null, itemId, files.size(), false);
+        WebSearchClient.SearchResponse first = client.search(SYSTEM, prompt, r1Progress);
+        checkInterrupted();
         Parsed parsed = parse(first);
+        emitProgress(progress, 2, "ROUND1_MATCHING", 1, 0, files.size(),
+            first.getCitations() == null ? 0 : first.getCitations().size(), 72, null, itemId, files.size(), false);
         matchAll(parsed, files, durations);
         if (!save(item, first, parsed, evidenceHash)) {
             return item;
         }
+        emitProgress(progress, 2, "ROUND1_SAVED", 1, files.size(), files.size(),
+            first.getCitations() == null ? 0 : first.getCitations().size(), 78, null, itemId, files.size(), true);
 
         if (parsed.candidates.isEmpty() || parsed.needsSecondRound) {
+            // 如果在第一轮完成后用户请求中止，直接保留已落盘的第一轮结果并退出
+            checkInterrupted();
             String secondPrompt = prompt + "\nFIRST ROUND FINDINGS:\n" + first.getText()
                 + "\nRun a second, narrower search using aliases, original-language names, catalog numbers, official pages, Discogs or VGMdb."
                 + " Return the same JSON schema.";
             try {
-                WebSearchClient.SearchResponse second = client.search(SYSTEM, secondPrompt);
+                WebSearchClient.ProgressListener r2Progress = bridgeClientProgress(progress, 2, itemId, files.size(), true);
+                emitProgress(progress, 3, "tavily".equals(client.name()) ? "ROUND2_QUERIES" : "ROUND2_NATIVE_SEARCH",
+                    2, 0, 0, parsed.clues.size(), 82, null, itemId, files.size(), true);
+                WebSearchClient.SearchResponse second = client.search(SYSTEM, secondPrompt, r2Progress);
+                checkInterrupted();
                 Parsed secondParsed = parse(second);
                 merge(parsed, secondParsed);
                 mergeEvidence(parsed.clues, second.getCitations());
+                emitProgress(progress, 3, "ROUND2_MATCHING", 2, 0, files.size(), parsed.clues.size(), 94, null, itemId, files.size(), true);
                 matchAll(parsed, files, durations);
                 save(item, second, parsed, evidenceHash);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
             } catch (LlmClient.LlmException e) {
+                if (Thread.currentThread().isInterrupted() || "interrupted".equals(e.getMessage())) {
+                    Thread.currentThread().interrupt();
+                    throw new InterruptedException("cancelled");
+                }
                 reviewQueue.updatePending(itemId, target -> {
                     appendResolutionNote(target, "第二轮联网搜索失败；已保留第一轮结果，可人工使用或重新搜索");
                     return true;
@@ -176,6 +235,54 @@ public class OnlineIdentificationService {
             }
         }
         return item;
+    }
+
+    private void checkInterrupted() throws InterruptedException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("cancelled");
+        }
+    }
+
+    private WebSearchClient.ProgressListener bridgeClientProgress(SearchProgressListener progress, int round,
+                                                                  String itemId, int fileCount, boolean round1Saved) {
+        if (progress == null) return null;
+        int stepIdx = round == 1 ? 1 : 3;
+        String prefix = round == 1 ? "ROUND1_" : "ROUND2_";
+        return (stage, current, total, citations, detail) -> {
+            String code;
+            int pct;
+            if ("GENERATING_QUERIES".equals(stage)) {
+                code = prefix + "QUERIES";
+                pct = round == 1 ? 24 : 83;
+            } else if ("WEB_SEARCH".equals(stage)) {
+                code = prefix + "WEB_SEARCH";
+                double frac = total > 0 ? Math.min(1.0, (double) current / total) : 0.5;
+                pct = round == 1 ? (int) (30 + frac * 26) : (int) (85 + frac * 6);
+            } else if ("SUMMARIZING".equals(stage)) {
+                code = prefix + "SUMMARIZING";
+                pct = round == 1 ? 64 : 92;
+            } else if ("NATIVE_RETRY".equals(stage)) {
+                code = prefix + "NATIVE_RETRY";
+                pct = round == 1 ? 45 : 88;
+            } else {
+                code = prefix + "NATIVE_SEARCH";
+                pct = round == 1 ? 40 : 86;
+            }
+            emitProgress(progress, stepIdx, code, round, current, total, citations, pct, detail, itemId, fileCount, round1Saved);
+        };
+    }
+
+    private void emitProgress(SearchProgressListener progress, int stepIndex, String stageCode, int round,
+                              int current, int total, int citations, int percent, String detail,
+                              String reviewItemId, int fileCount, boolean round1Saved) {
+        if (progress != null) {
+            try {
+                progress.onProgress(new SearchProgress(stepIndex, stageCode, round, current, total,
+                    citations, percent, detail, reviewItemId, fileCount, round1Saved));
+            } catch (Exception ignored) {
+                // ignore
+            }
+        }
     }
 
     private String buildPrompt(File root, List<File> files, List<Integer> durations, boolean analyzeCover) {

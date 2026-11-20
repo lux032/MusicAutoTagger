@@ -70,19 +70,40 @@ public class TavilyWebSearchClient implements WebSearchClient {
 
     @Override
     public SearchResponse search(String systemPrompt, String userPrompt) throws LlmClient.LlmException {
+        return search(systemPrompt, userPrompt, null);
+    }
+
+    @Override
+    public SearchResponse search(String systemPrompt, String userPrompt, ProgressListener progress)
+            throws LlmClient.LlmException {
         if (!hasEnabledEndpoint()) {
             throw new LlmClient.LlmException("llm.web.search.unavailable: tavily.apiKey or llm endpoint missing");
         }
+        checkNotInterrupted();
 
+        notifyProgress(progress, "GENERATING_QUERIES", 0, 0, 0, null);
         List<String> queries = generateQueries(userPrompt);
+        checkNotInterrupted();
+
         SearchResponse result = new SearchResponse();
         result.setProvider("tavily");
 
         List<String> failures = new ArrayList<>();
-        for (String query : queries) {
+        int totalQueries = queries.size();
+        for (int i = 0; i < totalQueries; i++) {
+            checkNotInterrupted();
+            String query = queries.get(i);
+            notifyProgress(progress, "WEB_SEARCH", i + 1, totalQueries, result.getCitations().size(), query);
             try {
                 collect(query, result);
+                notifyProgress(progress, "WEB_SEARCH", i + 1, totalQueries, result.getCitations().size(), query);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new LlmClient.LlmException("interrupted", interrupted);
             } catch (Exception e) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new LlmClient.LlmException("interrupted", e);
+                }
                 // 单条查询失败不影响整体：只要还有别的查询拿到结果就继续
                 failures.add(query + " -> " + e.getMessage());
                 log.warn("Tavily 检索失败 [{}]: {}", query, e.getMessage());
@@ -93,6 +114,9 @@ public class TavilyWebSearchClient implements WebSearchClient {
             throw new LlmClient.LlmException("llm.web.search.no.results: " + String.join(" | ", failures));
         }
 
+        checkNotInterrupted();
+        notifyProgress(progress, "SUMMARIZING", totalQueries, totalQueries, result.getCitations().size(), null);
+
         // 归纳阶段走普通 chat completions，不需要端点支持任何工具协议
         String prompt = userPrompt + "\n\n" + renderEvidence(result.getCitations());
         LlmClient.LlmResponse summary = llmClient.complete(
@@ -102,6 +126,22 @@ public class TavilyWebSearchClient implements WebSearchClient {
         result.setModel(summary.getModel());
         result.setProvider("tavily+" + summary.getProvider());
         return result;
+    }
+
+    private void checkNotInterrupted() throws LlmClient.LlmException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new LlmClient.LlmException("interrupted");
+        }
+    }
+
+    private void notifyProgress(ProgressListener progress, String stage, int current, int total, int citations, String detail) {
+        if (progress != null) {
+            try {
+                progress.onProgress(stage, current, total, citations, detail);
+            } catch (Exception ignored) {
+                // 进度上报不影响主搜索链路
+            }
+        }
     }
 
     // ==================== 第一步：生成检索词 ====================

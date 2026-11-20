@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>重新识别 - Music Auto Tagger</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=10">
+    <link rel="stylesheet" href="app.css?v=11">
     <script src="i18n.js?v=1"></script>
     <script src="shell.js?v=1"></script>
+    <script src="search-queue.js?v=1"></script>
     <style>
-        .tabs { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 14px; max-width: 100%; overflow-x: auto; }
+        .tabs { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; max-width: 100%; overflow-x: auto; }
 
         .tab {
             border: none;
@@ -18,20 +19,54 @@
             font: inherit;
             font-size: 13px;
             font-weight: 600;
-            padding: 6px 16px;
+            padding: 6px 14px;
             border-radius: 6px;
             cursor: pointer;
             white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
             transition: .15s;
         }
         .tab:hover { color: var(--text); }
-        .list-tools { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+        .tab .count { font-size: 11.5px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+        .tab.active { background: #fff; color: var(--text); box-shadow: var(--shadow-sm); }
+
+        .list-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
         .find-input {
             flex: 1 1 180px; max-width: 280px; min-width: 0; border: 1px solid var(--border-strong); border-radius: 8px;
             padding: 6px 10px; min-height: 34px; font: inherit; font-size: 13px; color: var(--text); background: #fff;
         }
         .find-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
-        .tab.active { background: #fff; color: var(--text); box-shadow: var(--shadow-sm); }
+        .select-all-wrap {
+            margin-left: auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12.5px;
+            color: var(--text-soft);
+            cursor: pointer;
+            user-select: none;
+        }
+        .select-all-wrap[hidden] { display: none; }
+
+        .bulk-bar {
+            background: var(--primary-soft);
+            border: 1px solid var(--primary-line);
+            border-radius: var(--radius);
+            padding: 9px 14px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            font-size: 13px;
+            color: var(--primary-dark);
+            animation: view-in .16s ease-out;
+        }
+        .bulk-bar[hidden] { display: none; }
+        .bulk-bar strong { font-variant-numeric: tabular-nums; }
+        .bulk-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
         .notice {
             background: var(--primary-soft);
@@ -41,47 +76,98 @@
             font-size: 12.5px;
             color: #24426f;
             line-height: 1.7;
-            margin-bottom: 16px;
+            margin-bottom: 14px;
         }
 
-        .items { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+        .items { display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; }
 
         .item {
             border: 1px solid var(--border);
             border-radius: var(--radius);
-            padding: 14px 16px;
-            display: flex;
-            justify-content: space-between;
-            gap: 16px;
+            padding: 13px 15px;
+            display: grid;
+            grid-template-columns: 20px minmax(0, 1fr) auto;
+            gap: 12px;
             align-items: center;
-            flex-wrap: wrap;
             background: #fff;
-            transition: box-shadow .15s ease;
+            transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
         }
-        .item:hover { box-shadow: var(--shadow); border-color: var(--border-strong); }
+        .item.no-check { grid-template-columns: minmax(0, 1fr) auto; }
+        .item:hover { box-shadow: var(--shadow-sm); border-color: var(--border-strong); }
+        .item.is-selected { background: var(--primary-soft); border-color: var(--primary-line); }
+        .item.is-running { background: #fafcff; border-color: var(--primary-line); }
+        .item.is-queued { background: #fffdf8; border-color: #f1d3a6; }
+        .item.is-ready { background: #fafdfb; border-color: #bfe3cc; }
+        .item input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary); }
+        .item-main { min-width: 0; }
+        .item-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
         .item .name { font-weight: 650; word-break: break-all; font-size: 13.5px; }
-        .item .meta { font-size: 12px; color: var(--text-mute); margin-top: 5px; word-break: break-all; }
+        .item .meta { font-size: 12px; color: var(--text-mute); margin-top: 4px; word-break: break-all; font-variant-numeric: tabular-nums; }
         .item .meta.warn { color: var(--danger); }
-        .item-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
+        .item-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+        .rec-progress {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            display: grid;
+            gap: 6px;
+        }
+        .item.is-running .rec-progress { background: #f3f7ff; border-color: var(--primary-line); }
+        .rec-progress-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--text-soft);
+            flex-wrap: wrap;
+            font-variant-numeric: tabular-nums;
+        }
+        .rec-progress-row strong { color: var(--primary-dark); }
+
+        .dialog-list {
+            margin-top: 10px;
+            padding: 10px 12px;
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            max-height: 170px;
+            overflow-y: auto;
+            font-size: 12.5px;
+            display: grid;
+            gap: 4px;
+            color: var(--text);
+        }
+        .dialog-list[hidden] { display: none; }
 
         .job {
             padding: 11px 12px;
             border-bottom: 1px solid var(--border);
             font-size: 13px;
             display: flex;
-            align-items: flex-start;
-            gap: 10px;
+            align-items: center;
+            gap: 8px 10px;
             flex-wrap: wrap;
         }
         .job:last-child { border-bottom: none; }
         .job .job-name { font-weight: 650; word-break: break-all; }
         .job .meta { font-size: 12px; color: var(--text-mute); width: 100%; }
+        .job .job-jump { margin-left: auto; }
 
         .job-status { font-weight: 600; }
-        .RUNNING .job-status { color: var(--warn); }
+        .QUEUED .job-status { color: var(--warn); }
+        .RUNNING .job-status { color: var(--primary-dark); }
         .SUCCEEDED .job-status { color: var(--success); }
         .WAITING_REVIEW .job-status { color: var(--info); }
         .FAILED .job-status { color: var(--danger); }
+
+        @media (max-width: 720px) {
+            .item { grid-template-columns: 20px minmax(0, 1fr); }
+            .item.no-check { grid-template-columns: minmax(0, 1fr); }
+            .item-actions { grid-column: 1 / -1; justify-content: flex-start; }
+        }
     </style>
 </head>
 <body>
@@ -132,6 +218,10 @@
             <p class="page-desc" data-i18n="recovery.page.subtitle">手动重试部分识别与识别失败的文件夹，任务在后台执行</p>
         </div>
         <div class="page-actions">
+            <button class="btn ghost" type="button" onclick="SearchQueue.openDrawer()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                <span data-i18n="recovery.open.queue">查看队列详情</span>
+            </button>
             <button class="btn ghost" onclick="loadAll()">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                 <span data-i18n="recovery.nav.refresh">刷新</span>
@@ -141,13 +231,27 @@
 
     <section class="card" style="margin-bottom: 18px;">
         <div class="list-tools">
-        <div class="tabs">
-            <button class="tab active" id="partialTab" onclick="setTab('PARTIAL')"><span data-i18n="recovery.tab.partial">部分识别</span><span class="count" id="partialCount">0</span></button>
-            <button class="tab" id="failedTab" onclick="setTab('FAILED')"><span data-i18n="recovery.tab.failed">识别失败</span><span class="count" id="failedCount">0</span></button>
-            <button class="tab" id="trashTab" onclick="setTab('TRASH')"><span data-i18n="recovery.tab.trash">回收站</span><span class="count" id="trashCount">0</span></button>
-        </div>
+            <div class="tabs">
+                <button class="tab active" id="partialTab" onclick="setTab('PARTIAL')"><span data-i18n="recovery.tab.partial">部分识别</span><span class="count" id="partialCount">0</span></button>
+                <button class="tab" id="failedTab" onclick="setTab('FAILED')"><span data-i18n="recovery.tab.failed">识别失败</span><span class="count" id="failedCount">0</span></button>
+                <button class="tab" id="trashTab" onclick="setTab('TRASH')"><span data-i18n="recovery.tab.trash">回收站</span><span class="count" id="trashCount">0</span></button>
+            </div>
             <input id="findInput" class="find-input" type="text" autocomplete="off" spellcheck="false"
                    placeholder="按名称筛选" data-i18n-placeholder="recovery.search.placeholder" aria-label="按名称筛选">
+            <label class="select-all-wrap" id="selectAllWrap">
+                <input type="checkbox" id="selectAllCheck">
+                <span data-i18n="recovery.select.all">全选未在队列中的项目</span>
+            </label>
+        </div>
+        <div class="bulk-bar" id="bulkBar" hidden>
+            <span id="bulkLabel"></span>
+            <div class="bulk-actions">
+                <button type="button" class="btn plain sm" id="bulkClearBtn" data-i18n="recovery.bulk.clear">取消选择</button>
+                <button type="button" class="btn primary sm" id="bulkOnlineBtn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                    <span data-i18n="recovery.bulk.online">批量加入联网搜索队列</span>
+                </button>
+            </div>
         </div>
         <div class="notice">
             <div data-i18n="recovery.notice.1">「部分识别」与「识别失败」通常是互斥状态：完整写入部分识别目录后不再重复生成失败副本；处理异常、目标撞名或 LLM 自动归档时仍保留失败副本供复核。</div>
@@ -179,11 +283,12 @@
 </main>
 </div>
 
-<!-- 通用确认弹窗：替代原来的 confirm()，可以放多行说明 -->
+<!-- 通用确认弹窗 -->
 <div class="overlay" id="confirmDialog">
-    <div class="dialog" style="width: min(480px, 96vw);">
+    <div class="dialog" style="width: min(490px, 96vw);">
         <div class="dialog-title" id="confirmTitle" data-i18n="recovery.confirm.title">确认操作</div>
         <div class="dialog-subtitle" id="confirmBody" style="white-space: pre-line;"></div>
+        <div class="dialog-list" id="confirmList" hidden></div>
         <div class="dialog-actions">
             <button class="btn ghost" onclick="closeConfirm(false)" data-i18n="web.cancel">取消</button>
             <button class="btn primary" id="confirmOkBtn" onclick="closeConfirm(true)" data-i18n="recovery.confirm.ok">确认</button>
@@ -195,7 +300,8 @@
 
 <script>
     let csrfToken = null, currentTab = 'PARTIAL', items = [], trashItems = [], trashCountValue = 0, onlineSearchAvailable = false;
-    let renderedList = [], renderedTrash = [], lastRunningCount = 0, lastWaitingCount = 0;
+    let renderedList = [], renderedTrash = [], lastActiveJobsCount = 0, lastWaitingCount = 0;
+    const selectedKeys = new Set();
     const T = (k, d) => I18n.t(k, d);
     const TF = (k, ...a) => I18n.tf(k, ...a);
 
@@ -213,12 +319,20 @@
         'trash.id.invalid': 'recovery.error.id.invalid'
     };
 
-    // ---------- 弹窗：用同一个 Promise 化的确认框替换原生 confirm ----------
-    let confirmResolver = null;
+    const itemKey = i => i.sourceType + '\n' + i.relativePath;
 
-    function ask(title, body, okLabel, danger) {
+    let confirmResolver = null;
+    function ask(title, body, okLabel, danger = false, listItems = []) {
         document.getElementById('confirmTitle').textContent = title;
         document.getElementById('confirmBody').textContent = body || '';
+        const listEl = document.getElementById('confirmList');
+        if (listItems && listItems.length) {
+            listEl.hidden = false;
+            listEl.innerHTML = listItems.map((line, i) => `<div><span style="color:var(--text-mute);font-family:var(--mono)">${i + 1}.</span> ${esc(line)}</div>`).join('');
+        } else {
+            listEl.hidden = true;
+            listEl.innerHTML = '';
+        }
         const ok = document.getElementById('confirmOkBtn');
         ok.textContent = okLabel || T('recovery.confirm.ok');
         ok.className = 'btn ' + (danger ? 'danger' : 'primary');
@@ -239,14 +353,15 @@
         if (e.target.id === 'confirmDialog') closeConfirm(false);
     });
 
-    // ---------- 基础 ----------
     async function init() {
         await I18n.load();
         I18n.apply();
         const r = await fetch('/api/auth/status'), d = await r.json();
         if (!d.authenticated) { location.href = '/index.html'; return; }
         csrfToken = d.csrfToken;
-        // 待确认页搜索时会带着 #find=<词> 跳过来：预填筛选词，并切到有匹配的那个 Tab
+        if (window.SearchQueue) {
+            SearchQueue.init({ getCsrf: () => csrfToken, onToast: toast });
+        }
         const find = (new URLSearchParams(location.hash.replace(/^#/, '')).get('find') || '').trim();
         if (find) {
             findQuery = find.toLowerCase();
@@ -256,11 +371,44 @@
             findQuery = e.target.value.trim().toLowerCase();
             if (currentTab === 'TRASH') renderTrash(); else render();
         });
+        document.getElementById('selectAllCheck').addEventListener('change', e => {
+            for (const item of selectableVisibleItems()) {
+                const k = itemKey(item);
+                if (e.target.checked) selectedKeys.add(k); else selectedKeys.delete(k);
+            }
+            render();
+        });
+        document.getElementById('bulkClearBtn').addEventListener('click', () => {
+            selectedKeys.clear();
+            render();
+        });
+        document.getElementById('bulkOnlineBtn').addEventListener('click', enqueueBatchOnline);
+
+        document.getElementById('list').addEventListener('change', e => {
+            const cb = e.target.closest('input[data-select-idx]');
+            if (!cb) return;
+            const item = renderedList[Number(cb.dataset.selectIdx)];
+            if (!item) return;
+            if (cb.checked) selectedKeys.add(itemKey(item)); else selectedKeys.delete(itemKey(item));
+            render();
+        });
         document.getElementById('list').addEventListener('click', e => {
             const btn = e.target.closest('button[data-action]');
             if (!btn || btn.disabled) return;
             const idx = Number(btn.dataset.idx);
             const action = btn.dataset.action;
+            const taskId = btn.dataset.taskId;
+            const reviewId = btn.dataset.reviewId;
+
+            if (action === 'sq-progress' && taskId) { SearchQueue.openDrawer(taskId); return; }
+            if (action === 'sq-cancel' && taskId) { SearchQueue.cancel(taskId); return; }
+            if (action === 'sq-prioritize' && taskId) { SearchQueue.prioritize(taskId); return; }
+            if (action === 'sq-retry' && taskId) { SearchQueue.retry(taskId); return; }
+            if (action === 'sq-goto' && reviewId) {
+                if (taskId) SearchQueue.markRead(taskId);
+                location.href = 'review.html#item=' + encodeURIComponent(reviewId);
+                return;
+            }
             if (action === 'restore-trash' || action === 'delete-trash') {
                 const entry = renderedTrash[idx];
                 if (!entry) return;
@@ -271,16 +419,24 @@
             const item = renderedList[idx];
             if (!item) return;
             if (action === 'retry-reidentify') retryMode(item.sourceType, item.relativePath, 'REIDENTIFY');
-            else if (action === 'retry-online') onlineSearch(item.sourceType, item.relativePath, item.fileCount);
+            else if (action === 'retry-online') enqueueSingleOnline(item);
             else if (action === 'retry-artist') retryMode(item.sourceType, item.relativePath, 'LOCAL_ARTIST_MATCH');
             else if (action === 'dismiss') dismissItem(item.sourceType, item.relativePath, item.name);
         });
+
+        window.addEventListener('mat:search-queue', e => {
+            if (currentTab !== 'TRASH') render();
+            if (e.detail?.newlyFinished?.length) loadAll();
+        });
+
         await loadAll();
         if (find && !matchesFind(items.filter(i => i.sourceType === currentTab)).length) {
             const other = matchesFind(items)[0];
             if (other) setTab(other.sourceType);
         }
-        setInterval(loadJobs, 3000);
+        setInterval(() => {
+            if (!document.hidden) loadJobs();
+        }, 4000);
     }
 
     async function api(path, opt = {}) {
@@ -296,13 +452,14 @@
 
     function setTab(tab) {
         currentTab = tab;
+        selectedKeys.clear();
         for (const [id, val] of [['partialTab', 'PARTIAL'], ['failedTab', 'FAILED'], ['trashTab', 'TRASH']]) {
             document.getElementById(id).classList.toggle('active', tab === val);
         }
+        document.getElementById('selectAllWrap').hidden = tab === 'TRASH' || !onlineSearchAvailable;
         if (tab === 'TRASH') loadTrash(); else render();
     }
 
-    // ---------- 回收站 ----------
     function updateTabCounts() {
         const partial = items.filter(i => i.sourceType === 'PARTIAL').length;
         const failed = items.filter(i => i.sourceType === 'FAILED').length;
@@ -327,6 +484,8 @@
     }
 
     function renderTrash() {
+        document.getElementById('bulkBar').hidden = true;
+        document.getElementById('selectAllWrap').hidden = true;
         const el = document.getElementById('list');
         const list = matchesFind(trashItems);
         renderedTrash = list;
@@ -336,8 +495,8 @@
             return;
         }
         el.innerHTML = list.map((i, idx) => `
-            <div class="item">
-                <div>
+            <div class="item no-check">
+                <div class="item-main">
                     <div class="name">${esc(i.relativePath || i.id)}</div>
                     <div class="meta">
                         ${i.sourceType === 'OUTPUT' ? esc(T('recovery.source.output')) : i.sourceType ? esc(i.sourceType) : esc(T('recovery.source.unknown'))} · ${esc(TF('recovery.audio.files', i.fileCount))} ·
@@ -355,9 +514,7 @@
     }
 
     async function restoreTrash(id, name) {
-        const ok = await ask(T('recovery.restore.title'),
-            TF('recovery.restore.body', name),
-            T('recovery.restore'));
+        const ok = await ask(T('recovery.restore.title'), TF('recovery.restore.body', name), T('recovery.restore'));
         if (!ok) return;
         try {
             await api('/api/recovery/trash-restore', { method: 'POST', body: JSON.stringify({ id }) });
@@ -378,7 +535,6 @@
         } catch (e) { toast(TF('recovery.delete.failed', e.message)); }
     }
 
-    // ---------- 列表与任务 ----------
     async function loadAll() {
         try {
             const d = await api('/api/recovery/list');
@@ -388,7 +544,7 @@
             updateTabCounts();
             render();
             const allJobs = d.jobs || [];
-            lastRunningCount = allJobs.filter(j => j.status === 'RUNNING').length;
+            lastActiveJobsCount = allJobs.filter(j => j.status === 'RUNNING' || j.status === 'QUEUED').length;
             lastWaitingCount = allJobs.filter(j => j.status === 'WAITING_REVIEW').length;
             renderJobs(allJobs);
             if (window.Shell) Shell.refreshCounts();
@@ -400,10 +556,10 @@
             const d = await api('/api/recovery/jobs');
             const jobs = d.jobs || [];
             renderJobs(jobs);
-            const curRunning = jobs.filter(j => j.status === 'RUNNING').length;
+            const curActive = jobs.filter(j => j.status === 'RUNNING' || j.status === 'QUEUED').length;
             const curWaiting = jobs.filter(j => j.status === 'WAITING_REVIEW').length;
-            const changed = curRunning < lastRunningCount || curWaiting < lastWaitingCount;
-            lastRunningCount = curRunning;
+            const changed = curActive < lastActiveJobsCount || curWaiting < lastWaitingCount;
+            lastActiveJobsCount = curActive;
             lastWaitingCount = curWaiting;
             if (changed) loadAll();
         } catch (e) { /* 轮询失败静默重试 */ }
@@ -416,35 +572,124 @@
             .some(v => String(v || '').toLowerCase().includes(findQuery)));
     }
 
+    function searchTaskFor(item) {
+        return window.SearchQueue ? SearchQueue.findForRecovery(item.sourceType, item.relativePath) : null;
+    }
+
+    function isItemBusy(item) {
+        const task = searchTaskFor(item);
+        return !!item.running || (task && (task.status === 'RUNNING' || task.status === 'QUEUED'));
+    }
+
+    function selectableVisibleItems() {
+        const inTab = items.filter(i => i.sourceType === currentTab);
+        return matchesFind(inTab).filter(i => onlineSearchAvailable && !isItemBusy(i));
+    }
+
     function render() {
         if (currentTab === 'TRASH') { renderTrash(); return; }
         const inTab = items.filter(i => i.sourceType === currentTab);
         const list = matchesFind(inTab);
         renderedList = list;
+
+        const selectable = selectableVisibleItems();
+        const selectableSet = new Set(selectable.map(itemKey));
+        for (const k of [...selectedKeys]) {
+            if (!selectableSet.has(k)) selectedKeys.delete(k);
+        }
+
+        const selectAllWrap = document.getElementById('selectAllWrap');
+        selectAllWrap.hidden = !onlineSearchAvailable || !list.length;
+        const selectAllCheck = document.getElementById('selectAllCheck');
+        selectAllCheck.checked = selectable.length > 0 && selectable.every(i => selectedKeys.has(itemKey(i)));
+        selectAllCheck.disabled = selectable.length === 0;
+
+        const bulkBar = document.getElementById('bulkBar');
+        bulkBar.hidden = selectedKeys.size === 0;
+        document.getElementById('bulkLabel').textContent = TF('recovery.bulk.selected', selectedKeys.size);
+
         const el = document.getElementById('list');
         if (!list.length) {
             el.innerHTML = `<div class="empty">${esc(inTab.length && findQuery
                 ? TF('recovery.search.empty', document.getElementById('findInput').value.trim()) : T('recovery.empty'))}</div>`;
             return;
         }
-        el.innerHTML = list.map((i, idx) => `
-            <div class="item ${i.sourceType === 'FAILED' ? 'failed' : ''}">
-                <div>
-                    <div class="name">${esc(i.name)}</div>
+        const snap = window.SearchQueue ? SearchQueue.getSnapshot() : null;
+        const maxC = snap?.maxConcurrency || 1;
+
+        el.innerHTML = list.map((i, idx) => {
+            const task = searchTaskFor(i);
+            const isRun = task && task.status === 'RUNNING';
+            const isWait = task && task.status === 'QUEUED';
+            const isOk = task && task.status === 'SUCCEEDED';
+            const isFail = task && (task.status === 'FAILED' || task.status === 'CANCELLED');
+            const locked = isRun || isWait || !!i.running;
+            const checked = selectedKeys.has(itemKey(i));
+
+            let cls = 'item' + (onlineSearchAvailable ? '' : ' no-check');
+            if (checked) cls += ' is-selected';
+            else if (isRun) cls += ' is-running';
+            else if (isWait) cls += ' is-queued';
+            else if (isOk) cls += ' is-ready';
+
+            let pillHtml = '';
+            if (isRun) {
+                const sec = SearchQueue.elapsedSeconds(task);
+                pillHtml = `<span class="sq-pill run"><span class="sq-spinner" style="width:11px;height:11px;border-width:1.8px"></span>${esc(T('sq.status.running'))} · <span data-sq-elapsed-short="${esc(task.id)}">${esc(TF('sq.elapsed', sec))}</span></span>`;
+            } else if (isWait) {
+                pillHtml = `<span class="sq-pill wait">${esc(TF('sq.queue.pos', task.queuePosition || 1))}</span>`;
+            } else if (isOk) {
+                pillHtml = `<span class="sq-pill ok">${esc(T('sq.badge.ready'))}</span>`;
+            } else if (isFail) {
+                pillHtml = `<span class="sq-pill fail">${esc(task.status === 'CANCELLED' ? T('sq.status.cancelled') : T('sq.badge.failed'))}</span>`;
+            }
+
+            let progressHtml = '';
+            if (isRun) {
+                progressHtml = `<div class="rec-progress">
+                    <div class="rec-progress-row">
+                        <strong>${esc(SearchQueue.stageText(task))}</strong>
+                        <span style="margin-left:auto">${Math.min(100, Math.max(0, Number(task.percent) || 0))}%</span>
+                    </div>
+                    ${SearchQueue.stepTrackHtml(task)}
+                </div>`;
+            } else if (isWait) {
+                const ahead = Math.max(0, (task.queuePosition || 1) - 1);
+                progressHtml = `<div class="rec-progress"><div class="rec-progress-row">${esc(TF('sq.queue.ahead', ahead, maxC))}</div></div>`;
+            } else if (isOk || isFail) {
+                progressHtml = `<div class="rec-progress"><div class="rec-progress-row">${esc(SearchQueue.resultSummary(task))}</div></div>`;
+            }
+
+            let actions = '';
+            if (isRun) {
+                actions = `<button class="btn soft sm" data-action="sq-progress" data-task-id="${esc(task.id)}">${esc(T('sq.act.view.progress'))}</button>
+                    <button class="btn danger-soft sm" data-action="sq-cancel" data-task-id="${esc(task.id)}" ${task.cancelRequested ? 'disabled' : ''}>${esc(task.cancelRequested ? T('sq.act.aborting') : T('sq.act.abort'))}</button>`;
+            } else if (isWait) {
+                actions = `${(task.queuePosition || 1) > 1 ? `<button class="btn ghost sm" data-action="sq-prioritize" data-task-id="${esc(task.id)}">${esc(T('sq.act.prioritize'))}</button>` : ''}
+                    <button class="btn danger-soft sm" data-action="sq-cancel" data-task-id="${esc(task.id)}">${esc(T('sq.act.remove'))}</button>`;
+            } else if (isOk && task.reviewItemId) {
+                actions = `<button class="btn primary sm" data-action="sq-goto" data-review-id="${esc(task.reviewItemId)}" data-task-id="${esc(task.id)}">${esc(T('sq.act.goto.review'))}</button>
+                    <button class="btn ghost sm" ${locked || !onlineSearchAvailable ? 'disabled' : ''} data-action="retry-online" data-idx="${idx}">${esc(T('sq.act.re_search'))}</button>
+                    <button class="btn ghost sm" ${locked ? 'disabled' : ''} data-action="dismiss" data-idx="${idx}">${esc(T('recovery.btn.dismiss'))}</button>`;
+            } else {
+                actions = `${isFail ? `<button class="btn soft sm" data-action="sq-retry" data-task-id="${esc(task.id)}">${esc(T('sq.act.retry.search'))}</button>`
+                        : `<button class="btn soft sm" ${locked || !onlineSearchAvailable ? 'disabled' : ''} data-action="retry-online" data-idx="${idx}">${esc(T('recovery.btn.online'))}</button>`}
+                    <button class="btn ghost sm" ${locked ? 'disabled' : ''} data-action="retry-reidentify" data-idx="${idx}">${esc(T('recovery.btn.reidentify'))}</button>
+                    ${i.sourceType === 'PARTIAL' ? `<button class="btn ghost sm" ${locked ? 'disabled' : ''} data-action="retry-artist" data-idx="${idx}">${esc(T('recovery.btn.artist.only'))}</button>` : ''}
+                    <button class="btn ghost sm" ${locked ? 'disabled' : ''} data-action="dismiss" data-idx="${idx}">${esc(T('recovery.btn.dismiss'))}</button>`;
+            }
+
+            return `<div class="${cls}">
+                ${onlineSearchAvailable ? `<input type="checkbox" data-select-idx="${idx}" ${checked ? 'checked' : ''} ${locked ? 'disabled' : ''}>` : ''}
+                <div class="item-main">
+                    <div class="item-head"><span class="name">${esc(i.name)}</span>${pillHtml}</div>
                     <div class="meta">${esc(i.directory ? T('recovery.item.folder') : T('recovery.item.file'))} · ${esc(TF('recovery.audio.files', i.fileCount))} · ${esc(i.path)}</div>
                     ${i.autoArchivedPath ? `<div class="meta">${esc(TF('recovery.auto.archived', i.autoArchivedPath))}</div>` : ''}
+                    ${progressHtml}
                 </div>
-                <div class="item-actions">
-                    <button class="btn primary sm" ${i.running ? 'disabled' : ''}
-                        data-action="retry-reidentify" data-idx="${idx}">${esc(T('recovery.btn.reidentify'))}</button>
-                    <button class="btn soft sm" ${i.running || !onlineSearchAvailable ? 'disabled' : ''}
-                        data-action="retry-online" data-idx="${idx}">${esc(T('recovery.btn.online'))}</button>
-                    ${i.sourceType === 'PARTIAL' ? `<button class="btn ghost sm" ${i.running ? 'disabled' : ''}
-                        data-action="retry-artist" data-idx="${idx}">${esc(T('recovery.btn.artist.only'))}</button>` : ''}
-                    <button class="btn ghost sm" ${i.running ? 'disabled' : ''}
-                        data-action="dismiss" data-idx="${idx}">${esc(T('recovery.btn.dismiss'))}</button>
-                </div>
-            </div>`).join('');
+                <div class="item-actions">${actions}</div>
+            </div>`;
+        }).join('');
     }
 
     function humanError(message) {
@@ -453,26 +698,72 @@
         return mismatch ? TF('recovery.workspace.count.mismatch', mismatch[1], mismatch[2]) : message;
     }
 
+    function modeBadge(j) {
+        if (j.mode === 'ONLINE_SEARCH') return T('recovery.job.online');
+        if (j.mode === 'LOCAL_ARTIST_MATCH') return T('recovery.job.artist');
+        return j.useLlm ? T('recovery.job.llm') : T('recovery.job.reidentify');
+    }
+
     function renderJobs(jobs) {
         const el = document.getElementById('jobs');
         if (!jobs.length) { el.innerHTML = `<div class="empty">${esc(T('recovery.no.jobs'))}</div>`; return; }
         el.innerHTML = jobs.slice(0, 20).map(j => `
-            <div class="job ${j.status}">
+            <div class="job ${esc(j.status)}">
                 <span class="job-name">${esc(j.relativePath)}</span>
-                <span class="badge">${esc(j.useLlm ? T('recovery.job.llm') : T('recovery.job.reidentify'))}</span>
+                <span class="badge">${esc(modeBadge(j))}</span>
                 <span class="job-status">${esc(status(j.status))}</span>
+                ${j.reviewItemId && j.status === 'WAITING_REVIEW'
+                    ? `<a class="btn soft xs job-jump" href="review.html#item=${encodeURIComponent(j.reviewItemId)}">${esc(T('sq.act.goto.review'))}</a>` : ''}
                 <div class="meta">${esc(humanError(j.message) || T('recovery.job.processing'))}</div>
             </div>`).join('');
     }
 
     function status(s) {
         const keys = {
+            QUEUED: 'recovery.status.queued',
             RUNNING: 'recovery.status.running',
             SUCCEEDED: 'recovery.status.succeeded',
             WAITING_REVIEW: 'recovery.status.waiting',
             FAILED: 'recovery.status.failed'
         };
         return keys[s] ? T(keys[s]) : s;
+    }
+
+    async function enqueueSingleOnline(item) {
+        try {
+            const res = await SearchQueue.enqueueRecovery([{ sourceType: item.sourceType, relativePath: item.relativePath }]);
+            if ((res.enqueued || []).length) toast(TF('sq.toast.enqueued', item.name || item.relativePath));
+            else toast(T('sq.toast.already'));
+            render();
+        } catch (e) {
+            toast(TF('recovery.submit.failed', errorKeys[e.message] ? T(errorKeys[e.message]) : e.message));
+        }
+    }
+
+    async function enqueueBatchOnline() {
+        const picked = items.filter(i => selectedKeys.has(itemKey(i)));
+        if (!picked.length) return;
+        const maxC = SearchQueue.getSnapshot()?.maxConcurrency || 1;
+        const ok = await ask(
+            TF('recovery.bulk.confirm.title', picked.length),
+            TF('recovery.bulk.confirm.body', maxC),
+            TF('recovery.bulk.confirm.ok', picked.length),
+            false,
+            picked.map(i => `${i.name} (${TF('recovery.audio.files', i.fileCount)})`)
+        );
+        if (!ok) return;
+        try {
+            const res = await SearchQueue.enqueueRecovery(
+                picked.map(i => ({ sourceType: i.sourceType, relativePath: i.relativePath }))
+            );
+            selectedKeys.clear();
+            const okCnt = (res.enqueued || []).length;
+            const skipCnt = (res.skipped || []).length;
+            toast(skipCnt ? TF('sq.toast.enqueued.batch.skipped', okCnt, skipCnt) : TF('sq.toast.enqueued.batch', okCnt));
+            render();
+        } catch (e) {
+            toast(TF('recovery.submit.failed', errorKeys[e.message] ? T(errorKeys[e.message]) : e.message));
+        }
     }
 
     async function retryMode(sourceType, relativePath, mode, analyzeCover = false) {
@@ -486,21 +777,6 @@
                 body: JSON.stringify({ sourceType, relativePath, mode, analyzeCover })
             });
             toast(T('recovery.submitted'));
-            loadAll();
-        } catch (e) { toast(TF('recovery.submit.failed', e.message)); }
-    }
-
-    async function onlineSearch(sourceType, relativePath, fileCount) {
-        const ok = await ask(T('recovery.online.title'),
-            TF('recovery.online.body', fileCount),
-            T('recovery.online.start'));
-        if (!ok) return;
-        try {
-            await api('/api/recovery/retry', {
-                method: 'POST',
-                body: JSON.stringify({ sourceType, relativePath, mode: 'ONLINE_SEARCH', analyzeCover: false })
-            });
-            toast(T('recovery.online.submitted'));
             loadAll();
         } catch (e) { toast(TF('recovery.submit.failed', e.message)); }
     }
@@ -524,7 +800,8 @@
         const e = document.getElementById('toast');
         e.textContent = t;
         e.style.display = 'block';
-        setTimeout(() => e.style.display = 'none', 4500);
+        clearTimeout(e._t);
+        e._t = setTimeout(() => { e.style.display = 'none'; }, 4200);
     }
 
     function esc(t) {

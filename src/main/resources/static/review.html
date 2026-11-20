@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>待人工确认 - Music Auto Tagger</title>
     <link rel="icon" href="logo.png" type="image/png">
-    <link rel="stylesheet" href="app.css?v=10">
+    <link rel="stylesheet" href="app.css?v=11">
     <script src="i18n.js?v=1"></script>
     <script src="shell.js?v=1"></script>
+    <script src="search-queue.js?v=1"></script>
     <style>
         /* ============================================================
            待确认 —— 「建议 → 选择并核对 → 决定」三段式
@@ -112,6 +113,19 @@
         .signal.online { background: var(--primary-soft); color: var(--primary-dark); border-color: var(--primary-line); }
         .signal.llm { background: #f5f0ff; color: #6d28d9; border-color: #ded0fb; }
         .signal.stale { background: var(--danger-soft); color: var(--danger); border-color: #f2c9cb; }
+        .q-live-strip {
+            display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600;
+            padding: 3px 7px; border-radius: 6px; margin-top: 2px; font-variant-numeric: tabular-nums;
+            min-width: 0;
+        }
+        .q-live-strip > span:not(.sq-spinner) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .q-live-strip.run { background: var(--primary-soft); color: var(--primary-dark); }
+        .q-live-strip.wait { background: var(--warn-soft); color: var(--warn); }
+        .q-live-strip.ok { background: var(--success-soft); color: var(--success); }
+        .q-live-strip.fail { background: var(--danger-soft); color: var(--danger); }
+        .q-item.active .q-live-strip.run { background: #fff; border: 1px solid var(--primary-line); }
+        .chip.tone-primary .dot { background: var(--primary); }
+        .chip.tone-ok .dot { background: var(--success); }
         .queue-foot { padding: 9px 14px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--text-mute); display: flex; align-items: center; gap: 6px; }
         kbd {
             font-family: var(--mono); font-size: 10.5px; padding: 0 5px; border-radius: 4px; line-height: 17px;
@@ -417,6 +431,10 @@
             <p class="page-desc" data-i18n="review.page.subtitle">曲目已识别、专辑无法确定的文件夹，文件保持原样未写入标签</p>
         </div>
         <div class="page-actions">
+            <button class="btn ghost" id="batchSearchBtn" data-act="batch-search">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                <span data-i18n="review.batch.search.btn">为未搜索条目批量入队</span>
+            </button>
             <button class="btn ghost" id="refreshBtn" data-act="refresh">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                 <span data-i18n="review.nav.refresh">刷新</span>
@@ -650,6 +668,14 @@
             toast(t('review.auth.failed') + ': ' + e.message);
             return;
         }
+        if (window.SearchQueue) {
+            SearchQueue.init({
+                getCsrf: () => state.csrf,
+                onNavigateReview: id => openLinked(id),
+                onToast: toast
+            });
+            window.addEventListener('mat:search-queue', onSearchQueueUpdate);
+        }
         initSeen();
         const link = parseHash();
         if (link.query) {
@@ -832,19 +858,78 @@
         return { code, tone: REASON_TONE[code], tag, short, title: t(base + '.title'), detail, next: t(base + '.next', '') };
     }
 
+    function searchTaskFor(itemId) {
+        return window.SearchQueue ? SearchQueue.findForReview(itemId) : null;
+    }
+
+    function isSearchActiveFor(itemId) {
+        const task = searchTaskFor(itemId);
+        return !!(task && (task.status === 'RUNNING' || task.status === 'QUEUED'));
+    }
+
+    function isSearchFreshReadyFor(itemId) {
+        const task = searchTaskFor(itemId);
+        return !!(task && task.status === 'SUCCEEDED' && SearchQueue.isUnread(task.id));
+    }
+
+    async function onSearchQueueUpdate(e) {
+        const snap = e.detail?.snapshot;
+        const newlyFinished = e.detail?.newlyFinished || [];
+        const batchBtn = $('batchSearchBtn');
+        if (batchBtn && snap) batchBtn.disabled = !snap.available;
+
+        applyReasonFilter();
+        renderChips();
+        renderList();
+        if (state.item) {
+            renderDetail();
+        }
+        if (newlyFinished.length) {
+            await loadList();
+            const hitCurrent = newlyFinished.find(x => x.reviewItemId && x.reviewItemId === state.currentId);
+            if (hitCurrent) {
+                SearchQueue.markRead(hitCurrent.id);
+                await openItem(state.currentId, { keepFlash: true });
+            }
+        }
+    }
+
     function renderChips() {
         const counts = {};
-        state.all.forEach(item => { const c = reasonCodeOf(item); counts[c] = (counts[c] || 0) + 1; });
+        let activeSearchCount = 0;
+        let readySearchCount = 0;
+        state.all.forEach(item => {
+            const c = reasonCodeOf(item);
+            counts[c] = (counts[c] || 0) + 1;
+            if (isSearchActiveFor(item.id)) activeSearchCount++;
+            if (isSearchFreshReadyFor(item.id)) readySearchCount++;
+        });
         const codes = Object.keys(REASON_TONE).filter(c => counts[c]);
-        // 只有一种原因时筛选没有意义，不占地方
-        if (codes.length < 2) { $('reasonChips').innerHTML = ''; return; }
-        const chip = (code, label, count) => `<button type="button" class="chip ${code ? 'tone-' + REASON_TONE[code] : ''} ${state.reason === code ? 'active' : ''}"
-            data-reason="${code || ''}" aria-pressed="${state.reason === code}">${code ? '<span class="dot"></span>' : ''}${escapeHtml(label)}<span class="n">${count}</span></button>`;
+        const hasLiveChips = activeSearchCount > 0 || readySearchCount > 0;
+        // 只有一种原因且没有活跃搜索态时筛选没有意义，不占地方
+        if (codes.length < 2 && !hasLiveChips) { $('reasonChips').innerHTML = ''; return; }
+        const chip = (code, label, count, toneOverride) => {
+            const tone = toneOverride || (code ? REASON_TONE[code] : '');
+            return `<button type="button" class="chip ${tone ? 'tone-' + tone : ''} ${state.reason === code ? 'active' : ''}"
+            data-reason="${code || ''}" aria-pressed="${state.reason === code}">${tone ? '<span class="dot"></span>' : ''}${escapeHtml(label)}<span class="n">${count}</span></button>`;
+        };
         $('reasonChips').innerHTML = chip(null, t('review.reason.all'), state.all.length)
+            + (activeSearchCount ? chip('__ACTIVE__', t('sq.chip.active'), activeSearchCount, 'primary') : '')
+            + (readySearchCount ? chip('__READY__', t('sq.chip.ready'), readySearchCount, 'ok') : '')
             + codes.map(c => chip(c, t('review.reason.' + c + '.label'), counts[c])).join('');
     }
 
     function applyReasonFilter() {
+        if (state.reason === '__ACTIVE__') {
+            state.items = state.all.filter(i => isSearchActiveFor(i.id));
+            if (!state.items.length) { state.reason = null; state.items = state.all; }
+            return;
+        }
+        if (state.reason === '__READY__') {
+            state.items = state.all.filter(i => isSearchFreshReadyFor(i.id));
+            if (!state.items.length) { state.reason = null; state.items = state.all; }
+            return;
+        }
         // 选中的原因在当前结果里已经没有条目（处理完了 / 换了搜索词）时自动回到「全部」
         if (state.reason && !state.all.some(i => reasonCodeOf(i) === state.reason)) state.reason = null;
         state.items = state.reason ? state.all.filter(i => reasonCodeOf(i) === state.reason) : state.all;
@@ -971,6 +1056,23 @@
             const meta = [tf('review.files.count', item.fileCount, item.candidateCount), ago(item.createdAt)].filter(Boolean).join(' · ');
             const busy = state.busy[item.id] ? '<span class="spinner q-busy" aria-hidden="true"></span>' : '';
             const why = reasonView(item);
+            const task = searchTaskFor(item.id);
+            let liveStrip = '';
+            if (task && task.status === 'RUNNING') {
+                const sec = SearchQueue.elapsedSeconds(task);
+                liveStrip = `<span class="q-live-strip run"><span class="sq-spinner" style="width:11px;height:11px;border-width:1.8px"></span><span>${escapeHtml(t('sq.status.running'))} · ${escapeHtml(SearchQueue.shortStage(task))} · <span data-sq-elapsed-short="${escapeHtml(task.id)}">${escapeHtml(tf('sq.elapsed', sec))}</span></span></span>`;
+            } else if (task && task.status === 'QUEUED') {
+                const pos = task.queuePosition || 1;
+                const label = Number(task.priority) === 2 ? tf('sq.queue.pos.auto', pos) : tf('sq.queue.pos.short', pos);
+                liveStrip = `<span class="q-live-strip wait"><span>${escapeHtml(label)}</span></span>`;
+            } else if (task && task.status === 'SUCCEEDED' && SearchQueue.isUnread(task.id)) {
+                const label = (task.candidateCount || 0) > 0
+                    ? tf('sq.badge.fresh', task.candidateCount)
+                    : tf('sq.badge.fresh.clues', task.clueCount || 0);
+                liveStrip = `<span class="q-live-strip ok"><span>${escapeHtml(label)}</span></span>`;
+            } else if (task && task.status === 'FAILED') {
+                liveStrip = `<span class="q-live-strip fail"><span>${escapeHtml(t('sq.card.failed.title'))}</span></span>`;
+            }
             return `<button type="button" class="q-item ${item.id === state.currentId ? 'active' : ''}" role="option"
                     aria-selected="${item.id === state.currentId}" data-open="${escapeHtml(item.id)}">
                 <span class="q-tags"><span class="rtag tone-${why.tone}">${escapeHtml(why.tag)}</span>${isNew(item) ? `<span class="q-new">${escapeHtml(t('review.badge.new'))}</span>` : ''}</span>
@@ -979,6 +1081,7 @@
                 ${item.matchedFile ? `<span class="q-match">${escapeHtml(t('review.search.matched.file'))} <b>${escapeHtml(item.matchedFile)}</b></span>` : ''}
                 <span class="q-meta">${pendingView ? '' : statusBadge(item.status) + ' '}${escapeHtml(meta)}</span>
                 ${signals ? `<span class="signals">${signals}</span>` : ''}
+                ${liveStrip}
             </button>`;
         }).join('') + renderElsewhere();
     }
@@ -1028,6 +1131,12 @@
         const switching = id !== state.currentId;
         state.currentId = id;
         state.menuOpen = false;
+        const finishedTask = searchTaskFor(id);
+        if (finishedTask && finishedTask.status === 'SUCCEEDED' && SearchQueue.isUnread(finishedTask.id)) {
+            SearchQueue.markRead(finishedTask.id);
+            renderChips();
+            renderList();
+        }
         syncHash();
         markActive();
         $('desk').dataset.view = 'detail';
@@ -1125,6 +1234,7 @@
             <dl class="d-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(t(k))}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>
             ${renderFlash()}
             ${renderAlert(item)}
+            ${renderSearchLiveCard(item)}
             ${renderResolution(item)}
             ${renderMissingTracks(item)}
             ${pending ? renderVerdict(item) : ''}
@@ -1169,6 +1279,82 @@
         if (!a) return '';
         return `<div class="banner ${a.tone}" role="alert">${ICON[a.tone] || ICON.err}<div class="grow">${escapeHtml(a.text)}</div>
             <button class="banner-close" data-act="dismiss-alert" aria-label="${escapeHtml(t('review.dismiss'))}">${ICON.close}</button></div>`;
+    }
+
+    function renderSearchLiveCard(item) {
+        if (!item || item.status !== 'PENDING_REVIEW') return '';
+        const task = searchTaskFor(item.id);
+        if (!task) return '';
+        const snap = window.SearchQueue ? SearchQueue.getSnapshot() : null;
+        const maxC = snap?.maxConcurrency || 1;
+        if (task.status === 'RUNNING') {
+            const sec = SearchQueue.elapsedSeconds(task);
+            const step = Number(task.stepIndex) || 0;
+            const inRound2 = Number(task.round) >= 2 || step >= 3;
+            const files = task.fileCount || (item.files || []).length || 0;
+            const steps = [
+                { k: t('sq.step.1'), v: tf('sq.step.1.sub', files) },
+                { k: t('sq.step.2'), v: SearchQueue.providerLabel(task.engine) },
+                { k: t('sq.step.3'), v: t('sq.step.3.sub') },
+                { k: t('sq.step.4'), v: inRound2 ? t('sq.step.4.active') : t('sq.step.4.sub') }
+            ];
+            return `<section class="sq-live-card" aria-live="polite">
+                <div class="sq-live-head">
+                    <span class="sq-spinner"></span>
+                    <span class="sq-live-title">${escapeHtml(t('sq.card.running.title'))}</span>
+                    <span class="sq-pill run">${Math.min(100, Math.max(0, Number(task.percent) || 0))}% · <span data-sq-elapsed="${escapeHtml(task.id)}">${escapeHtml(tf('sq.elapsed.used', sec))}</span></span>
+                    <div class="sq-live-actions">
+                        <button type="button" class="btn ghost xs" data-sq-inline="drawer" data-task-id="${escapeHtml(task.id)}">${escapeHtml(t('sq.act.view.queue'))}</button>
+                        <button type="button" class="btn danger-soft xs" data-sq-inline="cancel" data-task-id="${escapeHtml(task.id)}" ${task.cancelRequested ? 'disabled' : ''}>${escapeHtml(task.cancelRequested ? t('sq.act.aborting') : t('sq.act.abort'))}</button>
+                    </div>
+                </div>
+                <div class="sq-stepper">
+                    ${steps.map((s, idx) => {
+                        let cls = 'sq-step-node';
+                        if (step > idx) cls += ' done';
+                        else if (step === idx) cls += ' active';
+                        else if (idx === 3 && !inRound2) cls += ' skipped';
+                        return `<div class="${cls}"><span class="sq-step-k">${escapeHtml(s.k)}</span><span class="sq-step-v">${escapeHtml(s.v)}</span></div>`;
+                    }).join('')}
+                </div>
+                <div class="sq-live-foot">
+                    <span>${escapeHtml(t('sq.card.current.step'))} <strong>${escapeHtml(SearchQueue.stageText(task))}</strong></span>
+                    <span>${escapeHtml(t('sq.card.running.tip'))}</span>
+                </div>
+            </section>`;
+        }
+        if (task.status === 'QUEUED') {
+            const pos = task.queuePosition || 1;
+            const ahead = Math.max(0, pos - 1);
+            const isAuto = Number(task.priority) === 2;
+            return `<section class="sq-live-card is-queued" aria-live="polite">
+                <div class="sq-live-head">
+                    <span class="sq-pill wait">${escapeHtml(tf('sq.queue.pos', pos))}</span>
+                    <span class="sq-live-title">${escapeHtml(t(isAuto ? 'sq.card.queued.auto.title' : 'sq.card.queued.title'))}</span>
+                    <div class="sq-live-actions">
+                        ${pos > 1 || isAuto ? `<button type="button" class="btn soft xs" data-sq-inline="prioritize" data-task-id="${escapeHtml(task.id)}">${escapeHtml(t('sq.act.prioritize.now'))}</button>` : ''}
+                        <button type="button" class="btn ghost xs" data-sq-inline="drawer" data-task-id="${escapeHtml(task.id)}">${escapeHtml(t('sq.act.view.queue'))}</button>
+                        <button type="button" class="btn danger-soft xs" data-sq-inline="cancel" data-task-id="${escapeHtml(task.id)}">${escapeHtml(t('sq.act.cancel.queue'))}</button>
+                    </div>
+                </div>
+                <div class="sq-live-foot">
+                    <span>${escapeHtml(tf('sq.queue.ahead', ahead, maxC))}</span>
+                    <span>${escapeHtml(t('sq.card.queued.tip'))}</span>
+                </div>
+            </section>`;
+        }
+        if (task.status === 'FAILED') {
+            return `<section class="sq-live-card is-failed" role="alert">
+                <div class="sq-live-head">
+                    <span class="sq-pill fail">${escapeHtml(t('sq.card.failed.title'))}</span>
+                    <span class="sq-live-title">${escapeHtml(task.errorMessage || '')}</span>
+                    <div class="sq-live-actions">
+                        <button type="button" class="btn soft xs" data-sq-inline="retry" data-task-id="${escapeHtml(task.id)}">${escapeHtml(t('sq.act.retry.search'))}</button>
+                    </div>
+                </div>
+            </section>`;
+        }
+        return '';
     }
 
     function renderResolution(item) {
@@ -1461,12 +1647,25 @@
         const s = item.systemSuggestion || {};
         const primary = primaryAction(item);
         const sel = selectedCandidate();
+        const searchTask = searchTaskFor(item.id);
+        const searchActive = !!(searchTask && (searchTask.status === 'RUNNING' || searchTask.status === 'QUEUED'));
+        const locked = !!busy || searchActive;
         let status;
         if (busy) status = busyHtml(busy);
-        else if (sel) status = `<span class="k">${escapeHtml(t('review.selected'))}</span><span class="v" title="${escapeHtml(state.selection.type === 'local' ? candidateLabel(sel) : onlineLabel(sel))}">${escapeHtml(state.selection.type === 'local' ? candidateLabel(sel) : onlineLabel(sel))}</span>`;
+        else if (searchTask && searchTask.status === 'RUNNING') {
+            const sec = SearchQueue.elapsedSeconds(searchTask);
+            status = `<span class="sq-spinner" aria-hidden="true"></span><span style="min-width:0">
+                <span class="busy-label">${escapeHtml(t('sq.status.running'))}（${escapeHtml(SearchQueue.shortStage(searchTask))}）</span>
+                <span class="busy-sub" data-sq-elapsed="${escapeHtml(searchTask.id)}">${escapeHtml(tf('sq.elapsed.used', sec))}</span></span>`;
+        } else if (searchTask && searchTask.status === 'QUEUED') {
+            status = `<span class="sq-pill wait">${escapeHtml(tf('sq.queue.pos.short', searchTask.queuePosition || 1))}</span>
+                <span class="muted">${escapeHtml(t('sq.stage.QUEUED'))}</span>`;
+        } else if (sel) status = `<span class="k">${escapeHtml(t('review.selected'))}</span><span class="v" title="${escapeHtml(state.selection.type === 'local' ? candidateLabel(sel) : onlineLabel(sel))}">${escapeHtml(state.selection.type === 'local' ? candidateLabel(sel) : onlineLabel(sel))}</span>`;
         else status = `<span class="muted">${escapeHtml(t('review.selected.none'))}</span>`;
 
         const showSearch = primary.act !== 'search';
+        const hasOnline = (item.onlineCandidates || []).length > 0;
+        const searchLabel = hasOnline ? t('review.action.research') : t('review.action.online.search');
         const menuItems = [
             item.llmJudgeEnabled ? `<button class="menu-item" data-act="llm" ${s.hasReleaseLevelCandidate ? '' : 'disabled'}>
                 <span class="mi-t">${escapeHtml(t('review.action.llm.choose'))}</span><span class="mi-d">${escapeHtml(t('review.menu.llm.desc'))}</span></button>` : '',
@@ -1479,12 +1678,12 @@
         bar.innerHTML = `<div class="decision-status">${status}</div>
             <div class="decision-actions">
                 <div class="menu-wrap">
-                    <button class="btn ghost" data-act="menu" title="${escapeHtml(t('review.action.more'))}" aria-label="${escapeHtml(t('review.action.more'))}" aria-haspopup="menu" aria-expanded="${state.menuOpen}" ${busy ? 'disabled' : ''}>${ICON.dots}<span>${escapeHtml(t('review.action.more'))}</span></button>
-                    <div class="menu ${state.menuOpen && !busy ? 'show' : ''}" role="menu">${menuItems}</div>
+                    <button class="btn ghost" data-act="menu" title="${escapeHtml(t('review.action.more'))}" aria-label="${escapeHtml(t('review.action.more'))}" aria-haspopup="menu" aria-expanded="${state.menuOpen}" ${locked ? 'disabled' : ''}>${ICON.dots}<span>${escapeHtml(t('review.action.more'))}</span></button>
+                    <div class="menu ${state.menuOpen && !locked ? 'show' : ''}" role="menu">${menuItems}</div>
                 </div>
-                ${showSearch ? `<button class="btn ghost" data-act="search" title="${escapeHtml(t('review.action.online.search'))}" aria-label="${escapeHtml(t('review.action.online.search'))}" ${busy ? 'disabled' : ''}>${ICON.search}<span>${escapeHtml(t('review.action.online.search'))}</span></button>` : ''}
-                <button class="btn ghost" data-act="local-archive" ${busy ? 'disabled' : ''}>${escapeHtml(t('review.local.action'))}</button>
-                <span class="primary-slot"><button class="btn ${primary.cls}" ${primary.act ? `data-act="${primary.act}"` : 'disabled'} ${busy ? 'disabled' : ''}>
+                ${showSearch ? `<button class="btn ghost" data-act="search" title="${escapeHtml(searchLabel)}" aria-label="${escapeHtml(searchLabel)}" ${locked ? 'disabled' : ''}>${ICON.search}<span>${escapeHtml(searchLabel)}</span></button>` : ''}
+                <button class="btn ghost" data-act="local-archive" ${locked ? 'disabled' : ''}>${escapeHtml(t('review.local.action'))}</button>
+                <span class="primary-slot"><button class="btn ${primary.cls}" ${primary.act ? `data-act="${primary.act}"` : 'disabled'} ${locked ? 'disabled' : ''}>
                     ${busy && busy.key === primary.act ? '<span class="spinner"></span>' : ''}${escapeHtml(primary.label)}</button></span>
             </div>`;
     }
@@ -1653,10 +1852,53 @@
         await runAction('reject', '/api/review/reject', { id: item.id, note });
     }
 
-    function doSearch() {
+    async function doSearch() {
         const item = state.item;
-        if (!item || state.busy[item.id]) return;
+        if (!item || state.busy[item.id] || isSearchActiveFor(item.id)) return;
+        delete state.alerts[item.id];
+        if (window.SearchQueue) {
+            try {
+                const res = await SearchQueue.enqueueReview([item.id], false);
+                if ((res.enqueued || []).length) {
+                    toast(tf('sq.toast.enqueued', item.folderName || ''));
+                } else {
+                    toast(t('sq.toast.already'));
+                }
+                renderList();
+                renderDetail();
+            } catch (e) {
+                state.alerts[item.id] = { tone: 'err', text: tf('review.action.failed', humanError(e.message)) };
+                renderDetail();
+            }
+            return;
+        }
         return runAction('search', '/api/review/online-search', { id: item.id, analyzeCover: false });
+    }
+
+    async function doBatchSearch() {
+        const targets = state.items.filter(i =>
+            i.status === 'PENDING_REVIEW' && !(i.onlineCandidateCount > 0) && !isSearchActiveFor(i.id));
+        if (!targets.length) {
+            toast(t('review.batch.search.empty'));
+            return;
+        }
+        const maxC = (window.SearchQueue && SearchQueue.getSnapshot()?.maxConcurrency) || 1;
+        const ok = await ask({
+            title: tf('review.batch.search.title', targets.length),
+            facts: targets.slice(0, 8).map((item, idx) => ['#' + (idx + 1), item.folderName || ''])
+                .concat(targets.length > 8 ? [['…', `+${targets.length - 8}`]] : []),
+            body: [tf('review.batch.search.body', maxC)],
+            okText: tf('review.batch.search.ok', targets.length)
+        });
+        if (!ok) return;
+        try {
+            const res = await SearchQueue.enqueueReview(targets.map(i => i.id), false);
+            const okCnt = (res.enqueued || []).length;
+            const skipCnt = (res.skipped || []).length;
+            toast(skipCnt ? tf('sq.toast.enqueued.batch.skipped', okCnt, skipCnt) : tf('sq.toast.enqueued.batch', okCnt));
+        } catch (e) {
+            toast(tf('review.action.failed', humanError(e.message)));
+        }
     }
 
     function doExpand() {
@@ -2096,6 +2338,7 @@
         menu: () => { state.menuOpen = !state.menuOpen; renderDecision(); },
         expand: doExpand,
         search: doSearch,
+        'batch-search': doBatchSearch,
         llm: doLlm,
         archive: doArchive,
         reject: doReject,
@@ -2111,6 +2354,16 @@
     });
 
     document.addEventListener('click', e => {
+        const sqBtn = e.target.closest('[data-sq-inline]');
+        if (sqBtn && !sqBtn.disabled && window.SearchQueue) {
+            const act = sqBtn.dataset.sqInline;
+            const tid = sqBtn.dataset.taskId;
+            if (act === 'drawer') SearchQueue.openDrawer(tid || null);
+            else if (act === 'prioritize' && tid) SearchQueue.prioritize(tid);
+            else if (act === 'cancel' && tid) SearchQueue.cancel(tid);
+            else if (act === 'retry' && tid) SearchQueue.retry(tid);
+            return;
+        }
         const chip = e.target.closest('#reasonChips .chip');
         if (chip) return setReason(chip.dataset.reason);
         const open = e.target.closest('[data-open]');

@@ -43,20 +43,39 @@ public class NativeWebSearchClient implements WebSearchClient {
 
     @Override
     public SearchResponse search(String systemPrompt, String userPrompt) throws LlmClient.LlmException {
+        return search(systemPrompt, userPrompt, null);
+    }
+
+    @Override
+    public SearchResponse search(String systemPrompt, String userPrompt, ProgressListener progress)
+            throws LlmClient.LlmException {
         Exception last = null;
         List<LlmEndpoint> endpoints = searchEndpoints();
-        for (int i = 0; i < endpoints.size(); i++) {
+        int totalEndpoints = endpoints.size();
+        for (int i = 0; i < totalEndpoints; i++) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new LlmClient.LlmException("interrupted");
+            }
             LlmEndpoint endpoint = endpoints.get(i);
             String url = endpoint.getApiUrl();
             String key = endpoint.getApiKey();
             String model = endpoint.getModel();
             // 协议来自供应商的显式配置，不再逐个端点猜 URL 形态
             String provider = endpoint.getFormat();
-            for (int attempt = 0; attempt <= Math.max(0, config.getLlmMaxRetries()); attempt++) {
+            int maxAttempts = Math.max(0, config.getLlmMaxRetries()) + 1;
+            for (int attempt = 0; attempt < maxAttempts; attempt++) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new LlmClient.LlmException("interrupted");
+                }
+                notifyProgress(progress, attempt == 0 ? "NATIVE_SEARCH" : "NATIVE_RETRY",
+                    i + 1, totalEndpoints, attempt + 1, model);
                 try {
                     return "anthropic".equals(provider)
                         ? callAnthropic(i, url, key, model, systemPrompt, userPrompt)
                         : callOpenAi(i, url, key, model, systemPrompt, userPrompt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new LlmClient.LlmException("interrupted", interrupted);
                 } catch (Retryable e) {
                     last = e;
                     if (attempt < config.getLlmMaxRetries()) {
@@ -67,6 +86,9 @@ public class NativeWebSearchClient implements WebSearchClient {
                         }
                     }
                 } catch (Exception e) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new LlmClient.LlmException("interrupted", e);
+                    }
                     last = e;
                     log.warn("联网搜索端点 #{} 不可用: {}", i + 1, e.getMessage());
                     break;
@@ -74,6 +96,16 @@ public class NativeWebSearchClient implements WebSearchClient {
             }
         }
         throw new LlmClient.LlmException("llm.web.search.unavailable: " + (last == null ? "unknown" : last.getMessage()), last);
+    }
+
+    private void notifyProgress(ProgressListener progress, String stage, int current, int total, int attempt, String detail) {
+        if (progress != null) {
+            try {
+                progress.onProgress(stage, current, total, attempt, detail);
+            } catch (Exception ignored) {
+                // ignore
+            }
+        }
     }
 
     private SearchResponse callOpenAi(int index, String configuredUrl, String key, String model,

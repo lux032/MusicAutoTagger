@@ -113,6 +113,7 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("llmMaxRetries", "llm.maxRetries"),
             Map.entry("llmWebSearchMaxTokens", "llm.webSearch.maxTokens"),
             Map.entry("llmWebSearchTimeoutSeconds", "llm.webSearch.timeoutSeconds"),
+            Map.entry("llmWebSearchMaxConcurrency", "llm.webSearch.maxConcurrency"),
             Map.entry("webSearchProvider", "llm.webSearch.provider"),
             Map.entry("tavilyApiKey", "tavily.apiKey"),
             Map.entry("tavilyApiUrl", "tavily.apiUrl"),
@@ -233,6 +234,7 @@ public class ConfigServlet extends HttpServlet {
         handleInteger(body, updates, propertyUpdates, "llmMaxRetries");
         handleInteger(body, updates, propertyUpdates, "llmWebSearchMaxTokens");
         handleInteger(body, updates, propertyUpdates, "llmWebSearchTimeoutSeconds");
+        handleIntegerInRange(body, updates, propertyUpdates, "llmWebSearchMaxConcurrency", 1, 3);
         handleString(body, updates, propertyUpdates, "webSearchProvider", false);
         handleString(body, updates, propertyUpdates, "tavilyApiKey", false);
         handleString(body, updates, propertyUpdates, "tavilyApiUrl", false);
@@ -338,6 +340,7 @@ public class ConfigServlet extends HttpServlet {
         data.put("llmMaxRetries", config.getLlmMaxRetries());
         data.put("llmWebSearchMaxTokens", config.getLlmWebSearchMaxTokens());
         data.put("llmWebSearchTimeoutSeconds", config.getLlmWebSearchTimeoutSeconds());
+        data.put("llmWebSearchMaxConcurrency", config.getLlmWebSearchMaxConcurrency());
         data.put("webSearchProvider", config.getWebSearchProvider());
         data.put("tavilyApiKey", maskSecret(config.getTavilyApiKey()));
         data.put("tavilyApiUrl", config.getTavilyApiUrl());
@@ -600,6 +603,9 @@ public class ConfigServlet extends HttpServlet {
         }
         if (updates.containsKey("llmWebSearchTimeoutSeconds")) {
             config.setLlmWebSearchTimeoutSeconds(clamp((Integer) updates.get("llmWebSearchTimeoutSeconds"), 30, 900));
+        }
+        if (updates.containsKey("llmWebSearchMaxConcurrency")) {
+            config.setLlmWebSearchMaxConcurrency(clamp((Integer) updates.get("llmWebSearchMaxConcurrency"), 1, 3));
         }
         // 联网搜索来源：未知值一律回落 native，避免拼错后静默停用联网搜索
         if (updates.containsKey("webSearchProvider")) {

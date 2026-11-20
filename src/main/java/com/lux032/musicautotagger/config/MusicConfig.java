@@ -166,6 +166,8 @@ public class MusicConfig {
     private int llmWebSearchMaxTokens;
     /** 联网搜索超时；搜索本身就要几十秒，比普通调用需要更宽的窗口 */
     private int llmWebSearchTimeoutSeconds;
+    /** 联网搜索队列最大并发数（1..3，默认 1 串行，避免撞 LLM / Tavily 限流） */
+    private int llmWebSearchMaxConcurrency;
 
     // Tavily 外部检索（替代模型原生 Web Search）
     /**
@@ -280,6 +282,7 @@ public class MusicConfig {
 
         this.llmWebSearchMaxTokens = 4000;
         this.llmWebSearchTimeoutSeconds = 180;
+        this.llmWebSearchMaxConcurrency = 1;
 
         // 默认仍为 native，保证已有部署升级后行为不变；切到 tavily 需显式配置 key
         this.webSearchProvider = "native";
@@ -633,6 +636,11 @@ public class MusicConfig {
                 this.llmWebSearchTimeoutSeconds = parseIntInRange(
                     props.getProperty("llm.webSearch.timeoutSeconds"),
                     this.llmWebSearchTimeoutSeconds, 30, 900, "llm.webSearch.timeoutSeconds");
+            }
+            if (props.containsKey("llm.webSearch.maxConcurrency")) {
+                this.llmWebSearchMaxConcurrency = parseIntInRange(
+                    props.getProperty("llm.webSearch.maxConcurrency"),
+                    this.llmWebSearchMaxConcurrency, 1, 3, "llm.webSearch.maxConcurrency");
             }
 
             // 加载 Tavily 外部检索配置

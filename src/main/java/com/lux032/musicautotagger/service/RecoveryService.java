@@ -47,7 +47,7 @@ import java.util.concurrent.Executors;
 public class RecoveryService implements AutoCloseable {
 
     public enum SourceType { PARTIAL, FAILED }
-    public enum JobStatus { RUNNING, SUCCEEDED, WAITING_REVIEW, FAILED }
+    public enum JobStatus { QUEUED, RUNNING, SUCCEEDED, WAITING_REVIEW, FAILED }
     public enum RecoveryMode { REIDENTIFY, ONLINE_SEARCH, LOCAL_ARTIST_MATCH }
     /**
      * 音乐库里已有相同音频时怎么办。
@@ -66,6 +66,7 @@ public class RecoveryService implements AutoCloseable {
     private final FailedFileHandler failedFileHandler;
     private final FileSystemUtils fileSystemUtils;
     private final OnlineIdentificationService onlineIdentificationService;
+    private final OnlineSearchQueueService searchQueueService;
     private final TagWriterService tagWriter;
     private final AudioFingerprintService fingerprintService;
     private final OnlineTrackMatcher trackMatcher;
@@ -146,9 +147,15 @@ public class RecoveryService implements AutoCloseable {
         this.onlineIdentificationService = onlineIdentificationOverride != null
             ? onlineIdentificationOverride
             : new OnlineIdentificationService(config, reviewQueue, tagWriter, fingerprintService, artistSplitter);
+        this.searchQueueService = new OnlineSearchQueueService(config, reviewQueue, this.onlineIdentificationService);
+        this.searchQueueService.setRecoveryOtherJobsSupplier(this::listOtherJobs);
         cleanupExpiredTrash();
         cleanupStaleWorkspaces();
         resumeCommittedRecoveries();
+    }
+
+    public OnlineSearchQueueService getSearchQueueService() {
+        return searchQueueService;
     }
 
     /**
@@ -227,6 +234,16 @@ public class RecoveryService implements AutoCloseable {
     }
 
     public List<Map<String, Object>> listJobs() {
+        List<Map<String, Object>> result = new ArrayList<>(listOtherJobs());
+        if (searchQueueService != null) {
+            result.addAll(searchQueueService.listRecoveryJobViews());
+        }
+        result.sort(Comparator.comparingLong(m -> -((Number) m.getOrDefault("createdAt", 0L)).longValue()));
+        return result;
+    }
+
+    /** 仅返回非联网搜索的恢复任务（REIDENTIFY / LOCAL_ARTIST_MATCH） */
+    public List<Map<String, Object>> listOtherJobs() {
         List<RecoveryJob> snapshots = new ArrayList<>(jobs.values());
         snapshots.sort(Comparator.comparingLong(RecoveryJob::getCreatedAt).reversed());
         List<Map<String, Object>> result = new ArrayList<>();
@@ -380,6 +397,9 @@ public class RecoveryService implements AutoCloseable {
             throw new IOException("recovery.item.not.found");
         }
         String key = target.getCanonicalPath();
+        if (searchQueueService != null && searchQueueService.isFolderActive(key)) {
+            throw new IOException("recovery.already.running");
+        }
         if (!runningPaths.add(key)) {
             throw new IOException("recovery.already.running");
         }
@@ -1486,7 +1506,32 @@ public class RecoveryService implements AutoCloseable {
         return value != null && !value.trim().isEmpty();
     }
 
+    public OnlineSearchQueueService.EnqueueResult enqueueOnlineSearch(SourceType type, String relativePath,
+                                                                      boolean analyzeCover) throws IOException {
+        File target = resolveItem(type, relativePath);
+        if (!target.exists()) {
+            throw new IOException("recovery.item.not.found");
+        }
+        if (!onlineIdentificationService.isAvailable()) {
+            throw new IOException("llm.web.search.unavailable");
+        }
+        String key = target.getCanonicalPath();
+        if (runningPaths.contains(key)) {
+            throw new IOException("recovery.already.running");
+        }
+        int fileCount = collectAudioFiles(target).size();
+        return searchQueueService.enqueueRecoveryTarget(type.name(), relativePath, target, fileCount, analyzeCover);
+    }
+
     public String submit(SourceType type, String relativePath, RecoveryMode mode, boolean analyzeCover) throws IOException {
+        if (mode == RecoveryMode.ONLINE_SEARCH) {
+            OnlineSearchQueueService.EnqueueResult res = enqueueOnlineSearch(type, relativePath, analyzeCover);
+            if (res.alreadyActive()) {
+                throw new IOException("recovery.already.running");
+            }
+            return String.valueOf(res.task().get("id"));
+        }
+
         File target = resolveItem(type, relativePath);
         if (!target.exists()) {
             throw new IOException("recovery.item.not.found");
@@ -1494,11 +1539,11 @@ public class RecoveryService implements AutoCloseable {
         if (mode == RecoveryMode.LOCAL_ARTIST_MATCH && type != SourceType.PARTIAL) {
             throw new IOException("recovery.llm.partial.only");
         }
-        if (mode == RecoveryMode.ONLINE_SEARCH && !onlineIdentificationService.isAvailable()) {
-            throw new IOException("llm.web.search.unavailable");
-        }
 
         String key = target.getCanonicalPath();
+        if (searchQueueService != null && searchQueueService.isFolderActive(key)) {
+            throw new IOException("recovery.already.running");
+        }
         if (!runningPaths.add(key)) {
             throw new IOException("recovery.already.running");
         }
@@ -1511,7 +1556,7 @@ public class RecoveryService implements AutoCloseable {
         job.useLlm = mode != RecoveryMode.REIDENTIFY;
         job.mode = mode;
         job.analyzeCover = analyzeCover;
-        job.status = JobStatus.RUNNING;
+        job.status = JobStatus.QUEUED;
         job.createdAt = System.currentTimeMillis();
         job.updatedAt = job.createdAt;
         jobs.put(job.id, job);
@@ -1521,6 +1566,8 @@ public class RecoveryService implements AutoCloseable {
     }
 
     private void runJob(RecoveryJob job, File target, String runningKey) {
+        job.status = JobStatus.RUNNING;
+        job.updatedAt = System.currentTimeMillis();
         File processingTarget = target;
         File singleFileWorkspace = null;
         try {
@@ -1697,7 +1744,8 @@ public class RecoveryService implements AutoCloseable {
 
     private boolean isRunning(File file) {
         try {
-            return runningPaths.contains(file.getCanonicalPath());
+            String key = file.getCanonicalPath();
+            return runningPaths.contains(key) || (searchQueueService != null && searchQueueService.isFolderActive(key));
         } catch (IOException e) {
             return false;
         }
@@ -1926,6 +1974,9 @@ public class RecoveryService implements AutoCloseable {
 
     @Override
     public void close() {
+        if (searchQueueService != null) {
+            searchQueueService.close();
+        }
         executor.shutdownNow();
     }
 
@@ -2002,6 +2053,7 @@ public class RecoveryService implements AutoCloseable {
             map.put("useLlm", useLlm);
             map.put("mode", mode == null ? null : mode.name());
             map.put("analyzeCover", analyzeCover);
+            map.put("reviewItemId", reviewItemId);
             map.put("status", status.name());
             map.put("message", message);
             map.put("successCount", successCount);

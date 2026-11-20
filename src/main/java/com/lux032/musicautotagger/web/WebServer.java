@@ -170,6 +170,9 @@ public class WebServer {
         // 注册部分识别 / 识别失败恢复 API
         if (recoveryService != null) {
             servletHandler.addServlet(new ServletHolder(new RecoveryServlet(recoveryService)), "/api/recovery/*");
+            servletHandler.addServlet(
+                new ServletHolder(new SearchQueueServlet(recoveryService.getSearchQueueService(), recoveryService)),
+                "/api/search-queue/*");
         }
 
         // 注册处理记录管理 API（搜索 / 删除记录 / 重新识别 / 导出）

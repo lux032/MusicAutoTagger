@@ -34,8 +34,21 @@ public interface WebSearchClient {
      */
     SearchResponse search(String systemPrompt, String userPrompt) throws LlmClient.LlmException;
 
+    /**
+     * 带阶段进度回调的联网搜索。默认实现直接委派给无回调版本，保持旧实现和测试桩兼容。
+     */
+    default SearchResponse search(String systemPrompt, String userPrompt, ProgressListener progress)
+            throws LlmClient.LlmException {
+        return search(systemPrompt, userPrompt);
+    }
+
     /** 供日志 / 落库展示的实现名，例如 native-openai / tavily */
     String name();
+
+    @FunctionalInterface
+    interface ProgressListener {
+        void onProgress(String stage, int current, int total, int citations, String detail);
+    }
 
     // ==================== 数据结构 ====================
 
