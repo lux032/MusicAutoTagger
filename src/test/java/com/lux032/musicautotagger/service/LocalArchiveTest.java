@@ -91,8 +91,8 @@ class LocalArchiveTest {
     void previewIsReadOnlyAndManualArchiveWritesOnlyApprovedFieldsWithoutOnlineMatches() throws Exception {
         MusicConfig config = config();
         Path source = root.resolve("incoming");
-        Path first = flac(source.resolve("CD1/one.flac"), JOINT_CREDIT, 1);
-        Path second = flac(source.resolve("CD2/two.flac"), "Earth, Wind & Fire", 2);
+        Path first = flac(source.resolve("[Disc 1]/one.flac"), JOINT_CREDIT, 1);
+        Path second = flac(source.resolve("[Disc 2]/two.flac"), "Earth, Wind & Fire", 2);
         var secondAudio = AudioFileIO.read(second.toFile());
         secondAudio.getTag().setField(FieldKey.ARTISTS, "Earth, Wind & Fire");
         secondAudio.commit();
@@ -111,6 +111,7 @@ class LocalArchiveTest {
         try (var service = new RecoveryService(config, null, new ProcessedFileLogger(config, null), queue,
                 new FolderAlbumCache(null, null, null), null, new FileSystemUtils(config), writer, null, null)) {
             var draft = service.previewLocalArchive(item.getId());
+            assertEquals(2, draft.fileCount());
             assertEquals("Old album", draft.albumTitle());
             assertEquals(JOINT_CREDIT, draft.albumArtist());
             assertTrue(draft.albumArtists().isEmpty());
@@ -128,7 +129,7 @@ class LocalArchiveTest {
 
             String revision = service.previewLocalArchive(item.getId()).revision();
             service.confirmLocalArchive(item.getId(), revision, "New album", JOINT_CREDIT, JOINT_NAMES,
-                Map.of("CD1/one.flac", JOINT_NAMES), List.of(), RecoveryService.DuplicatePolicy.ASK);
+                Map.of("[Disc 1]/one.flac", JOINT_NAMES), List.of(), RecoveryService.DuplicatePolicy.ASK);
         }
         assertEquals(ReviewItem.Status.CONFIRMED, item.getStatus());
         assertEquals(ReviewItem.VerificationSource.LOCAL_TAGS, item.getVerificationSource());
@@ -136,8 +137,8 @@ class LocalArchiveTest {
         assertArrayEquals(originalSecond, Files.readAllBytes(second));
 
         Path output = root.resolve("output").resolve(JOINT_CREDIT).resolve("New album");
-        var firstTag = AudioFileIO.read(output.resolve("CD1/one.flac").toFile()).getTag();
-        var secondTag = AudioFileIO.read(output.resolve("CD2/two.flac").toFile()).getTag();
+        var firstTag = AudioFileIO.read(output.resolve("[Disc 1]/one.flac").toFile()).getTag();
+        var secondTag = AudioFileIO.read(output.resolve("[Disc 2]/two.flac").toFile()).getTag();
         assertEquals("New album", firstTag.getFirst(FieldKey.ALBUM));
         assertEquals(JOINT_CREDIT, firstTag.getFirst(FieldKey.ALBUM_ARTIST));
         assertEquals(JOINT_NAMES, firstTag.getAll(FieldKey.ALBUM_ARTISTS));

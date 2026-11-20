@@ -649,6 +649,7 @@ public class RecoveryService implements AutoCloseable {
     private LocalArchiveSources localArchiveSources(File source, ReviewItem item) throws IOException {
         Path sourcePath = source.toPath().toAbsolutePath().normalize();
         if (Files.isSymbolicLink(sourcePath)) throw new IOException("recovery.path.invalid");
+        if (!Files.exists(sourcePath) || !Files.isReadable(sourcePath)) throw new IOException("files.missing");
         boolean directory = Files.isDirectory(sourcePath);
         List<File> files;
         if (directory && item.getRecoverySourceType() != null) {
@@ -660,13 +661,30 @@ public class RecoveryService implements AutoCloseable {
         } else {
             files = collectAudioFiles(source);
         }
-        if (files.isEmpty()) throw new IOException("recovery.no.audio.files");
         Path root = directory ? sourcePath : sourcePath.getParent();
+        Set<Path> inputs = new java.util.TreeSet<>();
+        files.stream().map(file -> file.toPath().toAbsolutePath().normalize()).forEach(inputs::add);
+        // 联网识别可能已记录在非标准碟片子目录里的文件。保留这些已知曲目，
+        // 同时只补入本地扫描认定属于此专辑的文件，避免混入相邻专辑。
+        if (item.getFiles() != null) {
+            for (ReviewItem.FileEntry entry : item.getFiles()) {
+                if (entry.getOriginalPath() == null) continue;
+                Path queued = Path.of(entry.getOriginalPath()).toAbsolutePath().normalize();
+                if (!queued.startsWith(root) || (!directory && !queued.equals(sourcePath))) {
+                    throw new IOException("recovery.path.invalid");
+                }
+                if (!Files.isRegularFile(queued) || !Files.isReadable(queued)
+                        || !fileSystemUtils.isMusicFile(queued.toFile())) {
+                    throw new IOException("files.missing");
+                }
+                inputs.add(queued);
+            }
+        }
+        if (inputs.isEmpty()) throw new IOException("recovery.no.audio.files");
         Path realRoot = root.toRealPath();
         Map<String, Path> paths = new LinkedHashMap<>();
         List<List<String>> attributes = new ArrayList<>();
-        for (File file : files) {
-            Path path = file.toPath().toAbsolutePath().normalize();
+        for (Path path : inputs) {
             if (!path.startsWith(root) || !path.toRealPath().equals(realRoot.resolve(root.relativize(path)))) {
                 throw new IOException("recovery.path.invalid");
             }
@@ -676,15 +694,6 @@ public class RecoveryService implements AutoCloseable {
             paths.put(relative, path);
             attributes.add(List.of(path.toString(), String.valueOf(attr.fileKey()), String.valueOf(attr.size()),
                 attr.lastModifiedTime().toString(), attr.creationTime().toString()));
-        }
-        Set<Path> actual = new LinkedHashSet<>(paths.values());
-        if (item.getFiles() != null) {
-            for (ReviewItem.FileEntry entry : item.getFiles()) {
-                if (entry.getOriginalPath() != null
-                        && !actual.contains(Path.of(entry.getOriginalPath()).toAbsolutePath().normalize())) {
-                    throw new IOException("files.missing");
-                }
-            }
         }
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(gson.toJson(attributes).getBytes(StandardCharsets.UTF_8));
