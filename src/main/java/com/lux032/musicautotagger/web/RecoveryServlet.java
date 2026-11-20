@@ -59,6 +59,22 @@ public class RecoveryServlet extends HttpServlet {
             }
             return;
         }
+        if ("dismiss".equals(action)) {
+            Map<String, Object> body = readBody(req);
+            try {
+                RecoveryService.SourceType type = RecoveryService.SourceType.valueOf(str(body.get("sourceType")));
+                recoveryService.dismiss(type, str(body.get("relativePath")));
+                respond(resp, 200, Map.of("success", true));
+            } catch (IllegalArgumentException e) {
+                respond(resp, 400, Map.of("error", "recovery.source.invalid"));
+            } catch (IOException e) {
+                String message = e.getMessage() == null ? "recovery.dismiss.failed" : e.getMessage();
+                int status = "recovery.item.not.found".equals(message) ? 404 :
+                    "recovery.already.running".equals(message) ? 409 : 400;
+                respond(resp, status, Map.of("error", message));
+            }
+            return;
+        }
         if (!"retry".equals(action)) {
             respond(resp, 404, Map.of("error", "unknown.action"));
             return;

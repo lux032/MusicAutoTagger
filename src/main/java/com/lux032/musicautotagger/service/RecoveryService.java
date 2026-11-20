@@ -102,6 +102,22 @@ public class RecoveryService implements AutoCloseable {
                     AudioFingerprintService fingerprintService,
                     CoverCandidateService coverCandidateService,
                     LlmArtistSplitter artistSplitter) {
+        this(config, processor, processedLogger, reviewQueue, folderAlbumCache, failedFileHandler,
+            fileSystemUtils, tagWriter, fingerprintService, coverCandidateService, artistSplitter, null);
+    }
+
+    RecoveryService(MusicConfig config,
+                    AudioFileProcessorService processor,
+                    ProcessedFileLogger processedLogger,
+                    ReviewQueueService reviewQueue,
+                    FolderAlbumCache folderAlbumCache,
+                    FailedFileHandler failedFileHandler,
+                    FileSystemUtils fileSystemUtils,
+                    TagWriterService tagWriter,
+                    AudioFingerprintService fingerprintService,
+                    CoverCandidateService coverCandidateService,
+                    LlmArtistSplitter artistSplitter,
+                    OnlineIdentificationService onlineIdentificationOverride) {
         this.config = config;
         this.processor = processor;
         this.processedLogger = processedLogger;
@@ -118,8 +134,9 @@ public class RecoveryService implements AutoCloseable {
         this.duplicateDetector = new ArchiveDuplicateDetector(fileSystemUtils::isMusicFile);
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
         this.artistSplitter = artistSplitter;
-        this.onlineIdentificationService = new OnlineIdentificationService(
-            config, reviewQueue, tagWriter, fingerprintService, artistSplitter);
+        this.onlineIdentificationService = onlineIdentificationOverride != null
+            ? onlineIdentificationOverride
+            : new OnlineIdentificationService(config, reviewQueue, tagWriter, fingerprintService, artistSplitter);
         cleanupExpiredTrash();
         cleanupStaleWorkspaces();
         resumeCommittedRecoveries();
@@ -208,6 +225,122 @@ public class RecoveryService implements AutoCloseable {
 
     public boolean isOnlineSearchAvailable() {
         return onlineIdentificationService.isAvailable();
+    }
+
+    /**
+     * 对源文件已移除（或不在监控目录）的记录，基于暂存副本执行普通重新识别。
+     * 新文件原子写入后才删除旧归档；识别失败则保留原归档并写入失败记录与日志。
+     */
+    public java.util.concurrent.Future<?> submitStagedReidentify(
+            File stagedDir, String displayName, List<File> stagedFiles,
+            List<File> fallbackRecordFiles, List<Path> oldTargetPaths) {
+        String label = meaningful(displayName) ? displayName : stagedDir.getName();
+        Path stagedCleanupRoot = (stagedDir.getParentFile() != null
+            && stagedDir.getParentFile().getName().startsWith("reprocess-"))
+            ? stagedDir.getParentFile().toPath()
+            : stagedDir.toPath();
+        LogCollector.addLog("INFO", "手动重新识别（普通识别）：已提交 " + label + "（" + stagedFiles.size() + " 个文件）");
+        return executor.submit(() -> {
+            String taskId = UUID.randomUUID().toString();
+            File reidentifyWorkRoot = resolveWorkRoot().resolve("reidentify-" + taskId).toFile();
+            try {
+                if (reidentifyWorkRoot.exists()) deleteRecursively(reidentifyWorkRoot.toPath());
+                Files.createDirectories(reidentifyWorkRoot.toPath());
+                int succeeded = 0;
+                int failed = 0;
+                try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(reidentifyWorkRoot)) {
+                    for (File audioFile : stagedFiles) {
+                        ProcessResult result = processor.processRecoveryFile(audioFile, stagedDir);
+                        if (result == ProcessResult.SUCCESS) {
+                            succeeded++;
+                        } else {
+                            failed++;
+                            // 专辑识别失败时现有流程已将整目录标记并复制到失败/部分识别目录
+                            break;
+                        }
+                    }
+                }
+
+                if (reviewQueue != null && reviewQueue.isFolderUnderReview(stagedDir.getAbsolutePath())) {
+                    deleteRecursively(reidentifyWorkRoot.toPath());
+                    ReviewItem queued = reviewQueue.findPendingByFolder(stagedDir.getAbsolutePath());
+                    if (queued != null) {
+                        reviewQueue.updatePending(queued.getId(), target -> {
+                            if (meaningful(displayName)) target.setFolderName(displayName);
+                            target.setStagingDir(stagedDir.getAbsolutePath());
+                            return true;
+                        });
+                    }
+                    LogCollector.addLog("WARN", "重新识别转入待人工确认: " + label);
+                    return;
+                }
+
+                if (failed == 0 && succeeded == stagedFiles.size()) {
+                    commitReplacingDuplicates(reidentifyWorkRoot.toPath(), stagedFiles.size(), taskId,
+                        null, DuplicatePolicy.ASK, oldTargetPaths);
+                    clearReplacementEntries(stagedFiles);
+                    // 处理记录中不应保留很快会被删除的暂存路径：更新为实际有效归档路径
+                    for (File staged : stagedFiles) {
+                        String finalTarget = processedLogger.findTargetPath(staged);
+                        if (finalTarget != null && Files.isRegularFile(Path.of(finalTarget))) {
+                            List<com.lux032.musicautotagger.model.ProcessedRecord> recs =
+                                processedLogger.findRecordsByPaths(List.of(staged.getAbsolutePath()));
+                            if (!recs.isEmpty()) {
+                                var rec = recs.get(0);
+                                processedLogger.removeProcessedRecord(staged);
+                                processedLogger.markFileAsProcessed(new File(finalTarget), rec.recordingId,
+                                    rec.artist, rec.title, rec.album, rec.releaseGroupId, finalTarget);
+                            }
+                        }
+                    }
+                    deleteRecursively(stagedCleanupRoot);
+                    LogCollector.addLog("SUCCESS", "手动重新识别成功: " + label);
+                } else {
+                    deleteRecursively(reidentifyWorkRoot.toPath());
+                    clearReplacementEntries(stagedFiles);
+                    // 识别失败时保留原归档文件不被误删，并确保处理历史有明确 FAILED 记录供用户跟踪
+                    for (int i = 0; i < stagedFiles.size(); i++) {
+                        File staged = stagedFiles.get(i);
+                        processedLogger.removeProcessedRecord(staged);
+                        File fallback = fallbackRecordFiles != null && i < fallbackRecordFiles.size()
+                            ? fallbackRecordFiles.get(i) : staged;
+                        if (fallback != null && fallback.exists()) {
+                            processedLogger.markFileAsProcessed(fallback, "FAILED",
+                                "普通识别失败（已转入失败记录）", fallback.getName(), label);
+                        }
+                    }
+                    deleteRecursively(stagedCleanupRoot);
+                    LogCollector.addLog("ERROR", "手动重新识别失败，已转入失败记录（成功 " + succeeded + "，失败 " + failed + "）: " + label);
+                }
+            } catch (Exception e) {
+                log.error("基于已归档文件的重新识别失败: {}", label, e);
+                LogCollector.addLog("ERROR", "手动重新识别异常 (" + label + "): " + e.getMessage());
+                try {
+                    deleteRecursively(reidentifyWorkRoot.toPath());
+                    deleteRecursively(stagedCleanupRoot);
+                } catch (IOException cleanupErr) {
+                    log.debug("清理临时工作目录失败: {}", cleanupErr.getMessage());
+                }
+            }
+        });
+    }
+
+    /** 忽略部分识别 / 识别失败列表中的项目：移入回收站（保留天数为 0 时按策略直接删除），不影响音乐库已归档文件。 */
+    public void dismiss(SourceType type, String relativePath) throws IOException {
+        File target = resolveItem(type, relativePath);
+        if (!target.exists()) {
+            throw new IOException("recovery.item.not.found");
+        }
+        String key = target.getCanonicalPath();
+        if (!runningPaths.add(key)) {
+            throw new IOException("recovery.already.running");
+        }
+        try {
+            moveToTrash(target, "dismiss-" + UUID.randomUUID().toString().substring(0, 8), type, relativePath);
+            LogCollector.addLog("INFO", "已忽略隔离项目（已移入回收站）: " + relativePath + " [" + type.name() + "]");
+        } finally {
+            runningPaths.remove(key);
+        }
     }
 
     /** 普通待确认条目直接触发联网搜索，不将原始监控目录标记为 recovery 隔离副本。 */
@@ -559,8 +692,13 @@ public class RecoveryService implements AutoCloseable {
             Path relative = outputByOriginalPath.get(file.getAbsolutePath());
             String targetPath = Path.of(config.getOutputDirectory()).resolve(relative)
                 .toFile().getAbsolutePath();
-            processedLogger.markFileAsProcessed(file, "ONLINE_SEARCH", finalArtist,
-                file.getName(), finalAlbum, null, targetPath);
+            ReviewItem.OnlineTrack matchedTrack = trackByFile.get(file.getAbsolutePath());
+            String trackTitle = matchedTrack != null && meaningful(matchedTrack.getTitle())
+                ? matchedTrack.getTitle() : file.getName();
+            // 如果源文件来自待确认临时暂存目录（即将随 markResolved 清理），记录最终归档路径以免处理记录立即断链。
+            File recordSource = item.getStagingDir() != null ? new File(targetPath) : file;
+            processedLogger.markFileAsProcessed(recordSource, "ONLINE_SEARCH", finalArtist,
+                trackTitle, finalAlbum, null, targetPath);
         }
 
         if (selectedCover != null) {
@@ -1151,7 +1289,7 @@ public class RecoveryService implements AutoCloseable {
             // FileSystemUtils 会把整个 partial/failed 根目录误当成同一张专辑。
             // 为它创建独立工作目录，确保文件夹级识别只看到这一首。
             if (target.isFile()) {
-                singleFileWorkspace = new File(target.getParentFile(), ".recovery-" + job.id);
+                singleFileWorkspace = resolveWorkRoot().resolve("single-" + job.id).toFile();
                 Files.createDirectories(singleFileWorkspace.toPath());
                 processingTarget = new File(singleFileWorkspace, target.getName());
                 Files.copy(target.toPath(), processingTarget.toPath());

@@ -2,6 +2,7 @@ package com.lux032.musicautotagger.service;
 
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.model.ProcessResult;
 import com.lux032.musicautotagger.model.ProcessedRecord;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
@@ -273,5 +274,137 @@ class ReidentifyReplacementTest {
 
         assertFalse(Files.exists(existing), "同专辑目录重刮后旧文件应被直接删除");
         assertTrue(Files.isRegularFile(output.resolve("Artist A & Artist B/Album/1.01 Artist A & Artist B - New.flac")));
+    }
+
+    @Test
+    void reidentifyOnlineSearchRecordWithMissingSourceRunsNormalRecognitionAndRecordsFailure() throws Exception {
+        // 即使原记录是 ONLINE_SEARCH 且原失败文件已移入回收站，点击重新识别仍先走普通识别，失败后写入失败记录并输出日志
+        LogCollector.clear();
+        Path oldTarget = writeTaggedFlac(
+            output.resolve("TeddyLoid, 佐倉綾音 & 井上和/Beyond the Night (Single)/1.01 TeddyLoid, 佐倉綾音 & 井上和 - Beyond the Night.flac"),
+            31, "Beyond the Night", "1").toPath();
+        File missingFailedSource = dir.resolve("failed/TeddyLoid, 佐倉綾音 & 井上和 - Beyond the Night/1.01. Beyond the Night.flac").toFile();
+        Files.createDirectories(missingFailedSource.getParentFile().toPath());
+        Files.copy(oldTarget, missingFailedSource.toPath());
+        logger.markFileAsProcessed(missingFailedSource, "ONLINE_SEARCH", "TeddyLoid, 佐倉綾音 & 井上和",
+            "Beyond the Night", "Beyond the Night", null, oldTarget.toString());
+        Files.delete(missingFailedSource.toPath()); // moved to trash
+
+        ReviewQueueService queue = new ReviewQueueService(config);
+        List<File> seenRecoveryRoots = new ArrayList<>();
+        AudioFileProcessorService fakeProcessor = new AudioFileProcessorService(
+                config, null, null, tagWriter, null, logger, null, null, null, null,
+                new FileSystemUtils(config), new FolderAlbumCache(null, null, null)) {
+            @Override
+            public ProcessResult processRecoveryFile(File audioFile, File albumRootDir) {
+                seenRecoveryRoots.add(albumRootDir);
+                return ProcessResult.PERMANENT_FAIL;
+            }
+        };
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, fakeProcessor, logger, queue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, null, null, new LlmArtistSplitter(config), null)) {
+            ProcessedRecordService recordService = new ProcessedRecordService(
+                config, logger, new FolderAlbumCache(null, null, null), new CoverArtService(null, null),
+                new FileSystemUtils(config), () -> null, registry);
+            recordService.setRecoveryService(recovery);
+            recordService.setReviewQueueService(queue);
+
+            List<ProcessedRecord> targets = recordService.resolveTargets(List.of(missingFailedSource.getAbsolutePath()), null);
+            assertEquals(1, targets.size());
+            Map<String, Object> preview = recordService.preview(targets);
+            assertEquals(1, preview.get("recoverableFromTarget"));
+
+            Map<String, Object> res = recordService.reidentify(targets);
+            assertEquals(1, res.get("recoveryQueued"));
+            assertEquals(1, res.get("queued"));
+
+            long deadline = System.currentTimeMillis() + 5000;
+            while (logger.findRecordsByPaths(List.of(oldTarget.toString())).isEmpty() && System.currentTimeMillis() < deadline) {
+                Thread.sleep(25);
+            }
+
+            assertEquals(1, seenRecoveryRoots.size());
+            assertEquals("Beyond the Night", seenRecoveryRoots.get(0).getName(), "普通识别暂存目录应使用真实专辑名而非 UUID");
+            assertTrue(Files.isRegularFile(oldTarget), "普通识别失败时不得删除已有归档文件");
+            assertTrue(queue.list(ReviewItem.Status.PENDING_REVIEW).isEmpty(), "不应跳过普通识别直接进入联网搜索待确认");
+
+            List<ProcessedRecord> afterRecords = logger.findRecordsByPaths(List.of(oldTarget.toString()));
+            assertEquals(1, afterRecords.size());
+            assertEquals(ProcessedRecord.Status.FAILED, afterRecords.get(0).status);
+
+            // 验证非静默：LogCollector 中应有提交和失败转入失败记录日志
+            long logDeadline = System.currentTimeMillis() + 2000;
+            boolean hasSubmitLog = false, hasFailLog = false;
+            while (System.currentTimeMillis() < logDeadline && !(hasSubmitLog && hasFailLog)) {
+                for (LogCollector.LogEntry entry : LogCollector.getRecentLogs(50)) {
+                    if (entry.getMessage().contains("已提交")) hasSubmitLog = true;
+                    if (entry.getMessage().contains("已转入失败记录")) hasFailLog = true;
+                }
+                if (!(hasSubmitLog && hasFailLog)) Thread.sleep(20);
+            }
+            assertTrue(hasSubmitLog, "应输出重新识别提交日志");
+            assertTrue(hasFailLog, "应输出转入失败记录日志");
+        }
+    }
+
+    @Test
+    void dismissRecoveryItemMovesToTrashRemovesFromListAndCanRestore() throws Exception {
+        Path failedRoot = dir.resolve("failed");
+        config.setFailedDirectory(failedRoot.toString());
+        Path failedAlbum = failedRoot.resolve("Unidentified Album");
+        writeTaggedFlac(failedAlbum.resolve("01.flac"), 10, "Track 1", "1");
+
+        ReviewQueueService queue = new ReviewQueueService(config);
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, logger, queue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, null, null)) {
+            assertEquals(1, recovery.listItems().size());
+            LogCollector.clear();
+
+            recovery.dismiss(RecoveryService.SourceType.FAILED, "Unidentified Album");
+
+            assertTrue(recovery.listItems().isEmpty(), "忽略后不应继续停留在失败列表中");
+            assertFalse(Files.exists(failedAlbum), "原失败隔离目录应已移走");
+
+            List<Map<String, Object>> trash = recovery.listTrash();
+            assertEquals(1, trash.size());
+            assertEquals("FAILED", trash.get(0).get("sourceType"));
+            assertEquals("Unidentified Album", trash.get(0).get("relativePath"));
+            assertEquals(true, trash.get(0).get("restorable"));
+
+            boolean hasLog = LogCollector.getRecentLogs(20).stream()
+                .anyMatch(e -> e.getMessage().contains("已忽略") && e.getMessage().contains("Unidentified Album"));
+            assertTrue(hasLog, "忽略操作应写入可见日志");
+
+            // 仍支持从回收站还原
+            recovery.restoreFromTrash((String) trash.get(0).get("id"));
+            assertEquals(1, recovery.listItems().size());
+            assertTrue(Files.isDirectory(failedAlbum));
+        }
+    }
+
+    @Test
+    void reidentifySkipsMonitorRecordWhenFolderAlreadyPendingReview() throws Exception {
+        File src = wav(monitor.resolve("PendingAlbum/01.wav"), 2, (byte) 5);
+        logger.markFileAsProcessed(src, "rec-1", "Artist", "Song", "PendingAlbum", null, null);
+        ReviewQueueService queue = new ReviewQueueService(config);
+        ReviewItem item = queue.enqueueRecoveryFolder(src.getParentFile().getAbsolutePath(), null, List.of(src), tagWriter, "h");
+        assertNotNull(item);
+
+        ProcessedRecordService recordService = new ProcessedRecordService(
+            config, logger, new FolderAlbumCache(null, null, null), new CoverArtService(null, null),
+            new FileSystemUtils(config), () -> null, registry);
+        recordService.setReviewQueueService(queue);
+
+        List<ProcessedRecord> targets = recordService.resolveTargets(List.of(src.getAbsolutePath()), null);
+        Map<String, Object> preview = recordService.preview(targets);
+        assertEquals(1, preview.get("reviewBlockedCount"));
+
+        Map<String, Object> res = recordService.reidentify(targets);
+        assertEquals(1, res.get("skippedUnderReview"));
+        assertEquals(0, res.get("removed"));
+        assertTrue(logger.isFileProcessed(src), "跳过待确认条目时不应删掉原记录");
     }
 }

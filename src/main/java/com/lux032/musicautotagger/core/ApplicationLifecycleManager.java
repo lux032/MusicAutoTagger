@@ -205,6 +205,8 @@ public class ApplicationLifecycleManager {
         // 处理记录管理（Web 「处理记录」页面）
         processedRecordService = new ProcessedRecordService(config, processedLogger, folderAlbumCache,
             coverArtService, fileSystemUtils, () -> fileMonitor);
+        processedRecordService.setRecoveryService(recoveryService);
+        processedRecordService.setReviewQueueService(reviewQueueService);
         
         log.info(I18nUtil.getMessage("app.all.services.ready"));
     }

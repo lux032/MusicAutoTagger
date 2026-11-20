@@ -741,7 +741,10 @@ public class FileMonitorService {
     }
 
     private void logReviewSkips(int count) {
-        if (count > 0) log.info(I18nUtil.getMessage("monitor.review.skip.summary"), count);
+        if (count > 0) {
+            log.info(I18nUtil.getMessage("monitor.review.skip.summary"), count);
+            LogCollector.addLog("INFO", "已跳过 " + count + " 个处于「待人工确认」队列中的文件");
+        }
     }
 
     /** Caller holds processingLock and has checked lifecycle and review state. */

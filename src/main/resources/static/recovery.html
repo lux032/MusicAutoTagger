@@ -394,6 +394,8 @@
                         onclick='onlineSearch(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},${i.fileCount})'>${esc(T('recovery.btn.online'))}</button>
                     ${i.sourceType === 'PARTIAL' ? `<button class="btn ghost sm" ${i.running ? 'disabled' : ''}
                         onclick='retryMode(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},"LOCAL_ARTIST_MATCH")'>${esc(T('recovery.btn.artist.only'))}</button>` : ''}
+                    <button class="btn ghost sm" ${i.running ? 'disabled' : ''}
+                        onclick='dismissItem(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},${JSON.stringify(i.name)})'>${esc(T('recovery.btn.dismiss'))}</button>
                 </div>
             </div>`).join('');
     }
@@ -454,6 +456,21 @@
             toast(T('recovery.online.submitted'));
             loadAll();
         } catch (e) { toast(TF('recovery.submit.failed', e.message)); }
+    }
+
+    async function dismissItem(sourceType, relativePath, name) {
+        const ok = await ask(T('recovery.dismiss.title'),
+            TF('recovery.dismiss.body', name || relativePath),
+            T('recovery.btn.dismiss'), true);
+        if (!ok) return;
+        try {
+            await api('/api/recovery/dismiss', {
+                method: 'POST',
+                body: JSON.stringify({ sourceType, relativePath })
+            });
+            toast(T('recovery.dismissed'));
+            loadAll();
+        } catch (e) { toast(TF('recovery.dismiss.failed', e.message)); }
     }
 
     function toast(t) {

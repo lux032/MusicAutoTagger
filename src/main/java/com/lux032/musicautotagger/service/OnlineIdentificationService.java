@@ -42,6 +42,7 @@ public class OnlineIdentificationService {
     // 运行时按配置切换，避免「改了 provider 却要重启才生效」这种半生效状态
     private final WebSearchClient nativeSearchClient;
     private final WebSearchClient tavilySearchClient;
+    private final WebSearchClient searchClientOverride;
     private final ReviewQueueService reviewQueue;
     private final TagWriterService tagWriter;
     private final AudioFingerprintService fingerprintService;
@@ -51,15 +52,22 @@ public class OnlineIdentificationService {
 
     public OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
                                        TagWriterService tagWriter, AudioFingerprintService fingerprintService) {
-        this(config, reviewQueue, tagWriter, fingerprintService, new LlmArtistSplitter(config));
+        this(config, reviewQueue, tagWriter, fingerprintService, new LlmArtistSplitter(config), null);
     }
 
     OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
                                 TagWriterService tagWriter, AudioFingerprintService fingerprintService,
                                 LlmArtistSplitter artistSplitter) {
+        this(config, reviewQueue, tagWriter, fingerprintService, artistSplitter, null);
+    }
+
+    OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
+                                TagWriterService tagWriter, AudioFingerprintService fingerprintService,
+                                LlmArtistSplitter artistSplitter, WebSearchClient searchClientOverride) {
         this.config = config;
         this.nativeSearchClient = new NativeWebSearchClient(config);
         this.tavilySearchClient = new TavilyWebSearchClient(config, new LlmClient(config));
+        this.searchClientOverride = searchClientOverride;
         this.reviewQueue = reviewQueue;
         this.tagWriter = tagWriter;
         this.fingerprintService = fingerprintService;
@@ -75,6 +83,7 @@ public class OnlineIdentificationService {
      * 或声称支持但从不真正检索），因此提供 tavily 这条「外部检索器 + 普通 chat 归纳」的路径。
      */
     private WebSearchClient searchClient() {
+        if (searchClientOverride != null) return searchClientOverride;
         return "tavily".equalsIgnoreCase(config.getWebSearchProvider())
             ? tavilySearchClient : nativeSearchClient;
     }
@@ -82,17 +91,23 @@ public class OnlineIdentificationService {
     public boolean isAvailable() { return searchClient().hasEnabledEndpoint(); }
 
     public ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover) throws Exception {
-        return search(albumRoot, sourceType, analyzeCover, null);
+        return search(albumRoot, sourceType, analyzeCover, null, null, null);
+    }
+
+    public ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover,
+                             String displayName, File stagingDir) throws Exception {
+        return search(albumRoot, sourceType, analyzeCover, null, displayName, stagingDir);
     }
 
     /**
      * 只为指定的已有条目搜索（后台自动搜索用）。条目已不在待确认时返回 null，绝不新建条目。
      */
     public ReviewItem searchForExistingItem(String itemId, File albumRoot) throws Exception {
-        return search(albumRoot, null, false, itemId);
+        return search(albumRoot, null, false, itemId, null, null);
     }
 
-    private ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover, String targetItemId) throws Exception {
+    private ReviewItem search(File albumRoot, String sourceType, boolean analyzeCover,
+                              String targetItemId, String displayName, File stagingDir) throws Exception {
         List<File> files = collect(albumRoot);
         if (files.isEmpty()) throw new IllegalArgumentException("recovery.no.audio.files");
         String evidenceHash = evidenceHash(files);
@@ -106,11 +121,19 @@ public class OnlineIdentificationService {
         }
 
         final String itemId = item.getId();
-        List<Integer> durations = fingerprintService.extractDurationSequence(files);
+        List<Integer> durations = fingerprintService != null
+            ? fingerprintService.extractDurationSequence(files)
+            : List.of();
         // 共享条目的所有修改都在队列锁内完成，且只在条目仍待确认时生效
         if (!reviewQueue.updatePending(itemId, target -> {
             if (durations != null) {
                 target.setDurationSequence(new ArrayList<>(durations));
+            }
+            if (displayName != null && !displayName.isBlank()) {
+                target.setFolderName(displayName);
+            }
+            if (stagingDir != null) {
+                target.setStagingDir(stagingDir.getAbsolutePath());
             }
             if (analyzeCover) {
                 appendResolutionNote(target, "已申请封面视觉分析；当前原生搜索适配器未检测到可移植的图片+搜索联合协议，已明确降级为文本联网搜索");

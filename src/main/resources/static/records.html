@@ -777,6 +777,8 @@
         const notes = [];
         if (kind === 'reidentify') {
             if (preview.requeueable) lines.push(['', TF('records.confirm.requeue', preview.requeueable)]);
+            if (preview.recoverableFromTarget) lines.push(['', TF('records.confirm.requeue.archived', preview.recoverableFromTarget)]);
+            if (preview.reviewBlockedCount) lines.push(['warn', TF('records.confirm.review.blocked', preview.reviewBlockedCount)]);
             if (preview.sourceMissing) lines.push(['warn', TF('records.confirm.missing', preview.sourceMissing)]);
             if (preview.outsideMonitor) lines.push(['warn', TF('records.confirm.outside', preview.outsideMonitor)]);
             if (preview.successCount) notes.push(T('records.confirm.archive.note'));
@@ -805,7 +807,8 @@
             const res = await api('/api/records/' + kind, { method: 'POST', body: JSON.stringify(payload) });
             if (kind === 'reidentify') {
                 let msg = TF('records.done.reidentify', res.removed, res.queued);
-                if (res.queued && res.monitoringPaused) msg += ' ' + T('records.done.paused');
+                if (res.skippedUnderReview) msg += ' ' + TF('records.done.reidentify.review', res.skippedUnderReview);
+                if (res.monitorQueued && res.monitoringPaused) msg += ' ' + T('records.done.paused');
                 toast(msg);
             } else {
                 toast(TF('records.done.forget', res.removed));

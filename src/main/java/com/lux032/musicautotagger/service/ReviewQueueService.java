@@ -588,7 +588,8 @@ public class ReviewQueueService {
         return paths;
     }
 
-    private ReviewItem findPendingByFolder(String folderPath) {
+    synchronized ReviewItem findPendingByFolder(String folderPath) {
+        if (folderPath == null) return null;
         for (ReviewItem item : items.values()) {
             if (item.getStatus() == ReviewItem.Status.PENDING_REVIEW
                 && folderPath.equals(item.getFolderPath())) {
@@ -768,6 +769,11 @@ public class ReviewQueueService {
             log.debug("清理暂存目录内容失败: {} - {}", dir, e.getMessage());
         }
         deleteQuietly(dir);
+        Path parent = dir.getParent();
+        if (parent != null && parent.getFileName() != null
+                && parent.getFileName().toString().startsWith("reprocess-")) {
+            deleteQuietly(parent);
+        }
         item.setStagingDir(null);
     }
 
