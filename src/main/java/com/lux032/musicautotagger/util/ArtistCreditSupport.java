@@ -184,9 +184,11 @@ public final class ArtistCreditSupport {
         String trimmed = display.trim();
         List<String> cleaned = cleanNames(albumArtists);
         boolean collapse = policy != null && policy.shouldCollapse()
-            && (cleaned.size() > 1 || looksComposite(trimmed));
+            && cleaned.size() > 1;
         if (collapse || AlbumArtistPolicy.VARIOUS_ARTISTS.equalsIgnoreCase(trimmed)) {
             md.setAlbumArtist(AlbumArtistPolicy.VARIOUS_ARTISTS);
+            md.setAlbumArtists(null);
+            md.setAlbumArtistCredit(null);
             return;
         }
         md.setAlbumArtist(trimmed);

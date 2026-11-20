@@ -923,7 +923,9 @@ public class FileMonitorService {
             }
 
             // 复制文件（而非移动），保留原文件
-            Files.copy(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(sourcePath, targetPath);
+            ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath())
+                .recordAlias(sourcePath, targetPath);
             log.info("✓ 失败文件已复制到: {} (保留原文件)", targetPath);
             LogCollector.addLog("ERROR", "重试达到上限，已移入失败记录: " + file.getName());
 

@@ -313,6 +313,51 @@ class MultiArtistAssistTest {
     }
 
     @Test
+    void onlineConfirmationKeepsExplicitSingleBandWithPunctuationWhenCollapseIsEnabled() throws Exception {
+        config.setCollapseAlbumArtistToVariousArtists(true);
+        AtomicInteger calls = new AtomicInteger();
+        LlmArtistSplitter splitter = stubSplitter(Map.of(), calls);
+        ReviewQueueService queue = new ReviewQueueService(config);
+        ProcessedFileLogger logger = new ProcessedFileLogger(config, null);
+        OnlineIdentificationService online = new OnlineIdentificationService(config, queue, tagWriter, null, splitter);
+        var response = new WebSearchClient.SearchResponse();
+        response.setText("""
+            {"candidates":[{
+              "title":"Album","artist":"Earth, Wind & Fire","artists":["Earth, Wind & Fire"],
+              "album_artist":"Earth, Wind & Fire","album_artists":["Earth, Wind & Fire"],
+              "source_urls":["https://musicbrainz.org/release/1"],
+              "tracks":[{"disc":1,"track":1,"title":"Song","artist":"Earth, Wind & Fire",
+                         "artists":["Earth, Wind & Fire"],"duration":2}]
+            }]}
+            """);
+        response.addCitation(WebSearchClient.Citation.of("https://musicbrainz.org/release/1", "MusicBrainz", ""));
+        ReviewItem.OnlineCandidate candidate = online.parse(response).candidates.get(0);
+        assertEquals(List.of("Earth, Wind & Fire"), candidate.getAlbumArtists());
+
+        Path folder = dir.resolve("monitor/Album");
+        File source = createWav(folder.resolve("1.01. Song.wav"), "Earth, Wind & Fire", "Song", "Album", "1");
+        String evidenceHash = online.evidenceHashForFolder(folder.toFile());
+        ReviewItem item = queue.enqueueRecoveryFolder(folder.toString(), null, List.of(source), tagWriter, evidenceHash);
+        new OnlineTrackMatcher(tagWriter).match(candidate, List.of(source), List.of(2));
+        item.setOnlineCandidates(List.of(candidate));
+        queue.update(item);
+
+        try (var service = new RecoveryService(config, null, logger, queue, new FolderAlbumCache(null, null, null),
+                null, new FileSystemUtils(config), tagWriter, null, null, splitter)) {
+            service.confirmOnlineCandidate(item.getId(), candidate.getId(), null, null, null, null,
+                null, null, RecoveryService.DuplicatePolicy.ASK, null);
+        }
+
+        assertEquals(0, calls.get());
+        File archived = output.resolve("Earth, Wind & Fire/Album/1.01 Earth, Wind & Fire - Song.wav").toFile();
+        assertTrue(archived.isFile());
+        MusicMetadata written = tagWriter.readTags(archived);
+        assertEquals("Earth, Wind & Fire", written.getAlbumArtist());
+        assertEquals(List.of("Earth, Wind & Fire"), written.getAlbumArtists());
+        assertEquals(List.of("Earth, Wind & Fire"), written.getArtists());
+    }
+
+    @Test
     void unresolvedAlbumArchiveSplitsAndPersistsStructuredArtists() throws Exception {
         LlmArtistSplitter splitter = stubSplitter(Map.of(
             "TeddyLoid, 佐倉綾音 & 井上和", "{\"artists\":[\"TeddyLoid\",\"佐倉綾音\",\"井上和\"]}"

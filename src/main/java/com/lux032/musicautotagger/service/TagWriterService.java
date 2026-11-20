@@ -171,6 +171,7 @@ public class TagWriterService {
             }
             metadata.discardStaleAutomaticLyrics();
             File targetFile = null;
+            Path staged = null;
             try {
                 // 1. 确定目标文件路径
                 targetFile = determineTargetFile(sourceFile, metadata);
@@ -181,16 +182,16 @@ public class TagWriterService {
                     ensureWritablePermissions(targetFile.getParentFile().toPath(), true);
                 }
 
-                // 3. 复制文件（目标已存在且不是同一首歌时不覆盖，改名另存）
-                targetFile = copyWithoutClobbering(sourceFile, targetFile);
-                ensureWritablePermissions(targetFile.toPath(), false);
+                String name = targetFile.getName();
+                int dot = name.lastIndexOf('.');
+                String extension = dot >= 0 ? name.substring(dot) : "";
+                staged = Files.createTempFile(targetFile.getParentFile().toPath(), ".tag-write-", extension);
+                Files.copy(sourceFile.toPath(), staged, StandardCopyOption.REPLACE_EXISTING);
+                File stagedFile = staged.toFile();
+                FlacId3Stripper.stripId3FromFlac(stagedFile);
 
-                // 3.1 剥离 FLAC 头部 ID3v2 / 尾部 ID3v1，确保 jaudiotagger 读写的是以 fLaC 开头的纯净文件
-                FlacId3Stripper.stripId3FromFlac(targetFile);
-
-                // 4. 更新标签
                 log.info("开始更新标签: {}", targetFile.getName());
-                AudioFile audioFileObj = AudioFileIO.read(targetFile);
+                AudioFile audioFileObj = AudioFileIO.read(stagedFile);
                 Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
 
                 // 更新文本标签
@@ -204,6 +205,8 @@ public class TagWriterService {
 
                 // 保存更改
                 audioFileObj.commit();
+                ensureWritablePermissions(staged, false);
+                targetFile = publishWithoutClobbering(sourceFile, targetFile, staged);
                 log.info("文件处理完成: {}", targetFile.getName());
 
                 // 如果配置开启,导出歌词到独立文件
@@ -215,7 +218,15 @@ public class TagWriterService {
 
             } catch (Exception e) {
                 log.error("处理文件失败: {}", sourceFile.getName(), e);
-                return new TagProcessResult(false, targetFile == null ? null : targetFile.getAbsoluteFile());
+                return new TagProcessResult(false, null);
+            } finally {
+                if (staged != null) {
+                    try {
+                        Files.deleteIfExists(staged);
+                    } catch (IOException e) {
+                        log.warn("无法清理标签写入暂存文件: {}", staged, e);
+                    }
+                }
             }
 
         }
@@ -241,6 +252,10 @@ public class TagWriterService {
      * @return 实际写入的目标文件
      */
     File copyWithoutClobbering(File sourceFile, File targetFile) throws IOException {
+        return publishWithoutClobbering(sourceFile, targetFile, null);
+    }
+
+    private File publishWithoutClobbering(File sourceFile, File targetFile, Path staged) throws IOException {
         Double sourceDuration = null;
         boolean sourceDurationRead = false;
 
@@ -249,7 +264,7 @@ public class TagWriterService {
             if (!candidate.exists()) {
                 try {
                     // 不带 REPLACE_EXISTING：若并发线程抢先创建了同名文件，会抛异常并重新判定
-                    Files.copy(sourceFile.toPath(), candidate.toPath());
+                    publish(sourceFile, staged, candidate.toPath(), false);
                     logCopy(sourceFile, candidate, targetFile);
                     return candidate;
                 } catch (java.nio.file.FileAlreadyExistsException raced) {
@@ -264,7 +279,7 @@ public class TagWriterService {
             Path expectedReplaceTarget = expectedReplaceTargetOverride.get();
             if (expectedReplaceTarget != null
                 && candidate.toPath().toAbsolutePath().normalize().equals(expectedReplaceTarget)) {
-                Files.copy(sourceFile.toPath(), candidate.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                publish(sourceFile, staged, candidate.toPath(), true);
                 logCopy(sourceFile, candidate, targetFile);
                 return candidate;
             }
@@ -275,7 +290,7 @@ public class TagWriterService {
             Double existingDuration = readPreciseDuration(candidate);
             if (sourceDuration != null && existingDuration != null
                 && Math.abs(sourceDuration - existingDuration) <= SAME_AUDIO_DURATION_TOLERANCE_SECONDS) {
-                Files.copy(sourceFile.toPath(), candidate.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                publish(sourceFile, staged, candidate.toPath(), true);
                 logCopy(sourceFile, candidate, targetFile);
                 return candidate;
             }
@@ -285,6 +300,20 @@ public class TagWriterService {
             candidate = withConflictSuffix(targetFile, attempt + 1);
         }
         throw new IOException("目标文件名冲突过多，放弃写入: " + targetFile.getAbsolutePath());
+    }
+
+    private void publish(File source, Path staged, Path target, boolean replace) throws IOException {
+        if (staged == null) {
+            if (replace) {
+                Files.copy(source.toPath(), target, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.copy(source.toPath(), target);
+            }
+        } else if (replace) {
+            Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } else {
+            Files.move(staged, target);
+        }
     }
 
     private void logCopy(File sourceFile, File actual, File intended) {

@@ -306,10 +306,7 @@ public class OnlineIdentificationService {
     private List<String> resolveStructuredArtists(String display, List<String> explicit,
                                                   List<String> fallbackArtists, String fallbackDisplay) {
         List<String> cleaned = ArtistCreditSupport.cleanNames(explicit);
-        if (cleaned.size() > 1) {
-            return cleaned;
-        }
-        if (cleaned.size() == 1 && !ArtistCreditSupport.looksComposite(cleaned.get(0))) {
+        if (!cleaned.isEmpty()) {
             return cleaned;
         }
         if (display == null || display.isBlank()) {

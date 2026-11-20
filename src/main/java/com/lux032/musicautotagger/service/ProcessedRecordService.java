@@ -266,25 +266,19 @@ public class ProcessedRecordService {
 
             Path taskRoot = resolveStagingRoot().resolve("reprocess-" + UUID.randomUUID());
             Path albumStagingDir = taskRoot.resolve(safeFolder);
-            List<File> stagedFiles = new ArrayList<>();
-            List<File> fallbackRecordFiles = new ArrayList<>();
-            List<Path> oldTargetPaths = new ArrayList<>();
+            List<RecoveryService.StagedReidentifyFile> stagedFiles = new ArrayList<>();
             try {
                 Files.createDirectories(albumStagingDir);
                 for (ProcessedRecord r : group) {
                     File usable = Boolean.TRUE.equals(r.sourceExists) ? new File(r.filePath) : new File(r.targetFilePath);
                     Path staged = uniqueTarget(albumStagingDir, usable.getName());
                     Files.copy(usable.toPath(), staged, StandardCopyOption.REPLACE_EXISTING);
-                    stagedFiles.add(staged.toFile());
-                    fallbackRecordFiles.add(usable);
-                    if (r.targetFilePath != null && !r.targetFilePath.isBlank()) {
-                        oldTargetPaths.add(Path.of(r.targetFilePath));
-                        if (replacementRegistry != null) {
-                            String hash = logger != null ? logger.computeFileHashOrNull(staged.toFile()) : null;
-                            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(staged).orElse(null);
-                            replacementRegistry.record(staged.toFile().getAbsolutePath(), r.targetFilePath, hash, audioMd5);
-                        }
+                    Path oldTarget = replacementRegistry == null ? null
+                        : replacementRegistry.findOldTarget(usable).orElse(null);
+                    if (oldTarget == null && r.targetFilePath != null && !r.targetFilePath.isBlank()) {
+                        oldTarget = Path.of(r.targetFilePath);
                     }
+                    stagedFiles.add(new RecoveryService.StagedReidentifyFile(staged.toFile(), usable, oldTarget));
                 }
             } catch (IOException e) {
                 log.error("准备重新识别暂存副本失败: {}", e.getMessage(), e);
@@ -293,9 +287,13 @@ public class ProcessedRecordService {
                 continue;
             }
 
-            logger.removeProcessedRecords(paths(group));
-            recoveryService.submitStagedReidentify(
-                albumStagingDir.toFile(), displayName, stagedFiles, fallbackRecordFiles, oldTargetPaths);
+            try {
+                recoveryService.submitStagedReidentify(albumStagingDir.toFile(), displayName, stagedFiles, paths(group));
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                deleteQuietly(taskRoot);
+                LogCollector.addLog("ERROR", "恢复服务已停止，未能提交重新识别: " + displayName);
+                continue;
+            }
             submittedCount += group.size();
         }
         return submittedCount;
@@ -362,10 +360,7 @@ public class ProcessedRecordService {
             if (r.status != ProcessedRecord.Status.SUCCESS) {
                 continue;
             }
-            File sourceFile = new File(r.filePath);
-            String fileHash = logger != null ? logger.computeFileHashOrNull(sourceFile) : null;
-            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(sourceFile.toPath()).orElse(null);
-            replacementRegistry.record(r.filePath, r.targetFilePath, fileHash, audioMd5);
+            replacementRegistry.record(r.filePath, r.targetFilePath);
         }
     }
 

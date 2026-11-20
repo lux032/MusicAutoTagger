@@ -13,11 +13,12 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * 失败文件处理服务
@@ -49,7 +50,7 @@ public class FailedFileHandler {
             }
         };
     }
-    
+
     private final MusicConfig config;
     private final TagWriterService tagWriter;
     private final CoverArtService coverArtService;
@@ -59,6 +60,7 @@ public class FailedFileHandler {
     private final ArtistMatchingService artistMatchingService;
     private final AlbumArtistPolicy albumArtistPolicy;
     private final AutoArchiveRegistry autoArchiveRegistry;
+    private final ReidentifyReplacementRegistry replacementRegistry;
     private final LlmArtistSplitter artistSplitter;
     
     public FailedFileHandler(MusicConfig config, TagWriterService tagWriter,
@@ -81,6 +83,7 @@ public class FailedFileHandler {
         this.artistMatchingService = artistMatchingService;
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
         this.autoArchiveRegistry = AutoArchiveRegistry.forReviewQueuePath(config.getReviewQueuePath());
+        this.replacementRegistry = ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath());
         this.artistSplitter = artistSplitter;
     }
 
@@ -165,7 +168,8 @@ public class FailedFileHandler {
             // 复制文件到部分识别目录
             log.info(I18nUtil.getMessage("main.partial.recognition.copying") + ": {}", targetFile.getAbsolutePath());
             LogCollector.addLog("INFO", "  -> " + I18nUtil.getMessage("main.partial.recognition.copying") + ": " + relativePath);
-            Files.copy(sourceFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(sourceFile.toPath(), targetFile.toPath());
+            replacementRegistry.recordAlias(audioFile.toPath(), targetFile.toPath());
             
             // 如果使用了转码文件，尽量保留原始标签
             if (sourceFile != audioFile) {
@@ -305,7 +309,11 @@ public class FailedFileHandler {
             log.info(I18nUtil.getMessage("main.partial.recognition.copying.album") + ": {}", targetFolder.getAbsolutePath());
             LogCollector.addLog("INFO", "  -> " + I18nUtil.getMessage("main.partial.recognition.copying.album") + ": " + folderName);
             
-            int[] counts = fileSystemUtils.copyDirectoryRecursively(albumRootDir.toPath(), targetFolder.toPath());
+            Files.createDirectories(targetFolder.toPath().toAbsolutePath().getParent());
+            Files.createDirectory(targetFolder.toPath());
+            Set<Path> copiedFiles = new HashSet<>();
+            int[] counts = fileSystemUtils.copyDirectoryRecursively(albumRootDir.toPath(), targetFolder.toPath(),
+                (source, copy) -> copiedFiles.add(source.toAbsolutePath().normalize()));
             int copiedCount = counts[0];
             int skippedCount = counts[1];
             
@@ -322,7 +330,7 @@ public class FailedFileHandler {
                 File targetAudioFile = new File(targetFolder, relative.toString());
                 File flacTargetFile = withFlacExtension(targetAudioFile);
 
-                if (!targetAudioFile.exists()) {
+                if (!copiedFiles.contains(audioFile.toPath().toAbsolutePath().normalize())) {
                     continue;
                 }
 
@@ -344,6 +352,8 @@ public class FailedFileHandler {
                         tagWriter.updateTagsOnExistingFile(targetAudioFile, sourceTags, null);
                     }
                 }
+
+                replacementRegistry.recordAlias(audioFile.toPath(), targetAudioFile.toPath());
 
                 byte[] coverToEmbed = null;
                 if (hasFolderCover) {
@@ -546,8 +556,7 @@ public class FailedFileHandler {
             String sourceArtist = metadata.getArtist().trim();
             log.info("检测到源文件艺术家标签: {}", sourceArtist);
             List<String> trackArtists = resolveTrackArtists(metadata);
-            boolean multiple = trackArtists.size() > 1
-                || (trackArtists.isEmpty() && ArtistCreditSupport.looksComposite(sourceArtist));
+            boolean multiple = trackArtists.size() > 1;
 
             String folderArtist;
             List<String> albumArtists;
@@ -747,8 +756,7 @@ public class FailedFileHandler {
             }
         }
         if (displayArtists.isEmpty()) return null;
-        boolean multiple = individualArtists.size() > 1 || displayArtists.size() > 1
-            || (displayArtists.size() == 1 && ArtistCreditSupport.looksComposite(displayArtists.iterator().next()));
+        boolean multiple = individualArtists.size() > 1 || displayArtists.size() > 1;
         if (!multiple) {
             String single = !individualArtists.isEmpty()
                 ? individualArtists.iterator().next() : displayArtists.iterator().next();
@@ -892,7 +900,8 @@ public class FailedFileHandler {
         log.info("目标位置: {}", targetFile.getAbsolutePath());
         
         try {
-            Files.copy(audioFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(audioFile.toPath(), targetFile.toPath());
+            replacementRegistry.recordAlias(audioFile.toPath(), targetFile.toPath());
             log.info("文件复制完成: {}", targetFile.getAbsolutePath());
         } catch (IOException e) {
             log.error("复制文件失败: {} - {}", fileName, e.getMessage());
@@ -928,7 +937,10 @@ public class FailedFileHandler {
         log.info("目标位置: {}", targetFolder.getAbsolutePath());
         
         // 递归复制整个专辑根目录（包括所有子文件夹）
-        int[] counts = fileSystemUtils.copyDirectoryRecursively(albumRootFolder.toPath(), targetFolder.toPath());
+        Files.createDirectories(targetFolder.toPath().toAbsolutePath().getParent());
+        Files.createDirectory(targetFolder.toPath());
+        int[] counts = fileSystemUtils.copyDirectoryRecursively(albumRootFolder.toPath(), targetFolder.toPath(),
+            replacementRegistry::recordAlias);
         int copiedCount = counts[0];
         int skippedCount = counts[1];
         

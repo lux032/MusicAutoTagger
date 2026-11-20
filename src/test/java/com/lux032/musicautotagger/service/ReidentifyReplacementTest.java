@@ -162,6 +162,126 @@ class ReidentifyReplacementTest {
             "同一来源重新刮削到同路径时应直接覆盖，不应产生 (2) 副本");
     }
 
+    @Test
+    void samePathTagFailureLeavesOldArchiveIntact() throws Exception {
+        File source = wav(monitor.resolve("Album/01.wav"), 2, (byte) 1);
+        var batch = new AlbumBatchProcessor(config, new FolderAlbumCache(null, null, null), tagWriter, logger, null);
+        assertTrue(batch.processAndWriteFile(source, meta("Artist", "Artist", "Album", "Song", "1"), null, false));
+        Path oldTarget = Path.of(logger.findTargetPath(source));
+        byte[] oldBytes = Files.readAllBytes(oldTarget);
+        registry.record(source.getAbsolutePath(), oldTarget.toString());
+
+        Files.writeString(source.toPath(), "invalid WAV");
+
+        assertFalse(batch.processAndWriteFile(source, meta("Artist", "Artist", "Album", "Song", "1"), null, false));
+        assertArrayEquals(oldBytes, Files.readAllBytes(oldTarget));
+        assertEquals(oldTarget, registry.findOldTarget(source).orElseThrow());
+        try (var siblings = Files.list(oldTarget.getParent())) {
+            assertEquals(List.of(oldTarget), siblings.toList());
+        }
+    }
+
+    @Test
+    void legacyAudioHashesDoNotAuthorizeOrClearOtherReleaseReplacements() throws Exception {
+        File first = writeTaggedFlac(monitor.resolve("Edition 1/01.flac"), 69, "First edition", "1");
+        File second = writeTaggedFlac(monitor.resolve("Edition 2/01.flac"), 69, "Second edition", "1");
+        File unrelated = writeTaggedFlac(monitor.resolve("Edition 3/01.flac"), 69, "Third edition", "1");
+        Path firstTarget = output.resolve("Artist/Edition 1/01.flac");
+        Path secondTarget = output.resolve("Artist/Edition 2/01.flac");
+        String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(first.toPath()).orElseThrow();
+        assertEquals(audioMd5, ArchiveDuplicateDetector.flacAudioMd5(unrelated.toPath()).orElseThrow());
+        Path store = Path.of(config.getReviewQueuePath()).resolveSibling("pending-replacements.json");
+        Files.createDirectories(store.getParent());
+        Files.writeString(store, new com.google.gson.Gson().toJson(Map.of(
+            first.getAbsolutePath(), Map.of("oldTargetPath", firstTarget.toString(), "audioMd5", audioMd5),
+            second.getAbsolutePath(), Map.of("oldTargetPath", secondTarget.toString(), "audioMd5", audioMd5))));
+
+        assertTrue(registry.findOldTarget(unrelated).isEmpty());
+        assertEquals(firstTarget, registry.findOldTarget(first).orElseThrow());
+        registry.remove(first);
+        assertTrue(registry.findOldTarget(first).isEmpty());
+        assertEquals(secondTarget, registry.findOldTarget(second).orElseThrow());
+    }
+
+    @Test
+    void stagedFailureLinksOnlyActualCopiesOfTracksWithOldTargets() throws Exception {
+        config.setFailedDirectory(dir.resolve("failed").toString());
+        config.setPartialDirectory(dir.resolve("partial").toString());
+        Path staging = dir.resolve("staging/reprocess-mixed/Album");
+        File first = wav(staging.resolve("01.wav"), 2, (byte) 1);
+        File second = wav(staging.resolve("02.wav"), 3, (byte) 2);
+        File firstFallback = wav(dir.resolve("source/01.wav"), 2, (byte) 1);
+        File oldTarget = wav(output.resolve("Artist/Album/02.wav"), 3, (byte) 2);
+        File unrelated = wav(dir.resolve("partial/Album/02.wav"), 5, (byte) 3);
+        byte[] unrelatedBytes = Files.readAllBytes(unrelated.toPath());
+        FileSystemUtils fileSystem = new FileSystemUtils(config);
+        FolderAlbumCache cache = new FolderAlbumCache(null, null, null);
+        FailedFileHandler handler = new FailedFileHandler(config, tagWriter, null, logger, fileSystem);
+        AudioFileProcessorService processor = new AudioFileProcessorService(
+            config, null, null, tagWriter, null, logger, null, null, null, null, fileSystem, cache) {
+            @Override
+            public ProcessResult processRecoveryFile(File audioFile, File albumRootDir) {
+                assertDoesNotThrow(() -> handler.copyFailedFolderToFailedDirectory(albumRootDir));
+                return ProcessResult.PERMANENT_FAIL;
+            }
+        };
+        try (var service = new RecoveryService(config, processor, logger, new ReviewQueueService(config),
+                cache, handler, fileSystem, tagWriter, null, null)) {
+            service.submitStagedReidentify(staging.toFile(), "Album", List.of(
+                new RecoveryService.StagedReidentifyFile(first, firstFallback, null),
+                new RecoveryService.StagedReidentifyFile(second, oldTarget, oldTarget.toPath())), List.of())
+                .get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+
+        File failedFirst = dir.resolve("failed/Album/01.wav").toFile();
+        File failedSecond = dir.resolve("failed/Album/02.wav").toFile();
+        assertTrue(failedFirst.isFile());
+        assertTrue(failedSecond.isFile());
+        assertTrue(registry.findOldTarget(failedFirst).isEmpty());
+        assertTrue(registry.findOldTarget(firstFallback).isEmpty());
+        assertTrue(registry.findOldTarget(unrelated).isEmpty());
+        assertArrayEquals(unrelatedBytes, Files.readAllBytes(unrelated.toPath()));
+        assertEquals(oldTarget.toPath(), registry.findOldTarget(failedSecond).orElseThrow());
+        assertTrue(oldTarget.isFile());
+    }
+
+    @Test
+    void duplicateCommitReplacesTemporarySuccessWithRetryableFailure() throws Exception {
+        File oldArchive = writeTaggedFlac(output.resolve("Old Artist/Old Album/01.flac"), 79, "Song", "1");
+        File duplicate = writeTaggedFlac(output.resolve("New Artist/Existing/01.flac"), 79, "Song", "1");
+        Path staging = Files.createDirectories(dir.resolve("staging/reprocess-duplicate/Album"));
+        File staged = Files.copy(oldArchive.toPath(), staging.resolve("01.flac")).toFile();
+        FileSystemUtils fileSystem = new FileSystemUtils(config);
+        FolderAlbumCache cache = new FolderAlbumCache(null, null, null);
+        AudioFileProcessorService processor = new AudioFileProcessorService(
+            config, null, null, tagWriter, null, logger, null, null, null, null, fileSystem, cache) {
+            @Override
+            public ProcessResult processRecoveryFile(File audioFile, File albumRootDir) {
+                var result = tagWriter.processFileWithResult(
+                    audioFile, meta("New Artist", "New Artist", "New Album", "Song", "1"), null);
+                assertTrue(result.isSuccess());
+                logger.markFileAsProcessed(audioFile, "mb-retry", "New Artist", "Song", "New Album", null,
+                    result.getTargetFile().getAbsolutePath());
+                return ProcessResult.SUCCESS;
+            }
+        };
+        try (var service = new RecoveryService(config, processor, logger, new ReviewQueueService(config),
+                cache, null, fileSystem, tagWriter, null, null)) {
+            service.submitStagedReidentify(staging.toFile(), "Album", List.of(
+                new RecoveryService.StagedReidentifyFile(staged, oldArchive, oldArchive.toPath())), List.of())
+                .get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+
+        assertTrue(oldArchive.isFile());
+        assertTrue(duplicate.isFile());
+        assertFalse(staged.exists());
+        assertTrue(logger.findRecordsByPaths(List.of(staged.getAbsolutePath())).isEmpty());
+        List<ProcessedRecord> retry = logger.findRecordsByPaths(List.of(oldArchive.getAbsolutePath()));
+        assertEquals(1, retry.size());
+        assertEquals(ProcessedRecord.Status.FAILED, retry.get(0).status);
+        assertEquals(oldArchive.getAbsolutePath(), retry.get(0).targetFilePath);
+    }
+
     private static byte[] validFlac(int md5Seed) {
         byte[] flac = flac(md5Seed);
         // STREAMINFO bytes [18..25] hold 20-bit sample rate, 3-bit channels-1, 5-bit bps-1, 36-bit total samples.
@@ -199,8 +319,8 @@ class ReidentifyReplacementTest {
         Path oldTrack1 = write(output.resolve("OldCollab/Album/01.flac"), validFlac(11));
         Path untouchedSibling = write(output.resolve("OldCollab/Album/99-other.flac"), validFlac(99));
 
-        registry.record(src1.getAbsolutePath(), oldTrack1.toString(), null);
-        registry.record(src2.getAbsolutePath(), output.resolve("OldCollab/Album/02.flac").toString(), null);
+        registry.record(src1.getAbsolutePath(), oldTrack1.toString());
+        registry.record(src2.getAbsolutePath(), output.resolve("OldCollab/Album/02.flac").toString());
         write(output.resolve("OldCollab/Album/02.flac"), validFlac(12));
 
         ReviewQueueService queue = new ReviewQueueService(config);
@@ -244,7 +364,7 @@ class ReidentifyReplacementTest {
         Path folder = monitor.resolve("SameDir");
         File src = writeTaggedFlac(folder.resolve("01.flac"), 21, "New", "1");
         Path existing = write(output.resolve("Artist A & Artist B/Album/01 Old.flac"), validFlac(21));
-        registry.record(src.getAbsolutePath(), existing.toString(), null);
+        registry.record(src.getAbsolutePath(), existing.toString());
 
         ReviewQueueService queue = new ReviewQueueService(config);
         ReviewItem item = queue.enqueueRecoveryFolder(folder.toString(), null, List.of(src), tagWriter, "hash");
@@ -505,9 +625,8 @@ class ReidentifyReplacementTest {
             @Override
             public ProcessResult processRecoveryFile(File audioFile, File albumRootDir) {
                 try {
-                    Path copy = failedRoot.resolve(albumRootDir.getName()).resolve(audioFile.getName());
-                    Files.createDirectories(copy.getParent());
-                    Files.copy(audioFile.toPath(), copy);
+                    new FailedFileHandler(config, tagWriter, null, logger, new FileSystemUtils(config))
+                        .copyFailedFolderToFailedDirectory(albumRootDir);
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }

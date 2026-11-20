@@ -498,6 +498,11 @@ public class FileSystemUtils {
      * @return int[2] - [复制成功数, 跳过数]
      */
     public int[] copyDirectoryRecursively(Path source, Path target) throws IOException {
+        return copyDirectoryRecursively(source, target, (file, copy) -> { });
+    }
+
+    public int[] copyDirectoryRecursively(Path source, Path target,
+                                          java.util.function.BiConsumer<Path, Path> onCopied) throws IOException {
         try (var libraryWrite = com.lux032.musicautotagger.service.LibraryWriteGuard.acquire()) {
             int[] counts = new int[2]; // [copiedCount, skippedCount]
 
@@ -518,6 +523,7 @@ public class FileSystemUtils {
                     Path targetFile = target.resolve(source.relativize(file));
                     try {
                         Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
+                        onCopied.accept(file, targetFile);
                         counts[0]++; // copiedCount
                         log.debug("已复制: {}", file.getFileName());
                     } catch (IOException e) {

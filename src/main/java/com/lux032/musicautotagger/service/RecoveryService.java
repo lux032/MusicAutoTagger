@@ -255,43 +255,46 @@ public class RecoveryService implements AutoCloseable {
         return onlineIdentificationService.isAvailable();
     }
 
+    record StagedReidentifyFile(File staged, File fallback, Path oldTarget) { }
+
     /**
      * 对源文件已移除（或不在监控目录）的记录，基于暂存副本执行普通重新识别。
-     * 新文件原子写入后才删除旧归档；识别失败则保留原归档并写入失败记录与日志。
      */
-    public java.util.concurrent.Future<?> submitStagedReidentify(
-            File stagedDir, String displayName, List<File> stagedFiles,
-            List<File> fallbackRecordFiles, List<Path> oldTargetPaths) {
+    java.util.concurrent.Future<?> submitStagedReidentify(
+            File stagedDir, String displayName, List<StagedReidentifyFile> files, List<String> recordsToRemove) {
         String label = meaningful(displayName) ? displayName : stagedDir.getName();
         Path stagedCleanupRoot = (stagedDir.getParentFile() != null
             && stagedDir.getParentFile().getName().startsWith("reprocess-"))
             ? stagedDir.getParentFile().toPath()
             : stagedDir.toPath();
-        LogCollector.addLog("INFO", "手动重新识别（普通识别）：已提交 " + label + "（" + stagedFiles.size() + " 个文件）");
+        List<File> stagedFiles = files.stream().map(StagedReidentifyFile::staged).toList();
+        List<Path> oldTargetPaths = files.stream().map(StagedReidentifyFile::oldTarget)
+            .filter(java.util.Objects::nonNull).toList();
+        LogCollector.addLog("INFO", "手动重新识别（普通识别）：已提交 " + label + "（" + files.size() + " 个文件）");
         return executor.submit(() -> {
             String taskId = UUID.randomUUID().toString();
-            File reidentifyWorkRoot = resolveWorkRoot().resolve("reidentify-" + taskId).toFile();
+            Path workRoot = resolveWorkRoot().resolve("reidentify-" + taskId);
+            boolean waitingForReview = false;
+            boolean committed = false;
             try {
-                if (reidentifyWorkRoot.exists()) deleteRecursively(reidentifyWorkRoot.toPath());
-                Files.createDirectories(reidentifyWorkRoot.toPath());
+                processedLogger.removeProcessedRecords(recordsToRemove);
+                Files.createDirectories(workRoot);
+                for (StagedReidentifyFile file : files) {
+                    recordReplacementAlias(file.staged().toPath(), file.oldTarget());
+                }
                 int succeeded = 0;
-                int failed = 0;
-                try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(reidentifyWorkRoot);
+                try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(workRoot.toFile());
                      AutoCloseable suppressLlm = FailedFileHandler.suppressLlmAutoArchive()) {
                     for (File audioFile : stagedFiles) {
-                        ProcessResult result = processor.processRecoveryFile(audioFile, stagedDir);
-                        if (result == ProcessResult.SUCCESS) {
-                            succeeded++;
-                        } else {
-                            failed++;
-                            // 专辑识别失败时现有流程已将整目录标记并复制到失败/部分识别目录
+                        if (processor.processRecoveryFile(audioFile, stagedDir) != ProcessResult.SUCCESS) {
                             break;
                         }
+                        succeeded++;
                     }
                 }
 
                 if (reviewQueue != null && reviewQueue.isFolderUnderReview(stagedDir.getAbsolutePath())) {
-                    deleteRecursively(reidentifyWorkRoot.toPath());
+                    waitingForReview = true;
                     ReviewItem queued = reviewQueue.findPendingByFolder(stagedDir.getAbsolutePath());
                     if (queued != null) {
                         reviewQueue.updatePending(queued.getId(), target -> {
@@ -304,42 +307,57 @@ public class RecoveryService implements AutoCloseable {
                     return;
                 }
 
-                if (failed == 0 && succeeded == stagedFiles.size()) {
-                    Map<String, Path> tempTargets = collectTempRelativeTargets(reidentifyWorkRoot.toPath(), stagedFiles);
-                    commitReplacingDuplicates(reidentifyWorkRoot.toPath(), stagedFiles.size(), taskId,
-                        null, DuplicatePolicy.ASK, oldTargetPaths);
-                    clearReplacementEntries(stagedFiles);
-                    finalizeCommittedRecords(tempTargets, stagedFiles);
-                    deleteRecursively(stagedCleanupRoot);
-                    LogCollector.addLog("SUCCESS", "手动重新识别成功: " + label);
-                } else {
-                    deleteRecursively(reidentifyWorkRoot.toPath());
-                    preserveFailedReplacementEntries(stagedDir, stagedFiles, fallbackRecordFiles, oldTargetPaths);
-                    // 识别失败时保留原归档文件不被误删，并确保处理历史有明确 FAILED 记录供用户跟踪
-                    for (int i = 0; i < stagedFiles.size(); i++) {
-                        File staged = stagedFiles.get(i);
-                        processedLogger.removeProcessedRecord(staged);
-                        File fallback = fallbackRecordFiles != null && i < fallbackRecordFiles.size()
-                            ? fallbackRecordFiles.get(i) : staged;
-                        if (fallback != null && fallback.exists()) {
-                            processedLogger.markFileAsProcessed(fallback, "FAILED",
-                                "普通识别失败（已转入失败记录）", fallback.getName(), label);
-                        }
-                    }
-                    deleteRecursively(stagedCleanupRoot);
-                    LogCollector.addLog("ERROR", "手动重新识别失败，已转入失败记录（成功 " + succeeded + "，失败 " + failed + "）: " + label);
+                if (succeeded != files.size()) {
+                    recordStagedReidentifyFailure(files, label, "普通识别失败");
+                    LogCollector.addLog("ERROR", "手动重新识别失败，已转入失败记录（成功 " + succeeded + "/" + files.size() + "）: " + label);
+                    return;
                 }
+
+                Map<String, Path> tempTargets = collectTempRelativeTargets(workRoot, stagedFiles);
+                commitReplacingDuplicates(workRoot, files.size(), taskId, null, DuplicatePolicy.ASK, oldTargetPaths);
+                committed = true;
+                clearReplacementEntries(stagedFiles);
+                finalizeCommittedRecords(tempTargets, stagedFiles);
+                LogCollector.addLog("SUCCESS", "手动重新识别成功: " + label);
             } catch (Exception e) {
+                String reason = e instanceof DuplicateArchiveException duplicate ? duplicate.describe() : e.getMessage();
+                if (!committed && !waitingForReview) {
+                    try {
+                        recordStagedReidentifyFailure(files, label, meaningful(reason) ? reason : "重新识别提交失败");
+                    } catch (RuntimeException recordError) {
+                        e.addSuppressed(recordError);
+                    }
+                }
                 log.error("基于已归档文件的重新识别失败: {}", label, e);
-                LogCollector.addLog("ERROR", "手动重新识别异常 (" + label + "): " + e.getMessage());
+                LogCollector.addLog("ERROR", "手动重新识别异常 (" + label + "): " + reason);
+            } finally {
                 try {
-                    deleteRecursively(reidentifyWorkRoot.toPath());
-                    deleteRecursively(stagedCleanupRoot);
+                    deleteRecursively(workRoot);
+                    if (!waitingForReview) deleteRecursively(stagedCleanupRoot);
                 } catch (IOException cleanupErr) {
-                    log.debug("清理临时工作目录失败: {}", cleanupErr.getMessage());
+                    log.warn("清理重新识别暂存目录失败: {}", cleanupErr.getMessage());
                 }
             }
         });
+    }
+
+    private void recordStagedReidentifyFailure(List<StagedReidentifyFile> files, String label, String reason) {
+        processedLogger.removeProcessedRecords(files.stream().map(file -> file.staged().getAbsolutePath()).toList());
+        for (StagedReidentifyFile file : files) {
+            recordReplacementAlias(file.fallback().toPath(), file.oldTarget());
+            File retryFile = file.fallback().isFile() ? file.fallback()
+                : file.oldTarget() == null ? null : file.oldTarget().toFile();
+            if (retryFile != null && retryFile.isFile()) {
+                String oldTarget = file.oldTarget() == null ? null : file.oldTarget().toString();
+                processedLogger.markFileAsProcessed(retryFile, "FAILED", reason, retryFile.getName(), label, null, oldTarget);
+            }
+        }
+    }
+
+    private void recordReplacementAlias(Path source, Path oldTarget) {
+        if (oldTarget != null) {
+            replacementRegistry.record(source.toString(), oldTarget.toString());
+        }
     }
 
     /** 忽略部分识别 / 识别失败列表中的项目：移入回收站（保留天数为 0 时按策略直接删除），不影响音乐库已归档文件。 */
@@ -534,7 +552,7 @@ public class RecoveryService implements AutoCloseable {
         List<String> finalAlbumArtists = resolveOnlineAlbumArtists(
             finalArtist, chosen, chosenEffectiveAlbumArtist, manualAlbumArtists);
         if (albumArtistPolicy.shouldCollapse()
-                && (finalAlbumArtists.size() > 1 || ArtistCreditSupport.looksComposite(finalArtist))) {
+                && finalAlbumArtists.size() > 1) {
             finalArtist = AlbumArtistPolicy.VARIOUS_ARTISTS;
             finalAlbumArtists = List.of();
         }
@@ -1089,7 +1107,7 @@ public class RecoveryService implements AutoCloseable {
     private List<String> resolveOnlineTrackArtists(ReviewItem.OnlineTrack track, String finalAlbumArtist,
                                                  List<String> finalAlbumArtists) {
         List<String> explicit = ArtistCreditSupport.cleanNames(track.getArtists());
-        if (explicit.size() > 1 || (explicit.size() == 1 && !ArtistCreditSupport.looksComposite(explicit.get(0)))) {
+        if (!explicit.isEmpty()) {
             return explicit;
         }
         String trackArtist = track.getArtist() == null ? "" : track.getArtist().trim();
@@ -1127,66 +1145,22 @@ public class RecoveryService implements AutoCloseable {
         return ArtistCreditSupport.looksComposite(display) ? List.of() : List.of(display.trim());
     }
 
-    private List<Path> collectReplacedTargetPaths(List<File> sourceFiles) {
-        if (sourceFiles == null || sourceFiles.isEmpty()) {
-            return List.of();
+    private Path findReplacedTarget(File source) {
+        Path tracked = replacementRegistry.findOldTarget(source).orElse(null);
+        if (tracked != null || processedLogger == null) {
+            return tracked;
         }
-        List<Path> paths = new ArrayList<>();
-        for (File source : sourceFiles) {
-            String fileHash = processedLogger != null ? processedLogger.computeFileHashOrNull(source) : null;
-            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(source.toPath()).orElse(null);
-            if (replacementRegistry != null) {
-                replacementRegistry.findOldTarget(source, fileHash, audioMd5).ifPresent(paths::add);
-            }
-            if (processedLogger != null) {
-                String existing = processedLogger.findTargetPath(source);
-                if (existing != null && !existing.isBlank()) {
-                    paths.add(Path.of(existing));
-                }
-            }
-        }
-        return paths;
+        String existing = processedLogger.findTargetPath(source);
+        return meaningful(existing) ? Path.of(existing) : null;
     }
 
-    private void preserveFailedReplacementEntries(File stagedDir, List<File> stagedFiles,
-                                                  List<File> fallbackRecordFiles, List<Path> oldTargetPaths) {
-        if (replacementRegistry == null || stagedFiles == null || oldTargetPaths == null || oldTargetPaths.isEmpty()) {
-            return;
-        }
-        for (int i = 0; i < stagedFiles.size() && i < oldTargetPaths.size(); i++) {
-            Path oldTarget = oldTargetPaths.get(i);
-            if (oldTarget == null) continue;
-            File staged = stagedFiles.get(i);
-            String oldTargetStr = oldTarget.toAbsolutePath().normalize().toString();
-            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(staged.toPath()).orElse(null);
-            if (fallbackRecordFiles != null && i < fallbackRecordFiles.size() && fallbackRecordFiles.get(i) != null) {
-                File fb = fallbackRecordFiles.get(i);
-                String fbHash = processedLogger != null ? processedLogger.computeFileHashOrNull(fb) : null;
-                replacementRegistry.record(fb.getAbsolutePath(), oldTargetStr, fbHash, audioMd5);
-            }
-            if (stagedDir != null) {
-                Path rel = stagedDir.toPath().relativize(staged.toPath());
-                for (String isolatedRoot : new String[]{config.getFailedDirectory(), config.getPartialDirectory()}) {
-                    if (!meaningful(isolatedRoot)) continue;
-                    File isolatedCopy = Path.of(isolatedRoot.trim(), stagedDir.getName()).resolve(rel).toFile();
-                    if (isolatedCopy.isFile()) {
-                        String copyHash = processedLogger != null ? processedLogger.computeFileHashOrNull(isolatedCopy) : null;
-                        String copyAudioMd5 = ArchiveDuplicateDetector.flacAudioMd5(isolatedCopy.toPath()).orElse(audioMd5);
-                        replacementRegistry.record(isolatedCopy.getAbsolutePath(), oldTargetStr, copyHash, copyAudioMd5);
-                    }
-                }
-            }
-        }
+    private List<Path> collectReplacedTargetPaths(List<File> sourceFiles) {
+        return sourceFiles.stream().map(this::findReplacedTarget).filter(java.util.Objects::nonNull).toList();
     }
 
     private void clearReplacementEntries(List<File> sourceFiles) {
-        if (replacementRegistry == null || sourceFiles == null) {
-            return;
-        }
         for (File source : sourceFiles) {
-            String fileHash = processedLogger != null ? processedLogger.computeFileHashOrNull(source) : null;
-            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(source.toPath()).orElse(null);
-            replacementRegistry.remove(source, fileHash, audioMd5);
+            replacementRegistry.remove(source);
         }
     }
 
@@ -1371,6 +1345,7 @@ public class RecoveryService implements AutoCloseable {
                 Files.createDirectories(singleFileWorkspace.toPath());
                 processingTarget = new File(singleFileWorkspace, target.getName());
                 Files.copy(target.toPath(), processingTarget.toPath());
+                recordReplacementAlias(processingTarget.toPath(), findReplacedTarget(target));
             }
 
             List<File> audioFiles = collectAudioFiles(processingTarget);
