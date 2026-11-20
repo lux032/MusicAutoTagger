@@ -33,7 +33,7 @@ public final class LocalArchiveDraft {
         """;
 
     public record Track(String file, String title, String artist, List<String> currentArtists,
-                        List<String> artists, boolean needsReview) { }
+                        List<String> artists, boolean needsReview, boolean inheritAlbumArtists) { }
 
     public record Draft(String revision, String albumTitle, String albumArtist, List<String> albumArtists,
                         List<String> localAlbumArtists, int fileCount, List<Track> tracks, boolean needsReview) { }
@@ -97,13 +97,17 @@ public final class LocalArchiveDraft {
 
         List<Track> changes = new ArrayList<>();
         tags.forEach((file, md) -> {
-            if (!needsTrackSuggestion(md)) return;
             String display = clean(md.getArtist());
             List<String> existing = names(md.getArtists());
+            if (display.isEmpty() && existing.isEmpty()) {
+                changes.add(new Track(file, clean(md.getTitle()), "", List.of(), List.of(), false, true));
+                return;
+            }
+            if (!needsTrackSuggestion(md)) return;
             List<String> suggested = ArtistCreditSupport.looksComposite(display)
                 ? splits.getOrDefault(display, List.of()) : List.of(display);
             if (!suggested.equals(existing) || suggested.isEmpty()) {
-                changes.add(new Track(file, clean(md.getTitle()), display, existing, suggested, suggested.isEmpty()));
+                changes.add(new Track(file, clean(md.getTitle()), display, existing, suggested, suggested.isEmpty(), false));
             }
         });
 

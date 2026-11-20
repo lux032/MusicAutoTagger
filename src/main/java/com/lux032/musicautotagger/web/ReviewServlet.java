@@ -195,7 +195,8 @@ public class ReviewServlet extends HttpServlet {
                     synchronized (resolutionService) {
                         item = recoveryService.confirmLocalArchive(id, str(body.get("revision")),
                             str(body.get("albumTitle")), str(body.get("albumArtist")), strList(body.get("albumArtists")),
-                            trackArtistLists(body.get("trackArtists")), duplicatePolicy(str(body.get("duplicatePolicy"))));
+                            trackArtistLists(body.get("trackArtists")), strList(body.get("trackArtistFallbacks")),
+                            duplicatePolicy(str(body.get("duplicatePolicy"))));
                     }
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
                     return;

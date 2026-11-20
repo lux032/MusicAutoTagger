@@ -548,7 +548,7 @@
                 </div>
                 <details class="local-tracks" id="localTracks" hidden>
                     <summary id="localTracksSummary"></summary>
-                    <div class="hint" data-i18n="review.local.tracks.hint">勾选要写入新名单的曲目。</div>
+                    <div class="hint" data-i18n="review.local.tracks.hint">缺少艺术家的曲目默认沿用专辑艺术家。已有署名的曲目，可勾选以更新拆分名单。</div>
                     <div id="localTrackList"></div>
                 </details>
             </div>
@@ -1821,23 +1821,36 @@
             const label = document.createElement('label');
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
-            checkbox.checked = !track.needsReview;
+            checkbox.checked = track.inheritAlbumArtists;
             label.append(checkbox, track.title || baseName(track.file));
             const source = document.createElement('span');
             source.className = 'hint';
-            source.textContent = tf('review.local.track.source', track.artist);
+            source.textContent = track.inheritAlbumArtists ? t('review.local.track.inherit')
+                : tf('review.local.track.source', track.artist);
             source.title = track.file;
+            if (track.inheritAlbumArtists) {
+                checkbox.addEventListener('change', updateTrackSummary);
+                row.append(label, source);
+                list.append(row);
+                draft.tracks.push({ file: track.file, checkbox, inheritAlbumArtists: true });
+                continue;
+            }
             const editor = document.createElement('div');
             editor.className = 'form-row artist-editor';
             editor.setAttribute('role', 'group');
             editor.setAttribute('aria-label', tf('review.local.track.artists', track.title || baseName(track.file)));
             editor.hidden = !checkbox.checked;
+            const suggestion = document.createElement('span');
+            suggestion.className = 'hint';
+            suggestion.textContent = tf('review.local.track.suggestion', track.artists.join(' · '));
+            suggestion.hidden = !track.artists.length || checkbox.checked;
             checkbox.addEventListener('change', () => {
                 editor.hidden = !checkbox.checked;
+                suggestion.hidden = !track.artists.length || checkbox.checked;
                 updateTrackSummary();
             });
             artistEditor(editor, track.artists.length ? track.artists : track.currentArtists.length ? track.currentArtists : ['']);
-            row.append(label, source);
+            row.append(label, source, suggestion);
             if (track.currentArtists.length) {
                 const current = document.createElement('span');
                 current.className = 'hint';
@@ -1870,7 +1883,9 @@
                 (payload.albumTitle ? $('localArtists').querySelector('input, button') : $('localTitle')).focus();
                 return;
             }
-            const selected = draft.tracks.filter(track => track.checkbox.checked);
+            payload.trackArtistFallbacks = draft.tracks.filter(track => track.inheritAlbumArtists && track.checkbox.checked)
+                .map(track => track.file);
+            const selected = draft.tracks.filter(track => !track.inheritAlbumArtists && track.checkbox.checked);
             payload.trackArtists = Object.fromEntries(selected.map(track => [track.file, artistNames(track.editor)]));
             const empty = selected.find(track => !payload.trackArtists[track.file].length);
             if (empty) {

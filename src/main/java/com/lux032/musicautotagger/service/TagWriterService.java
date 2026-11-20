@@ -1222,12 +1222,20 @@ public class TagWriterService {
 
     /** Writes only the approved album fields and optional track artist list on an archive copy. */
     void writeLocalArchiveTags(Path file, String album, String albumArtist, List<String> albumArtists,
-                               List<String> trackArtists) throws IOException {
+                               List<String> trackArtists, boolean inheritAlbumArtists) throws IOException {
         if (FlacId3Stripper.hasUnsafeId3(file.toFile())) throw new IOException("local.archive.write.failed");
         try {
             AudioFile audio = AudioFileIO.read(file.toFile());
             Tag tag = audio.getTagOrCreateAndSetDefault();
             String trackArtist = tag.getFirst(FieldKey.ARTIST);
+            if (inheritAlbumArtists) {
+                if ((trackArtist != null && !trackArtist.isBlank()) || readArtistNames(tag, FieldKey.ARTISTS) != null) {
+                    throw new IOException("local.archive.stale");
+                }
+                trackArtist = albumArtist;
+                trackArtists = albumArtists;
+                tag.setField(FieldKey.ARTIST, trackArtist);
+            }
             if (!albumArtist.equals(tag.getFirst(FieldKey.ALBUM_ARTIST))) {
                 deleteFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASEARTISTID);
                 deleteFieldSafely(tag, FieldKey.ALBUM_ARTIST_SORT);
@@ -1251,6 +1259,7 @@ public class TagWriterService {
                 throw new IOException("Approved tags could not be verified");
             }
         } catch (Exception e) {
+            if ("local.archive.stale".equals(e.getMessage()) && e instanceof IOException stale) throw stale;
             log.warn("本地入库标签写入失败: {}", file, e);
             throw new IOException("local.archive.write.failed", e);
         }

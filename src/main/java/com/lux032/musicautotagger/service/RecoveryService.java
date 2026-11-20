@@ -532,7 +532,7 @@ public class RecoveryService implements AutoCloseable {
 
     public synchronized ReviewItem confirmLocalArchive(String itemId, String revision, String album, String artist,
                                                        List<String> artists, Map<String, List<String>> trackArtists,
-                                                       DuplicatePolicy duplicatePolicy) throws IOException {
+                                                       List<String> trackArtistFallbacks, DuplicatePolicy duplicatePolicy) throws IOException {
         ReviewItem item = requirePendingRecoveryReview(itemId);
         File source = localArchiveSource(item);
         String runningKey = source.getCanonicalPath();
@@ -542,7 +542,8 @@ public class RecoveryService implements AutoCloseable {
                 finishCommittedRecovery(item);
                 return item;
             }
-            return archiveLocalTags(item, source, revision, album, artist, artists, trackArtists, duplicatePolicy);
+            Set<String> inherit = trackArtistFallbacks == null ? Set.of() : new LinkedHashSet<>(trackArtistFallbacks);
+            return archiveLocalTags(item, source, revision, album, artist, artists, trackArtists, inherit, duplicatePolicy);
         } finally {
             runningPaths.remove(runningKey);
         }
@@ -550,7 +551,7 @@ public class RecoveryService implements AutoCloseable {
 
     private ReviewItem archiveLocalTags(ReviewItem item, File source, String revision, String album, String artist,
                                         List<String> artists, Map<String, List<String>> trackArtists,
-                                        DuplicatePolicy duplicatePolicy) throws IOException {
+                                        Set<String> inherit, DuplicatePolicy duplicatePolicy) throws IOException {
         List<String> albumNames = ArtistCreditSupport.cleanNames(artists);
         if (!meaningful(album) || !meaningful(artist) || albumNames.isEmpty()) {
             throw new IOException("local.archive.metadata.required");
@@ -561,6 +562,8 @@ public class RecoveryService implements AutoCloseable {
         LocalArchiveSources snapshot = localArchiveSources(source, item);
         if (!snapshot.revision().equals(revision)) throw new IOException("local.archive.stale");
         if (!snapshot.files().keySet().containsAll(trackArtists.keySet())
+            || !snapshot.files().keySet().containsAll(inherit)
+            || inherit.stream().anyMatch(trackArtists::containsKey)
             || trackArtists.values().stream().anyMatch(names -> names == null || names.isEmpty())) {
             throw new IOException("local.archive.tracks.invalid");
         }
@@ -579,7 +582,8 @@ public class RecoveryService implements AutoCloseable {
                 Files.createDirectories(copy.getParent());
                 Files.copy(entry.getValue(), copy, LinkOption.NOFOLLOW_LINKS);
                 if (!Files.isRegularFile(copy, LinkOption.NOFOLLOW_LINKS)) throw new IOException("local.archive.stale");
-                tagWriter.writeLocalArchiveTags(copy, album, artist, albumNames, trackArtists.get(entry.getKey()));
+                tagWriter.writeLocalArchiveTags(copy, album, artist, albumNames, trackArtists.get(entry.getKey()),
+                    inherit.contains(entry.getKey()));
             }
             if (!snapshot.revision().equals(localArchiveSources(source, item).revision())) {
                 throw new IOException("local.archive.stale");
