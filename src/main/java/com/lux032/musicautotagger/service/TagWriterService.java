@@ -1235,6 +1235,9 @@ public class TagWriterService {
                 trackArtist = albumArtist;
                 trackArtists = albumArtists;
                 tag.setField(FieldKey.ARTIST, trackArtist);
+            } else if (trackArtists != null
+                    && !LocalArchiveDraft.canSplitTrackCredit(trackArtist, readArtistNames(tag, FieldKey.ARTISTS))) {
+                throw new IOException("local.archive.stale");
             }
             if (!albumArtist.equals(tag.getFirst(FieldKey.ALBUM_ARTIST))) {
                 deleteFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASEARTISTID);

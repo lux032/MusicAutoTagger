@@ -153,10 +153,16 @@ public final class LocalArchiveDraft {
     }
 
     private static boolean needsTrackSuggestion(MusicMetadata md) {
-        String display = clean(md.getArtist());
-        List<String> current = names(md.getArtists());
-        return !display.isEmpty() && !AlbumArtistPolicy.VARIOUS_ARTISTS.equalsIgnoreCase(display)
-            && !usableList(display, current) && (!current.isEmpty() || ArtistCreditSupport.looksComposite(display));
+        return canSplitTrackCredit(md.getArtist(), md.getArtists());
+    }
+
+    static boolean canSplitTrackCredit(String artist, List<String> artists) {
+        String display = clean(artist);
+        List<String> current = names(artists);
+        // A separate list may credit different performers than ARTIST. Only a missing list
+        // or a single value that repeats the entire composite credit needs splitting.
+        return ArtistCreditSupport.looksComposite(display)
+            && (current.isEmpty() || current.equals(List.of(display)));
     }
 
     private static boolean usableList(String display, List<String> names) {

@@ -38,6 +38,7 @@ class LocalArchiveTest {
                 var credits = JsonParser.parseString(user).getAsJsonObject().getAsJsonObject("credits");
                 assertEquals(JOINT_CREDIT, credits.get("0").getAsString());
                 assertEquals("Earth, Wind & Fire", credits.get("1").getAsString());
+                assertEquals(2, credits.size());
                 return new LlmResponse("""
                     {"albumTitle":"Ignore this", "albumArtist":"Ignore this",
                      "credits":[{"index":0,"artists":["Hironori Anazawa","Shoji Meguro"]},
@@ -53,6 +54,10 @@ class LocalArchiveTest {
         var inputs = new LinkedHashMap<String, MusicMetadata>();
         inputs.put("a.flac", first);
         inputs.put("b.flac", second);
+        var credited = metadata("Existing album", JOINT_CREDIT, "Other & Guest");
+        credited.setAlbumArtists(List.of(JOINT_CREDIT));
+        credited.setArtists(List.of("Orchestra", "Choir"));
+        inputs.put("c.flac", credited);
 
         var result = draft.build("revision", "Different Folder", inputs);
         assertEquals("Existing album", result.albumTitle());
@@ -60,6 +65,7 @@ class LocalArchiveTest {
         assertEquals(JOINT_NAMES, result.albumArtists());
         assertEquals(JOINT_NAMES, result.tracks().get(0).artists());
         assertEquals(List.of("Earth, Wind & Fire"), result.tracks().get(1).artists());
+        assertEquals(2, result.tracks().size());
     }
 
     @Test
@@ -92,9 +98,9 @@ class LocalArchiveTest {
         MusicConfig config = config();
         Path source = root.resolve("incoming");
         Path first = flac(source.resolve("[Disc 1]/one.flac"), JOINT_CREDIT, 1);
-        Path second = flac(source.resolve("[Disc 2]/two.flac"), "Earth, Wind & Fire", 2);
+        Path second = flac(source.resolve("[Disc 2]/two.flac"), "Hironori Anazawa", 2);
         var secondAudio = AudioFileIO.read(second.toFile());
-        secondAudio.getTag().setField(FieldKey.ARTISTS, "Earth, Wind & Fire");
+        secondAudio.getTag().setField(FieldKey.ARTISTS, "ユークロニア王立交響楽団");
         secondAudio.commit();
         byte[] originalFirst = Files.readAllBytes(first);
         byte[] originalSecond = Files.readAllBytes(second);
@@ -115,7 +121,8 @@ class LocalArchiveTest {
             assertEquals("Old album", draft.albumTitle());
             assertEquals(JOINT_CREDIT, draft.albumArtist());
             assertTrue(draft.albumArtists().isEmpty());
-            assertTrue(draft.tracks().stream().allMatch(LocalArchiveDraft.Track::needsReview));
+            assertEquals(List.of("[Disc 1]/one.flac"), draft.tracks().stream().map(LocalArchiveDraft.Track::file).toList());
+            assertTrue(draft.tracks().get(0).needsReview());
             assertEquals(ReviewItem.Status.PENDING_REVIEW, item.getStatus());
             assertFalse(Files.exists(root.resolve("output")));
             assertArrayEquals(originalFirst, Files.readAllBytes(first));
@@ -128,6 +135,11 @@ class LocalArchiveTest {
             assertFalse(Files.exists(root.resolve("output")));
 
             String revision = service.previewLocalArchive(item.getId()).revision();
+            IOException protectedCredit = assertThrows(IOException.class, () ->
+                service.confirmLocalArchive(item.getId(), revision, "New album", JOINT_CREDIT, JOINT_NAMES,
+                    Map.of("[Disc 2]/two.flac", List.of("Hironori Anazawa")), List.of(), RecoveryService.DuplicatePolicy.ASK));
+            assertEquals("local.archive.stale", protectedCredit.getMessage());
+            assertFalse(Files.exists(root.resolve("output")));
             service.confirmLocalArchive(item.getId(), revision, "New album", JOINT_CREDIT, JOINT_NAMES,
                 Map.of("[Disc 1]/one.flac", JOINT_NAMES), List.of(), RecoveryService.DuplicatePolicy.ASK);
         }
@@ -144,8 +156,8 @@ class LocalArchiveTest {
         assertEquals(JOINT_NAMES, firstTag.getAll(FieldKey.ALBUM_ARTISTS));
         assertEquals(JOINT_NAMES, firstTag.getAll(FieldKey.ARTISTS));
         assertEquals(JOINT_NAMES, secondTag.getAll(FieldKey.ALBUM_ARTISTS));
-        assertEquals(List.of("Earth, Wind & Fire"), secondTag.getAll(FieldKey.ARTISTS));
-        assertEquals("Earth, Wind & Fire", secondTag.getFirst(FieldKey.ARTIST));
+        assertEquals(List.of("ユークロニア王立交響楽団"), secondTag.getAll(FieldKey.ARTISTS));
+        assertEquals("Hironori Anazawa", secondTag.getFirst(FieldKey.ARTIST));
         assertEquals("Song 2", secondTag.getFirst(FieldKey.TITLE));
         assertEquals("2", secondTag.getFirst(FieldKey.TRACK));
         assertEquals("2", secondTag.getFirst(FieldKey.DISC_NO));
