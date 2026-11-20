@@ -925,6 +925,7 @@ public class FileMonitorService {
             // 复制文件（而非移动），保留原文件
             Files.copy(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING);
             log.info("✓ 失败文件已复制到: {} (保留原文件)", targetPath);
+            LogCollector.addLog("ERROR", "重试达到上限，已移入失败记录: " + file.getName());
 
         } catch (IOException e) {
             log.error(I18nUtil.getMessage("monitor.move.failed.error"), file.getName(), failedDir, e);

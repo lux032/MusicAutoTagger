@@ -27,6 +27,7 @@ public class RecoveryServlet extends HttpServlet {
         String action = action(req);
         if ("list".equals(action)) {
             respond(resp, 200, Map.of("items", recoveryService.listItems(), "jobs", recoveryService.listJobs(),
+                "trashCount", recoveryService.countTrash(),
                 "onlineSearchAvailable", recoveryService.isOnlineSearchAvailable()));
         } else if ("jobs".equals(action)) {
             respond(resp, 200, Map.of("jobs", recoveryService.listJobs()));

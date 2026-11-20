@@ -35,6 +35,20 @@ public class FailedFileHandler {
         STORED,
         ARCHIVED
     }
+
+    private static final ThreadLocal<Boolean> SUPPRESS_LLM_AUTO_ARCHIVE = new ThreadLocal<>();
+
+    public static AutoCloseable suppressLlmAutoArchive() {
+        Boolean previous = SUPPRESS_LLM_AUTO_ARCHIVE.get();
+        SUPPRESS_LLM_AUTO_ARCHIVE.set(Boolean.TRUE);
+        return () -> {
+            if (previous == null) {
+                SUPPRESS_LLM_AUTO_ARCHIVE.remove();
+            } else {
+                SUPPRESS_LLM_AUTO_ARCHIVE.set(previous);
+            }
+        };
+    }
     
     private final MusicConfig config;
     private final TagWriterService tagWriter;
@@ -181,7 +195,8 @@ public class FailedFileHandler {
             }
 
             // LLM 匹配逻辑：如果启用且源文件有艺术家标签，尝试匹配并移动到 outputDirectory
-            Path archivedFile = config.isEnableLLMMatching() ? tryLLMMatchAndMove(audioFile, targetFile) : null;
+            boolean llmAllowed = config.isEnableLLMMatching() && !Boolean.TRUE.equals(SUPPRESS_LLM_AUTO_ARCHIVE.get());
+            Path archivedFile = llmAllowed ? tryLLMMatchAndMove(audioFile, targetFile) : null;
             if (archivedFile != null) {
                 log.info("LLM 匹配成功，文件已移动到 outputDirectory");
                 onArchived.accept(archivedFile);
@@ -363,7 +378,9 @@ public class FailedFileHandler {
 
             // LLM 匹配逻辑：如果启用且源文件有艺术家标签，尝试匹配并移动到 outputDirectory
             log.info("LLM 匹配配置检查: enabled={}", config.isEnableLLMMatching());
-            Path archivedFolder = config.isEnableLLMMatching() && !audioFiles.isEmpty()
+            boolean llmAllowed = config.isEnableLLMMatching()
+                && !Boolean.TRUE.equals(SUPPRESS_LLM_AUTO_ARCHIVE.get());
+            Path archivedFolder = llmAllowed && !audioFiles.isEmpty()
                 ? tryLLMMatchAndMoveAlbum(audioFiles.get(0), targetFolder) : null;
             if (archivedFolder != null) {
                 log.info("LLM 匹配成功，专辑已移动到 outputDirectory");

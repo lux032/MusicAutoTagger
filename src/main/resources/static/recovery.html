@@ -142,9 +142,9 @@
     <section class="card" style="margin-bottom: 18px;">
         <div class="list-tools">
         <div class="tabs">
-            <button class="tab active" id="partialTab" onclick="setTab('PARTIAL')" data-i18n="recovery.tab.partial">部分识别</button>
-            <button class="tab" id="failedTab" onclick="setTab('FAILED')" data-i18n="recovery.tab.failed">识别失败</button>
-            <button class="tab" id="trashTab" onclick="setTab('TRASH')" data-i18n="recovery.tab.trash">回收站</button>
+            <button class="tab active" id="partialTab" onclick="setTab('PARTIAL')"><span data-i18n="recovery.tab.partial">部分识别</span><span class="count" id="partialCount">0</span></button>
+            <button class="tab" id="failedTab" onclick="setTab('FAILED')"><span data-i18n="recovery.tab.failed">识别失败</span><span class="count" id="failedCount">0</span></button>
+            <button class="tab" id="trashTab" onclick="setTab('TRASH')"><span data-i18n="recovery.tab.trash">回收站</span><span class="count" id="trashCount">0</span></button>
         </div>
             <input id="findInput" class="find-input" type="text" autocomplete="off" spellcheck="false"
                    placeholder="按名称筛选" data-i18n-placeholder="recovery.search.placeholder" aria-label="按名称筛选">
@@ -194,7 +194,8 @@
 <div id="toast" class="toast"></div>
 
 <script>
-    let csrfToken = null, currentTab = 'PARTIAL', items = [], trashItems = [], onlineSearchAvailable = false;
+    let csrfToken = null, currentTab = 'PARTIAL', items = [], trashItems = [], trashCountValue = 0, onlineSearchAvailable = false;
+    let renderedList = [], renderedTrash = [], lastRunningCount = 0, lastWaitingCount = 0;
     const T = (k, d) => I18n.t(k, d);
     const TF = (k, ...a) => I18n.tf(k, ...a);
 
@@ -255,6 +256,25 @@
             findQuery = e.target.value.trim().toLowerCase();
             if (currentTab === 'TRASH') renderTrash(); else render();
         });
+        document.getElementById('list').addEventListener('click', e => {
+            const btn = e.target.closest('button[data-action]');
+            if (!btn || btn.disabled) return;
+            const idx = Number(btn.dataset.idx);
+            const action = btn.dataset.action;
+            if (action === 'restore-trash' || action === 'delete-trash') {
+                const entry = renderedTrash[idx];
+                if (!entry) return;
+                if (action === 'restore-trash') restoreTrash(entry.id, entry.relativePath || entry.id);
+                else deleteTrash(entry.id, entry.relativePath || entry.id);
+                return;
+            }
+            const item = renderedList[idx];
+            if (!item) return;
+            if (action === 'retry-reidentify') retryMode(item.sourceType, item.relativePath, 'REIDENTIFY');
+            else if (action === 'retry-online') onlineSearch(item.sourceType, item.relativePath, item.fileCount);
+            else if (action === 'retry-artist') retryMode(item.sourceType, item.relativePath, 'LOCAL_ARTIST_MATCH');
+            else if (action === 'dismiss') dismissItem(item.sourceType, item.relativePath, item.name);
+        });
         await loadAll();
         if (find && !matchesFind(items.filter(i => i.sourceType === currentTab)).length) {
             const other = matchesFind(items)[0];
@@ -283,10 +303,23 @@
     }
 
     // ---------- 回收站 ----------
+    function updateTabCounts() {
+        const partial = items.filter(i => i.sourceType === 'PARTIAL').length;
+        const failed = items.filter(i => i.sourceType === 'FAILED').length;
+        const pEl = document.getElementById('partialCount');
+        const fEl = document.getElementById('failedCount');
+        const tEl = document.getElementById('trashCount');
+        if (pEl) pEl.textContent = String(partial);
+        if (fEl) fEl.textContent = String(failed);
+        if (tEl) tEl.textContent = String(trashCountValue);
+    }
+
     async function loadTrash() {
         try {
             const d = await api('/api/recovery/trash');
             trashItems = d.items || [];
+            trashCountValue = trashItems.length;
+            updateTabCounts();
             render();
         } catch (e) {
             toast(TF('recovery.trash.load.failed', e.message));
@@ -296,12 +329,13 @@
     function renderTrash() {
         const el = document.getElementById('list');
         const list = matchesFind(trashItems);
+        renderedTrash = list;
         if (!list.length) {
             el.innerHTML = `<div class="empty">${esc(trashItems.length && findQuery
                 ? TF('recovery.search.empty', document.getElementById('findInput').value.trim()) : T('recovery.trash.empty'))}</div>`;
             return;
         }
-        el.innerHTML = list.map(i => `
+        el.innerHTML = list.map((i, idx) => `
             <div class="item">
                 <div>
                     <div class="name">${esc(i.relativePath || i.id)}</div>
@@ -313,9 +347,9 @@
                 </div>
                 <div class="item-actions">
                     <button class="btn ghost sm" ${i.restorable ? '' : 'disabled'}
-                        onclick='restoreTrash(${JSON.stringify(i.id)},${JSON.stringify(i.relativePath || i.id)})'>${esc(T('recovery.restore'))}</button>
+                        data-action="restore-trash" data-idx="${idx}">${esc(T('recovery.restore'))}</button>
                     <button class="btn danger sm"
-                        onclick='deleteTrash(${JSON.stringify(i.id)},${JSON.stringify(i.relativePath || i.id)})'>${esc(T('recovery.delete.forever'))}</button>
+                        data-action="delete-trash" data-idx="${idx}">${esc(T('recovery.delete.forever'))}</button>
                 </div>
             </div>`).join('');
     }
@@ -328,7 +362,8 @@
         try {
             await api('/api/recovery/trash-restore', { method: 'POST', body: JSON.stringify({ id }) });
             toast(T('recovery.restored'));
-            loadTrash();
+            await loadTrash();
+            await loadAll();
         } catch (e) { toast(TF('recovery.restore.failed', e.message)); }
     }
 
@@ -338,7 +373,8 @@
         try {
             await api('/api/recovery/trash-delete', { method: 'POST', body: JSON.stringify({ id }) });
             toast(T('recovery.deleted'));
-            loadTrash();
+            await loadTrash();
+            await loadAll();
         } catch (e) { toast(TF('recovery.delete.failed', e.message)); }
     }
 
@@ -347,19 +383,29 @@
         try {
             const d = await api('/api/recovery/list');
             items = d.items || [];
+            if (typeof d.trashCount === 'number') trashCountValue = d.trashCount;
             onlineSearchAvailable = !!d.onlineSearchAvailable;
+            updateTabCounts();
             render();
-            renderJobs(d.jobs || []);
-            if (window.Shell) Shell.refreshRecoveryCount();
+            const allJobs = d.jobs || [];
+            lastRunningCount = allJobs.filter(j => j.status === 'RUNNING').length;
+            lastWaitingCount = allJobs.filter(j => j.status === 'WAITING_REVIEW').length;
+            renderJobs(allJobs);
+            if (window.Shell) Shell.refreshCounts();
         } catch (e) { toast(TF('recovery.load.failed', e.message)); }
     }
 
     async function loadJobs() {
         try {
             const d = await api('/api/recovery/jobs');
-            renderJobs(d.jobs || []);
-            if ((d.jobs || []).some(j => j.status === 'RUNNING')) return;
-            if (document.querySelector('.job.RUNNING')) loadAll();
+            const jobs = d.jobs || [];
+            renderJobs(jobs);
+            const curRunning = jobs.filter(j => j.status === 'RUNNING').length;
+            const curWaiting = jobs.filter(j => j.status === 'WAITING_REVIEW').length;
+            const changed = curRunning < lastRunningCount || curWaiting < lastWaitingCount;
+            lastRunningCount = curRunning;
+            lastWaitingCount = curWaiting;
+            if (changed) loadAll();
         } catch (e) { /* 轮询失败静默重试 */ }
     }
 
@@ -374,13 +420,14 @@
         if (currentTab === 'TRASH') { renderTrash(); return; }
         const inTab = items.filter(i => i.sourceType === currentTab);
         const list = matchesFind(inTab);
+        renderedList = list;
         const el = document.getElementById('list');
         if (!list.length) {
             el.innerHTML = `<div class="empty">${esc(inTab.length && findQuery
                 ? TF('recovery.search.empty', document.getElementById('findInput').value.trim()) : T('recovery.empty'))}</div>`;
             return;
         }
-        el.innerHTML = list.map(i => `
+        el.innerHTML = list.map((i, idx) => `
             <div class="item ${i.sourceType === 'FAILED' ? 'failed' : ''}">
                 <div>
                     <div class="name">${esc(i.name)}</div>
@@ -389,13 +436,13 @@
                 </div>
                 <div class="item-actions">
                     <button class="btn primary sm" ${i.running ? 'disabled' : ''}
-                        onclick='retryMode(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},"REIDENTIFY")'>${esc(T('recovery.btn.reidentify'))}</button>
+                        data-action="retry-reidentify" data-idx="${idx}">${esc(T('recovery.btn.reidentify'))}</button>
                     <button class="btn soft sm" ${i.running || !onlineSearchAvailable ? 'disabled' : ''}
-                        onclick='onlineSearch(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},${i.fileCount})'>${esc(T('recovery.btn.online'))}</button>
+                        data-action="retry-online" data-idx="${idx}">${esc(T('recovery.btn.online'))}</button>
                     ${i.sourceType === 'PARTIAL' ? `<button class="btn ghost sm" ${i.running ? 'disabled' : ''}
-                        onclick='retryMode(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},"LOCAL_ARTIST_MATCH")'>${esc(T('recovery.btn.artist.only'))}</button>` : ''}
+                        data-action="retry-artist" data-idx="${idx}">${esc(T('recovery.btn.artist.only'))}</button>` : ''}
                     <button class="btn ghost sm" ${i.running ? 'disabled' : ''}
-                        onclick='dismissItem(${JSON.stringify(i.sourceType)},${JSON.stringify(i.relativePath)},${JSON.stringify(i.name)})'>${esc(T('recovery.btn.dismiss'))}</button>
+                        data-action="dismiss" data-idx="${idx}">${esc(T('recovery.btn.dismiss'))}</button>
                 </div>
             </div>`).join('');
     }

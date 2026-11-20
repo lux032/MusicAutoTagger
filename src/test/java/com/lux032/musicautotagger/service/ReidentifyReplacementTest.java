@@ -386,6 +386,103 @@ class ReidentifyReplacementTest {
     }
 
     @Test
+    void stagedReidentifySuccessUpdatesRecordToFinalOutputPathAndReplacesOldArchive() throws Exception {
+        Path oldTarget = writeTaggedFlac(
+            output.resolve("Old Artist/Old Album/01 Song.flac"), 41, "Song", "1").toPath();
+        File missingSource = dir.resolve("failed/Old Album/01 Song.flac").toFile();
+        Files.createDirectories(missingSource.getParentFile().toPath());
+        Files.copy(oldTarget, missingSource.toPath());
+        logger.markFileAsProcessed(missingSource, "ONLINE_SEARCH", "Old Artist", "Song", "Old Album", null, oldTarget.toString());
+        Files.delete(missingSource.toPath());
+
+        ReviewQueueService queue = new ReviewQueueService(config);
+        AudioFileProcessorService fakeProcessor = new AudioFileProcessorService(
+                config, null, null, tagWriter, null, logger, null, null, null, null,
+                new FileSystemUtils(config), new FolderAlbumCache(null, null, null)) {
+            @Override
+            public ProcessResult processRecoveryFile(File audioFile, File albumRootDir) {
+                var result = tagWriter.processFileWithResult(audioFile, meta("New Artist", "New Artist", "New Album", "Song", "1"), null);
+                assertTrue(result.isSuccess());
+                logger.markFileAsProcessed(audioFile, "mb-rec-new", "New Artist", "Song", "New Album", "mb-rg-new",
+                    result.getTargetFile().getAbsolutePath());
+                return ProcessResult.SUCCESS;
+            }
+        };
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, fakeProcessor, logger, queue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, null, null, new LlmArtistSplitter(config), null)) {
+            ProcessedRecordService recordService = new ProcessedRecordService(
+                config, logger, new FolderAlbumCache(null, null, null), new CoverArtService(null, null),
+                new FileSystemUtils(config), () -> null, registry);
+            recordService.setRecoveryService(recovery);
+            recordService.setReviewQueueService(queue);
+
+            List<ProcessedRecord> targets = recordService.resolveTargets(List.of(missingSource.getAbsolutePath()), null);
+            recordService.reidentify(targets);
+
+            Path expectedNewTarget = output.resolve("New Artist/New Album/1.01 New Artist - Song.flac");
+            long deadline = System.currentTimeMillis() + 5000;
+            while (!Files.isRegularFile(expectedNewTarget) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(25);
+            }
+            // Wait slightly for finalizeCommittedRecords to run after commitWorkspace
+            long recordDeadline = System.currentTimeMillis() + 5000;
+            while (logger.findRecordsByPaths(List.of(expectedNewTarget.toString())).isEmpty()
+                    && System.currentTimeMillis() < recordDeadline) {
+                Thread.sleep(25);
+            }
+
+            assertFalse(Files.exists(oldTarget), "旧归档文件应已被替换清理");
+            List<ProcessedRecord> recs = logger.findRecordsByPaths(List.of(expectedNewTarget.toString()));
+            assertEquals(1, recs.size(), "处理历史应更新为真实归档路径，不能残余临时工作目录路径");
+            assertEquals(ProcessedRecord.Status.SUCCESS, recs.get(0).status);
+            assertEquals(expectedNewTarget.toString(), recs.get(0).targetFilePath);
+        }
+    }
+
+    @Test
+    void recoveryJobReflectsConfirmedOrRejectedReviewStatusInListJobs() throws Exception {
+        Path failedRoot = dir.resolve("failed");
+        config.setFailedDirectory(failedRoot.toString());
+        Path failedAlbum = failedRoot.resolve("PLAY!+ Hatsunetsumiko's GAME COLLECTION");
+        writeTaggedFlac(failedAlbum.resolve("01.flac"), 10, "Track 1", "1");
+
+        ReviewQueueService queue = new ReviewQueueService(config);
+        var fakeSearch = new com.lux032.musicautotagger.service.llm.WebSearchClient() {
+            @Override public boolean hasEnabledEndpoint() { return true; }
+            @Override public String name() { return "fake"; }
+            @Override public SearchResponse search(String sys, String usr) {
+                var resp = new SearchResponse();
+                resp.setProvider("fake");
+                resp.setModel("fake-model");
+                resp.setText("{\"needs_second_round\":false,\"candidates\":[],\"clues\":[]}");
+                return resp;
+            }
+        };
+        var online = new OnlineIdentificationService(config, queue, tagWriter, null, new LlmArtistSplitter(config), fakeSearch);
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, logger, queue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, null, null, new LlmArtistSplitter(config), online)) {
+            recovery.submit(RecoveryService.SourceType.FAILED, "PLAY!+ Hatsunetsumiko's GAME COLLECTION",
+                RecoveryService.RecoveryMode.ONLINE_SEARCH, false);
+
+            long deadline = System.currentTimeMillis() + 5000;
+            while ((recovery.listJobs().isEmpty()
+                    || !"WAITING_REVIEW".equals(recovery.listJobs().get(0).get("status")))
+                    && System.currentTimeMillis() < deadline) {
+                Thread.sleep(25);
+            }
+            assertEquals("WAITING_REVIEW", recovery.listJobs().get(0).get("status"));
+
+            ReviewItem item = queue.list(ReviewItem.Status.PENDING_REVIEW).get(0);
+            queue.markResolved(item, ReviewItem.Status.REJECTED, "rejected");
+
+            assertEquals("FAILED", recovery.listJobs().get(0).get("status"));
+        }
+    }
+
+    @Test
     void reidentifySkipsMonitorRecordWhenFolderAlreadyPendingReview() throws Exception {
         File src = wav(monitor.resolve("PendingAlbum/01.wav"), 2, (byte) 5);
         logger.markFileAsProcessed(src, "rec-1", "Artist", "Song", "PendingAlbum", null, null);

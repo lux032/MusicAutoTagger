@@ -218,9 +218,37 @@ public class RecoveryService implements AutoCloseable {
         snapshots.sort(Comparator.comparingLong(RecoveryJob::getCreatedAt).reversed());
         List<Map<String, Object>> result = new ArrayList<>();
         for (RecoveryJob job : snapshots) {
-            result.add(job.toView());
+            Map<String, Object> view = job.toView();
+            if (job.status == JobStatus.WAITING_REVIEW && job.reviewItemId != null && reviewQueue != null) {
+                ReviewItem reviewItem = reviewQueue.get(job.reviewItemId);
+                if (reviewItem != null) {
+                    if (reviewItem.getStatus() == ReviewItem.Status.CONFIRMED
+                            || reviewItem.getStatus() == ReviewItem.Status.ARCHIVED_UNVERIFIED) {
+                        view.put("status", JobStatus.SUCCEEDED.name());
+                        view.put("message", "已在待确认页面确认完成");
+                    } else if (reviewItem.getStatus() == ReviewItem.Status.REJECTED) {
+                        view.put("status", JobStatus.FAILED.name());
+                        view.put("message", "已在待确认页面驳回");
+                    }
+                } else {
+                    view.put("status", JobStatus.FAILED.name());
+                    view.put("message", "待确认条目已移除");
+                }
+            }
+            result.add(view);
         }
         return result;
+    }
+
+    /** 统计回收站当前条目数量（仅统计主体条目，忽略 manifest .json）。 */
+    public int countTrash() {
+        Path root = trashRoot();
+        if (!Files.isDirectory(root)) return 0;
+        try (var stream = Files.list(root)) {
+            return (int) stream.filter(p -> !p.getFileName().toString().endsWith(".json")).count();
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     public boolean isOnlineSearchAvailable() {
@@ -248,7 +276,8 @@ public class RecoveryService implements AutoCloseable {
                 Files.createDirectories(reidentifyWorkRoot.toPath());
                 int succeeded = 0;
                 int failed = 0;
-                try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(reidentifyWorkRoot)) {
+                try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(reidentifyWorkRoot);
+                     AutoCloseable suppressLlm = FailedFileHandler.suppressLlmAutoArchive()) {
                     for (File audioFile : stagedFiles) {
                         ProcessResult result = processor.processRecoveryFile(audioFile, stagedDir);
                         if (result == ProcessResult.SUCCESS) {
@@ -276,23 +305,11 @@ public class RecoveryService implements AutoCloseable {
                 }
 
                 if (failed == 0 && succeeded == stagedFiles.size()) {
+                    Map<String, Path> tempTargets = collectTempRelativeTargets(reidentifyWorkRoot.toPath(), stagedFiles);
                     commitReplacingDuplicates(reidentifyWorkRoot.toPath(), stagedFiles.size(), taskId,
                         null, DuplicatePolicy.ASK, oldTargetPaths);
                     clearReplacementEntries(stagedFiles);
-                    // 处理记录中不应保留很快会被删除的暂存路径：更新为实际有效归档路径
-                    for (File staged : stagedFiles) {
-                        String finalTarget = processedLogger.findTargetPath(staged);
-                        if (finalTarget != null && Files.isRegularFile(Path.of(finalTarget))) {
-                            List<com.lux032.musicautotagger.model.ProcessedRecord> recs =
-                                processedLogger.findRecordsByPaths(List.of(staged.getAbsolutePath()));
-                            if (!recs.isEmpty()) {
-                                var rec = recs.get(0);
-                                processedLogger.removeProcessedRecord(staged);
-                                processedLogger.markFileAsProcessed(new File(finalTarget), rec.recordingId,
-                                    rec.artist, rec.title, rec.album, rec.releaseGroupId, finalTarget);
-                            }
-                        }
-                    }
+                    finalizeCommittedRecords(tempTargets, stagedFiles);
                     deleteRecursively(stagedCleanupRoot);
                     LogCollector.addLog("SUCCESS", "手动重新识别成功: " + label);
                 } else {
@@ -1269,7 +1286,8 @@ public class RecoveryService implements AutoCloseable {
         try {
             if (job.mode == RecoveryMode.ONLINE_SEARCH) {
                 File albumRoot = target;
-                onlineIdentificationService.search(albumRoot, job.sourceType.name(), job.analyzeCover);
+                ReviewItem item = onlineIdentificationService.search(albumRoot, job.sourceType.name(), job.analyzeCover);
+                if (item != null) job.reviewItemId = item.getId();
                 complete(job, JobStatus.WAITING_REVIEW, "联网搜索完成，候选已进入待确认页面");
                 return;
             }
@@ -1334,12 +1352,15 @@ public class RecoveryService implements AutoCloseable {
                 ? processingTarget.getAbsolutePath() : processingTarget.getParentFile().getAbsolutePath();
             if (reviewQueue != null && reviewQueue.isFolderUnderReview(reviewFolder)) {
                 // 待确认阶段不应留下任何正式输出；候选和文件引用已由队列持久化。
+                ReviewItem queued = reviewQueue.findPendingByFolder(reviewFolder);
+                if (queued != null) job.reviewItemId = queued.getId();
                 deleteRecursively(reidentifyWorkRoot.toPath());
                 if (singleFileWorkspace != null) {
                     Files.deleteIfExists(target.toPath());
                 }
                 complete(job, JobStatus.WAITING_REVIEW, "重新识别后进入待人工确认队列，文件已转交待确认页");
             } else if (failed == 0 && succeeded == audioFiles.size()) {
+                Map<String, Path> tempTargets = collectTempRelativeTargets(reidentifyWorkRoot.toPath(), audioFiles);
                 try {
                     commitReplacingDuplicates(reidentifyWorkRoot.toPath(), audioFiles.size(), job.id,
                         job.sourceType == SourceType.FAILED ? job.relativePath : null,
@@ -1350,6 +1371,7 @@ public class RecoveryService implements AutoCloseable {
                     throw commitError;
                 }
                 retireRecoveryCopies(target, job);
+                finalizeCommittedRecords(tempTargets, audioFiles);
                 if (singleFileWorkspace != null) {
                     deleteRecursively(singleFileWorkspace.toPath());
                 }
@@ -1666,6 +1688,52 @@ public class RecoveryService implements AutoCloseable {
         executor.shutdownNow();
     }
 
+    private Map<String, Path> collectTempRelativeTargets(Path workRoot, List<File> sourceFiles) {
+        Map<String, Path> relativeBySource = new LinkedHashMap<>();
+        if (processedLogger == null || workRoot == null || sourceFiles == null) {
+            return relativeBySource;
+        }
+        Path normalizedWork = workRoot.toAbsolutePath().normalize();
+        for (File source : sourceFiles) {
+            String tempTarget = processedLogger.findTargetPath(source);
+            if (tempTarget == null || tempTarget.isBlank()) {
+                continue;
+            }
+            Path targetPath = Path.of(tempTarget).toAbsolutePath().normalize();
+            if (targetPath.startsWith(normalizedWork)) {
+                relativeBySource.put(source.getAbsolutePath(), normalizedWork.relativize(targetPath));
+            }
+        }
+        return relativeBySource;
+    }
+
+    private void finalizeCommittedRecords(Map<String, Path> relativeBySource, List<File> sourceFiles) {
+        if (processedLogger == null || relativeBySource == null || relativeBySource.isEmpty()
+                || config.getOutputDirectory() == null || config.getOutputDirectory().isBlank()) {
+            return;
+        }
+        Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
+        for (File source : sourceFiles) {
+            Path relative = relativeBySource.get(source.getAbsolutePath());
+            if (relative == null) {
+                continue;
+            }
+            File finalTarget = outputRoot.resolve(relative).normalize().toFile();
+            if (!finalTarget.isFile()) {
+                continue;
+            }
+            List<com.lux032.musicautotagger.model.ProcessedRecord> recs =
+                processedLogger.findRecordsByPaths(List.of(source.getAbsolutePath()));
+            if (recs.isEmpty()) {
+                continue;
+            }
+            var rec = recs.get(0);
+            processedLogger.removeProcessedRecord(source);
+            processedLogger.markFileAsProcessed(finalTarget, rec.recordingId,
+                rec.artist, rec.title, rec.album, rec.releaseGroupId, finalTarget.getAbsolutePath());
+        }
+    }
+
     private static class RecoveryJob {
         private String id;
         private SourceType sourceType;
@@ -1674,6 +1742,7 @@ public class RecoveryService implements AutoCloseable {
         private boolean useLlm;
         private RecoveryMode mode;
         private boolean analyzeCover;
+        private String reviewItemId;
         private JobStatus status;
         private String message;
         private int successCount;
