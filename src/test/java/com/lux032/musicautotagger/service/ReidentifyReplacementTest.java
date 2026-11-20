@@ -1,0 +1,277 @@
+package com.lux032.musicautotagger.service;
+
+import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.model.ProcessedRecord;
+import com.lux032.musicautotagger.model.ReviewItem;
+import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
+import com.lux032.musicautotagger.util.FileSystemUtils;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.File;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+
+import static com.lux032.musicautotagger.service.ArchiveDuplicateDetectorTest.flac;
+import static com.lux032.musicautotagger.service.ArchiveDuplicateDetectorTest.write;
+import static org.junit.jupiter.api.Assertions.*;
+
+class ReidentifyReplacementTest {
+
+    @TempDir
+    Path dir;
+
+    private MusicConfig config;
+    private Path monitor;
+    private Path output;
+    private TagWriterService tagWriter;
+    private ProcessedFileLogger logger;
+    private ReidentifyReplacementRegistry registry;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        var constructor = MusicConfig.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        config = constructor.newInstance();
+        monitor = dir.resolve("monitor");
+        output = dir.resolve("output");
+        Files.createDirectories(monitor);
+        Files.createDirectories(output);
+        config.setMonitorDirectory(monitor.toString());
+        config.setOutputDirectory(output.toString());
+        config.setRecoveryWorkDirectory(dir.resolve("work").toString());
+        config.setRecoveryTrashDirectory(dir.resolve("trash").toString());
+        config.setReviewQueuePath(dir.resolve("data/review.json").toString());
+        config.setReviewStagingDirectory(dir.resolve("staging").toString());
+        config.setProcessedFileLogPath(dir.resolve("processed.log").toString());
+        config.setAutoRename(true);
+        config.setExportLyricsToFile(false);
+
+        tagWriter = new TagWriterService(config);
+        logger = new ProcessedFileLogger(config, null);
+        registry = ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath());
+    }
+
+    private File wav(Path target, int seconds, byte fill) throws Exception {
+        int sampleRate = 8000;
+        int dataLen = sampleRate * seconds;
+        ByteBuffer b = ByteBuffer.allocate(44 + dataLen).order(ByteOrder.LITTLE_ENDIAN);
+        b.put("RIFF".getBytes()).putInt(36 + dataLen).put("WAVE".getBytes());
+        b.put("fmt ".getBytes()).putInt(16).putShort((short) 1).putShort((short) 1)
+            .putInt(sampleRate).putInt(sampleRate).putShort((short) 1).putShort((short) 8);
+        b.put("data".getBytes()).putInt(dataLen);
+        for (int i = 0; i < dataLen; i++) b.put(fill);
+        Files.createDirectories(target.getParent());
+        Files.write(target, b.array());
+        return target.toFile();
+    }
+
+    private static MusicMetadata meta(String artist, String albumArtist, String album, String title, String trackNo) {
+        MusicMetadata md = new MusicMetadata();
+        md.setRecordingId("mb-rec-1");
+        md.setReleaseGroupId("mb-rg-1");
+        md.setArtist(artist);
+        md.setAlbumArtist(albumArtist);
+        md.setAlbum(album);
+        md.setTitle(title);
+        md.setDiscNo("1");
+        md.setTrackNo(trackNo);
+        return md;
+    }
+
+    @Test
+    void reidentifyToDifferentOutputPathDeletesOldFileAndEmptyDirectories() throws Exception {
+        File src = wav(monitor.resolve("Album/01.wav"), 2, (byte) 1);
+        AlbumBatchProcessor batch = new AlbumBatchProcessor(
+            config, new FolderAlbumCache(null, null, null), tagWriter, logger,
+            new CoverArtService(null, null), new LlmArtistSplitter(config), registry);
+
+        // First scrape writes under Old Artist
+        assertTrue(batch.processAndWriteFile(src, src, meta("Old Artist", "Old Artist", "Album", "Song", "1"), null, false));
+        Path oldTarget = output.resolve("Old Artist/Album/1.01 Old Artist - Song.wav");
+        assertTrue(Files.isRegularFile(oldTarget));
+
+        // Re-identify from ProcessedRecordService
+        List<File> requeued = new ArrayList<>();
+        FileMonitorService stubMonitor = new FileMonitorService(config, logger) {
+            @Override
+            public boolean isConsumerAvailable() { return true; }
+
+            @Override
+            public int requeueFiles(Collection<File> files, Runnable beforeEnqueue) {
+                beforeEnqueue.run();
+                requeued.addAll(files);
+                return files.size();
+            }
+        };
+        ProcessedRecordService recordService = new ProcessedRecordService(
+            config, logger, new FolderAlbumCache(null, null, null), new CoverArtService(null, null),
+            new FileSystemUtils(config), () -> stubMonitor, registry);
+
+        List<ProcessedRecord> targets = recordService.resolveTargets(List.of(src.getAbsolutePath()), null);
+        assertEquals(1, targets.size());
+        Map<String, Object> res = recordService.reidentify(targets);
+        assertEquals(1, res.get("queued"));
+        assertEquals(1, requeued.size());
+
+        // Old target MUST still exist before the re-scrape actually succeeds
+        assertTrue(Files.isRegularFile(oldTarget));
+
+        // Re-scrape succeeds with New Artist -> old file and empty Old Artist/Album dirs are deleted
+        assertTrue(batch.processAndWriteFile(src, src, meta("New Artist", "New Artist", "Album", "Song", "1"), null, false));
+        Path newTarget = output.resolve("New Artist/Album/1.01 New Artist - Song.wav");
+        assertTrue(Files.isRegularFile(newTarget));
+        assertFalse(Files.exists(oldTarget), "旧路径文件应在重新刮削成功后直接删除");
+        assertFalse(Files.exists(output.resolve("Old Artist/Album")), "空专辑目录应清理");
+        assertFalse(Files.exists(output.resolve("Old Artist")), "空艺术家目录应清理");
+    }
+
+    @Test
+    void forgetAndRescanOverwritesSamePathEvenWhenDurationChangesWithoutCreatingSuffix2() throws Exception {
+        File src = wav(monitor.resolve("Album/01.wav"), 2, (byte) 1);
+        AlbumBatchProcessor batch = new AlbumBatchProcessor(
+            config, new FolderAlbumCache(null, null, null), tagWriter, logger,
+            new CoverArtService(null, null), new LlmArtistSplitter(config), registry);
+
+        assertTrue(batch.processAndWriteFile(src, src, meta("Artist", "Artist", "Album", "Song", "1"), null, false));
+        Path target = output.resolve("Artist/Album/1.01 Artist - Song.wav");
+        assertTrue(Files.isRegularFile(target));
+
+        ProcessedRecordService recordService = new ProcessedRecordService(
+            config, logger, new FolderAlbumCache(null, null, null), new CoverArtService(null, null),
+            new FileSystemUtils(config), () -> null, registry);
+        List<ProcessedRecord> targets = recordService.resolveTargets(List.of(src.getAbsolutePath()), null);
+        recordService.forget(targets);
+        assertTrue(Files.isRegularFile(target));
+
+        // Replace source audio with different duration (> 1.0s diff) and re-scrape to identical output path
+        wav(src.toPath(), 5, (byte) 9);
+        assertTrue(batch.processAndWriteFile(src, src, meta("Artist", "Artist", "Album", "Song", "1"), null, false));
+
+        assertTrue(Files.isRegularFile(target));
+        assertFalse(TagWriterService.withConflictSuffix(target.toFile(), 2).exists(),
+            "同一来源重新刮削到同路径时应直接覆盖，不应产生 (2) 副本");
+    }
+
+    private static byte[] validFlac(int md5Seed) {
+        byte[] flac = flac(md5Seed);
+        // STREAMINFO bytes [18..25] hold 20-bit sample rate, 3-bit channels-1, 5-bit bps-1, 36-bit total samples.
+        // Set sampleRate = 44100, channels = 2, bps = 16, totalSamples = 88200 (2s).
+        int sr = 44100;
+        int channelsMinus1 = 1;
+        int bpsMinus1 = 15;
+        long totalSamples = 88200L;
+        flac[18] = (byte) (sr >> 12);
+        flac[19] = (byte) (sr >> 4);
+        flac[20] = (byte) (((sr & 0xF) << 4) | (channelsMinus1 << 1) | ((bpsMinus1 >> 4) & 0x1));
+        flac[21] = (byte) (((bpsMinus1 & 0xF) << 4) | ((totalSamples >> 32) & 0xF));
+        flac[22] = (byte) (totalSamples >> 24);
+        flac[23] = (byte) (totalSamples >> 16);
+        flac[24] = (byte) (totalSamples >> 8);
+        flac[25] = (byte) totalSamples;
+        return flac;
+    }
+
+    private File writeTaggedFlac(Path target, int md5Seed, String title, String trackNo) throws Exception {
+        write(target, validFlac(md5Seed));
+        var af = org.jaudiotagger.audio.AudioFileIO.read(target.toFile());
+        var tag = af.getTagOrCreateAndSetDefault();
+        tag.setField(org.jaudiotagger.tag.FieldKey.TITLE, title);
+        tag.setField(org.jaudiotagger.tag.FieldKey.TRACK, trackNo);
+        af.commit();
+        return target.toFile();
+    }
+
+    @Test
+    void recoveryOnlineConfirmReplacesTrackedTargetAcrossSameAndDifferentDirectories() throws Exception {
+        Path folder = monitor.resolve("Multi");
+        File src1 = writeTaggedFlac(folder.resolve("01.flac"), 11, "T1", "1");
+        File src2 = writeTaggedFlac(folder.resolve("02.flac"), 12, "T2", "2");
+        Path oldTrack1 = write(output.resolve("OldCollab/Album/01.flac"), validFlac(11));
+        Path untouchedSibling = write(output.resolve("OldCollab/Album/99-other.flac"), validFlac(99));
+
+        registry.record(src1.getAbsolutePath(), oldTrack1.toString(), null);
+        registry.record(src2.getAbsolutePath(), output.resolve("OldCollab/Album/02.flac").toString(), null);
+        write(output.resolve("OldCollab/Album/02.flac"), validFlac(12));
+
+        ReviewQueueService queue = new ReviewQueueService(config);
+        ReviewItem item = queue.enqueueRecoveryFolder(folder.toString(), null, List.of(src1, src2), tagWriter, "hash");
+
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("c1");
+        cand.setTitle("Album");
+        cand.setArtist("Artist A & Artist B");
+        cand.setAlbumArtist("Artist A & Artist B");
+        cand.setAlbumArtists(List.of("Artist A", "Artist B"));
+        ReviewItem.OnlineTrack t1 = new ReviewItem.OnlineTrack();
+        t1.setDiscNo(1); t1.setTrackNo(1); t1.setTitle("T1"); t1.setArtist("Artist A & Artist B");
+        t1.setMatchedFilePath(src1.getAbsolutePath()); t1.setMatchConfidence(0.95);
+        ReviewItem.OnlineTrack t2 = new ReviewItem.OnlineTrack();
+        t2.setDiscNo(1); t2.setTrackNo(2); t2.setTitle("T2"); t2.setArtist("Artist A & Artist B");
+        t2.setMatchedFilePath(src2.getAbsolutePath()); t2.setMatchConfidence(0.95);
+        cand.getTracks().addAll(List.of(t1, t2));
+        item.setOnlineCandidates(List.of(cand));
+        OnlineIdentificationService online = new OnlineIdentificationService(config, queue, tagWriter, null);
+        item.setEvidenceHash(online.evidenceHashForFolder(folder.toFile()));
+        queue.update(item);
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, logger, queue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, null, null)) {
+            recovery.confirmOnlineCandidate(item.getId(), cand.getId(),
+                "Album", "Artist A & Artist B", "2026-01-01", "", null, null,
+                RecoveryService.DuplicatePolicy.ASK, null);
+        }
+
+        assertTrue(Files.isRegularFile(output.resolve("Artist A & Artist B/Album/1.01 Artist A & Artist B - T1.flac")));
+        assertTrue(Files.isRegularFile(output.resolve("Artist A & Artist B/Album/1.02 Artist A & Artist B - T2.flac")));
+        assertFalse(Files.exists(oldTrack1));
+        assertFalse(Files.exists(output.resolve("OldCollab/Album/02.flac")));
+        assertTrue(Files.isRegularFile(untouchedSibling), "同目录内无关曲目不能被误删");
+    }
+
+    @Test
+    void recoveryOnlineConfirmReplacesWhenDestinationDirectoryIsIdentical() throws Exception {
+        Path folder = monitor.resolve("SameDir");
+        File src = writeTaggedFlac(folder.resolve("01.flac"), 21, "New", "1");
+        Path existing = write(output.resolve("Artist A & Artist B/Album/01 Old.flac"), validFlac(21));
+        registry.record(src.getAbsolutePath(), existing.toString(), null);
+
+        ReviewQueueService queue = new ReviewQueueService(config);
+        ReviewItem item = queue.enqueueRecoveryFolder(folder.toString(), null, List.of(src), tagWriter, "hash");
+
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("c1");
+        cand.setTitle("Album");
+        cand.setArtist("Artist A & Artist B");
+        cand.setAlbumArtist("Artist A & Artist B");
+        cand.setAlbumArtists(List.of("Artist A", "Artist B"));
+        ReviewItem.OnlineTrack t1 = new ReviewItem.OnlineTrack();
+        t1.setDiscNo(1); t1.setTrackNo(1); t1.setTitle("New"); t1.setArtist("Artist A & Artist B");
+        t1.setMatchedFilePath(src.getAbsolutePath()); t1.setMatchConfidence(0.95);
+        cand.getTracks().add(t1);
+        item.setOnlineCandidates(List.of(cand));
+        OnlineIdentificationService online = new OnlineIdentificationService(config, queue, tagWriter, null);
+        item.setEvidenceHash(online.evidenceHashForFolder(folder.toFile()));
+        queue.update(item);
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, logger, queue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, null, null)) {
+            recovery.confirmOnlineCandidate(item.getId(), cand.getId(),
+                "Album", "Artist A & Artist B", "2026-01-01", "", null, null,
+                RecoveryService.DuplicatePolicy.ASK, null);
+        }
+
+        assertFalse(Files.exists(existing), "同专辑目录重刮后旧文件应被直接删除");
+        assertTrue(Files.isRegularFile(output.resolve("Artist A & Artist B/Album/1.01 Artist A & Artist B - New.flac")));
+    }
+}

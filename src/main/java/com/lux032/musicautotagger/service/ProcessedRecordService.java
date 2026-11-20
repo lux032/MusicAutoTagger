@@ -37,16 +37,26 @@ public class ProcessedRecordService {
     private final CoverArtService coverArtService;
     private final FileSystemUtils fileSystemUtils;
     private final Supplier<FileMonitorService> monitorSupplier;
+    private final ReidentifyReplacementRegistry replacementRegistry;
 
     public ProcessedRecordService(MusicConfig config, ProcessedFileLogger logger,
                                   FolderAlbumCache folderAlbumCache, CoverArtService coverArtService,
                                   FileSystemUtils fileSystemUtils, Supplier<FileMonitorService> monitorSupplier) {
+        this(config, logger, folderAlbumCache, coverArtService, fileSystemUtils, monitorSupplier,
+            ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath()));
+    }
+
+    ProcessedRecordService(MusicConfig config, ProcessedFileLogger logger,
+                           FolderAlbumCache folderAlbumCache, CoverArtService coverArtService,
+                           FileSystemUtils fileSystemUtils, Supplier<FileMonitorService> monitorSupplier,
+                           ReidentifyReplacementRegistry replacementRegistry) {
         this.config = config;
         this.logger = logger;
         this.folderAlbumCache = folderAlbumCache;
         this.coverArtService = coverArtService;
         this.fileSystemUtils = fileSystemUtils;
         this.monitorSupplier = monitorSupplier;
+        this.replacementRegistry = replacementRegistry;
     }
 
     /** 分页查询，并为当前页补充文件是否存在等信息。 */
@@ -103,8 +113,9 @@ public class ProcessedRecordService {
         return result;
     }
 
-    /** 仅删除记录。 */
+    /** 仅删除记录（同时登记原成功归档路径，便于之后重扫时清理旧文件）。 */
     public Map<String, Object> forget(List<ProcessedRecord> targets) {
+        recordReplacements(targets);
         int removed = logger.removeProcessedRecords(paths(targets));
         log.info("通过处理记录页删除了 {} 条记录", removed);
         Map<String, Object> result = new LinkedHashMap<>();
@@ -116,12 +127,14 @@ public class ProcessedRecordService {
     public Map<String, Object> reidentify(List<ProcessedRecord> targets) {
         Path monitorRoot = monitorRoot();
         List<File> requeue = new ArrayList<>();
+        List<ProcessedRecord> queuedTargets = new ArrayList<>();
         Set<String> albumRoots = new LinkedHashSet<>();
         for (ProcessedRecord r : targets) {
             enrich(r, monitorRoot);
             if (Boolean.TRUE.equals(r.sourceExists) && Boolean.TRUE.equals(r.inMonitorDirectory)) {
                 File file = new File(r.filePath);
                 requeue.add(file);
+                queuedTargets.add(r);
                 File root = fileSystemUtils != null ? fileSystemUtils.getAlbumRootDirectory(file) : file.getParentFile();
                 if (root != null) albumRoots.add(root.getAbsolutePath());
                 if (file.getParentFile() != null) albumRoots.add(file.getParentFile().getAbsolutePath());
@@ -133,7 +146,8 @@ public class ProcessedRecordService {
             throw new IllegalStateException("File consumer unavailable; records unchanged");
         int[] removedCount = {0};
         int queued = monitor.requeueFiles(requeue, () -> {
-            // Clear caches before deleting records: failures must not leave forgotten records unqueued.
+            // Clear caches and persist old target paths before deleting records.
+            recordReplacements(queuedTargets);
             for (String root : albumRoots) {
                 if (folderAlbumCache != null) folderAlbumCache.clearFolderCache(root);
                 if (coverArtService != null) coverArtService.clearFolderCache(root);
@@ -159,6 +173,20 @@ public class ProcessedRecordService {
     public boolean isMonitoringPaused() {
         FileMonitorService monitor = monitorSupplier != null ? monitorSupplier.get() : null;
         return monitor != null && monitor.isPaused();
+    }
+
+    private void recordReplacements(List<ProcessedRecord> records) {
+        if (replacementRegistry == null || records == null) return;
+        for (ProcessedRecord r : records) {
+            if (r == null || r.filePath == null || r.targetFilePath == null || r.targetFilePath.isBlank()) {
+                continue;
+            }
+            if (r.status != ProcessedRecord.Status.SUCCESS) {
+                continue;
+            }
+            String fileHash = logger != null ? logger.computeFileHashOrNull(new File(r.filePath)) : null;
+            replacementRegistry.record(r.filePath, r.targetFilePath, fileHash);
+        }
     }
 
     private static List<String> paths(List<ProcessedRecord> records) {

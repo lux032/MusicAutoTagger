@@ -1918,6 +1918,7 @@ public class FolderAlbumCache {
         private final String releaseId;  // 新增：具体的 Release ID，用于确保版本一致性
         private final String albumTitle;
         private final String albumArtist;
+        private List<String> albumArtists;
         private final int trackCount;
         private final String releaseDate;
         private final String releaseType;

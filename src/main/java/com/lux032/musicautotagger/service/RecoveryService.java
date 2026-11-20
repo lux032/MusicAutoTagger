@@ -6,6 +6,8 @@ import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.ProcessResult;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
+import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
+import com.lux032.musicautotagger.util.ArtistCreditSupport;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FileSystemUtils;
 import com.lux032.musicautotagger.util.MetadataUtils;
@@ -62,7 +64,10 @@ public class RecoveryService implements AutoCloseable {
     private final OnlineTrackMatcher trackMatcher;
     private final CoverCandidateService coverCandidateService;
     private final AutoArchiveRegistry autoArchiveRegistry;
+    private final ReidentifyReplacementRegistry replacementRegistry;
     private final ArchiveDuplicateDetector duplicateDetector;
+    private final AlbumArtistPolicy albumArtistPolicy;
+    private final LlmArtistSplitter artistSplitter;
     private final Gson gson = new Gson();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "manual-recovery");
@@ -82,6 +87,21 @@ public class RecoveryService implements AutoCloseable {
                            TagWriterService tagWriter,
                            AudioFingerprintService fingerprintService,
                            CoverCandidateService coverCandidateService) {
+        this(config, processor, processedLogger, reviewQueue, folderAlbumCache, failedFileHandler,
+            fileSystemUtils, tagWriter, fingerprintService, coverCandidateService, new LlmArtistSplitter(config));
+    }
+
+    RecoveryService(MusicConfig config,
+                    AudioFileProcessorService processor,
+                    ProcessedFileLogger processedLogger,
+                    ReviewQueueService reviewQueue,
+                    FolderAlbumCache folderAlbumCache,
+                    FailedFileHandler failedFileHandler,
+                    FileSystemUtils fileSystemUtils,
+                    TagWriterService tagWriter,
+                    AudioFingerprintService fingerprintService,
+                    CoverCandidateService coverCandidateService,
+                    LlmArtistSplitter artistSplitter) {
         this.config = config;
         this.processor = processor;
         this.processedLogger = processedLogger;
@@ -94,9 +114,12 @@ public class RecoveryService implements AutoCloseable {
         this.trackMatcher = new OnlineTrackMatcher(tagWriter);
         this.coverCandidateService = coverCandidateService;
         this.autoArchiveRegistry = AutoArchiveRegistry.forReviewQueuePath(config.getReviewQueuePath());
+        this.replacementRegistry = ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath());
         this.duplicateDetector = new ArchiveDuplicateDetector(fileSystemUtils::isMusicFile);
+        this.albumArtistPolicy = new AlbumArtistPolicy(config);
+        this.artistSplitter = artistSplitter;
         this.onlineIdentificationService = new OnlineIdentificationService(
-            config, reviewQueue, tagWriter, fingerprintService);
+            config, reviewQueue, tagWriter, fingerprintService, artistSplitter);
         cleanupExpiredTrash();
         cleanupStaleWorkspaces();
         resumeCommittedRecoveries();
@@ -313,7 +336,7 @@ public class RecoveryService implements AutoCloseable {
                                                            String archiveDirectoryName,
                                                            String selectedCoverSha256) throws IOException {
         return confirmOnlineCandidate(itemId, candidateId, albumTitle, albumArtist, releaseDate, edition,
-            archiveDirectoryName, selectedCoverSha256, DuplicatePolicy.ASK);
+            archiveDirectoryName, selectedCoverSha256, DuplicatePolicy.ASK, null);
     }
 
     public synchronized ReviewItem confirmOnlineCandidate(String itemId, String candidateId,
@@ -322,6 +345,17 @@ public class RecoveryService implements AutoCloseable {
                                                            String archiveDirectoryName,
                                                            String selectedCoverSha256,
                                                            DuplicatePolicy duplicatePolicy) throws IOException {
+        return confirmOnlineCandidate(itemId, candidateId, albumTitle, albumArtist, releaseDate, edition,
+            archiveDirectoryName, selectedCoverSha256, duplicatePolicy, null);
+    }
+
+    public synchronized ReviewItem confirmOnlineCandidate(String itemId, String candidateId,
+                                                           String albumTitle, String albumArtist,
+                                                           String releaseDate, String edition,
+                                                           String archiveDirectoryName,
+                                                           String selectedCoverSha256,
+                                                           DuplicatePolicy duplicatePolicy,
+                                                           List<String> manualAlbumArtists) throws IOException {
         ReviewItem item = reviewQueue.get(itemId);
         if (item == null) throw new IOException("item.not.found");
         if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) throw new IOException("item.already.resolved");
@@ -340,11 +374,20 @@ public class RecoveryService implements AutoCloseable {
             .filter(c -> candidateId != null && candidateId.equals(c.getId())).findFirst()
             .orElseThrow(() -> new IOException("online.candidate.not.found"));
 
+        String chosenEffectiveAlbumArtist = meaningful(chosen.getAlbumArtist())
+            ? chosen.getAlbumArtist().trim() : chosen.getArtist();
         String finalAlbum = meaningful(albumTitle) ? albumTitle.trim() : chosen.getTitle();
-        String finalArtist = meaningful(albumArtist) ? albumArtist.trim()
-            : (meaningful(chosen.getAlbumArtist()) ? chosen.getAlbumArtist() : chosen.getArtist());
+        String finalArtist = meaningful(albumArtist) ? albumArtist.trim() : chosenEffectiveAlbumArtist;
         String finalDate = releaseDate != null ? releaseDate.trim() : chosen.getReleaseDate();
         if (!meaningful(finalAlbum) || !meaningful(finalArtist)) throw new IOException("online.metadata.incomplete");
+
+        List<String> finalAlbumArtists = resolveOnlineAlbumArtists(
+            finalArtist, chosen, chosenEffectiveAlbumArtist, manualAlbumArtists);
+        if (albumArtistPolicy.shouldCollapse()
+                && (finalAlbumArtists.size() > 1 || ArtistCreditSupport.looksComposite(finalArtist))) {
+            finalArtist = AlbumArtistPolicy.VARIOUS_ARTISTS;
+            finalAlbumArtists = List.of();
+        }
 
         File source = new File(item.getRecoverySourcePath() != null ? item.getRecoverySourcePath() : item.getFolderPath());
         List<File> originalFiles = collectAudioFiles(source);
@@ -445,6 +488,8 @@ public class RecoveryService implements AutoCloseable {
             }
         }
 
+        List<Path> replacedTargetPaths = collectReplacedTargetPaths(originalFiles);
+        Map<Path, Path> newOutputByOriginalPath = new LinkedHashMap<>();
         Map<String, Path> outputByOriginalPath = new LinkedHashMap<>();
         try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(workRoot)) {
             for (File file : files) {
@@ -454,14 +499,22 @@ public class RecoveryService implements AutoCloseable {
                     file.getAbsolutePath(), file.getAbsolutePath());
                 MetadataUtils.overlayTrackCredits(queuedMetadataByOriginalPath.get(matchedPath), md);
                 md.setAlbum(finalAlbum);
-                md.setAlbumArtist(finalArtist);
+                ArtistCreditSupport.applyAlbumArtistCredit(md, finalArtist, finalAlbumArtists, albumArtistPolicy);
                 md.setReleaseDate(finalDate);
                 ReviewItem.OnlineTrack track = trackByFile.get(matchedPath);
                 if (track != null) {
                     if (meaningful(track.getTitle())) md.setTitle(track.getTitle());
-                    if (meaningful(track.getArtist())) md.setArtist(track.getArtist());
+                    if (meaningful(track.getArtist())) {
+                        List<String> trackArtists = resolveOnlineTrackArtists(
+                            track, finalArtist, finalAlbumArtists);
+                        ArtistCreditSupport.applyTrackArtistCredit(md, track.getArtist(), trackArtists);
+                    } else {
+                        ensureTrackStructuredArtists(md);
+                    }
                     if (track.getDiscNo() > 0) md.setDiscNo(String.valueOf(track.getDiscNo()));
                     if (track.getTrackNo() > 0) md.setTrackNo(String.valueOf(track.getTrackNo()));
+                } else {
+                    ensureTrackStructuredArtists(md);
                 }
                 TagWriterService.TagProcessResult result =
                     tagWriter.processFileToRootWithResult(file, md, cover, workRoot);
@@ -485,7 +538,8 @@ public class RecoveryService implements AutoCloseable {
             }
             String linkKey = SourceType.FAILED.name().equals(item.getRecoverySourceType()) ? source.getName() : null;
             committed = commitReplacingDuplicates(workRoot.toPath(), files.size(), item.getId(),
-                linkKey, duplicatePolicy);
+                linkKey, duplicatePolicy, replacedTargetPaths);
+            clearReplacementEntries(originalFiles);
         } catch (IOException e) {
             deleteRecursively(workRoot.toPath());
             throw e;
@@ -527,6 +581,11 @@ public class RecoveryService implements AutoCloseable {
      * （例如 ThreadLocal 输出根失效），或被同名覆盖，此时必须整体失败。
      */
     private List<Path> commitWorkspace(Path workspace, int expectedAudioCount, String taskId) throws IOException {
+        return commitWorkspace(workspace, expectedAudioCount, taskId, Set.of());
+    }
+
+    private List<Path> commitWorkspace(Path workspace, int expectedAudioCount, String taskId,
+                                       Set<Path> mergeUnits) throws IOException {
         try (var libraryWrite = LibraryWriteGuard.acquire()) {
             if (!Files.isDirectory(workspace)) throw new IOException("recovery.workspace.missing");
 
@@ -545,18 +604,36 @@ public class RecoveryService implements AutoCloseable {
                 units.add(relative.getNameCount() >= 3 ? relative.subpath(0, 2) : relative);
             }
             for (Path unit : units) {
-                if (Files.exists(outputRoot.resolve(unit))) throw new IOException("online.destination.exists");
+                if (Files.exists(outputRoot.resolve(unit)) && !mergeUnits.contains(unit)) {
+                    throw new IOException("online.destination.exists");
+                }
             }
 
             List<Path> committed = new ArrayList<>();
+            List<Path> mergedFiles = new ArrayList<>();
             try {
                 for (Path unit : units) {
                     Path destination = outputRoot.resolve(unit);
-                    Files.createDirectories(destination.getParent());
                     Path source = workspace.resolve(unit);
-                    commitUnit(source, destination, taskId);
-                    processedLogger.rebaseTargetPaths(source.toString(), destination.toString());
-                    committed.add(destination);
+                    if (mergeUnits.contains(unit) && Files.isDirectory(destination) && Files.isDirectory(source)) {
+                        for (Path newFile : listFiles(source)) {
+                            Path rel = source.relativize(newFile);
+                            Path targetFile = destination.resolve(rel);
+                            if (Files.exists(targetFile)) {
+                                throw new IOException("online.destination.exists");
+                            }
+                            Files.createDirectories(targetFile.getParent());
+                            commitUnit(newFile, targetFile, taskId);
+                            processedLogger.rebaseTargetPaths(newFile.toString(), targetFile.toString());
+                            mergedFiles.add(targetFile);
+                            committed.add(targetFile);
+                        }
+                    } else {
+                        Files.createDirectories(destination.getParent());
+                        commitUnit(source, destination, taskId);
+                        processedLogger.rebaseTargetPaths(source.toString(), destination.toString());
+                        committed.add(destination);
+                    }
                 }
             } catch (IOException failure) {
                 rollbackCommitted(committed, workspace, outputRoot, failure);
@@ -571,23 +648,44 @@ public class RecoveryService implements AutoCloseable {
     /** 被替换掉的旧输出：原位置 + 回收站条目（提交失败时据此搬回）。 */
     private record RetiredOutput(Path original, Path trashEntry) { }
 
+    /** 待删除替换的旧文件/目录（提交前先移到隐藏暂存位，提交成功后彻底删除，失败则还原）。 */
+    private record StagedReplacement(Path original, Path stagedBackup) { }
+
+    List<Path> commitReplacingDuplicates(Path workspace, int expectedAudioCount, String taskId,
+                                         String failedRelativePath, DuplicatePolicy policy) throws IOException {
+        return commitReplacingDuplicates(workspace, expectedAudioCount, taskId, failedRelativePath, policy, List.of());
+    }
+
     /**
      * 带重复音频保护的提交。
      *
      * 1. 失败副本关联了 LLM 自动归档且归档未被改动过 → 无条件替换（它就是同一份输入）。
-     * 2. 其余目标艺术家目录里的相同音频按 {@link DuplicatePolicy} 处理。
-     * 旧输出先移入回收站再提交（新旧目录可能同名），提交失败则搬回原位。
+     * 2. 已被「重新识别 / 删除记录」登记替换的旧输出 → 提交成功后直接删除并清理空目录。
+     * 3. 其余目标艺术家目录里的相同音频按 {@link DuplicatePolicy} 处理。
+     * 旧输出先移入回收站或暂存位再提交，提交失败则搬回原位。
      *
      * @param failedRelativePath 来源为 FAILED 副本时的条目名，用于查自动归档链接；否则为 null
      */
     List<Path> commitReplacingDuplicates(Path workspace, int expectedAudioCount, String taskId,
-                                                 String failedRelativePath, DuplicatePolicy policy) throws IOException {
+                                         String failedRelativePath, DuplicatePolicy policy,
+                                         java.util.Collection<Path> replacedTargetPaths) throws IOException {
         try (var libraryWrite = LibraryWriteGuard.acquire()) {
             if (policy == null) policy = DuplicatePolicy.ASK;
             Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
 
             List<Path> toRetire = new ArrayList<>();
             validAutoArchive(failedRelativePath, outputRoot).ifPresent(toRetire::add);
+
+            Set<Path> replacedFiles = new LinkedHashSet<>();
+            if (replacedTargetPaths != null) {
+                for (Path p : replacedTargetPaths) {
+                    if (p == null) continue;
+                    Path norm = p.toAbsolutePath().normalize();
+                    if (norm.startsWith(outputRoot) && !norm.equals(outputRoot) && Files.isRegularFile(norm)) {
+                        replacedFiles.add(norm);
+                    }
+                }
+            }
 
             List<Path> incoming = Files.isDirectory(workspace)
                 ? listFiles(workspace).stream().filter(p -> fileSystemUtils.isMusicFile(p.toFile())).toList()
@@ -597,8 +695,10 @@ public class RecoveryService implements AutoCloseable {
                 Path relative = workspace.relativize(file);
                 if (relative.getNameCount() >= 2) searchRoots.add(outputRoot.resolve(relative.getName(0)));
             }
+            List<Path> excluded = new ArrayList<>(toRetire);
+            excluded.addAll(replacedFiles);
             List<ArchiveDuplicateDetector.DuplicateGroup> duplicates =
-                duplicateDetector.find(incoming, outputRoot, searchRoots, toRetire);
+                duplicateDetector.find(incoming, outputRoot, searchRoots, excluded);
             if (!duplicates.isEmpty()) {
                 switch (policy) {
                     case ASK -> throw new DuplicateArchiveException(
@@ -613,12 +713,24 @@ public class RecoveryService implements AutoCloseable {
             }
 
             List<RetiredOutput> retired = retireOutputs(toRetire, taskId);
+            List<StagedReplacement> stagedReplacements = new ArrayList<>();
+            Set<Path> mergeUnits = new LinkedHashSet<>();
             List<Path> committed;
             try {
-                committed = commitWorkspace(workspace, expectedAudioCount, taskId);
+                stageCollidingReplacements(workspace, outputRoot, replacedFiles, taskId, stagedReplacements, mergeUnits);
+                committed = commitWorkspace(workspace, expectedAudioCount, taskId, mergeUnits);
             } catch (IOException e) {
+                restoreStagedReplacements(stagedReplacements);
                 restoreRetired(retired);
                 throw e;
+            }
+            cleanupStagedReplacements(stagedReplacements, committed, outputRoot);
+            Set<Path> committedFiles = collectCommittedRegularFiles(committed);
+            for (Path oldFile : replacedFiles) {
+                if (!committedFiles.contains(oldFile)) {
+                    ReidentifyReplacementRegistry.deleteReplacedFileAndEmptyParents(
+                        oldFile, null, outputRoot, config.isExportLyricsToFile());
+                }
             }
             if (failedRelativePath != null) {
                 autoArchiveRegistry.remove(failedRelativePath);
@@ -770,6 +882,204 @@ public class RecoveryService implements AutoCloseable {
             ? Path.of(config.getOutputDirectory(), ".recovery-work").toString() : configured);
     }
 
+    private List<String> resolveOnlineAlbumArtists(String finalArtist, ReviewItem.OnlineCandidate chosen,
+                                                 String chosenEffectiveAlbumArtist,
+                                                 List<String> manualAlbumArtists) {
+        List<String> manual = ArtistCreditSupport.cleanNames(manualAlbumArtists);
+        if (!manual.isEmpty()) {
+            return manual;
+        }
+        if (chosenEffectiveAlbumArtist != null && finalArtist.equalsIgnoreCase(chosenEffectiveAlbumArtist.trim())) {
+            List<String> candidateAlbumArtists = ArtistCreditSupport.cleanNames(chosen.getAlbumArtists());
+            if (!candidateAlbumArtists.isEmpty()) {
+                return candidateAlbumArtists;
+            }
+            if (chosen.getArtist() != null && finalArtist.equalsIgnoreCase(chosen.getArtist().trim())) {
+                List<String> candidateArtists = ArtistCreditSupport.cleanNames(chosen.getArtists());
+                if (!candidateArtists.isEmpty()) {
+                    return candidateArtists;
+                }
+            }
+        }
+        return splitDisplayArtists(finalArtist);
+    }
+
+    private List<String> resolveOnlineTrackArtists(ReviewItem.OnlineTrack track, String finalAlbumArtist,
+                                                 List<String> finalAlbumArtists) {
+        List<String> explicit = ArtistCreditSupport.cleanNames(track.getArtists());
+        if (explicit.size() > 1 || (explicit.size() == 1 && !ArtistCreditSupport.looksComposite(explicit.get(0)))) {
+            return explicit;
+        }
+        String trackArtist = track.getArtist() == null ? "" : track.getArtist().trim();
+        if (trackArtist.isEmpty()) {
+            return List.of();
+        }
+        if (finalAlbumArtist != null && trackArtist.equalsIgnoreCase(finalAlbumArtist.trim())
+                && finalAlbumArtists != null && !finalAlbumArtists.isEmpty()) {
+            return finalAlbumArtists;
+        }
+        return splitDisplayArtists(trackArtist);
+    }
+
+    private void ensureTrackStructuredArtists(MusicMetadata md) {
+        if (md == null || !meaningful(md.getArtist())) {
+            return;
+        }
+        if (md.getArtists() != null && !md.getArtists().isEmpty()) {
+            return;
+        }
+        List<String> split = splitDisplayArtists(md.getArtist());
+        if (!split.isEmpty()) {
+            ArtistCreditSupport.applyTrackArtistCredit(md, md.getArtist(), split);
+        }
+    }
+
+    private List<String> splitDisplayArtists(String display) {
+        if (!meaningful(display)) {
+            return List.of();
+        }
+        LlmArtistSplitter.SplitResult split = artistSplitter != null ? artistSplitter.split(display) : null;
+        if (split != null && split.hasStructuredArtists()) {
+            return split.artists();
+        }
+        return ArtistCreditSupport.looksComposite(display) ? List.of() : List.of(display.trim());
+    }
+
+    private List<Path> collectReplacedTargetPaths(List<File> sourceFiles) {
+        if (sourceFiles == null || sourceFiles.isEmpty()) {
+            return List.of();
+        }
+        List<Path> paths = new ArrayList<>();
+        for (File source : sourceFiles) {
+            String fileHash = processedLogger != null ? processedLogger.computeFileHashOrNull(source) : null;
+            if (replacementRegistry != null) {
+                replacementRegistry.findOldTarget(source, fileHash).ifPresent(paths::add);
+            }
+            if (processedLogger != null) {
+                String existing = processedLogger.findTargetPath(source);
+                if (existing != null && !existing.isBlank()) {
+                    paths.add(Path.of(existing));
+                }
+            }
+        }
+        return paths;
+    }
+
+    private void clearReplacementEntries(List<File> sourceFiles) {
+        if (replacementRegistry == null || sourceFiles == null) {
+            return;
+        }
+        for (File source : sourceFiles) {
+            String fileHash = processedLogger != null ? processedLogger.computeFileHashOrNull(source) : null;
+            replacementRegistry.remove(source, fileHash);
+        }
+    }
+
+    private void stageCollidingReplacements(Path workspace, Path outputRoot, Set<Path> replacedFiles,
+                                            String taskId, List<StagedReplacement> staged,
+                                            Set<Path> mergeUnits) throws IOException {
+        if (replacedFiles.isEmpty() || !Files.isDirectory(workspace)) {
+            return;
+        }
+        Set<Path> units = new LinkedHashSet<>();
+        for (Path file : listFiles(workspace)) {
+            Path relative = workspace.relativize(file);
+            units.add(relative.getNameCount() >= 3 ? relative.subpath(0, 2) : relative);
+        }
+        Path backupRoot = resolveWorkRoot().resolve(".replace-" + taskId);
+        int index = 0;
+        for (Path unit : units) {
+            Path destination = outputRoot.resolve(unit).toAbsolutePath().normalize();
+            if (!Files.exists(destination)) {
+                continue;
+            }
+            if (Files.isDirectory(destination)) {
+                List<Path> inside = replacedFiles.stream().filter(p -> p.startsWith(destination)).toList();
+                if (inside.isEmpty()) {
+                    continue;
+                }
+                List<File> existingAudio = collectAudioFiles(destination.toFile());
+                boolean allReplaced = !existingAudio.isEmpty() && existingAudio.stream()
+                    .allMatch(f -> replacedFiles.contains(f.toPath().toAbsolutePath().normalize()));
+                if (allReplaced) {
+                    Files.createDirectories(backupRoot);
+                    Path backup = backupRoot.resolve("unit-" + (index++));
+                    moveAcrossDevices(destination, backup);
+                    staged.add(new StagedReplacement(destination, backup));
+                } else {
+                    for (Path oldFile : inside) {
+                        if (Files.exists(oldFile)) {
+                            Files.createDirectories(backupRoot);
+                            Path backup = backupRoot.resolve("file-" + (index++));
+                            moveAcrossDevices(oldFile, backup);
+                            staged.add(new StagedReplacement(oldFile, backup));
+                        }
+                    }
+                    mergeUnits.add(unit);
+                }
+            } else if (Files.isRegularFile(destination) && replacedFiles.contains(destination)) {
+                Files.createDirectories(backupRoot);
+                Path backup = backupRoot.resolve("file-" + (index++));
+                moveAcrossDevices(destination, backup);
+                staged.add(new StagedReplacement(destination, backup));
+            }
+        }
+    }
+
+    private void restoreStagedReplacements(List<StagedReplacement> staged) {
+        for (int i = staged.size() - 1; i >= 0; i--) {
+            StagedReplacement item = staged.get(i);
+            try {
+                if (Files.exists(item.stagedBackup()) && !Files.exists(item.original())) {
+                    Files.createDirectories(item.original().getParent());
+                    moveAcrossDevices(item.stagedBackup(), item.original());
+                }
+            } catch (IOException e) {
+                log.error("提交失败后还原被替换的旧归档失败: {} <- {}", item.original(), item.stagedBackup(), e);
+            }
+        }
+    }
+
+    private void cleanupStagedReplacements(List<StagedReplacement> staged, List<Path> committed, Path outputRoot) {
+        Set<Path> committedFiles = collectCommittedRegularFiles(committed);
+        for (StagedReplacement item : staged) {
+            try {
+                deleteRecursively(item.stagedBackup());
+                if (!committedFiles.contains(item.original())) {
+                    ReidentifyReplacementRegistry.deleteReplacedFileAndEmptyParents(
+                        item.original(), null, outputRoot, config.isExportLyricsToFile());
+                }
+            } catch (IOException e) {
+                log.warn("清理暂存的旧归档副本失败: {} - {}", item.stagedBackup(), e.getMessage());
+            }
+        }
+        if (!staged.isEmpty()) {
+            try {
+                deleteRecursively(staged.get(0).stagedBackup().getParent());
+            } catch (IOException e) {
+                log.debug("清理临时替换备份目录失败: {}", e.getMessage());
+            }
+        }
+    }
+
+    private Set<Path> collectCommittedRegularFiles(List<Path> committed) {
+        Set<Path> files = new LinkedHashSet<>();
+        for (Path entry : committed) {
+            if (Files.isRegularFile(entry)) {
+                files.add(entry.toAbsolutePath().normalize());
+            } else if (Files.isDirectory(entry)) {
+                try {
+                    for (Path f : listFiles(entry)) {
+                        files.add(f.toAbsolutePath().normalize());
+                    }
+                } catch (IOException e) {
+                    log.debug("列举已提交文件失败 ({}): {}", entry, e.getMessage());
+                }
+            }
+        }
+        return files;
+    }
+
     private boolean meetsCoverage(int files, int tracks) {
         int matched = Math.min(files, tracks);
         if (files <= 3) return matched == files;
@@ -853,6 +1163,7 @@ public class RecoveryService implements AutoCloseable {
                 return;
             }
 
+            List<Path> replacedTargetPaths = collectReplacedTargetPaths(audioFiles);
             // 失败处置会把文件记为 processed。人工重试必须先撤销这些路径的旧记录，
             // 否则处理器会在入口处直接返回“已处理”。
             for (File audioFile : audioFiles) {
@@ -893,7 +1204,9 @@ public class RecoveryService implements AutoCloseable {
             } else if (failed == 0 && succeeded == audioFiles.size()) {
                 try {
                     commitReplacingDuplicates(reidentifyWorkRoot.toPath(), audioFiles.size(), job.id,
-                        job.sourceType == SourceType.FAILED ? job.relativePath : null, DuplicatePolicy.ASK);
+                        job.sourceType == SourceType.FAILED ? job.relativePath : null,
+                        DuplicatePolicy.ASK, replacedTargetPaths);
+                    clearReplacementEntries(audioFiles);
                 } catch (IOException commitError) {
                     deleteRecursively(reidentifyWorkRoot.toPath());
                     throw commitError;

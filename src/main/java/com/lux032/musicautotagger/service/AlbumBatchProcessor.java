@@ -4,11 +4,15 @@ import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
+import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
+import com.lux032.musicautotagger.util.ArtistCreditSupport;
 import com.lux032.musicautotagger.util.I18nUtil;
 
 import java.io.File;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -26,6 +30,8 @@ public class AlbumBatchProcessor {
     private final ProcessedFileLogger processedLogger;
     private final CoverArtService coverArtService;
     private final AlbumArtistPolicy albumArtistPolicy;
+    private final LlmArtistSplitter artistSplitter;
+    private final ReidentifyReplacementRegistry replacementRegistry;
     /** 用于按锁定 Release 获取唯一权威的专辑级标签。 */
     private MusicBrainzClient musicBrainzClient;
     /** 人工确认队列（阶段六，可选） */
@@ -34,12 +40,23 @@ public class AlbumBatchProcessor {
     public AlbumBatchProcessor(MusicConfig config, FolderAlbumCache folderAlbumCache,
                                TagWriterService tagWriter, ProcessedFileLogger processedLogger,
                                CoverArtService coverArtService) {
+        this(config, folderAlbumCache, tagWriter, processedLogger, coverArtService,
+            new LlmArtistSplitter(config),
+            ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath()));
+    }
+
+    AlbumBatchProcessor(MusicConfig config, FolderAlbumCache folderAlbumCache,
+                        TagWriterService tagWriter, ProcessedFileLogger processedLogger,
+                        CoverArtService coverArtService, LlmArtistSplitter artistSplitter,
+                        ReidentifyReplacementRegistry replacementRegistry) {
         this.config = config;
         this.folderAlbumCache = folderAlbumCache;
         this.tagWriter = tagWriter;
         this.processedLogger = processedLogger;
         this.coverArtService = coverArtService;
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
+        this.artistSplitter = artistSplitter;
+        this.replacementRegistry = replacementRegistry;
     }
 
     /**
@@ -67,8 +84,21 @@ public class AlbumBatchProcessor {
         File displayFile = originalFile != null ? originalFile : audioFile;
         try {
             log.info("正在写入文件标签: {}", displayFile.getName());
+            boolean recoveryWorkspaceActive = tagWriter.isOutputRootOverridden();
+            String fileHash = !recoveryWorkspaceActive && processedLogger != null
+                ? processedLogger.computeFileHashOrNull(displayFile) : null;
+            Path oldTarget = null;
+            if (!recoveryWorkspaceActive) {
+                oldTarget = replacementRegistry != null
+                    ? replacementRegistry.findOldTarget(displayFile, fileHash).orElse(null) : null;
+                if (oldTarget == null && processedLogger != null) {
+                    String logged = processedLogger.findTargetPath(displayFile);
+                    if (logged != null) oldTarget = Path.of(logged);
+                }
+            }
+
             TagWriterService.TagProcessResult writeResult =
-                tagWriter.processFileWithResult(audioFile, metadata, coverArtData);
+                tagWriter.processFileWithResult(audioFile, metadata, coverArtData, oldTarget);
             boolean success = writeResult.isSuccess();
             
             if (success) {
@@ -91,6 +121,22 @@ public class AlbumBatchProcessor {
                     metadata.getReleaseGroupId(),
                     writeResult.getTargetFile() == null ? null : writeResult.getTargetFile().getAbsolutePath()
                 );
+
+                if (!recoveryWorkspaceActive && writeResult.getTargetFile() != null
+                    && config.getOutputDirectory() != null && !config.getOutputDirectory().isBlank()) {
+                    Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
+                    Path newTarget = writeResult.getTargetFile().toPath().toAbsolutePath().normalize();
+                    if (newTarget.startsWith(outputRoot)) {
+                        if (replacementRegistry != null) {
+                            replacementRegistry.completeReplacement(
+                                displayFile, fileHash, newTarget, outputRoot, config.isExportLyricsToFile());
+                        }
+                        if (oldTarget != null) {
+                            ReidentifyReplacementRegistry.deleteReplacedFileAndEmptyParents(
+                                oldTarget, newTarget, outputRoot, config.isExportLyricsToFile());
+                        }
+                    }
+                }
                 return true;
             } else {
                 log.error("? 文件处理失败: {}", displayFile.getName());
@@ -261,15 +307,21 @@ public class AlbumBatchProcessor {
                 // 注意：metadata已经通过指纹识别获取了完整的单曲信息
                 // 只需要覆盖专辑相关字段
                 metadata.setAlbum(albumInfo.getAlbumTitle());
-                metadata.setAlbumArtist(albumInfo.getAlbumArtist());
                 metadata.setReleaseGroupId(albumInfo.getReleaseGroupId());
                 metadata.setReleaseId(albumInfo.getReleaseId());
                 metadata.setReleaseType(albumInfo.getReleaseType());
                 metadata.setCompilation(albumInfo.isCompilation());
                 // 选项 A 仅在成功取得 MusicBrainz 权威快照时执行；网络故障不能触发误清空。
                 if (releaseTags != null) {
+                    metadata.setAlbumArtist(albumInfo.getAlbumArtist());
                     metadata.setClearAlbumLevelTags(true);
                     releaseTags.applyTo(metadata);
+                } else {
+                    if (unresolvedAlbum) {
+                        ensureTrackStructuredArtists(metadata);
+                    }
+                    ArtistCreditSupport.applyAlbumArtistCredit(
+                        metadata, albumInfo.getAlbumArtist(), albumInfo.getAlbumArtists(), albumArtistPolicy);
                 }
                 if (unresolvedAlbum) {
                     // 专辑未确定：宁可没有年份，也不能保留旧专辑的年份。
@@ -535,7 +587,8 @@ public class AlbumBatchProcessor {
         //    composer / lyricist / lyrics / genres，并不会保留源文件的 album，
         //    在 allowAlbumGuess=false 时 md.getAlbum() 几乎恒为 null。
         Map<String, Integer> albumVotes = new HashMap<>();
-        Map<String, Integer> artistVotes = new HashMap<>();
+        Set<String> individualArtists = new LinkedHashSet<>();
+        Set<String> displayArtists = new LinkedHashSet<>();
         int filesWithRecognizedArtist = 0;
 
         for (FolderAlbumCache.PendingFile pending : pendingFiles) {
@@ -555,9 +608,27 @@ public class AlbumBatchProcessor {
             // 艺术家：用识别后的元数据（指纹识别结果比原标签准）
             MusicMetadata md = (MusicMetadata) pending.getMetadata();
             if (md != null) {
+                ensureTrackStructuredArtists(md);
                 String artist = md.getAlbumArtist() != null ? md.getAlbumArtist() : md.getArtist();
                 if (artist != null && !artist.trim().isEmpty()) {
-                    artistVotes.merge(artist.trim(), 1, Integer::sum);
+                    String trimmed = artist.trim();
+                    displayArtists.add(trimmed);
+                    if (md.getAlbumArtists() != null && !md.getAlbumArtists().isEmpty()) {
+                        individualArtists.addAll(ArtistCreditSupport.cleanNames(md.getAlbumArtists()));
+                    } else if (md.getAlbumArtist() == null && md.getArtists() != null && !md.getArtists().isEmpty()) {
+                        individualArtists.addAll(ArtistCreditSupport.cleanNames(md.getArtists()));
+                    } else if (!ArtistCreditSupport.looksComposite(trimmed)) {
+                        individualArtists.add(trimmed);
+                    } else if (artistSplitter != null) {
+                        LlmArtistSplitter.SplitResult split = artistSplitter.split(trimmed);
+                        if (split.hasStructuredArtists()) {
+                            individualArtists.addAll(split.artists());
+                        } else {
+                            individualArtists.add(trimmed);
+                        }
+                    } else {
+                        individualArtists.add(trimmed);
+                    }
                     filesWithRecognizedArtist++;
                 }
             }
@@ -601,12 +672,26 @@ public class AlbumBatchProcessor {
         //    如果 10 个文件里只有 1 个识别出了艺术家，其余 9 个缺失，
         //    artistVotes.size() 也是 1，会被误判为「全专辑艺术家一致」。
         boolean allFilesHaveArtist = (filesWithRecognizedArtist == pendingFiles.size());
-        String albumArtist = albumArtistPolicy.collapseOrJoin(
-            new ArrayList<>(artistVotes.keySet()), allFilesHaveArtist);
-        log.info("合成未收录专辑艺术家: {}（识别 {}/{}，不同艺术家 {}）",
-            albumArtist, filesWithRecognizedArtist, pendingFiles.size(), artistVotes.size());
+        String albumArtist;
+        List<String> albumArtists = null;
+        if (allFilesHaveArtist && displayArtists.size() == 1 && !albumArtistPolicy.shouldCollapse()) {
+            albumArtist = displayArtists.iterator().next();
+            if (!individualArtists.isEmpty()
+                && !(individualArtists.size() == 1 && ArtistCreditSupport.looksComposite(albumArtist))) {
+                albumArtists = List.copyOf(individualArtists);
+            }
+        } else {
+            albumArtist = albumArtistPolicy.collapseOrJoin(
+                new ArrayList<>(individualArtists), allFilesHaveArtist);
+            if (!albumArtistPolicy.shouldCollapse() && allFilesHaveArtist && !individualArtists.isEmpty()
+                && !(individualArtists.size() == 1 && ArtistCreditSupport.looksComposite(albumArtist))) {
+                albumArtists = List.copyOf(individualArtists);
+            }
+        }
+        log.info("合成未收录专辑艺术家: {}（识别 {}/{}，独立艺术家 {}）",
+            albumArtist, filesWithRecognizedArtist, pendingFiles.size(), individualArtists.size());
 
-        return new FolderAlbumCache.CachedAlbumInfo(
+        FolderAlbumCache.CachedAlbumInfo synthesized = new FolderAlbumCache.CachedAlbumInfo(
             null,   // releaseGroupId - MusicBrainz 没有这张专辑
             null,   // releaseId
             albumTitle,
@@ -616,6 +701,23 @@ public class AlbumBatchProcessor {
             0.0,    // 置信度 0：表示未经验证
             FolderAlbumCache.CacheSource.UNKNOWN
         );
+        synthesized.setAlbumArtists(albumArtists);
+        return synthesized;
+    }
+
+    private void ensureTrackStructuredArtists(MusicMetadata md) {
+        if (md == null || md.getArtist() == null || md.getArtist().isBlank()) {
+            return;
+        }
+        if (md.getArtists() != null && !md.getArtists().isEmpty()) {
+            return;
+        }
+        if (artistSplitter != null) {
+            LlmArtistSplitter.SplitResult split = artistSplitter.split(md.getArtist());
+            if (split.hasStructuredArtists()) {
+                ArtistCreditSupport.applyTrackArtistCredit(md, md.getArtist(), split.artists());
+            }
+        }
     }
 
     /**

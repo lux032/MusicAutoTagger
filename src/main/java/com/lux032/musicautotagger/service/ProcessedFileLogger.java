@@ -1088,6 +1088,75 @@ public class ProcessedFileLogger {
         return set;
     }
 
+    public String computeFileHashOrNull(File file) {
+        if (file == null || !file.isFile()) {
+            return null;
+        }
+        try {
+            return calculateFileHash(file);
+        } catch (IOException e) {
+            log.debug("计算文件哈希失败 ({}): {}", file.getName(), e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 查找源文件对应的既有成功归档目标路径（优先按 file_path 精确匹配，DB 模式下必要时回退 file_hash）。
+     */
+    public String findTargetPath(File file) {
+        if (file == null) {
+            return null;
+        }
+        String filePath = file.getAbsolutePath();
+        if (!isDbMode) {
+            String found = null;
+            for (ProcessedRecord r : readFileRecords()) {
+                if (filePath.equals(r.filePath)
+                    && r.status == ProcessedRecord.Status.SUCCESS
+                    && r.targetFilePath != null && !r.targetFilePath.isBlank()) {
+                    found = r.targetFilePath;
+                }
+            }
+            return found;
+        }
+        if (!targetFilePathColumnAvailable) {
+            return null;
+        }
+        try (Connection conn = databaseService.getConnection()) {
+            String byPath = "SELECT recording_id, target_file_path FROM processed_files "
+                + "WHERE file_path = ? AND target_file_path IS NOT NULL";
+            try (PreparedStatement pstmt = conn.prepareStatement(byPath)) {
+                pstmt.setString(1, filePath);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next() && ProcessedRecord.classify(rs.getString("recording_id")) == ProcessedRecord.Status.SUCCESS) {
+                        return emptyToNull(rs.getString("target_file_path"));
+                    }
+                }
+            }
+            String fileHash = computeFileHashOrNull(file);
+            if (fileHash != null) {
+                String byHash = "SELECT recording_id, target_file_path FROM processed_files "
+                    + "WHERE file_hash = ? AND target_file_path IS NOT NULL ORDER BY processed_time DESC";
+                try (PreparedStatement pstmt = conn.prepareStatement(byHash)) {
+                    pstmt.setString(1, fileHash);
+                    try (ResultSet rs = pstmt.executeQuery()) {
+                        while (rs.next()) {
+                            if (ProcessedRecord.classify(rs.getString("recording_id")) == ProcessedRecord.Status.SUCCESS) {
+                                String target = emptyToNull(rs.getString("target_file_path"));
+                                if (target != null) {
+                                    return target;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            log.debug("查询既有归档目标路径失败 ({}): {}", file.getName(), e.getMessage());
+        }
+        return null;
+    }
+
     /**
      * 批量删除处理记录（按记录中保存的原始路径精确匹配）。
      * @return 实际被删除的记录数（文件模式下按不同路径计数）

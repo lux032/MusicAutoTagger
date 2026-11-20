@@ -70,6 +70,7 @@ public class TagWriterService {
     private final ThreadLocal<Path> outputRootOverride = new ThreadLocal<>();
     public enum CollisionPolicy { REPLACE_SAME_AUDIO, PRESERVE_ALL }
     private final ThreadLocal<CollisionPolicy> collisionPolicyOverride = new ThreadLocal<>();
+    private final ThreadLocal<Path> expectedReplaceTargetOverride = new ThreadLocal<>();
 
     /** Same-thread scope; nested scopes restore both values, including on exceptions. */
     public final class OutputScope implements AutoCloseable {
@@ -108,6 +109,10 @@ public class TagWriterService {
         outputRootOverride.remove();
     }
 
+    public boolean isOutputRootOverridden() {
+        return outputRootOverride.get() != null;
+    }
+
     private Path outputRoot() {
         Path override = outputRootOverride.get();
         return override != null ? override : Paths.get(config.getOutputDirectory());
@@ -130,6 +135,26 @@ public class TagWriterService {
     /** 兼容旧调用；新调用需要目标路径时应使用 {@link #processFileWithResult}. */
     public boolean processFile(File sourceFile, MusicMetadata metadata, byte[] coverArtData) {
         return processFileWithResult(sourceFile, metadata, coverArtData).isSuccess();
+    }
+
+    /** 处理音频文件，并在预期覆盖目标路径匹配时直接替换旧归档。 */
+    public TagProcessResult processFileWithResult(File sourceFile, MusicMetadata metadata, byte[] coverArtData,
+                                                  Path expectedReplaceTarget) {
+        Path previous = expectedReplaceTargetOverride.get();
+        if (expectedReplaceTarget == null) {
+            expectedReplaceTargetOverride.remove();
+        } else {
+            expectedReplaceTargetOverride.set(expectedReplaceTarget.toAbsolutePath().normalize());
+        }
+        try {
+            return processFileWithResult(sourceFile, metadata, coverArtData);
+        } finally {
+            if (previous == null) {
+                expectedReplaceTargetOverride.remove();
+            } else {
+                expectedReplaceTargetOverride.set(previous);
+            }
+        }
     }
 
     /** 处理音频文件，并返回实际写入的目标文件。 */
@@ -235,6 +260,13 @@ public class TagWriterService {
             if (collisionPolicyOverride.get() == CollisionPolicy.PRESERVE_ALL) {
                 candidate = withConflictSuffix(targetFile, attempt + 1);
                 continue;
+            }
+            Path expectedReplaceTarget = expectedReplaceTargetOverride.get();
+            if (expectedReplaceTarget != null
+                && candidate.toPath().toAbsolutePath().normalize().equals(expectedReplaceTarget)) {
+                Files.copy(sourceFile.toPath(), candidate.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                logCopy(sourceFile, candidate, targetFile);
+                return candidate;
             }
             if (!sourceDurationRead) {
                 sourceDuration = readPreciseDuration(sourceFile);
@@ -555,6 +587,9 @@ public class TagWriterService {
         java.util.regex.Pattern.compile("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
 
     private List<List<String>> readCustomTextTagGroups(Tag tag, String name) throws Exception {
+        if (tag instanceof WavTag wav) {
+            tag = wav.getActiveTag();
+        }
         List<List<String>> groups = new ArrayList<>();
         if (tag instanceof FlacTag || tag instanceof VorbisCommentTag) {
             List<String> values = new ArrayList<>();
@@ -600,6 +635,9 @@ public class TagWriterService {
     }
 
     private void writeCustomTextTag(Tag tag, String name, String value) throws Exception {
+        if (tag instanceof WavTag wav) {
+            tag = wav.getActiveTag();
+        }
         if (tag instanceof FlacTag flac) {
             flac.deleteField(name);
             if (value != null) flac.setField(name, value);
@@ -1490,7 +1528,10 @@ public class TagWriterService {
             }
 
             // 读取歌词
-            metadata.setLocalPreciseDuration(audioFileObj.getAudioHeader().getPreciseTrackLength());
+            double preciseLen = audioFileObj.getAudioHeader().getPreciseTrackLength();
+            if (Double.isFinite(preciseLen) && preciseLen > 0) {
+                metadata.setLocalPreciseDuration(preciseLen);
+            }
             String lyrics = readEmbeddedLyrics(tag);
             if (lyrics != null && !lyrics.isEmpty()) {
                 metadata.setLyrics(lyrics);

@@ -474,6 +474,10 @@
                 <input id="ocArtist" type="text">
             </div>
             <div class="form-row">
+                <label for="ocArtists" data-i18n="review.online.artists">拆分后的歌手名单（可选）</label>
+                <input id="ocArtists" type="text" placeholder="用分号 ; 分隔多人，如 TeddyLoid; 佐倉綾音; 井上和（留空则自动处理）" data-i18n-placeholder="review.online.artists.placeholder">
+            </div>
+            <div class="form-row">
                 <label for="ocDate" data-i18n="review.online.date">发行日期</label>
                 <input id="ocDate" type="text" placeholder="保留来源精度，可留空" data-i18n-placeholder="review.online.date.placeholder">
             </div>
@@ -1281,6 +1285,11 @@
             const trackRows = (c.tracks || []).filter(x => x.matchedFilePath).map(x => `<div class="match-line"><span class="num">${x.discNo || 1}-${x.trackNo || '-'}</span>${escapeHtml(x.title || '')}
                 → ${escapeHtml(baseName(x.matchedFilePath))} · ${escapeHtml(tf('review.match', percent(x.matchConfidence)))}</div>`).join('');
             const sources = (c.sources || []).map(src => `<div class="src-line"><span class="src-rel">${escapeHtml(src.reliability || '?')}</span>${linkOrText(src.url, src.title || src.domain || src.url)}${src.snippet ? ' — ' + escapeHtml(src.snippet) : ''}</div>`).join('');
+            const candidateArtists = (c.albumArtists && c.albumArtists.length)
+                ? c.albumArtists
+                : ((!c.albumArtist || c.albumArtist === c.artist) && c.artists && c.artists.length ? c.artists : []);
+            const splitBadge = candidateArtists.length > 1
+                ? `<div class="cand-reason">${escapeHtml(candidateArtists.join(' · '))}</div>` : '';
             const attrs = selectable ? `role="radio" tabindex="0" aria-checked="${selected}" data-select="online" data-key="${escapeHtml(c.id)}"` : '';
             return `<div class="cand ${selected ? 'selected' : ''} ${pending ? (selectable ? '' : 'disabled') : 'static'}">
                 <div class="cand-row" ${attrs}>
@@ -1288,6 +1297,7 @@
                     <div class="cand-main">
                         <div class="cand-title">${escapeHtml(c.title || '')}${tags}</div>
                         <div class="cand-sub">${sub}</div>
+                        ${splitBadge}
                         ${c.reason ? `<div class="cand-reason">${escapeHtml(c.reason)}</div>` : ''}
                     </div>
                     <div class="cand-stats">
@@ -1662,7 +1672,13 @@
         pendingOnline = { itemId: item.id, candidateId: c.id };
         pendingCoverSha256 = null;
         $('ocTitle').value = c.title || '';
-        $('ocArtist').value = c.albumArtist || c.artist || '';
+        const defaultArtist = c.albumArtist || c.artist || '';
+        const defaultArtists = (c.albumArtists && c.albumArtists.length)
+            ? c.albumArtists
+            : ((!c.albumArtist || c.albumArtist === c.artist) && c.artists && c.artists.length ? c.artists : []);
+        $('ocArtist').value = defaultArtist;
+        $('ocArtists').value = defaultArtists.join('; ');
+        $('ocArtists').dataset.edited = '';
         $('ocDate').value = c.releaseDate || '';
         $('ocEdition').value = c.edition || '';
         $('ocDir').value = '';
@@ -1680,11 +1696,16 @@
 
     async function submitOnlineConfirm() {
         if (!pendingOnline) return;
+        const rawArtists = $('ocArtists').value.trim();
+        const albumArtists = rawArtists
+            ? rawArtists.split(/[;；\r\n]+/).map(s => s.trim()).filter(Boolean)
+            : [];
         const payload = {
             id: pendingOnline.itemId,
             candidateId: pendingOnline.candidateId,
             albumTitle: $('ocTitle').value.trim(),
             albumArtist: $('ocArtist').value.trim(),
+            albumArtists,
             releaseDate: $('ocDate').value.trim(),
             edition: $('ocEdition').value.trim(),
             archiveDirectoryName: $('ocDir').value.trim(),
@@ -1775,6 +1796,14 @@
         'confirm-local': doConfirmLocal,
         'confirm-online': doConfirmOnline
     };
+
+    document.addEventListener('input', e => {
+        if (e.target && e.target.id === 'ocArtists') {
+            e.target.dataset.edited = '1';
+        } else if (e.target && e.target.id === 'ocArtist' && !$('ocArtists').dataset.edited) {
+            $('ocArtists').value = '';
+        }
+    });
 
     document.addEventListener('click', e => {
         const chip = e.target.closest('#reasonChips .chip');

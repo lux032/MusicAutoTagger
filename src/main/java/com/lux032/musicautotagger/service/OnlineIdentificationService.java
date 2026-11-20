@@ -8,10 +8,12 @@ import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.LlmAlbumJudge;
+import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
 import com.lux032.musicautotagger.service.llm.LlmClient;
 import com.lux032.musicautotagger.service.llm.NativeWebSearchClient;
 import com.lux032.musicautotagger.service.llm.TavilyWebSearchClient;
 import com.lux032.musicautotagger.service.llm.WebSearchClient;
+import com.lux032.musicautotagger.util.ArtistCreditSupport;
 import com.lux032.musicautotagger.util.TagQualityEvaluator;
 import lombok.extern.slf4j.Slf4j;
 
@@ -44,10 +46,17 @@ public class OnlineIdentificationService {
     private final TagWriterService tagWriter;
     private final AudioFingerprintService fingerprintService;
     private final OnlineTrackMatcher trackMatcher;
+    private final LlmArtistSplitter artistSplitter;
     private final Gson gson = new Gson();
 
     public OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
                                        TagWriterService tagWriter, AudioFingerprintService fingerprintService) {
+        this(config, reviewQueue, tagWriter, fingerprintService, new LlmArtistSplitter(config));
+    }
+
+    OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
+                                TagWriterService tagWriter, AudioFingerprintService fingerprintService,
+                                LlmArtistSplitter artistSplitter) {
         this.config = config;
         this.nativeSearchClient = new NativeWebSearchClient(config);
         this.tavilySearchClient = new TavilyWebSearchClient(config, new LlmClient(config));
@@ -55,6 +64,7 @@ public class OnlineIdentificationService {
         this.tagWriter = tagWriter;
         this.fingerprintService = fingerprintService;
         this.trackMatcher = new OnlineTrackMatcher(tagWriter);
+        this.artistSplitter = artistSplitter;
     }
 
     /**
@@ -162,12 +172,8 @@ public class OnlineIdentificationService {
         }
         sb.append("VISUAL COVER ANALYSIS REQUESTED: ").append(analyzeCover)
             .append(". This API integration currently uses cover-derived text only when available; do not claim you saw an image unless image evidence is supplied.\n");
-        sb.append("Search current official and music database sources. Return strict JSON:\n")
-            .append("{\"needs_second_round\":boolean,\"candidates\":[{\"title\":string,\"artist\":string,")
-            .append("\"album_artist\":string,\"release_date\":string,\"edition\":string,\"country\":string,")
-            .append("\"label\":string,\"catalog_number\":string,\"cover_url\":string,\"confidence\":number 0..1,")
-            .append("\"reason\":string,\"tracks\":[{\"disc\":number,\"track\":number,\"title\":string,\"artist\":string,\"duration\":number}],")
-            .append("\"source_urls\":[string]}],\"clues\":[{\"url\":string,\"title\":string,\"snippet\":string}]}.");
+        sb.append("Search current official and music database sources. ");
+        appendJsonSchema(sb);
         return sb.toString();
     }
 
@@ -218,16 +224,23 @@ public class OnlineIdentificationService {
           .append("with bonus tracks, or a larger soundtrack collection. Prefer official store pages, the label site, VGMdb, Discogs.\n")
           .append("If the closest release above is in fact the right edition and the extra local files are simply not part of it,\n")
           .append("return it as a candidate and explain which local files do not belong to it.\n");
-        sb.append("Return strict JSON:\n")
-            .append("{\"needs_second_round\":boolean,\"candidates\":[{\"title\":string,\"artist\":string,")
-            .append("\"album_artist\":string,\"release_date\":string,\"edition\":string,\"country\":string,")
-            .append("\"label\":string,\"catalog_number\":string,\"cover_url\":string,\"confidence\":number 0..1,")
-            .append("\"reason\":string,\"tracks\":[{\"disc\":number,\"track\":number,\"title\":string,\"artist\":string,\"duration\":number}],")
-            .append("\"source_urls\":[string]}],\"clues\":[{\"url\":string,\"title\":string,\"snippet\":string}]}.");
+        appendJsonSchema(sb);
         return sb.toString();
     }
 
-    private Parsed parse(WebSearchClient.SearchResponse response) throws LlmClient.LlmException {
+    private void appendJsonSchema(StringBuilder sb) {
+        sb.append("Return strict JSON:\n")
+          .append("{\"needs_second_round\":boolean,\"candidates\":[{\"title\":string,\"artist\":string,\"artists\":[string],")
+          .append("\"album_artist\":string,\"album_artists\":[string],\"release_date\":string,\"edition\":string,\"country\":string,")
+          .append("\"label\":string,\"catalog_number\":string,\"cover_url\":string,\"confidence\":number 0..1,")
+          .append("\"reason\":string,\"tracks\":[{\"disc\":number,\"track\":number,\"title\":string,\"artist\":string,\"artists\":[string],\"duration\":number}],")
+          .append("\"source_urls\":[string]}],\"clues\":[{\"url\":string,\"title\":string,\"snippet\":string}]}.\n")
+          .append("For \"artists\", \"album_artists\", and \"tracks[].artists\", always list each individual credited artist separately in order ")
+          .append("(e.g. \"artist\":\"TeddyLoid, 佐倉綾音 & 井上和\", \"artists\":[\"TeddyLoid\",\"佐倉綾音\",\"井上和\"]), ")
+          .append("and never split a single band or artist whose own name contains punctuation (e.g. \"Earth, Wind & Fire\" -> [\"Earth, Wind & Fire\"]).");
+    }
+
+    Parsed parse(WebSearchClient.SearchResponse response) throws LlmClient.LlmException {
         JsonObject json = LlmAlbumJudge.parseJsonObject(response.getText());
         if (json == null) throw new LlmClient.LlmException("llm.web.search.response.not.json");
         Parsed result=new Parsed();
@@ -252,6 +265,8 @@ public class OnlineIdentificationService {
     private ReviewItem.OnlineCandidate parseCandidate(JsonObject o,List<ReviewItem.OnlineEvidence> allEvidence){
         ReviewItem.OnlineCandidate c=new ReviewItem.OnlineCandidate();c.setId(UUID.randomUUID().toString());
         c.setTitle(str(o,"title"));c.setArtist(str(o,"artist"));c.setAlbumArtist(str(o,"album_artist"));
+        c.setArtists(new ArrayList<>(resolveStructuredArtists(c.getArtist(), strList(o, "artists"), List.of(), null)));
+        c.setAlbumArtists(new ArrayList<>(resolveStructuredArtists(c.getAlbumArtist(), strList(o, "album_artists"), c.getArtists(), c.getArtist())));
         c.setReleaseDate(str(o,"release_date"));c.setEdition(str(o,"edition"));c.setCountry(str(o,"country"));c.setLabel(str(o,"label"));
         c.setCatalogNumber(str(o,"catalog_number"));c.setCoverUrl(str(o,"cover_url"));c.setConfidence(normalizeConfidence(number(o,"confidence")));c.setReason(str(o,"reason"));
         Set<String> sourceUrls=new HashSet<>();JsonArray urls=o.getAsJsonArray("source_urls");if(urls!=null)for(JsonElement u:urls)if(u.isJsonPrimitive())sourceUrls.add(u.getAsString());
@@ -261,8 +276,34 @@ public class OnlineIdentificationService {
         long high=c.getSources().stream().filter(e->"HIGH".equals(e.getReliability())).count();
         long mediumDomains=c.getSources().stream().filter(e->"MEDIUM".equals(e.getReliability())).map(ReviewItem.OnlineEvidence::getDomain).distinct().count();
         c.setOfficialCandidate(high>=1||mediumDomains>=2);
-        JsonArray tracks=o.getAsJsonArray("tracks");if(tracks!=null)for(JsonElement te:tracks){if(!te.isJsonObject())continue;JsonObject t=te.getAsJsonObject();ReviewItem.OnlineTrack track=new ReviewItem.OnlineTrack();track.setDiscNo(integer(t,"disc"));track.setTrackNo(integer(t,"track"));track.setTitle(str(t,"title"));track.setArtist(str(t,"artist"));track.setDuration(integerNullable(t,"duration"));c.getTracks().add(track);}
+        JsonArray tracks=o.getAsJsonArray("tracks");if(tracks!=null)for(JsonElement te:tracks){if(!te.isJsonObject())continue;JsonObject t=te.getAsJsonObject();ReviewItem.OnlineTrack track=new ReviewItem.OnlineTrack();track.setDiscNo(integer(t,"disc"));track.setTrackNo(integer(t,"track"));track.setTitle(str(t,"title"));track.setArtist(str(t,"artist"));track.setArtists(new ArrayList<>(resolveStructuredArtists(track.getArtist(), strList(t, "artists"), c.getArtists(), c.getArtist())));track.setDuration(integerNullable(t,"duration"));c.getTracks().add(track);}
         return c;
+    }
+
+    private List<String> resolveStructuredArtists(String display, List<String> explicit,
+                                                  List<String> fallbackArtists, String fallbackDisplay) {
+        List<String> cleaned = ArtistCreditSupport.cleanNames(explicit);
+        if (cleaned.size() > 1) {
+            return cleaned;
+        }
+        if (cleaned.size() == 1 && !ArtistCreditSupport.looksComposite(cleaned.get(0))) {
+            return cleaned;
+        }
+        if (display == null || display.isBlank()) {
+            return List.of();
+        }
+        String trimmed = display.trim();
+        if (fallbackArtists != null && !fallbackArtists.isEmpty()
+                && fallbackDisplay != null && trimmed.equalsIgnoreCase(fallbackDisplay.trim())) {
+            return List.copyOf(fallbackArtists);
+        }
+        if (artistSplitter != null) {
+            LlmArtistSplitter.SplitResult split = artistSplitter.split(trimmed);
+            if (split.hasStructuredArtists()) {
+                return split.artists();
+            }
+        }
+        return List.of();
     }
 
     /** 提前算好逐曲匹配与覆盖率，人工确认前就能在界面上看到到底匹上了几首。 */
@@ -307,7 +348,18 @@ public class OnlineIdentificationService {
     /** 供人工确认阶段重算并比对，确保搜索后文件未被改动。必须与搜索时采用同一套收集语义。 */
     public String evidenceHashForFolder(File albumRoot)throws Exception{return evidenceHash(collect(albumRoot));}
     public String evidenceHash(List<File> files)throws Exception{MessageDigest md=MessageDigest.getInstance("SHA-256");for(File f:files){md.update(f.getAbsolutePath().getBytes(StandardCharsets.UTF_8));md.update(Long.toString(f.length()).getBytes());md.update(Long.toString(f.lastModified()).getBytes());MusicMetadata m=tagWriter.readTags(f);if(m!=null)md.update((nz(m.getTitle())+nz(m.getArtist())+nz(m.getAlbum())+nz(m.getTrackNo())+nz(m.getDiscNo())).getBytes(StandardCharsets.UTF_8));}StringBuilder sb=new StringBuilder();for(byte b:md.digest())sb.append(String.format("%02x",b));return sb.toString();}
-    private static class Parsed{boolean needsSecondRound;List<ReviewItem.OnlineCandidate> candidates=new ArrayList<>();List<ReviewItem.OnlineEvidence> clues=new ArrayList<>();}
+    static class Parsed{boolean needsSecondRound;List<ReviewItem.OnlineCandidate> candidates=new ArrayList<>();List<ReviewItem.OnlineEvidence> clues=new ArrayList<>();}
+    private List<String> strList(JsonObject o, String k) {
+        if (o == null || !o.has(k) || !o.get(k).isJsonArray()) return List.of();
+        List<String> out = new ArrayList<>();
+        for (JsonElement el : o.getAsJsonArray(k)) {
+            if (el != null && el.isJsonPrimitive()) {
+                String value = el.getAsString().trim();
+                if (!value.isEmpty()) out.add(value);
+            }
+        }
+        return out;
+    }
     private String str(JsonObject o,String k){return o.has(k)&&o.get(k).isJsonPrimitive()?o.get(k).getAsString():null;}private boolean bool(JsonObject o,String k){try{return o.has(k)&&o.get(k).getAsBoolean();}catch(Exception e){return false;}}private double number(JsonObject o,String k){try{return o.get(k).getAsDouble();}catch(Exception e){return 0;}}
     /** 兼容模型偶尔返回 85 而不是 0.85，同时挡住 NaN/Infinity 和越界值。 */
     private double normalizeConfidence(double value){if(!Double.isFinite(value))return 0;if(value>1&&value<=100)value/=100;return Math.max(0,Math.min(1,value));}

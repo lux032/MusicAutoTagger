@@ -2,6 +2,8 @@ package com.lux032.musicautotagger.service;
 
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
+import com.lux032.musicautotagger.util.ArtistCreditSupport;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FileSystemUtils;
 import com.lux032.musicautotagger.util.I18nUtil;
@@ -43,19 +45,29 @@ public class FailedFileHandler {
     private final ArtistMatchingService artistMatchingService;
     private final AlbumArtistPolicy albumArtistPolicy;
     private final AutoArchiveRegistry autoArchiveRegistry;
+    private final LlmArtistSplitter artistSplitter;
     
     public FailedFileHandler(MusicConfig config, TagWriterService tagWriter,
                              CoverArtService coverArtService, ProcessedFileLogger processedLogger,
                              FileSystemUtils fileSystemUtils) {
+        this(config, tagWriter, coverArtService, processedLogger, fileSystemUtils,
+            new ArtistMatchingService(config), new LlmArtistSplitter(config));
+    }
+
+    FailedFileHandler(MusicConfig config, TagWriterService tagWriter,
+                      CoverArtService coverArtService, ProcessedFileLogger processedLogger,
+                      FileSystemUtils fileSystemUtils, ArtistMatchingService artistMatchingService,
+                      LlmArtistSplitter artistSplitter) {
         this.config = config;
         this.tagWriter = tagWriter;
         this.coverArtService = coverArtService;
         this.processedLogger = processedLogger;
         this.fileSystemUtils = fileSystemUtils;
         this.audioFormatNormalizer = new AudioFormatNormalizer(config);
-        this.artistMatchingService = new ArtistMatchingService(config);
+        this.artistMatchingService = artistMatchingService;
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
         this.autoArchiveRegistry = AutoArchiveRegistry.forReviewQueuePath(config.getReviewQueuePath());
+        this.artistSplitter = artistSplitter;
     }
 
     /**
@@ -505,47 +517,71 @@ public class FailedFileHandler {
         try {
             // 读取源文件的艺术家标签
             com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(sourceFile);
+            if ((metadata == null || metadata.getArtist() == null || metadata.getArtist().trim().isEmpty())
+                && partialFile != null && !partialFile.equals(sourceFile)) {
+                metadata = tagWriter.readTags(partialFile);
+            }
             if (metadata == null || metadata.getArtist() == null || metadata.getArtist().trim().isEmpty()) {
                 log.debug("源文件没有艺术家标签，跳过 LLM 匹配");
                 return null;
             }
 
-            String sourceArtist = metadata.getArtist();
+            String sourceArtist = metadata.getArtist().trim();
             log.info("检测到源文件艺术家标签: {}", sourceArtist);
+            List<String> trackArtists = resolveTrackArtists(metadata);
+            boolean multiple = trackArtists.size() > 1
+                || (trackArtists.isEmpty() && ArtistCreditSupport.looksComposite(sourceArtist));
 
-            // 调用 LLM 匹配
-            ArtistMatchingService.MatchResult matchResult = artistMatchingService.matchArtist(sourceArtist);
-            if (matchResult == null) {
-                log.info("LLM 未找到匹配的艺术家");
-                return null;
+            String folderArtist;
+            List<String> albumArtists;
+            if (multiple) {
+                folderArtist = albumArtistPolicy.shouldCollapse() ? AlbumArtistPolicy.VARIOUS_ARTISTS : sourceArtist;
+                albumArtists = albumArtistPolicy.shouldCollapse() ? null : trackArtists;
+                log.info("检测到单文件多艺术家，保留结构化署名: {} -> {}", folderArtist, albumArtists);
+            } else {
+                String singleArtist = trackArtists.isEmpty() ? sourceArtist : trackArtists.get(0);
+                // 调用 LLM 匹配
+                ArtistMatchingService.MatchResult matchResult = artistMatchingService.matchArtist(singleArtist);
+                if (matchResult == null) {
+                    log.info("LLM 未找到匹配的艺术家");
+                    return null;
+                }
+                folderArtist = matchResult.getMatchedArtist();
+                albumArtists = List.of(folderArtist);
+                log.info("LLM 匹配到艺术家: {}", folderArtist);
             }
-
-            String matchedArtist = matchResult.getMatchedArtist();
-            log.info("LLM 匹配到艺术家: {}", matchedArtist);
 
             // 构建目标路径：outputDirectory/艺术家/专辑/文件
             // 专辑名直接来自文件自带标签,可能含路径分隔符或超长,必须清洗后才能当目录名
             String albumName = FileNameSanitizer.sanitize(metadata.getAlbum(), "Unknown Album");
 
-            File artistDir = new File(config.getOutputDirectory(), FileNameSanitizer.sanitize(matchedArtist));
+            File artistDir = new File(config.getOutputDirectory(), FileNameSanitizer.sanitize(folderArtist));
             File albumDir = new File(artistDir, albumName);
             File finalFile = new File(albumDir, partialFile.getName());
 
             // 同名文件可能是另一首歌或用户整理过的版本，自动流程不能覆盖它。
             if (finalFile.exists()) {
                 log.warn("LLM 匹配目标文件已存在，放弃自动归档以免覆盖: {}", finalFile.getAbsolutePath());
-                LogCollector.addLog("WARN", "LLM 匹配目标已存在，未自动归档: " + matchedArtist + "/" + albumName
+                LogCollector.addLog("WARN", "LLM 匹配目标已存在，未自动归档: " + folderArtist + "/" + albumName
                     + "/" + partialFile.getName());
                 return null;
             }
             albumDir.mkdirs();
 
-            // 移动文件（不覆盖）
+            // 移动文件（不覆盖）并同步写入结构化艺术家标签
             try (var libraryWrite = LibraryWriteGuard.acquire()) {
                 Files.move(partialFile.toPath(), finalFile.toPath());
+                if (multiple) {
+                    ArtistCreditSupport.applyTrackArtistCredit(metadata, sourceArtist, trackArtists);
+                    ArtistCreditSupport.applyAlbumArtistCredit(metadata, folderArtist, albumArtists, albumArtistPolicy);
+                } else {
+                    ArtistCreditSupport.applyTrackArtistCredit(metadata, folderArtist, List.of(folderArtist));
+                    ArtistCreditSupport.applyAlbumArtistCredit(metadata, folderArtist, List.of(folderArtist), albumArtistPolicy);
+                }
+                tagWriter.updateTagsOnExistingFile(finalFile, metadata, null);
             }
             log.info("文件已移动到: {}", finalFile.getAbsolutePath());
-            LogCollector.addLog("SUCCESS", "LLM 匹配成功，文件移动到: " + matchedArtist + "/" + albumName);
+            LogCollector.addLog("SUCCESS", "LLM 匹配成功，文件移动到: " + folderArtist + "/" + albumName);
 
             return finalFile.toPath();
         } catch (Exception e) {
@@ -618,10 +654,10 @@ public class FailedFileHandler {
 
             // 更新标签
             if (artistSummary.multiple()) {
-                // 多艺术家：只更新专辑艺术家，保留逐曲艺术家。
-                updateAlbumArtistInFolder(finalFolder, matchedArtist);
+                // 多艺术家：补全逐曲结构化 ARTISTS，并按策略写 ALBUM_ARTIST / ALBUM_ARTISTS。
+                updateMultiArtistTagsInFolder(finalFolder, matchedArtist, artistSummary.albumArtists());
             } else {
-                // 单艺术家：更新所有文件的艺术家标签
+                // 单艺术家：规范化所有文件的艺术家与专辑艺术家标签
                 updateArtistTagsInFolder(finalFolder, matchedArtist);
             }
 
@@ -673,26 +709,68 @@ public class FailedFileHandler {
         dir.delete();
     }
 
-    /** 汇总专辑中的逐曲艺术家，并按配置生成专辑艺术家。 */
+    /** 汇总专辑中的逐曲艺术家（必要时做 LLM 语义拆分），并按配置生成专辑艺术家。 */
     private ArtistSummary summarizeArtists(List<File> audioFiles) {
-        java.util.LinkedHashSet<String> artists = new java.util.LinkedHashSet<>();
+        java.util.LinkedHashSet<String> individualArtists = new java.util.LinkedHashSet<>();
+        java.util.LinkedHashSet<String> displayArtists = new java.util.LinkedHashSet<>();
         for (File file : audioFiles) {
             try {
                 com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(file);
                 if (metadata != null && metadata.getArtist() != null && !metadata.getArtist().trim().isEmpty()) {
-                    artists.add(metadata.getArtist().trim());
+                    displayArtists.add(metadata.getArtist().trim());
+                    List<String> resolved = resolveTrackArtists(metadata);
+                    if (!resolved.isEmpty()) {
+                        individualArtists.addAll(resolved);
+                    } else {
+                        individualArtists.add(metadata.getArtist().trim());
+                    }
                 }
             } catch (Exception e) {
                 log.debug("读取标签失败: {}", file.getName());
             }
         }
-        if (artists.isEmpty()) return null;
-        boolean multiple = artists.size() > 1;
-        String albumArtist = albumArtistPolicy.collapseOrJoin(new ArrayList<>(artists), true);
-        return new ArtistSummary(albumArtist, multiple);
+        if (displayArtists.isEmpty()) return null;
+        boolean multiple = individualArtists.size() > 1 || displayArtists.size() > 1
+            || (displayArtists.size() == 1 && ArtistCreditSupport.looksComposite(displayArtists.iterator().next()));
+        if (!multiple) {
+            String single = !individualArtists.isEmpty()
+                ? individualArtists.iterator().next() : displayArtists.iterator().next();
+            return new ArtistSummary(single, List.of(single), false);
+        }
+        if (displayArtists.size() == 1 && !albumArtistPolicy.shouldCollapse()) {
+            String display = displayArtists.iterator().next();
+            List<String> list = individualArtists.isEmpty()
+                || (individualArtists.size() == 1 && ArtistCreditSupport.looksComposite(display))
+                ? null : List.copyOf(individualArtists);
+            return new ArtistSummary(display, list, true);
+        }
+        List<String> basis = !individualArtists.isEmpty()
+            ? new ArrayList<>(individualArtists) : new ArrayList<>(displayArtists);
+        String albumArtist = albumArtistPolicy.collapseOrJoin(basis, true);
+        List<String> albumArtists = (!albumArtistPolicy.shouldCollapse() && !individualArtists.isEmpty()
+            && !(individualArtists.size() == 1 && ArtistCreditSupport.looksComposite(albumArtist)))
+            ? List.copyOf(individualArtists) : null;
+        return new ArtistSummary(albumArtist, albumArtists, true);
     }
 
-    private record ArtistSummary(String albumArtist, boolean multiple) { }
+    private List<String> resolveTrackArtists(com.lux032.musicautotagger.model.MusicMetadata metadata) {
+        if (metadata == null || metadata.getArtist() == null || metadata.getArtist().isBlank()) {
+            return List.of();
+        }
+        if (metadata.getArtists() != null && !metadata.getArtists().isEmpty()) {
+            return ArtistCreditSupport.cleanNames(metadata.getArtists());
+        }
+        if (artistSplitter != null) {
+            LlmArtistSplitter.SplitResult split = artistSplitter.split(metadata.getArtist());
+            if (split.hasStructuredArtists()) {
+                return split.artists();
+            }
+        }
+        return ArtistCreditSupport.looksComposite(metadata.getArtist())
+            ? List.of() : List.of(metadata.getArtist().trim());
+    }
+
+    private record ArtistSummary(String albumArtist, List<String> albumArtists, boolean multiple) { }
 
     /**
      * 递归收集文件夹中的所有音频文件
@@ -711,7 +789,7 @@ public class FailedFileHandler {
     }
 
     /**
-     * 更新文件夹中所有音频文件的艺术家标签
+     * 更新文件夹中所有音频文件的艺术家与专辑艺术家标签（单艺术家规范化）。
      */
     private void updateArtistTagsInFolder(File folder, String newArtist) {
         File[] files = folder.listFiles();
@@ -724,7 +802,9 @@ public class FailedFileHandler {
                 try {
                     com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(file);
                     if (metadata != null) {
-                        metadata.setArtist(newArtist);
+                        ArtistCreditSupport.applyTrackArtistCredit(metadata, newArtist, List.of(newArtist));
+                        ArtistCreditSupport.applyAlbumArtistCredit(
+                            metadata, newArtist, List.of(newArtist), albumArtistPolicy);
                         tagWriter.updateTagsOnExistingFile(file, metadata, null);
                         log.debug("已更新艺术家标签: {} -> {}", file.getName(), newArtist);
                     }
@@ -736,22 +816,27 @@ public class FailedFileHandler {
     }
 
     /**
-     * 更新文件夹中所有音频文件的专辑艺术家标签
+     * 更新多艺术家专辑中所有音频文件的结构化单曲与专辑艺术家标签。
      */
-    private void updateAlbumArtistInFolder(File folder, String albumArtist) {
+    private void updateMultiArtistTagsInFolder(File folder, String albumArtist, List<String> albumArtists) {
         File[] files = folder.listFiles();
         if (files == null) return;
 
         for (File file : files) {
             if (file.isDirectory()) {
-                updateAlbumArtistInFolder(file, albumArtist);
+                updateMultiArtistTagsInFolder(file, albumArtist, albumArtists);
             } else if (file.isFile() && isAudioFile(file)) {
                 try {
                     com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(file);
                     if (metadata != null) {
-                        metadata.setAlbumArtist(albumArtist);
+                        if (metadata.getArtist() != null && !metadata.getArtist().isBlank()) {
+                            List<String> trackArtists = resolveTrackArtists(metadata);
+                            ArtistCreditSupport.applyTrackArtistCredit(metadata, metadata.getArtist(), trackArtists);
+                        }
+                        ArtistCreditSupport.applyAlbumArtistCredit(
+                            metadata, albumArtist, albumArtists, albumArtistPolicy);
                         tagWriter.updateTagsOnExistingFile(file, metadata, null);
-                        log.debug("已更新专辑艺术家标签: {} -> {}", file.getName(), albumArtist);
+                        log.debug("已更新多艺术家标签: {} -> {} ({})", file.getName(), albumArtist, albumArtists);
                     }
                 } catch (Exception e) {
                     log.warn("更新标签失败: {} - {}", file.getName(), e.getMessage());

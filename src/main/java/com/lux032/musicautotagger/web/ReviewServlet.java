@@ -189,7 +189,8 @@ public class ReviewServlet extends HttpServlet {
                     ReviewItem item = recoveryService.confirmOnlineCandidate(id, str(body.get("candidateId")),
                         str(body.get("albumTitle")), str(body.get("albumArtist")), str(body.get("releaseDate")),
                         str(body.get("edition")), str(body.get("archiveDirectoryName")),
-                        str(body.get("selectedCoverSha256")), duplicatePolicy(str(body.get("duplicatePolicy"))));
+                        str(body.get("selectedCoverSha256")), duplicatePolicy(str(body.get("duplicatePolicy"))),
+                        strList(body.get("albumArtists")));
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
                     return;
                 }
@@ -501,6 +502,22 @@ public class ReviewServlet extends HttpServlet {
 
     private String str(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private List<String> strList(Object value) {
+        if (value == null) return null;
+        if (value instanceof List<?> list) {
+            List<String> out = new ArrayList<>();
+            for (Object el : list) {
+                if (el != null) {
+                    String s = String.valueOf(el).trim();
+                    if (!s.isEmpty()) out.add(s);
+                }
+            }
+            return out;
+        }
+        String raw = String.valueOf(value).trim();
+        return raw.isEmpty() ? List.of() : com.lux032.musicautotagger.util.ArtistCreditSupport.parseSemicolonOrLineList(raw);
     }
 
     private void respond(HttpServletResponse resp, int status, Map<String, Object> payload) throws IOException {

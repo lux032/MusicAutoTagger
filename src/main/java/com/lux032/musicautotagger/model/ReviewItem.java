@@ -244,6 +244,7 @@ public class ReviewItem {
         private int trackNo;
         private String title;
         private String artist;
+        private List<String> artists = new ArrayList<>();
         private Integer duration;
         private String matchedFilePath;
         private double matchConfidence;
@@ -254,7 +255,9 @@ public class ReviewItem {
         private String id;
         private String title;
         private String artist;
+        private List<String> artists = new ArrayList<>();
         private String albumArtist;
+        private List<String> albumArtists = new ArrayList<>();
         private String releaseDate;
         private String edition;
         private String country;
