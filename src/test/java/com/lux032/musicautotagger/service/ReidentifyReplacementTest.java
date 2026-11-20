@@ -483,6 +483,105 @@ class ReidentifyReplacementTest {
     }
 
     @Test
+    void failedStagedReidentifyFollowedByOnlineConfirmReplacesOldSingleArtistArchive() throws Exception {
+        // Reproduces exact Plex screenshot flow:
+        // 19:23 single-artist archive -> "处理记录 -> 重新识别" fails & enters /failed_files/Beyond the Night
+        // -> 19:44 user runs online search & confirms multi-artist archive -> old single-artist file must be cleaned up.
+        Path failedRoot = dir.resolve("failed");
+        config.setFailedDirectory(failedRoot.toString());
+        Path oldTarget = writeTaggedFlac(
+            output.resolve("TeddyLoid/Beyond the Night/1.01 TeddyLoid - Beyond the Night.flac"),
+            51, "Beyond the Night", "1").toPath();
+        File initialFailed = failedRoot.resolve("initial/1.01.flac").toFile();
+        Files.createDirectories(initialFailed.getParentFile().toPath());
+        Files.copy(oldTarget, initialFailed.toPath());
+        logger.markFileAsProcessed(initialFailed, "ONLINE_SEARCH", "TeddyLoid", "Beyond the Night", "Beyond the Night", null, oldTarget.toString());
+        Files.delete(initialFailed.toPath());
+
+        ReviewQueueService queue = new ReviewQueueService(config);
+        AudioFileProcessorService fakeProcessor = new AudioFileProcessorService(
+                config, null, null, tagWriter, null, logger, null, null, null, null,
+                new FileSystemUtils(config), new FolderAlbumCache(null, null, null)) {
+            @Override
+            public ProcessResult processRecoveryFile(File audioFile, File albumRootDir) {
+                try {
+                    Path copy = failedRoot.resolve(albumRootDir.getName()).resolve(audioFile.getName());
+                    Files.createDirectories(copy.getParent());
+                    Files.copy(audioFile.toPath(), copy);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                return ProcessResult.PERMANENT_FAIL;
+            }
+        };
+        var fakeSearch = new com.lux032.musicautotagger.service.llm.WebSearchClient() {
+            @Override public boolean hasEnabledEndpoint() { return true; }
+            @Override public String name() { return "fake"; }
+            @Override public SearchResponse search(String sys, String usr) {
+                var resp = new SearchResponse();
+                resp.setProvider("fake");
+                resp.setModel("fake-model");
+                resp.addCitation(Citation.of("https://musicbrainz.org/release/99", "MB", ""));
+                resp.setText("""
+                    {"needs_second_round":false,"candidates":[{
+                      "title":"Beyond the Night","artist":"TeddyLoid, 佐倉綾音 & 井上和",
+                      "artists":["TeddyLoid","佐倉綾音","井上和"],
+                      "album_artist":"TeddyLoid, 佐倉綾音 & 井上和",
+                      "album_artists":["TeddyLoid","佐倉綾音","井上和"],
+                      "release_date":"2026-11-11","edition":"Digital single","confidence":0.95,
+                      "tracks":[{"disc":1,"track":1,"title":"Beyond the Night","artist":"TeddyLoid, 佐倉綾音 & 井上和",
+                        "artists":["TeddyLoid","佐倉綾音","井上和"],"duration":2}],
+                      "source_urls":["https://musicbrainz.org/release/99"]
+                    }],"clues":[]}
+                    """);
+                return resp;
+            }
+        };
+        var online = new OnlineIdentificationService(config, queue, tagWriter, null, new LlmArtistSplitter(config), fakeSearch);
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, fakeProcessor, logger, queue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, null, null, new LlmArtistSplitter(config), online)) {
+            ProcessedRecordService recordService = new ProcessedRecordService(
+                config, logger, new FolderAlbumCache(null, null, null), new CoverArtService(null, null),
+                new FileSystemUtils(config), () -> null, registry);
+            recordService.setRecoveryService(recovery);
+            recordService.setReviewQueueService(queue);
+
+            // Step 1: Click re-identify on old record -> fails normal recognition and moves copy to /failed_files/Beyond the Night
+            List<ProcessedRecord> targets = recordService.resolveTargets(List.of(initialFailed.getAbsolutePath()), null);
+            recordService.reidentify(targets);
+
+            Path failedCopy = failedRoot.resolve("Beyond the Night/1.01 TeddyLoid - Beyond the Night.flac");
+            long deadline = System.currentTimeMillis() + 5000;
+            while ((!Files.isRegularFile(failedCopy) || logger.findRecordsByPaths(List.of(oldTarget.toString())).isEmpty())
+                    && System.currentTimeMillis() < deadline) {
+                Thread.sleep(25);
+            }
+            assertTrue(Files.isRegularFile(failedCopy));
+            assertTrue(Files.isRegularFile(oldTarget));
+
+            // Step 2: Run online search on /failed_files/Beyond the Night and confirm multi-artist candidate
+            recovery.submit(RecoveryService.SourceType.FAILED, "Beyond the Night",
+                RecoveryService.RecoveryMode.ONLINE_SEARCH, false);
+            long reviewDeadline = System.currentTimeMillis() + 5000;
+            while (queue.list(ReviewItem.Status.PENDING_REVIEW).isEmpty() && System.currentTimeMillis() < reviewDeadline) {
+                Thread.sleep(25);
+            }
+            ReviewItem item = queue.list(ReviewItem.Status.PENDING_REVIEW).get(0);
+            recovery.confirmOnlineCandidate(item.getId(), item.getOnlineCandidates().get(0).getId(),
+                "Beyond the Night", "TeddyLoid, 佐倉綾音 & 井上和", "2026-11-11", "Digital single",
+                null, null, RecoveryService.DuplicatePolicy.ASK, List.of("TeddyLoid", "佐倉綾音", "井上和"));
+
+            Path newTarget = output.resolve("TeddyLoid, 佐倉綾音 & 井上和/Beyond the Night (Digital single)/1.01 TeddyLoid, 佐倉綾音 & 井上和 - Beyond the Night.flac");
+            assertTrue(Files.isRegularFile(newTarget), "新的多艺术家归档文件应已创建");
+            assertFalse(Files.exists(oldTarget), "第一次刮削的旧单艺术家文件应已被自动清理");
+            assertFalse(Files.exists(oldTarget.getParent()), "旧空目录应已清理");
+            assertTrue(logger.findRecordsByPaths(List.of(oldTarget.toString())).isEmpty(), "旧目标上的 FAILED 记录应随文件替换一起清理");
+        }
+    }
+
+    @Test
     void reidentifySkipsMonitorRecordWhenFolderAlreadyPendingReview() throws Exception {
         File src = wav(monitor.resolve("PendingAlbum/01.wav"), 2, (byte) 5);
         logger.markFileAsProcessed(src, "rec-1", "Artist", "Song", "PendingAlbum", null, null);

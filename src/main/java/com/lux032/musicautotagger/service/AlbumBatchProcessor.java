@@ -87,10 +87,12 @@ public class AlbumBatchProcessor {
             boolean recoveryWorkspaceActive = tagWriter.isOutputRootOverridden();
             String fileHash = !recoveryWorkspaceActive && processedLogger != null
                 ? processedLogger.computeFileHashOrNull(displayFile) : null;
+            String audioMd5 = !recoveryWorkspaceActive
+                ? ArchiveDuplicateDetector.flacAudioMd5(displayFile.toPath()).orElse(null) : null;
             Path oldTarget = null;
             if (!recoveryWorkspaceActive) {
                 oldTarget = replacementRegistry != null
-                    ? replacementRegistry.findOldTarget(displayFile, fileHash).orElse(null) : null;
+                    ? replacementRegistry.findOldTarget(displayFile, fileHash, audioMd5).orElse(null) : null;
                 if (oldTarget == null && processedLogger != null) {
                     String logged = processedLogger.findTargetPath(displayFile);
                     if (logged != null) oldTarget = Path.of(logged);
@@ -129,7 +131,7 @@ public class AlbumBatchProcessor {
                     if (newTarget.startsWith(outputRoot)) {
                         if (replacementRegistry != null) {
                             replacementRegistry.completeReplacement(
-                                displayFile, fileHash, newTarget, outputRoot, config.isExportLyricsToFile());
+                                displayFile, fileHash, audioMd5, newTarget, outputRoot, config.isExportLyricsToFile());
                         }
                         if (oldTarget != null) {
                             ReidentifyReplacementRegistry.deleteReplacedFileAndEmptyParents(

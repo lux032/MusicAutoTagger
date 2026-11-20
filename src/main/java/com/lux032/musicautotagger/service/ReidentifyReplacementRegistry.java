@@ -47,24 +47,35 @@ public class ReidentifyReplacementRegistry {
         private String sourcePath;
         private String oldTargetPath;
         private String fileHash;
+        private String audioMd5;
         private long recordedAt;
 
         public Entry() { }
 
         public Entry(String sourcePath, String oldTargetPath, String fileHash, long recordedAt) {
+            this(sourcePath, oldTargetPath, fileHash, null, recordedAt);
+        }
+
+        public Entry(String sourcePath, String oldTargetPath, String fileHash, String audioMd5, long recordedAt) {
             this.sourcePath = sourcePath;
             this.oldTargetPath = oldTargetPath;
             this.fileHash = fileHash;
+            this.audioMd5 = audioMd5;
             this.recordedAt = recordedAt;
         }
 
         public String getSourcePath() { return sourcePath; }
         public String getOldTargetPath() { return oldTargetPath; }
         public String getFileHash() { return fileHash; }
+        public String getAudioMd5() { return audioMd5; }
         public long getRecordedAt() { return recordedAt; }
     }
 
     public void record(String sourcePath, String oldTargetPath, String fileHash) {
+        record(sourcePath, oldTargetPath, fileHash, null);
+    }
+
+    public void record(String sourcePath, String oldTargetPath, String fileHash, String audioMd5) {
         if (sourcePath == null || sourcePath.isBlank() || oldTargetPath == null || oldTargetPath.isBlank()) {
             return;
         }
@@ -73,18 +84,24 @@ public class ReidentifyReplacementRegistry {
         synchronized (LOCK) {
             Map<String, Entry> entries = load();
             entries.put(key, new Entry(key, normalizedTarget,
-                fileHash == null || fileHash.isBlank() ? null : fileHash.trim(), System.currentTimeMillis()));
+                fileHash == null || fileHash.isBlank() ? null : fileHash.trim(),
+                audioMd5 == null || audioMd5.isBlank() ? null : audioMd5.trim(),
+                System.currentTimeMillis()));
             save(entries);
         }
     }
 
     public Optional<Path> findOldTarget(File sourceFile, String fileHash) {
-        if (sourceFile == null && (fileHash == null || fileHash.isBlank())) {
+        return findOldTarget(sourceFile, fileHash, null);
+    }
+
+    public Optional<Path> findOldTarget(File sourceFile, String fileHash, String audioMd5) {
+        if (sourceFile == null && (fileHash == null || fileHash.isBlank()) && (audioMd5 == null || audioMd5.isBlank())) {
             return Optional.empty();
         }
         synchronized (LOCK) {
             Map<String, Entry> entries = load();
-            Entry match = findEntry(entries, sourceFile, fileHash);
+            Entry match = findEntry(entries, sourceFile, fileHash, audioMd5);
             if (match == null || match.getOldTargetPath() == null || match.getOldTargetPath().isBlank()) {
                 return Optional.empty();
             }
@@ -93,7 +110,11 @@ public class ReidentifyReplacementRegistry {
     }
 
     public void remove(File sourceFile, String fileHash) {
-        if (sourceFile == null && (fileHash == null || fileHash.isBlank())) {
+        remove(sourceFile, fileHash, null);
+    }
+
+    public void remove(File sourceFile, String fileHash, String audioMd5) {
+        if (sourceFile == null && (fileHash == null || fileHash.isBlank()) && (audioMd5 == null || audioMd5.isBlank())) {
             return;
         }
         synchronized (LOCK) {
@@ -108,6 +129,10 @@ public class ReidentifyReplacementRegistry {
                 String trimmedHash = fileHash.trim();
                 changed |= entries.values().removeIf(e -> trimmedHash.equals(e.getFileHash()));
             }
+            if (audioMd5 != null && !audioMd5.isBlank()) {
+                String trimmedMd5 = audioMd5.trim();
+                changed |= entries.values().removeIf(e -> trimmedMd5.equals(e.getAudioMd5()));
+            }
             if (changed) {
                 save(entries);
             }
@@ -121,13 +146,18 @@ public class ReidentifyReplacementRegistry {
      */
     public boolean completeReplacement(File sourceFile, String fileHash, Path newTarget,
                                        Path outputRoot, boolean cleanLyricsTxt) {
-        Optional<Path> oldTargetOpt = findOldTarget(sourceFile, fileHash);
+        return completeReplacement(sourceFile, fileHash, null, newTarget, outputRoot, cleanLyricsTxt);
+    }
+
+    public boolean completeReplacement(File sourceFile, String fileHash, String audioMd5, Path newTarget,
+                                       Path outputRoot, boolean cleanLyricsTxt) {
+        Optional<Path> oldTargetOpt = findOldTarget(sourceFile, fileHash, audioMd5);
         if (oldTargetOpt.isEmpty()) {
             return false;
         }
         Path oldTarget = oldTargetOpt.get();
         boolean deleted = deleteReplacedFileAndEmptyParents(oldTarget, newTarget, outputRoot, cleanLyricsTxt);
-        remove(sourceFile, fileHash);
+        remove(sourceFile, fileHash, audioMd5);
         return deleted;
     }
 
@@ -201,7 +231,7 @@ public class ReidentifyReplacementRegistry {
         }
     }
 
-    private static Entry findEntry(Map<String, Entry> entries, File sourceFile, String fileHash) {
+    private static Entry findEntry(Map<String, Entry> entries, File sourceFile, String fileHash, String audioMd5) {
         if (sourceFile != null) {
             Entry direct = entries.get(normalizePathKey(sourceFile.getAbsolutePath()));
             if (direct != null) return direct;
@@ -215,6 +245,14 @@ public class ReidentifyReplacementRegistry {
             String trimmed = fileHash.trim();
             for (Entry entry : entries.values()) {
                 if (trimmed.equals(entry.getFileHash())) {
+                    return entry;
+                }
+            }
+        }
+        if (audioMd5 != null && !audioMd5.isBlank()) {
+            String trimmedMd5 = audioMd5.trim();
+            for (Entry entry : entries.values()) {
+                if (trimmedMd5.equals(entry.getAudioMd5())) {
                     return entry;
                 }
             }

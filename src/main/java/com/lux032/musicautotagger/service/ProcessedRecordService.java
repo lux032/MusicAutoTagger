@@ -281,7 +281,8 @@ public class ProcessedRecordService {
                         oldTargetPaths.add(Path.of(r.targetFilePath));
                         if (replacementRegistry != null) {
                             String hash = logger != null ? logger.computeFileHashOrNull(staged.toFile()) : null;
-                            replacementRegistry.record(staged.toFile().getAbsolutePath(), r.targetFilePath, hash);
+                            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(staged).orElse(null);
+                            replacementRegistry.record(staged.toFile().getAbsolutePath(), r.targetFilePath, hash, audioMd5);
                         }
                     }
                 }
@@ -361,8 +362,10 @@ public class ProcessedRecordService {
             if (r.status != ProcessedRecord.Status.SUCCESS) {
                 continue;
             }
-            String fileHash = logger != null ? logger.computeFileHashOrNull(new File(r.filePath)) : null;
-            replacementRegistry.record(r.filePath, r.targetFilePath, fileHash);
+            File sourceFile = new File(r.filePath);
+            String fileHash = logger != null ? logger.computeFileHashOrNull(sourceFile) : null;
+            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(sourceFile.toPath()).orElse(null);
+            replacementRegistry.record(r.filePath, r.targetFilePath, fileHash, audioMd5);
         }
     }
 

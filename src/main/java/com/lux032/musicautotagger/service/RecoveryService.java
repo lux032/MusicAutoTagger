@@ -314,7 +314,7 @@ public class RecoveryService implements AutoCloseable {
                     LogCollector.addLog("SUCCESS", "手动重新识别成功: " + label);
                 } else {
                     deleteRecursively(reidentifyWorkRoot.toPath());
-                    clearReplacementEntries(stagedFiles);
+                    preserveFailedReplacementEntries(stagedDir, stagedFiles, fallbackRecordFiles, oldTargetPaths);
                     // 识别失败时保留原归档文件不被误删，并确保处理历史有明确 FAILED 记录供用户跟踪
                     for (int i = 0; i < stagedFiles.size(); i++) {
                         File staged = stagedFiles.get(i);
@@ -687,8 +687,15 @@ public class RecoveryService implements AutoCloseable {
                     ? newRelative.resolve(oldRelative.relativize(relative)) : relative);
             }
             String linkKey = SourceType.FAILED.name().equals(item.getRecoverySourceType()) ? source.getName() : null;
+            List<String> extraArtists = new ArrayList<>();
+            if (finalAlbumArtists != null) {
+                for (String a : finalAlbumArtists) {
+                    if (meaningful(a)) extraArtists.add(FileNameSanitizer.sanitize(a));
+                }
+            }
+            extraArtists.add(FileNameSanitizer.sanitize(AlbumArtistPolicy.VARIOUS_ARTISTS));
             committed = commitReplacingDuplicates(workRoot.toPath(), files.size(), item.getId(),
-                linkKey, duplicatePolicy, replacedTargetPaths);
+                linkKey, duplicatePolicy, replacedTargetPaths, extraArtists);
             clearReplacementEntries(originalFiles);
         } catch (IOException e) {
             deleteRecursively(workRoot.toPath());
@@ -824,6 +831,14 @@ public class RecoveryService implements AutoCloseable {
     List<Path> commitReplacingDuplicates(Path workspace, int expectedAudioCount, String taskId,
                                          String failedRelativePath, DuplicatePolicy policy,
                                          java.util.Collection<Path> replacedTargetPaths) throws IOException {
+        return commitReplacingDuplicates(workspace, expectedAudioCount, taskId, failedRelativePath,
+            policy, replacedTargetPaths, List.of());
+    }
+
+    List<Path> commitReplacingDuplicates(Path workspace, int expectedAudioCount, String taskId,
+                                         String failedRelativePath, DuplicatePolicy policy,
+                                         java.util.Collection<Path> replacedTargetPaths,
+                                         java.util.Collection<String> extraSearchArtistDirs) throws IOException {
         try (var libraryWrite = LibraryWriteGuard.acquire()) {
             if (policy == null) policy = DuplicatePolicy.ASK;
             Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
@@ -849,6 +864,13 @@ public class RecoveryService implements AutoCloseable {
             for (Path file : incoming) {
                 Path relative = workspace.relativize(file);
                 if (relative.getNameCount() >= 2) searchRoots.add(outputRoot.resolve(relative.getName(0)));
+            }
+            if (extraSearchArtistDirs != null) {
+                for (String artistDir : extraSearchArtistDirs) {
+                    if (meaningful(artistDir)) {
+                        searchRoots.add(outputRoot.resolve(artistDir.trim()));
+                    }
+                }
             }
             List<Path> excluded = new ArrayList<>(toRetire);
             excluded.addAll(replacedFiles);
@@ -881,11 +903,16 @@ public class RecoveryService implements AutoCloseable {
             }
             cleanupStagedReplacements(stagedReplacements, committed, outputRoot);
             Set<Path> committedFiles = collectCommittedRegularFiles(committed);
+            List<String> staleReplacedRecordPaths = new ArrayList<>();
             for (Path oldFile : replacedFiles) {
                 if (!committedFiles.contains(oldFile)) {
                     ReidentifyReplacementRegistry.deleteReplacedFileAndEmptyParents(
                         oldFile, null, outputRoot, config.isExportLyricsToFile());
+                    staleReplacedRecordPaths.add(oldFile.toString());
                 }
+            }
+            if (!staleReplacedRecordPaths.isEmpty() && processedLogger != null) {
+                processedLogger.removeProcessedRecords(staleReplacedRecordPaths);
             }
             if (failedRelativePath != null) {
                 autoArchiveRegistry.remove(failedRelativePath);
@@ -1107,8 +1134,9 @@ public class RecoveryService implements AutoCloseable {
         List<Path> paths = new ArrayList<>();
         for (File source : sourceFiles) {
             String fileHash = processedLogger != null ? processedLogger.computeFileHashOrNull(source) : null;
+            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(source.toPath()).orElse(null);
             if (replacementRegistry != null) {
-                replacementRegistry.findOldTarget(source, fileHash).ifPresent(paths::add);
+                replacementRegistry.findOldTarget(source, fileHash, audioMd5).ifPresent(paths::add);
             }
             if (processedLogger != null) {
                 String existing = processedLogger.findTargetPath(source);
@@ -1120,13 +1148,45 @@ public class RecoveryService implements AutoCloseable {
         return paths;
     }
 
+    private void preserveFailedReplacementEntries(File stagedDir, List<File> stagedFiles,
+                                                  List<File> fallbackRecordFiles, List<Path> oldTargetPaths) {
+        if (replacementRegistry == null || stagedFiles == null || oldTargetPaths == null || oldTargetPaths.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < stagedFiles.size() && i < oldTargetPaths.size(); i++) {
+            Path oldTarget = oldTargetPaths.get(i);
+            if (oldTarget == null) continue;
+            File staged = stagedFiles.get(i);
+            String oldTargetStr = oldTarget.toAbsolutePath().normalize().toString();
+            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(staged.toPath()).orElse(null);
+            if (fallbackRecordFiles != null && i < fallbackRecordFiles.size() && fallbackRecordFiles.get(i) != null) {
+                File fb = fallbackRecordFiles.get(i);
+                String fbHash = processedLogger != null ? processedLogger.computeFileHashOrNull(fb) : null;
+                replacementRegistry.record(fb.getAbsolutePath(), oldTargetStr, fbHash, audioMd5);
+            }
+            if (stagedDir != null) {
+                Path rel = stagedDir.toPath().relativize(staged.toPath());
+                for (String isolatedRoot : new String[]{config.getFailedDirectory(), config.getPartialDirectory()}) {
+                    if (!meaningful(isolatedRoot)) continue;
+                    File isolatedCopy = Path.of(isolatedRoot.trim(), stagedDir.getName()).resolve(rel).toFile();
+                    if (isolatedCopy.isFile()) {
+                        String copyHash = processedLogger != null ? processedLogger.computeFileHashOrNull(isolatedCopy) : null;
+                        String copyAudioMd5 = ArchiveDuplicateDetector.flacAudioMd5(isolatedCopy.toPath()).orElse(audioMd5);
+                        replacementRegistry.record(isolatedCopy.getAbsolutePath(), oldTargetStr, copyHash, copyAudioMd5);
+                    }
+                }
+            }
+        }
+    }
+
     private void clearReplacementEntries(List<File> sourceFiles) {
         if (replacementRegistry == null || sourceFiles == null) {
             return;
         }
         for (File source : sourceFiles) {
             String fileHash = processedLogger != null ? processedLogger.computeFileHashOrNull(source) : null;
-            replacementRegistry.remove(source, fileHash);
+            String audioMd5 = ArchiveDuplicateDetector.flacAudioMd5(source.toPath()).orElse(null);
+            replacementRegistry.remove(source, fileHash, audioMd5);
         }
     }
 
