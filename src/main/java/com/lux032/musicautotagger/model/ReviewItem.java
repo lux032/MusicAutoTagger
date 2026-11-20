@@ -24,6 +24,7 @@ public class ReviewItem {
     public enum VerificationSource {
         MUSICBRAINZ,
         ONLINE_SEARCH,
+        LOCAL_TAGS,
         SYNTHESIZED,
         MANUAL_REJECTED
     }

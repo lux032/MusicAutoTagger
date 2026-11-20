@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.service;
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.util.ArtistCreditSupport;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FlacId3Stripper;
 import com.lux032.musicautotagger.util.TagQualityEvaluator;
@@ -1216,6 +1217,42 @@ public class TagWriterService {
                 .add(artwork.getMimeType() + ":" + artwork.getDescription() + ":"
                     + artwork.getPictureType() + ":" + artwork.getImageUrl() + ":"
                     + (binary == null ? "" : Base64.getEncoder().encodeToString(binary)));
+        }
+    }
+
+    /** Writes only the approved album fields and optional track artist list on an archive copy. */
+    void writeLocalArchiveTags(Path file, String album, String albumArtist, List<String> albumArtists,
+                               List<String> trackArtists) throws IOException {
+        if (FlacId3Stripper.hasUnsafeId3(file.toFile())) throw new IOException("local.archive.write.failed");
+        try {
+            AudioFile audio = AudioFileIO.read(file.toFile());
+            Tag tag = audio.getTagOrCreateAndSetDefault();
+            String trackArtist = tag.getFirst(FieldKey.ARTIST);
+            if (!albumArtist.equals(tag.getFirst(FieldKey.ALBUM_ARTIST))) {
+                deleteFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASEARTISTID);
+                deleteFieldSafely(tag, FieldKey.ALBUM_ARTIST_SORT);
+            }
+            tag.setField(FieldKey.ALBUM, album);
+            tag.setField(FieldKey.ALBUM_ARTIST, albumArtist);
+            writeArtistNames(tag, FieldKey.ALBUM_ARTISTS, albumArtists);
+            writeCustomTextTag(tag, ALBUM_ARTIST_CREDIT_TAG, ArtistCreditSupport.buildCreditJson(albumArtist, albumArtists));
+            if (trackArtists != null) {
+                writeArtistNames(tag, FieldKey.ARTISTS, trackArtists);
+                writeCustomTextTag(tag, ARTIST_CREDIT_TAG, ArtistCreditSupport.buildCreditJson(trackArtist, trackArtists));
+            }
+            audio.commit();
+
+            Tag written = AudioFileIO.read(file.toFile()).getTag();
+            if (written == null || !album.equals(written.getFirst(FieldKey.ALBUM))
+                    || !albumArtist.equals(written.getFirst(FieldKey.ALBUM_ARTIST))
+                    || !albumArtists.equals(readArtistNames(written, FieldKey.ALBUM_ARTISTS))
+                    || !Objects.equals(trackArtist, written.getFirst(FieldKey.ARTIST))
+                    || (trackArtists != null && !trackArtists.equals(readArtistNames(written, FieldKey.ARTISTS)))) {
+                throw new IOException("Approved tags could not be verified");
+            }
+        } catch (Exception e) {
+            log.warn("本地入库标签写入失败: {}", file, e);
+            throw new IOException("local.archive.write.failed", e);
         }
     }
 

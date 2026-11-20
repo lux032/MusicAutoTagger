@@ -184,6 +184,22 @@ public class ReviewServlet extends HttpServlet {
                     }
                     return;
                 }
+                case "local-preview": {
+                    if (recoveryService == null) throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
+                    respond(resp, 200, Map.of("draft", recoveryService.previewLocalArchive(id)));
+                    return;
+                }
+                case "local-confirm": {
+                    if (recoveryService == null) throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
+                    ReviewItem item;
+                    synchronized (resolutionService) {
+                        item = recoveryService.confirmLocalArchive(id, str(body.get("revision")),
+                            str(body.get("albumTitle")), str(body.get("albumArtist")), strList(body.get("albumArtists")),
+                            trackArtistLists(body.get("trackArtists")), duplicatePolicy(str(body.get("duplicatePolicy"))));
+                    }
+                    respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
+                    return;
+                }
                 case "online-confirm": {
                     if (recoveryService == null) throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
                     ReviewItem item = recoveryService.confirmOnlineCandidate(id, str(body.get("candidateId")),
@@ -209,10 +225,10 @@ public class ReviewServlet extends HttpServlet {
             respond(resp, e.getHttpStatus(), Map.of("error", e.getMessage()));
         } catch (com.lux032.musicautotagger.service.DuplicateArchiveException e) {
             // 什么都没提交；前端据此让用户选择「替换 / 保留两份 / 取消」后带 duplicatePolicy 重新提交
-            log.info("联网候选确认暂停，音乐库已有相同音频: {} - {}", id, e.describe());
+            log.info("待确认归档暂停，音乐库已有相同音频: {} - {}", id, e.describe());
             respond(resp, 409, Map.of("error", e.getMessage(), "duplicates", e.getDuplicates()));
         } catch (java.io.IOException e) {
-            log.warn("联网候选确认被拒绝: {} - {}", id, e.getMessage());
+            log.warn("待确认操作被拒绝: {} - {}", id, e.getMessage());
             respond(resp, 400, Map.of("error", e.getMessage() == null ? "online.confirm.failed" : e.getMessage()));
         } catch (Exception e) {
             log.error("待确认条目处置失败: {}", id, e);
@@ -502,6 +518,20 @@ public class ReviewServlet extends HttpServlet {
 
     private String str(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private Map<String, List<String>> trackArtistLists(Object value) throws IOException {
+        if (value == null) return Map.of();
+        if (!(value instanceof Map<?, ?> map)) throw new IOException("local.archive.tracks.invalid");
+        Map<String, List<String>> tracks = new LinkedHashMap<>();
+        for (var entry : map.entrySet()) {
+            if (!(entry.getKey() instanceof String name) || !(entry.getValue() instanceof List<?> values)
+                    || values.isEmpty() || !values.stream().allMatch(el -> el instanceof String s && !s.isBlank())) {
+                throw new IOException("local.archive.tracks.invalid");
+            }
+            tracks.put(name, strList(values));
+        }
+        return tracks;
     }
 
     private List<String> strList(Object value) {

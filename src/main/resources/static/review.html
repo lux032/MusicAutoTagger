@@ -308,6 +308,24 @@
         .ask-body p + p { margin-top: 6px; }
         .ask-warn { padding: 9px 12px; border-radius: var(--radius-sm); background: var(--warn-soft); border: 1px solid #f1d3a6; color: #8a3f06; font-size: 12.5px; line-height: 1.6; }
 
+        .artist-editor { display: grid; gap: 6px; margin-top: 6px; }
+        .artist-editor > .btn { justify-self: start; }
+        .artist-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+        .artist-row .btn { min-width: 36px; padding-inline: 8px; }
+        .artist-row .btn svg { width: 16px; height: 16px; }
+        .local-dialog { display: flex; flex-direction: column; width: min(620px, 100%); max-height: min(92vh, calc(100dvh - 40px)); overflow: hidden; }
+        .local-dialog > .dialog-stack { overflow-y: auto; overscroll-behavior: contain; padding: 2px; }
+        .local-dialog > .dialog-title, .local-dialog > .dialog-subtitle, .local-dialog > .dialog-actions { flex-shrink: 0; }
+        .local-dialog > .dialog-actions { margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
+        .local-status { color: var(--text-soft); font-size: 13px; overflow-wrap: anywhere; }
+        .local-tracks { border-top: 1px solid var(--border); padding-top: 10px; }
+        .local-tracks summary { cursor: pointer; font-weight: 650; }
+        .local-track { padding: 12px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+        .local-track label { display: flex; gap: 8px; align-items: baseline; font-weight: 650; }
+        .local-track .artist-editor { margin-top: 8px; }
+        .local-track .hint { display: block; margin-top: 3px; }
+        #localDialog [hidden] { display: none; }
+
         .cover-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; margin-top:8px; }
         .cover-choice { border:2px solid var(--border); border-radius:8px; padding:6px; cursor:pointer; background:#fff; text-align:left; font:inherit; }
         .cover-choice.selected { border-color:var(--primary); box-shadow:0 0 0 2px var(--primary-soft); }
@@ -329,6 +347,8 @@
         }
         @media (max-width: 640px) {
             .detail-body { padding: 16px 14px 8px; }
+            .local-dialog { padding: 18px; }
+            .local-dialog .dialog-subtitle { margin-bottom: 10px; }
             .decision { padding: 10px 14px; }
             .cand-row { grid-template-columns: 20px minmax(0, 1fr); }
             .cand.static .cand-row { grid-template-columns: minmax(0, 1fr); }
@@ -339,7 +359,7 @@
             .decision { gap: 8px; }
             .decision-status { flex-basis: 100%; font-size: 12.5px; }
             .decision-status .busy-sub:not([data-elapsed]) { display: none; }
-            .decision-actions { width: 100%; margin-left: 0; flex-wrap: nowrap; }
+            .decision-actions { width: 100%; margin-left: 0; }
             .decision-actions .menu-wrap .btn span, .decision-actions [data-act="search"] span { display: none; }
             .decision-actions .menu-wrap .btn, .decision-actions [data-act="search"] { padding: 6px 10px; }
             .decision-actions [data-act="search"] svg, .decision-actions .menu-wrap .btn svg { width: 17px; height: 17px; }
@@ -474,8 +494,9 @@
                 <input id="ocArtist" type="text">
             </div>
             <div class="form-row">
-                <label for="ocArtists" data-i18n="review.online.artists">拆分后的歌手名单（可选）</label>
-                <input id="ocArtists" type="text" placeholder="用分号 ; 分隔多人，如 TeddyLoid; 佐倉綾音; 井上和（留空则自动处理）" data-i18n-placeholder="review.online.artists.placeholder">
+                <label id="ocArtistsLabel" data-i18n="review.online.artists">拆分后的艺术家名单（可选）</label>
+                <div id="ocArtists" class="artist-editor" role="group" aria-labelledby="ocArtistsLabel" aria-describedby="ocArtistsHint"></div>
+                <div id="ocArtistsHint" class="hint" data-i18n="review.online.artists.hint">每行一位艺术家。留空时由系统处理。</div>
             </div>
             <div class="form-row">
                 <label for="ocDate" data-i18n="review.online.date">发行日期</label>
@@ -501,6 +522,42 @@
         <div class="dialog-actions">
             <button class="btn ghost" data-close="online" data-i18n="web.cancel">取消</button>
             <button class="btn primary" id="onlineSubmit" data-i18n="review.online.submit">确认归档</button>
+        </div>
+    </div>
+</div>
+
+<div class="overlay" id="localDialog" role="dialog" aria-modal="true" aria-labelledby="localDialogTitle">
+    <div class="dialog local-dialog">
+        <div class="dialog-title" id="localDialogTitle" tabindex="-1" data-i18n="review.local.title">按本地信息入库</div>
+        <div class="dialog-subtitle" data-i18n="review.local.subtitle">核对专辑信息和艺术家名单。确认后整张入库，沿用原文件的曲名、曲序、日期和封面。</div>
+        <div class="dialog-stack">
+            <div class="local-status" id="localStatus" role="status"></div>
+            <div class="dialog-stack" id="localFields" hidden>
+                <div class="form-row">
+                    <label for="localTitle" data-i18n="review.online.title">最终专辑名</label>
+                    <input id="localTitle" type="text">
+                </div>
+                <div class="form-row">
+                    <label for="localArtist" data-i18n="review.local.display">专辑艺术家显示名</label>
+                    <input id="localArtist" type="text" data-i18n-placeholder="review.local.display.placeholder">
+                    <div class="hint" id="localAlbumSource"></div>
+                </div>
+                <div class="form-row">
+                    <label id="localArtistsLabel" data-i18n="review.local.artists">专辑艺术家名单</label>
+                    <div id="localArtists" class="artist-editor" role="group" aria-labelledby="localArtistsLabel"></div>
+                </div>
+                <details class="local-tracks" id="localTracks" hidden>
+                    <summary id="localTracksSummary"></summary>
+                    <div class="hint" data-i18n="review.local.tracks.hint">勾选要写入新名单的曲目。</div>
+                    <div id="localTrackList"></div>
+                </details>
+            </div>
+            <div class="dialog-error" id="localError" role="alert"></div>
+        </div>
+        <div class="dialog-actions">
+            <button class="btn ghost" type="button" id="localCancel" data-close="local" data-i18n="web.cancel">取消</button>
+            <button class="btn ghost" type="button" id="localRetry" data-i18n="review.local.retry" hidden>重新读取</button>
+            <button class="btn primary" type="button" id="localSubmit" data-i18n="review.local.submit" disabled>确认入库</button>
         </div>
     </div>
 </div>
@@ -693,7 +750,11 @@
         'recovery.no.audio.files': 'review.error.no.audio.files',
         'cover.selection.expired': 'review.error.cover.expired',
         'online.destination.exists': 'review.error.destination.exists',
-        'online.duplicate.exists': 'review.duplicate.title'
+        'online.duplicate.exists': 'review.duplicate.title',
+        'local.archive.stale': 'review.local.error.stale',
+        'local.archive.metadata.required': 'review.local.error.required',
+        'local.archive.tracks.invalid': 'review.local.error.tracks',
+        'local.archive.write.failed': 'review.local.error.write'
     };
 
     function humanError(message) {
@@ -1422,6 +1483,7 @@
                     <div class="menu ${state.menuOpen && !busy ? 'show' : ''}" role="menu">${menuItems}</div>
                 </div>
                 ${showSearch ? `<button class="btn ghost" data-act="search" title="${escapeHtml(t('review.action.online.search'))}" aria-label="${escapeHtml(t('review.action.online.search'))}" ${busy ? 'disabled' : ''}>${ICON.search}<span>${escapeHtml(t('review.action.online.search'))}</span></button>` : ''}
+                <button class="btn ghost" data-act="local-archive" ${busy ? 'disabled' : ''}>${escapeHtml(t('review.local.action'))}</button>
                 <span class="primary-slot"><button class="btn ${primary.cls}" ${primary.act ? `data-act="${primary.act}"` : 'disabled'} ${busy ? 'disabled' : ''}>
                     ${busy && busy.key === primary.act ? '<span class="spinner"></span>' : ''}${escapeHtml(primary.label)}</button></span>
             </div>`;
@@ -1448,6 +1510,7 @@
     const BUSY_LABEL = {
         expand: 'review.busy.expand', search: 'review.busy.search', llm: 'review.busy.llm',
         'confirm-local': 'review.busy.confirm', 'confirm-online': 'review.busy.confirm',
+        'archive-local-tags': 'review.busy.archive',
         archive: 'review.busy.archive', reject: 'review.busy.reject', unreject: 'review.busy.unreject'
     };
 
@@ -1455,7 +1518,7 @@
      * 统一执行入口：锁住该条目的操作、显示进度、把结果落成持续可见的反馈。
      * 成功处置（状态离开当前过滤条件）后自动跳到下一条。
      */
-    async function runAction(key, path, body, { onError } = {}) {
+    async function runAction(key, path, body, { onError, onSuccess } = {}) {
         const id = body.id;
         const before = state.items.find(i => i.id === id) || state.item;
         const folderName = before ? before.folderName : '';
@@ -1478,6 +1541,7 @@
             return;
         }
         delete state.busy[id];
+        if (onSuccess) onSuccess();
         const item = data.item;
         const filter = $('statusFilter').value;
         const resolvedOut = item && item.status !== beforeStatus && filter !== 'ALL' && item.status !== filter;
@@ -1629,6 +1693,226 @@
         if (r) r(value);
     }
 
+    // ---------- 艺术家名单 ----------
+    function artistEditor(root, names, onEdit = () => {}) {
+        root.replaceChildren();
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'btn ghost sm';
+        add.textContent = t('review.artists.add');
+        root.append(add);
+
+        function addRow(name, focus = false) {
+            const row = document.createElement('div');
+            row.className = 'artist-row';
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = name;
+            input.placeholder = t('review.artists.name');
+            input.setAttribute('aria-label', t('review.artists.name'));
+            input.addEventListener('input', onEdit);
+            input.addEventListener('keydown', event => {
+                if (event.key !== 'Enter' || event.isComposing || !input.value.trim()) return;
+                event.preventDefault();
+                addRow('', true);
+            });
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'btn ghost sm';
+            remove.setAttribute('aria-label', t('review.artists.remove'));
+            remove.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+            remove.addEventListener('click', () => {
+                const next = row.nextElementSibling.querySelector('input')
+                    || row.previousElementSibling?.querySelector('input') || add;
+                row.remove();
+                next.focus();
+                onEdit();
+            });
+            row.append(input, remove);
+            root.insertBefore(row, add);
+            if (focus) input.focus();
+        }
+
+        for (const name of names) addRow(name);
+        add.addEventListener('click', () => {
+            const empty = [...root.querySelectorAll('input')].find(input => !input.value.trim());
+            if (empty) empty.focus();
+            else addRow('', true);
+        });
+    }
+
+    function artistNames(root) {
+        return [...root.querySelectorAll('input')].map(input => input.value.trim()).filter(Boolean);
+    }
+
+    // ---------- 按本地信息入库 ----------
+    let pendingLocal = null;
+
+    function showLocalError(message) {
+        const error = $('localError');
+        error.textContent = message;
+        error.style.display = message ? 'block' : 'none';
+    }
+
+    async function doLocalArchive() {
+        if (!state.item) return;
+        const draft = { itemId: state.item.id, submitting: false };
+        pendingLocal = draft;
+        openOverlay('localDialog');
+        $('localDialogTitle').focus();
+        await loadLocalDraft(draft);
+    }
+
+    async function loadLocalDraft(draft) {
+        $('localFields').hidden = true;
+        $('localRetry').hidden = true;
+        $('localSubmit').disabled = true;
+        $('localStatus').textContent = t('review.local.loading');
+        showLocalError('');
+        try {
+            const data = await api('/api/review/local-preview', {
+                method: 'POST', body: JSON.stringify({ id: draft.itemId })
+            });
+            if (pendingLocal !== draft) return;
+            renderLocalDraft(draft, data.draft);
+        } catch (e) {
+            if (pendingLocal !== draft) return;
+            $('localStatus').textContent = '';
+            showLocalError(humanError(e.message));
+            $('localRetry').hidden = false;
+        }
+    }
+
+    function renderLocalDraft(draft, data) {
+        draft.revision = data.revision;
+        draft.tracks = [];
+        $('localStatus').textContent = data.revision
+            ? tf(data.needsReview ? 'review.local.check' : 'review.local.ready', data.fileCount)
+            : t('review.local.resume');
+        $('localSubmit').disabled = false;
+        if (!data.revision) return;
+
+        $('localFields').hidden = false;
+        $('localTitle').value = data.albumTitle || '';
+        $('localArtist').value = data.albumArtist || '';
+        $('localAlbumSource').textContent = data.localAlbumArtists.length
+            ? tf('review.local.album.source', data.localAlbumArtists.join(' · ')) : '';
+        let initialDisplay = data.albumArtist || '';
+        const initialNames = JSON.stringify(data.albumArtists);
+        artistEditor($('localArtists'), data.albumArtists.length ? data.albumArtists : [''], () => {
+            const input = $('localArtist');
+            if (input.value !== initialDisplay) return;
+            const names = artistNames($('localArtists'));
+            input.value = JSON.stringify(names) === initialNames ? data.albumArtist || '' : names.join(' & ');
+            initialDisplay = input.value;
+        });
+
+        const list = $('localTrackList');
+        list.replaceChildren();
+        $('localTracks').hidden = !data.tracks.length;
+        $('localTracks').open = data.tracks.length > 0 && data.tracks.length <= 3 && !isNarrow();
+        function updateTrackSummary() {
+            const selected = draft.tracks.filter(track => track.checkbox.checked).length;
+            $('localTracksSummary').textContent = tf('review.local.tracks', draft.tracks.length, selected);
+        }
+        for (const track of data.tracks) {
+            const row = document.createElement('div');
+            row.className = 'local-track';
+            const label = document.createElement('label');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = !track.needsReview;
+            label.append(checkbox, track.title || baseName(track.file));
+            const source = document.createElement('span');
+            source.className = 'hint';
+            source.textContent = tf('review.local.track.source', track.artist);
+            source.title = track.file;
+            const editor = document.createElement('div');
+            editor.className = 'form-row artist-editor';
+            editor.setAttribute('role', 'group');
+            editor.setAttribute('aria-label', tf('review.local.track.artists', track.title || baseName(track.file)));
+            editor.hidden = !checkbox.checked;
+            checkbox.addEventListener('change', () => {
+                editor.hidden = !checkbox.checked;
+                updateTrackSummary();
+            });
+            artistEditor(editor, track.artists.length ? track.artists : track.currentArtists.length ? track.currentArtists : ['']);
+            row.append(label, source);
+            if (track.currentArtists.length) {
+                const current = document.createElement('span');
+                current.className = 'hint';
+                current.textContent = tf('review.local.track.current', track.currentArtists.join(' · '));
+                row.append(current);
+            }
+            row.append(editor);
+            list.append(row);
+            draft.tracks.push({ file: track.file, checkbox, editor });
+        }
+        updateTrackSummary();
+    }
+
+    function closeLocalDialog() {
+        if (pendingLocal?.submitting) return;
+        closeOverlay('localDialog');
+        pendingLocal = null;
+    }
+
+    async function submitLocalConfirm(duplicatePolicy) {
+        const draft = pendingLocal;
+        if (!draft || draft.submitting || draft.revision === undefined) return;
+        const payload = { id: draft.itemId, revision: draft.revision, duplicatePolicy };
+        if (draft.revision) {
+            payload.albumTitle = $('localTitle').value.trim();
+            payload.albumArtists = artistNames($('localArtists'));
+            payload.albumArtist = $('localArtist').value.trim() || payload.albumArtists.join(' & ');
+            if (!payload.albumTitle || !payload.albumArtists.length) {
+                showLocalError(t('review.local.error.required'));
+                (payload.albumTitle ? $('localArtists').querySelector('input, button') : $('localTitle')).focus();
+                return;
+            }
+            const selected = draft.tracks.filter(track => track.checkbox.checked);
+            payload.trackArtists = Object.fromEntries(selected.map(track => [track.file, artistNames(track.editor)]));
+            const empty = selected.find(track => !payload.trackArtists[track.file].length);
+            if (empty) {
+                showLocalError(t('review.local.error.tracks'));
+                $('localTracks').open = true;
+                empty.editor.querySelector('input, button').focus();
+                return;
+            }
+        }
+        draft.submitting = true;
+        $('localCancel').disabled = $('localSubmit').disabled = true;
+        $('localFields').inert = true;
+        $('localDialogTitle').focus();
+        const previousStatus = $('localStatus').textContent;
+        $('localStatus').textContent = t('review.busy.archive');
+        showLocalError('');
+        try {
+            await runAction('archive-local-tags', '/api/review/local-confirm', payload, {
+                onSuccess: () => {
+                    draft.submitting = false;
+                    closeLocalDialog();
+                },
+                onError: e => {
+                    if (isDuplicateError(e)) {
+                        closeOverlay('localDialog');
+                        showDuplicateDialog(payload, e.data.duplicates, true);
+                    } else {
+                        showLocalError(humanError(e.message));
+                        $('localRetry').hidden = e.message !== 'local.archive.stale';
+                    }
+                    return true;
+                }
+            });
+        } finally {
+            draft.submitting = false;
+            $('localFields').inert = false;
+            $('localStatus').textContent = previousStatus;
+            $('localCancel').disabled = false;
+            $('localSubmit').disabled = !$('localRetry').hidden;
+        }
+    }
+
     // ---------- 联网候选确认 ----------
     let pendingOnline = null; // {itemId, candidateId}
     let pendingCoverSha256 = null;
@@ -1677,14 +1961,16 @@
             ? c.albumArtists
             : ((!c.albumArtist || c.albumArtist === c.artist) && c.artists && c.artists.length ? c.artists : []);
         $('ocArtist').value = defaultArtist;
-        $('ocArtists').value = defaultArtists.join('; ');
-        $('ocArtists').dataset.edited = '';
+        const editor = $('ocArtists');
+        editor.dataset.edited = '';
+        artistEditor(editor, defaultArtists, () => { editor.dataset.edited = '1'; });
         $('ocDate').value = c.releaseDate || '';
         $('ocEdition').value = c.edition || '';
         $('ocDir').value = '';
         $('onlineError').style.display = 'none';
         chooseCover(null);
         openOverlay('onlineDialog');
+        $('ocTitle').focus();
         loadCoverChoices(item.id, c.id);
     }
 
@@ -1696,16 +1982,12 @@
 
     async function submitOnlineConfirm() {
         if (!pendingOnline) return;
-        const rawArtists = $('ocArtists').value.trim();
-        const albumArtists = rawArtists
-            ? rawArtists.split(/[;；\r\n]+/).map(s => s.trim()).filter(Boolean)
-            : [];
         const payload = {
             id: pendingOnline.itemId,
             candidateId: pendingOnline.candidateId,
             albumTitle: $('ocTitle').value.trim(),
             albumArtist: $('ocArtist').value.trim(),
-            albumArtists,
+            albumArtists: artistNames($('ocArtists')),
             releaseDate: $('ocDate').value.trim(),
             edition: $('ocEdition').value.trim(),
             archiveDirectoryName: $('ocDir').value.trim(),
@@ -1722,20 +2004,24 @@
         await submitOnlinePayload(payload);
     }
 
-    let pendingDuplicatePayload = null;
+    let pendingDuplicate = null;
+
+    function isDuplicateError(e) {
+        return e.message === 'online.duplicate.exists' && Array.isArray(e.data?.duplicates);
+    }
 
     async function submitOnlinePayload(payload) {
         await runAction('confirm-online', '/api/review/online-confirm', payload, {
             onError: e => {
-                if (e.message !== 'online.duplicate.exists' || !e.data || !Array.isArray(e.data.duplicates)) return false;
+                if (!isDuplicateError(e)) return false;
                 showDuplicateDialog(payload, e.data.duplicates);
                 return true;
             }
         });
     }
 
-    function showDuplicateDialog(payload, duplicates) {
-        pendingDuplicatePayload = payload;
+    function showDuplicateDialog(payload, duplicates, local = false) {
+        pendingDuplicate = { payload, local };
         $('duplicateList').innerHTML = duplicates.map(d => `
             <div>
                 <div style="font-family:var(--mono);font-size:12px;overflow-wrap:anywhere"><strong>${escapeHtml(d.path)}</strong></div>
@@ -1748,10 +2034,15 @@
 
     async function resolveDuplicate(policy) {
         closeOverlay('duplicateDialog');
-        const payload = pendingDuplicatePayload;
-        pendingDuplicatePayload = null;
-        if (!policy || !payload) return;
-        await runAction('confirm-online', '/api/review/online-confirm', { ...payload, duplicatePolicy: policy });
+        const duplicate = pendingDuplicate;
+        pendingDuplicate = null;
+        if (duplicate?.local && pendingLocal) {
+            openOverlay('localDialog');
+            $('localDialogTitle').focus();
+            if (policy) await submitLocalConfirm(policy);
+        } else if (policy && duplicate) {
+            await runAction('confirm-online', '/api/review/online-confirm', { ...duplicate.payload, duplicatePolicy: policy });
+        }
     }
 
     // ---------- 弹层 ----------
@@ -1768,6 +2059,7 @@
     function cancelOverlay(id) {
         if (id === 'askDialog') settleAsk(false);
         else if (id === 'onlineDialog') closeOnlineDialog();
+        else if (id === 'localDialog') closeLocalDialog();
         else if (id === 'duplicateDialog') resolveDuplicate(null);
         else closeOverlay(id);
     }
@@ -1794,15 +2086,13 @@
         reject: doReject,
         unreject: doUnreject,
         'confirm-local': doConfirmLocal,
-        'confirm-online': doConfirmOnline
+        'confirm-online': doConfirmOnline,
+        'local-archive': doLocalArchive
     };
 
-    document.addEventListener('input', e => {
-        if (e.target && e.target.id === 'ocArtists') {
-            e.target.dataset.edited = '1';
-        } else if (e.target && e.target.id === 'ocArtist' && !$('ocArtists').dataset.edited) {
-            $('ocArtists').value = '';
-        }
+    $('ocArtist').addEventListener('input', () => {
+        if ($('ocArtists').dataset.edited) return;
+        artistEditor($('ocArtists'), [], () => { $('ocArtists').dataset.edited = '1'; });
     });
 
     document.addEventListener('click', e => {
@@ -1819,7 +2109,7 @@
         const dup = e.target.closest('[data-dup]');
         if (dup) return resolveDuplicate(dup.dataset.dup || null);
         const close = e.target.closest('[data-close]');
-        if (close) return close.dataset.close === 'online' ? closeOnlineDialog() : closeOverlay('rejectDialog');
+        if (close) return cancelOverlay(close.dataset.close + 'Dialog');
         const act = e.target.closest('[data-act]');
         if (act && !act.disabled && ACTIONS[act.dataset.act]) {
             if (act.dataset.act !== 'menu') state.menuOpen = false;
@@ -1830,6 +2120,8 @@
 
     $('noCoverBtn').addEventListener('click', () => chooseCover(null));
     $('onlineSubmit').addEventListener('click', submitOnlineConfirm);
+    $('localSubmit').addEventListener('click', () => submitLocalConfirm());
+    $('localRetry').addEventListener('click', () => { if (pendingLocal) loadLocalDraft(pendingLocal); });
     $('rejectSubmit').addEventListener('click', submitReject);
     $('rejectNote').addEventListener('keydown', e => { if (e.key === 'Enter') submitReject(); });
     $('statusFilter').addEventListener('change', () => { state.flash = null; closeDetail(); loadList({ autoOpen: !isNarrow() }); });
@@ -1849,6 +2141,18 @@
         if (e.key === 'Escape') {
             if (openOverlayEl) return cancelOverlay(openOverlayEl.id);
             if (state.menuOpen) { state.menuOpen = false; renderDecision(); }
+            return;
+        }
+        if (openOverlayEl?.id === 'localDialog' && e.key === 'Tab') {
+            const controls = [...openOverlayEl.querySelectorAll('button, input, summary')]
+                .filter(el => !el.disabled && !el.closest('[inert]') && el.getClientRects().length);
+            const first = controls[0], last = controls.at(-1);
+            if (!first) e.preventDefault();
+            else if ((e.shiftKey && (document.activeElement === first || document.activeElement === $('localDialogTitle')))
+                    || (!e.shiftKey && document.activeElement === last)) {
+                e.preventDefault();
+                (e.shiftKey ? last : first).focus();
+            }
             return;
         }
         if (openOverlayEl || e.metaKey || e.ctrlKey || e.altKey) return;

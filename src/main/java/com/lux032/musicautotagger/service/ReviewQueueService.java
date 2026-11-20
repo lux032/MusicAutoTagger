@@ -720,7 +720,8 @@ public class ReviewQueueService {
         }
         int restored = 0;
         for (ReviewItem item : items.values()) {
-            if (item.getStatus() != ReviewItem.Status.CONFIRMED) {
+            if (item.getStatus() != ReviewItem.Status.CONFIRMED
+                    || item.getVerificationSource() == ReviewItem.VerificationSource.LOCAL_TAGS) {
                 continue;
             }
             if (item.getFolderPath() == null || item.getResolvedAlbumTitle() == null) {

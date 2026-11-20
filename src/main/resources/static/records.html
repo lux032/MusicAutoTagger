@@ -648,6 +648,7 @@
         const id = (r.recordingId || '').trim();
         if (r.status === 'SUCCESS') {
             let html = `<span class="badge confirmed">${esc(T('records.status.success'))}</span>`;
+            if (id === 'LOCAL_TAGS') html += `<span class="badge unverified">${esc(T('records.status.local.tags'))}</span>`;
             if (id === 'ONLINE_SEARCH') html += `<span class="badge unverified">${esc(T('records.status.online'))}</span>`;
             return html;
         }

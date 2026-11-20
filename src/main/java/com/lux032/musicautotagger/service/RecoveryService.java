@@ -7,6 +7,7 @@ import com.lux032.musicautotagger.model.ProcessResult;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
+import com.lux032.musicautotagger.service.llm.LlmClient;
 import com.lux032.musicautotagger.util.ArtistCreditSupport;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FileSystemUtils;
@@ -15,11 +16,17 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -68,6 +75,7 @@ public class RecoveryService implements AutoCloseable {
     private final ArchiveDuplicateDetector duplicateDetector;
     private final AlbumArtistPolicy albumArtistPolicy;
     private final LlmArtistSplitter artistSplitter;
+    private final LocalArchiveDraft localArchiveDraft;
     private final Gson gson = new Gson();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "manual-recovery");
@@ -134,6 +142,7 @@ public class RecoveryService implements AutoCloseable {
         this.duplicateDetector = new ArchiveDuplicateDetector(fileSystemUtils::isMusicFile);
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
         this.artistSplitter = artistSplitter;
+        this.localArchiveDraft = new LocalArchiveDraft(new LlmClient(config));
         this.onlineIdentificationService = onlineIdentificationOverride != null
             ? onlineIdentificationOverride
             : new OnlineIdentificationService(config, reviewQueue, tagWriter, fingerprintService, artistSplitter);
@@ -190,7 +199,10 @@ public class RecoveryService implements AutoCloseable {
             trashJob.relativePath = source.getName();
             moveToTrash(source, trashJob);
         }
-        if (item.getRecoverySourceType() == null) {
+        boolean local = item.getVerificationSource() == ReviewItem.VerificationSource.LOCAL_TAGS;
+        if (item.getRecoverySourceType() == null && local) {
+            folderAlbumCache.clearFolderUnresolved(item.getFolderPath());
+        } else if (item.getRecoverySourceType() == null) {
             // 普通 review 条目的原目录仍在 monitor 树下，确认后必须解除 unresolved 守卫，
             // 否则后续新文件永远无法再走专辑匹配（对齐 ReviewResolutionService.confirmCandidate 的既有行为）。
             FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
@@ -202,7 +214,8 @@ public class RecoveryService implements AutoCloseable {
         }
         item.setRecoveryCommitState(ReviewItem.RecoveryCommitState.COMPLETED);
         reviewQueue.markResolved(item, ReviewItem.Status.CONFIRMED,
-            "人工确认联网候选: " + (item.getResolvedAlbumTitle() == null ? "" : item.getResolvedAlbumTitle()));
+            (local ? "人工确认本地入库: " : "人工确认联网候选: ")
+                + (item.getResolvedAlbumTitle() == null ? "" : item.getResolvedAlbumTitle()));
     }
 
     public List<Map<String, Object>> listItems() {
@@ -495,6 +508,186 @@ public class RecoveryService implements AutoCloseable {
         if (!entry.getParent().equals(root)) throw new IOException("trash.id.invalid");
         if (!Files.exists(entry)) throw new IOException("trash.entry.not.found");
         return entry;
+    }
+
+    public LocalArchiveDraft.Draft previewLocalArchive(String itemId) throws IOException {
+        ReviewItem item = requirePendingRecoveryReview(itemId);
+        if (item.getRecoveryCommitState() == ReviewItem.RecoveryCommitState.COMMITTED) {
+            return new LocalArchiveDraft.Draft("", item.getResolvedAlbumTitle(), item.getResolvedAlbumArtist(),
+                List.of(), List.of(), item.getResolvedTrackCount(), List.of(), false);
+        }
+        File source = localArchiveSource(item);
+        LocalArchiveSources snapshot = localArchiveSources(source, item);
+        Map<String, MusicMetadata> tags = new LinkedHashMap<>();
+        snapshot.files().forEach((name, path) -> {
+            MusicMetadata metadata = tagWriter.readTags(path.toFile());
+            tags.put(name, metadata == null ? new MusicMetadata() : metadata);
+        });
+        if (!snapshot.revision().equals(localArchiveSources(source, item).revision())) {
+            throw new IOException("local.archive.stale");
+        }
+        String folder = meaningful(item.getFolderName()) ? item.getFolderName() : source.getName();
+        return localArchiveDraft.build(snapshot.revision(), folder, tags);
+    }
+
+    public synchronized ReviewItem confirmLocalArchive(String itemId, String revision, String album, String artist,
+                                                       List<String> artists, Map<String, List<String>> trackArtists,
+                                                       DuplicatePolicy duplicatePolicy) throws IOException {
+        ReviewItem item = requirePendingRecoveryReview(itemId);
+        File source = localArchiveSource(item);
+        String runningKey = source.getCanonicalPath();
+        if (!runningPaths.add(runningKey)) throw new IOException("recovery.already.running");
+        try {
+            if (item.getRecoveryCommitState() == ReviewItem.RecoveryCommitState.COMMITTED) {
+                finishCommittedRecovery(item);
+                return item;
+            }
+            return archiveLocalTags(item, source, revision, album, artist, artists, trackArtists, duplicatePolicy);
+        } finally {
+            runningPaths.remove(runningKey);
+        }
+    }
+
+    private ReviewItem archiveLocalTags(ReviewItem item, File source, String revision, String album, String artist,
+                                        List<String> artists, Map<String, List<String>> trackArtists,
+                                        DuplicatePolicy duplicatePolicy) throws IOException {
+        List<String> albumNames = ArtistCreditSupport.cleanNames(artists);
+        if (!meaningful(album) || !meaningful(artist) || albumNames.isEmpty()) {
+            throw new IOException("local.archive.metadata.required");
+        }
+        album = album.strip();
+        artist = artist.strip();
+
+        LocalArchiveSources snapshot = localArchiveSources(source, item);
+        if (!snapshot.revision().equals(revision)) throw new IOException("local.archive.stale");
+        if (!snapshot.files().keySet().containsAll(trackArtists.keySet())
+            || trackArtists.values().stream().anyMatch(names -> names == null || names.isEmpty())) {
+            throw new IOException("local.archive.tracks.invalid");
+        }
+
+        Path artistDir = Path.of(FileNameSanitizer.sanitize(artist));
+        String albumDir = FileNameSanitizer.sanitize(album);
+        Path workRoot = resolveWorkRoot();
+        Files.createDirectories(workRoot);
+        Path workspace = Files.createTempDirectory(workRoot, "local-");
+        List<Path> committed;
+        Path albumUnit;
+        try {
+            albumUnit = artistDir.resolve(albumDir);
+            for (var entry : snapshot.files().entrySet()) {
+                Path copy = workspace.resolve(albumUnit).resolve(entry.getKey());
+                Files.createDirectories(copy.getParent());
+                Files.copy(entry.getValue(), copy, LinkOption.NOFOLLOW_LINKS);
+                if (!Files.isRegularFile(copy, LinkOption.NOFOLLOW_LINKS)) throw new IOException("local.archive.stale");
+                tagWriter.writeLocalArchiveTags(copy, album, artist, albumNames, trackArtists.get(entry.getKey()));
+            }
+            if (!snapshot.revision().equals(localArchiveSources(source, item).revision())) {
+                throw new IOException("local.archive.stale");
+            }
+            var originalFiles = snapshot.files().values().stream().map(Path::toFile).toList();
+            String linkKey = SourceType.FAILED.name().equals(item.getRecoverySourceType()) ? source.getName() : null;
+            List<String> searchDirs = new ArrayList<>(albumNames.stream().map(FileNameSanitizer::sanitize).toList());
+            searchDirs.add(FileNameSanitizer.sanitize(AlbumArtistPolicy.VARIOUS_ARTISTS));
+            try (var libraryWrite = LibraryWriteGuard.acquire()) {
+                if (duplicatePolicy == DuplicatePolicy.KEEP_BOTH) {
+                    int copyNumber = 2;
+                    while (Files.exists(Path.of(config.getOutputDirectory()).resolve(albumUnit))) {
+                        albumUnit = artistDir.resolve(albumDir + " (" + copyNumber++ + ")");
+                    }
+                    Path copiedAlbum = workspace.resolve(artistDir.resolve(albumDir));
+                    if (!copiedAlbum.equals(workspace.resolve(albumUnit))) {
+                        Files.move(copiedAlbum, workspace.resolve(albumUnit));
+                    }
+                }
+                committed = commitReplacingDuplicates(workspace, originalFiles.size(), item.getId(), linkKey,
+                    duplicatePolicy, collectReplacedTargetPaths(originalFiles), searchDirs);
+            }
+            clearReplacementEntries(originalFiles);
+        } finally {
+            try {
+                deleteRecursively(workspace);
+            } catch (IOException e) {
+                log.warn("无法清理本地入库工作目录: {}", workspace, e);
+            }
+        }
+
+        item.setVerificationSource(ReviewItem.VerificationSource.LOCAL_TAGS);
+        item.setResolvedAlbumTitle(album);
+        item.setResolvedAlbumArtist(artist);
+        item.setResolvedTrackCount(snapshot.files().size());
+        item.setRecoveryCommitState(ReviewItem.RecoveryCommitState.COMMITTED);
+        item.setCommittedOutputPaths(committed.stream().map(Path::toString).toList());
+        reviewQueue.update(item);
+
+        for (var entry : snapshot.files().entrySet()) {
+            File file = entry.getValue().toFile();
+            File output = Path.of(config.getOutputDirectory()).resolve(albumUnit).resolve(entry.getKey()).toFile();
+            processedLogger.markFileAsProcessed(file, "LOCAL_TAGS", artist, file.getName(), album,
+                null, output.getAbsolutePath());
+        }
+        finishCommittedRecovery(item);
+        return item;
+    }
+
+    private ReviewItem requirePendingRecoveryReview(String itemId) throws IOException {
+        ReviewItem item = reviewQueue.get(itemId);
+        if (item == null) throw new IOException("item.not.found");
+        if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) throw new IOException("item.already.resolved");
+        return item;
+    }
+
+    private File localArchiveSource(ReviewItem item) {
+        return new File(item.getRecoverySourcePath() != null ? item.getRecoverySourcePath() : item.getFolderPath());
+    }
+
+    private record LocalArchiveSources(Map<String, Path> files, String revision) { }
+
+    private LocalArchiveSources localArchiveSources(File source, ReviewItem item) throws IOException {
+        Path sourcePath = source.toPath().toAbsolutePath().normalize();
+        if (Files.isSymbolicLink(sourcePath)) throw new IOException("recovery.path.invalid");
+        boolean directory = Files.isDirectory(sourcePath);
+        List<File> files;
+        if (directory && item.getRecoverySourceType() != null) {
+            // 隔离条目整个目录归同一专辑，沿用联网搜索的递归范围。
+            try (var entries = Files.walk(sourcePath)) {
+                files = entries.filter(path -> Files.isRegularFile(path) || Files.isSymbolicLink(path))
+                    .map(Path::toFile).filter(fileSystemUtils::isMusicFile).sorted().toList();
+            }
+        } else {
+            files = collectAudioFiles(source);
+        }
+        if (files.isEmpty()) throw new IOException("recovery.no.audio.files");
+        Path root = directory ? sourcePath : sourcePath.getParent();
+        Path realRoot = root.toRealPath();
+        Map<String, Path> paths = new LinkedHashMap<>();
+        List<List<String>> attributes = new ArrayList<>();
+        for (File file : files) {
+            Path path = file.toPath().toAbsolutePath().normalize();
+            if (!path.startsWith(root) || !path.toRealPath().equals(realRoot.resolve(root.relativize(path)))) {
+                throw new IOException("recovery.path.invalid");
+            }
+            BasicFileAttributes attr = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attr.isRegularFile()) throw new IOException("recovery.path.invalid");
+            String relative = root.relativize(path).toString();
+            paths.put(relative, path);
+            attributes.add(List.of(path.toString(), String.valueOf(attr.fileKey()), String.valueOf(attr.size()),
+                attr.lastModifiedTime().toString(), attr.creationTime().toString()));
+        }
+        Set<Path> actual = new LinkedHashSet<>(paths.values());
+        if (item.getFiles() != null) {
+            for (ReviewItem.FileEntry entry : item.getFiles()) {
+                if (entry.getOriginalPath() != null
+                        && !actual.contains(Path.of(entry.getOriginalPath()).toAbsolutePath().normalize())) {
+                    throw new IOException("files.missing");
+                }
+            }
+        }
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(gson.toJson(attributes).getBytes(StandardCharsets.UTF_8));
+            return new LocalArchiveSources(paths, HexFormat.of().formatHex(digest));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** 用户确认联网候选后，在工作目录完成整张处理，再整体提交。 */
