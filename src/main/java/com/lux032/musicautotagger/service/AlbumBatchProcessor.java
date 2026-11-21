@@ -189,17 +189,20 @@ public class AlbumBatchProcessor {
         private final int successCount;
         private final List<String> failedFiles;
         private final boolean queuedForMissingCover;
+        private final boolean deferringForMissingCover;
         private final String queuedReviewItemId;
 
         public BatchProcessResult(int successCount, List<String> failedFiles) {
-            this(successCount, failedFiles, false, null);
+            this(successCount, failedFiles, false, false, null);
         }
 
         private BatchProcessResult(int successCount, List<String> failedFiles,
-                                   boolean queuedForMissingCover, String queuedReviewItemId) {
+                                   boolean queuedForMissingCover, boolean deferringForMissingCover,
+                                   String queuedReviewItemId) {
             this.successCount = successCount;
             this.failedFiles = failedFiles == null ? new ArrayList<>() : failedFiles;
             this.queuedForMissingCover = queuedForMissingCover;
+            this.deferringForMissingCover = deferringForMissingCover;
             this.queuedReviewItemId = queuedReviewItemId;
         }
 
@@ -223,6 +226,10 @@ public class AlbumBatchProcessor {
             return queuedForMissingCover;
         }
 
+        public boolean isDeferringForMissingCover() {
+            return deferringForMissingCover;
+        }
+
         public String getQueuedReviewItemId() {
             return queuedReviewItemId;
         }
@@ -232,7 +239,11 @@ public class AlbumBatchProcessor {
         }
 
         public static BatchProcessResult queuedForMissingCover(String reviewItemId) {
-            return new BatchProcessResult(0, new ArrayList<>(), true, reviewItemId);
+            return new BatchProcessResult(0, new ArrayList<>(), true, false, reviewItemId);
+        }
+
+        public static BatchProcessResult deferringForMissingCover() {
+            return new BatchProcessResult(0, new ArrayList<>(), false, true, null);
         }
     }
 
@@ -240,7 +251,7 @@ public class AlbumBatchProcessor {
      * 批量处理文件夹内的待处理文件，统一应用确定的专辑信息
      */
     public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo) {
-        return processPendingFilesWithAlbum(folderPath, albumInfo, false, null, true);
+        return processPendingFilesWithAlbum(folderPath, albumInfo, false, null, true, true);
     }
 
     /**
@@ -251,7 +262,7 @@ public class AlbumBatchProcessor {
      */
     public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo,
                                                            boolean unresolvedAlbum) {
-        return processPendingFilesWithAlbum(folderPath, albumInfo, unresolvedAlbum, null, true);
+        return processPendingFilesWithAlbum(folderPath, albumInfo, unresolvedAlbum, null, true, true);
     }
 
     /**
@@ -264,6 +275,21 @@ public class AlbumBatchProcessor {
     public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo,
                                                            boolean unresolvedAlbum, byte[] explicitCoverArt,
                                                            boolean allowMissingCoverIntercept) {
+        return processPendingFilesWithAlbum(folderPath, albumInfo, unresolvedAlbum,
+            explicitCoverArt, allowMissingCoverIntercept, true);
+    }
+
+    /**
+     * 批量处理文件夹内的待处理文件。
+     *
+     * @param allFilesCollected 当前待处理队列是否已收齐整个文件夹的全部文件。
+     *                          投票在第 3 首锁定专辑时为 false：若此时缺少封面，不能只把前 3 首提前入「缺少封面」队列，
+     *                          必须标记 {@code folderCoverMissing} 继续收集剩余曲目，收齐后再整张专辑一并入队。
+     */
+    public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo,
+                                                           boolean unresolvedAlbum, byte[] explicitCoverArt,
+                                                           boolean allowMissingCoverIntercept,
+                                                           boolean allFilesCollected) {
         List<FolderAlbumCache.PendingFile> pendingFiles = folderAlbumCache.getPendingFiles(folderPath);
         
         if (pendingFiles == null || pendingFiles.isEmpty()) {
@@ -315,6 +341,15 @@ public class AlbumBatchProcessor {
             && reviewQueueService != null
             && config != null
             && config.isCoverMissingRequireReview()) {
+            if (!allFilesCollected) {
+                // 投票阶段刚锁定专辑但文件夹内其余曲目尚未扫描完成：
+                // 保留 pendingFiles 与已锁定专辑缓存，标记缺封面继续收集整张专辑，
+                // 避免只把前 3 首提前送进「缺少封面」导致后续曲目被入口跳过。
+                log.warn("专辑「{}」已锁定但缺少封面，当前仅收集 {}/整张专辑，继续收集其余文件后再统一入「缺少封面」队列",
+                    albumInfo.getAlbumTitle(), pendingFiles.size());
+                folderAlbumCache.markFolderCoverMissing(folderPath);
+                return BatchProcessResult.deferringForMissingCover();
+            }
             ReviewItem.MissingCover details = new ReviewItem.MissingCover();
             details.setMode(ReviewItem.MissingCover.Mode.STAGED_IMPORT);
             details.setSourcePipeline(tagWriter.isOutputRootOverridden() ? "REIDENTIFY" : "AUTO_SCAN");

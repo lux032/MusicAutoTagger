@@ -195,10 +195,12 @@ public class WebServer {
         // API 认证过滤器
         servletHandler.addFilter(AuthFilter.class, "/api/*", EnumSet.of(DispatcherType.REQUEST));
 
-        // 创建静态资源处理器
+        // 创建静态资源处理器（关闭浏览器强缓存并开启 ETag，避免升级镜像后子页继续命中旧 HTML）
         ResourceHandler resourceHandler = new ResourceHandler();
         resourceHandler.setDirectoriesListed(false);
         resourceHandler.setWelcomeFiles(new String[]{"index.html"});
+        resourceHandler.setCacheControl("no-cache");
+        resourceHandler.setEtags(true);
         
         // 从 classpath 加载静态资源
         resourceHandler.setResourceBase(

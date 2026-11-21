@@ -23,6 +23,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -283,6 +284,140 @@ class CoverMissingWorkflowTest {
         assertEquals("DONE", after.getMissingCover().getCoverSearchStatus());
         assertTrue(after.getMissingCover().getCoverSearchedAt() > 0L);
         assertEquals("bonus edition", after.getMissingCover().getCustomSearchQuery());
+    }
+
+    @Test
+    void votingLockOnThirdTrackCollectsAllTwelveTracksAndReplacesAllOldLibraryFiles() throws Exception {
+        ReidentifyReplacementRegistry replacementRegistry =
+            ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath());
+        AlbumBatchProcessor batchWithReplace = new AlbumBatchProcessor(
+            config, folderAlbumCache, tagWriter, processedLogger, coverArtService, null, replacementRegistry);
+        batchWithReplace.setReviewQueueService(reviewQueue);
+
+        Path reprocessTask = Path.of(config.getReviewStagingDirectory()).resolve("reprocess-abc");
+        Path stagedAlbumDir = reprocessTask.resolve("BonusCD");
+        Path oldAlbumDir = outputDir.resolve("OldArtist").resolve("OldBonusCD");
+        List<File> stagedFiles = new ArrayList<>();
+        List<Path> oldTargets = new ArrayList<>();
+        for (int i = 1; i <= 12; i++) {
+            String name = String.format("%02d Track %d.flac", i, i);
+            File staged = createFlac(stagedAlbumDir.resolve(name), "Track " + i, "Artist " + i,
+                "Bonus CD", "Various Artists", "rg-bonus-12");
+            File oldLib = createFlac(oldAlbumDir.resolve(name), "Track " + i, "Artist " + i,
+                "OldBonusCD", "OldArtist", "rg-bonus-12");
+            stagedFiles.add(staged);
+            oldTargets.add(oldLib.toPath());
+            replacementRegistry.record(staged.getAbsolutePath(), oldLib.getAbsolutePath());
+        }
+
+        String folderPath = stagedAlbumDir.toFile().getAbsolutePath();
+        FolderAlbumCache.CachedAlbumInfo lockedAlbum = new FolderAlbumCache.CachedAlbumInfo(
+            "rg-bonus-12", "rel-bonus-12", "Bonus CD", "Various Artists",
+            12, "2026", "Album", true, 0.95, FolderAlbumCache.CacheSource.DURATION_SEQUENCE);
+        folderAlbumCache.forceSetFolderAlbum(folderPath, lockedAlbum);
+
+        // First 3 tracks trigger voting lock with allFilesCollected=false -> must NOT prematurely enqueue only 3 tracks
+        for (int i = 0; i < 3; i++) {
+            File f = stagedFiles.get(i);
+            MusicMetadata md = new MusicMetadata();
+            md.setTitle("Track " + (i + 1));
+            md.setArtist("Artist " + (i + 1));
+            md.setAlbum("Bonus CD");
+            md.setAlbumArtist("Various Artists");
+            md.setTrackNo(String.valueOf(i + 1));
+            md.setTrackCount(12);
+            md.setRecordingId("rec-" + (i + 1));
+            md.setReleaseGroupId("rg-bonus-12");
+            batchWithReplace.addPendingFile(folderPath, f, f, null, md, null);
+        }
+
+        AlbumBatchProcessor.BatchProcessResult partialResult =
+            batchWithReplace.processPendingFilesWithAlbum(folderPath, lockedAlbum, false, null, true, false);
+        assertTrue(partialResult.isDeferringForMissingCover(),
+            "Must defer queueing when only 3/12 tracks are collected");
+        assertEquals(0, reviewQueue.countPendingMissingCover(),
+            "Must NOT prematurely enqueue only 3 tracks");
+        assertTrue(folderAlbumCache.isFolderCoverMissing(folderPath));
+        assertEquals(3, batchWithReplace.getPendingFileCount(folderPath));
+
+        // Remaining tracks 4..12 arrive
+        for (int i = 3; i < 12; i++) {
+            File f = stagedFiles.get(i);
+            MusicMetadata md = new MusicMetadata();
+            md.setTitle("Track " + (i + 1));
+            md.setArtist("Artist " + (i + 1));
+            md.setAlbum("Bonus CD");
+            md.setAlbumArtist("Various Artists");
+            md.setTrackNo(String.valueOf(i + 1));
+            md.setTrackCount(12);
+            md.setRecordingId("rec-" + (i + 1));
+            md.setReleaseGroupId("rg-bonus-12");
+            batchWithReplace.addPendingFile(folderPath, f, f, null, md, null);
+        }
+
+        // All 12 collected -> finalize enqueues complete 12-track COVER_MISSING item
+        AlbumBatchProcessor.BatchProcessResult finalQueueResult =
+            batchWithReplace.processPendingFilesAsUnresolvedAlbum(folderPath);
+        assertTrue(finalQueueResult.isQueuedForMissingCover());
+        assertEquals(1, reviewQueue.countPendingMissingCover());
+
+        ReviewItem queued = reviewQueue.listByKinds(ReviewItem.Status.PENDING_REVIEW,
+            Set.of(ReviewItem.Kind.COVER_MISSING)).get(0);
+        assertEquals(12, queued.getFiles().size(), "Queued COVER_MISSING item must contain all 12 tracks");
+        queued.setStagingDir(folderPath);
+        reviewQueue.update(queued);
+
+        // Upload cover & apply -> all 12 archived with cover, all 12 old library files deleted,
+        // temporary reprocess-* dir cleaned, and processed records migrated to final output paths
+        try (CoverMissingService service = new CoverMissingService(
+                config, reviewQueue, folderAlbumCache, batchWithReplace, tagWriter, coverCandidateService, processedLogger)) {
+            CoverCandidateView uploaded = service.uploadCover(queued.getId(), createImageBytes(800, 800, "png"), "cover.png");
+            ReviewItem resolved = service.applyCover(
+                queued.getId(), uploaded.getSha256(), RecoveryService.DuplicatePolicy.ASK);
+            assertEquals(ReviewItem.Status.CONFIRMED, resolved.getStatus());
+        }
+
+        Path newAlbumDir = outputDir.resolve("Various Artists").resolve("Bonus CD");
+        try (var s = Files.list(newAlbumDir)) {
+            List<Path> written = s.filter(p -> p.toString().endsWith(".flac")).toList();
+            assertEquals(12, written.size(), "All 12 tracks must be archived to new album directory");
+            for (Path p : written) {
+                assertNotNull(AudioFileIO.read(p.toFile()).getTag().getFirstArtwork(),
+                    "Every archived track must have the embedded cover");
+            }
+        }
+        for (Path oldTarget : oldTargets) {
+            assertFalse(Files.exists(oldTarget), "Old coverless library file must be deleted: " + oldTarget);
+        }
+        assertFalse(Files.exists(oldAlbumDir), "Empty old album directory must be removed");
+        assertFalse(Files.exists(reprocessTask), "Temporary reprocess-* staging dir must be cleaned");
+        assertTrue(processedLogger.findRecordsByPaths(List.of(stagedFiles.get(0).getAbsolutePath())).isEmpty(),
+            "Processed log must migrate away from deleted staging path");
+    }
+
+    @Test
+    void recordsFolderViewMergesDiscSubfoldersOutsideMonitorDirectory() throws Exception {
+        Path failed = Files.createDirectories(Path.of(config.getFailedDirectory()));
+        Path recoveredAlbum = failed.resolve("Metaphor Orchestral Album");
+        File d1 = createFlac(recoveredAlbum.resolve("Disc 1").resolve("01.flac"),
+            "Overture", "Composer", "Metaphor Orchestral Album", "Composer", "rg-meta");
+        File d2 = createFlac(recoveredAlbum.resolve("Disc 2").resolve("01.flac"),
+            "Finale", "Composer", "Metaphor Orchestral Album", "Composer", "rg-meta");
+        processedLogger.markFileAsProcessed(d1, "rec-1", "Composer", "Overture", "Metaphor Orchestral Album",
+            "rg-meta", outputDir.resolve("Composer").resolve("Metaphor Orchestral Album").resolve("01.flac").toString());
+        processedLogger.markFileAsProcessed(d2, "rec-2", "Composer", "Finale", "Metaphor Orchestral Album",
+            "rg-meta", outputDir.resolve("Composer").resolve("Metaphor Orchestral Album").resolve("02.flac").toString());
+
+        ProcessedRecordService service = new ProcessedRecordService(
+            config, processedLogger, folderAlbumCache, coverArtService, null, null);
+        ProcessedRecordQuery query = new ProcessedRecordQuery();
+        query.view = "folder";
+        ProcessedRecordQuery.FolderPage page = service.listFolders(query);
+
+        assertEquals(1, page.total, "Disc 1 and Disc 2 outside monitorDirectory must merge into 1 album folder");
+        assertEquals("Metaphor Orchestral Album", page.items.get(0).folderName);
+        assertEquals(2, page.items.get(0).discCount);
+        assertEquals(2, page.items.get(0).totalCount);
     }
 
     private Map<String, Object> awaitScan(CoverMissingService service) throws InterruptedException {

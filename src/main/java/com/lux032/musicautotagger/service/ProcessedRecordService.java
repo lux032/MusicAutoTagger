@@ -736,13 +736,9 @@ public class ProcessedRecordService {
         String discName = null;
         if (FileSystemUtils.isDiscFolderName(parentName)) {
             Path grand = parentPath.getParent();
-            if (grand != null) {
-                boolean allowed = monitorRoot == null
-                    || (!grand.equals(monitorRoot) && grand.startsWith(monitorRoot));
-                if (allowed) {
-                    resolved = grand;
-                    discName = parentName;
-                }
+            if (grand != null && canAscendFromDiscFolder(parentPath, grand, monitorRoot)) {
+                resolved = grand;
+                discName = parentName;
             }
         }
 
@@ -753,6 +749,34 @@ public class ProcessedRecordService {
             relativePath = monitorRoot.relativize(resolved).toString().replace('\\', '/');
         }
         return new FolderInfo(folderPath, folderName, relativePath, false, discName);
+    }
+
+    /**
+     * 判断碟片子目录（Disc 1 / CD 2 等）是否允许上升一级到专辑根目录：
+     * - 位于监控目录内时，只要父目录不是监控根目录本身即可上升；
+     * - 位于监控目录外（如重新识别 / 恢复目录 / 输出音乐库）时，同样允许上升到专辑目录，
+     *   仅阻止上升到文件系统根或各配置根目录本身，避免多碟专辑被拆成 Disc 1 / Disc 2 两行。
+     */
+    private boolean canAscendFromDiscFolder(Path parentPath, Path grand, Path monitorRoot) {
+        if (grand.getParent() == null) {
+            return false;
+        }
+        if (monitorRoot != null && parentPath.startsWith(monitorRoot)) {
+            return !grand.equals(monitorRoot) && grand.startsWith(monitorRoot);
+        }
+        for (String rootDir : new String[] {
+            config == null ? null : config.getOutputDirectory(),
+            config == null ? null : config.getFailedDirectory(),
+            config == null ? null : config.getPartialDirectory()
+        }) {
+            if (rootDir != null && !rootDir.isBlank()) {
+                Path configuredRoot = canonicalOrNormalized(new File(rootDir));
+                if (grand.equals(configuredRoot)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private static Path canonicalOrNormalized(File file) {

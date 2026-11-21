@@ -4,6 +4,7 @@ import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.util.AudioFileOrdering;
+import com.lux032.musicautotagger.util.FileSystemUtils;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
@@ -321,6 +322,7 @@ public class CoverMissingService implements AutoCloseable {
             }
             mc.setSelectedCoverSha256(selectedSha);
             mc.setConfirmedNoCover(confirmedNoCover);
+            finalizeTemporarySourceRecords(item);
             retireRecoveryAndCleanupStaging(item);
             reviewQueue.markResolved(item, ReviewItem.Status.CONFIRMED,
                 confirmedNoCover ? "人工确认保持无封面入库" : "已补全封面并入库");
@@ -377,6 +379,7 @@ public class CoverMissingService implements AutoCloseable {
         }
         mc.setSelectedCoverSha256(selectedSha);
         mc.setConfirmedNoCover(confirmedNoCover);
+        finalizeTemporarySourceRecords(item);
         retireRecoveryAndCleanupStaging(item);
         String note = confirmedNoCover
             ? "人工确认保持无封面入库: " + displayAlbum(item, mc)
@@ -384,6 +387,36 @@ public class CoverMissingService implements AutoCloseable {
         reviewQueue.markResolved(item, ReviewItem.Status.CONFIRMED, note);
         LogCollector.addLog("SUCCESS", note);
         return item;
+    }
+
+    /**
+     * 来自暂存重识别（reprocess-*）或隔离恢复目录（partial/failed）的条目，
+     * 源文件会在提交后清理/回收；把处理记录的 file_path 迁移到最终落盘路径，避免处理记录立即断链。
+     */
+    private void finalizeTemporarySourceRecords(ReviewItem item) {
+        if (processedLogger == null || item == null || item.getFiles() == null) {
+            return;
+        }
+        boolean temporarySource = meaningful(item.getStagingDir())
+            || (meaningful(item.getRecoverySourceType()) && meaningful(item.getRecoverySourcePath()));
+        if (!temporarySource) {
+            return;
+        }
+        for (ReviewItem.FileEntry entry : item.getFiles()) {
+            if (entry == null || !meaningful(entry.getOriginalPath())) continue;
+            File source = new File(entry.getOriginalPath());
+            List<com.lux032.musicautotagger.model.ProcessedRecord> recs =
+                processedLogger.findRecordsByPaths(List.of(source.getAbsolutePath()));
+            if (recs == null || recs.isEmpty()) continue;
+            com.lux032.musicautotagger.model.ProcessedRecord rec = recs.get(0);
+            if (!meaningful(rec.targetFilePath)) continue;
+            File target = new File(rec.targetFilePath);
+            if (!target.isFile()) continue;
+            processedLogger.removeProcessedRecord(source);
+            processedLogger.markFileAsProcessed(
+                target, rec.recordingId, rec.artist, rec.title, rec.album, rec.releaseGroupId,
+                target.getAbsolutePath());
+        }
     }
 
     private void retireRecoveryAndCleanupStaging(ReviewItem item) {
@@ -481,7 +514,14 @@ public class CoverMissingService implements AutoCloseable {
                 if (attrs.isRegularFile() && !paths.excluded(file, attrs) && isSupportedAudio(file)) {
                     Path parent = file.getParent();
                     if (parent != null) {
-                        filesByAlbumDir.computeIfAbsent(parent, k -> new ArrayList<>()).add(file.toFile());
+                        Path albumDir = parent;
+                        if (parent.getFileName() != null
+                            && FileSystemUtils.isDiscFolderName(parent.getFileName().toString())
+                            && parent.getParent() != null
+                            && !parent.getParent().equals(root)) {
+                            albumDir = parent.getParent();
+                        }
+                        filesByAlbumDir.computeIfAbsent(albumDir, k -> new ArrayList<>()).add(file.toFile());
                     }
                 }
                 return FileVisitResult.CONTINUE;

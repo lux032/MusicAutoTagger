@@ -879,12 +879,17 @@ public class AudioFileProcessorService {
                     // 另一线程可能刚把文件夹判为缺曲
                     synchronized (folderAlbumCache.folderLock(folderPath)) {
                         if (folderAlbumCache.isAutomaticWriteAllowed(folderPath)) {
+                            int currentPending = albumBatchProcessor.getPendingFileCount(folderPath);
+                            boolean allCollected = currentPending >= musicFilesInFolder
+                                || currentPending >= remainingUnprocessed;
                             log.info("========================================");
                             log.info("✓ 文件夹专辑已确定: {}", determinedAlbum.getAlbumTitle());
                             log.info("开始批量处理文件夹内的所有文件...");
                             log.info("========================================");
-                            albumBatchProcessor.processPendingFilesWithAlbum(folderPath, determinedAlbum);
-                            batchWritten = true;
+                            AlbumBatchProcessor.BatchProcessResult batchResult =
+                                albumBatchProcessor.processPendingFilesWithAlbum(
+                                    folderPath, determinedAlbum, false, null, true, allCollected);
+                            batchWritten = batchResult == null || !batchResult.isDeferringForMissingCover();
                         } else {
                             log.warn("专辑确定后文件夹被判定为未确定 / 缺曲，放弃按该专辑批量写入: {}",
                                 determinedAlbum.getAlbumTitle());
