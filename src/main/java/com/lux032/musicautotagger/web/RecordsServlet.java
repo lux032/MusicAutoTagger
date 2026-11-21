@@ -29,11 +29,12 @@ import java.util.Map;
 /**
  * 处理记录管理 API。
  *
- *   GET  /api/records/list        分页查询（q / status / album / sort / offset / limit）
- *   GET  /api/records/export      按当前筛选导出 CSV
- *   POST /api/records/preview     批量操作预览   body: {paths:[...]} 或 {filter:{...}}
- *   POST /api/records/forget      仅删除记录
- *   POST /api/records/reidentify  删除记录并重新加入处理队列
+ *   GET  /api/records/list          分页查询（view=file|folder / q / status / album / sort / offset / limit）
+ *   GET  /api/records/folder-files  展开单个文件夹下的全部子文件记录（folder=...）
+ *   GET  /api/records/export        按当前筛选导出 CSV
+ *   POST /api/records/preview       批量操作预览   body: {paths:[...]} / {folders:[...]} / {filter:{...}}
+ *   POST /api/records/forget        仅删除记录
+ *   POST /api/records/reidentify    删除记录并重新加入处理队列
  */
 @Slf4j
 public class RecordsServlet extends HttpServlet {
@@ -56,16 +57,39 @@ public class RecordsServlet extends HttpServlet {
         try {
             if ("list".equals(action)) {
                 ProcessedRecordQuery query = queryFromParams(req);
-                ProcessedRecordQuery.Page page = service.list(query);
                 Map<String, Object> body = new LinkedHashMap<>();
-                body.put("items", page.items);
-                body.put("total", page.total);
-                body.put("counts", page.counts);
-                body.put("offset", page.offset);
-                body.put("limit", page.limit);
+                if (query.isFolderView()) {
+                    ProcessedRecordQuery.FolderPage page = service.listFolders(query);
+                    body.put("view", "folder");
+                    body.put("items", page.items);
+                    body.put("total", page.total);
+                    body.put("totalFiles", page.totalFiles);
+                    body.put("counts", page.counts);
+                    body.put("offset", page.offset);
+                    body.put("limit", page.limit);
+                } else {
+                    ProcessedRecordQuery.Page page = service.list(query);
+                    body.put("view", "file");
+                    body.put("items", page.items);
+                    body.put("total", page.total);
+                    body.put("counts", page.counts);
+                    body.put("offset", page.offset);
+                    body.put("limit", page.limit);
+                }
                 body.put("storage", storageName());
                 body.put("monitoringActive", service.isMonitoringActive());
                 body.put("monitoringPaused", service.isMonitoringPaused());
+                respond(resp, 200, body);
+            } else if ("folder-files".equals(action)) {
+                String folder = req.getParameter("folder");
+                if (folder == null || folder.isBlank()) {
+                    respond(resp, 400, Map.of("error", "records.no.target"));
+                    return;
+                }
+                List<ProcessedRecord> files = service.listFolderFiles(folder);
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("folder", folder);
+                body.put("items", files);
                 respond(resp, 200, body);
             } else if ("export".equals(action)) {
                 export(req, resp);
@@ -92,14 +116,15 @@ public class RecordsServlet extends HttpServlet {
 
         Map<String, Object> body = readBody(req);
         List<String> paths = stringList(body.get("paths"));
+        List<String> folders = stringList(body.get("folders"));
         ProcessedRecordQuery filter = body.get("filter") instanceof Map<?, ?> m ? queryFromMap(m) : null;
-        if (paths.isEmpty() && filter == null) {
+        if (paths.isEmpty() && folders.isEmpty() && filter == null) {
             respond(resp, 400, Map.of("error", "records.no.target"));
             return;
         }
 
         try {
-            List<ProcessedRecord> targets = service.resolveTargets(paths, filter);
+            List<ProcessedRecord> targets = service.resolveTargets(paths, folders, filter);
             Map<String, Object> result;
             switch (action) {
                 case "preview": result = service.preview(targets); break;
@@ -126,10 +151,11 @@ public class RecordsServlet extends HttpServlet {
         PrintWriter w = resp.getWriter();
         w.write('\uFEFF'); // BOM：让 Excel 以 UTF-8 打开，中文/日文不乱码
         w.write(csvLine("status", "processed_time", "artist", "title", "album", "recording_id",
-            "release_group_id", "file_path", "target_file_path"));
+            "release_group_id", "file_path", "target_file_path", "folder_path"));
         for (ProcessedRecord r : records) {
+            String folderPath = r.folderPath != null ? r.folderPath : service.resolveFolderPath(r.filePath);
             w.write(csvLine(r.status == null ? "" : r.status.name(), r.processedTime, r.artist, r.title, r.album,
-                r.recordingId, r.releaseGroupId, r.filePath, r.targetFilePath));
+                r.recordingId, r.releaseGroupId, r.filePath, r.targetFilePath, folderPath));
         }
         w.flush();
     }
@@ -162,7 +188,7 @@ public class RecordsServlet extends HttpServlet {
 
     private ProcessedRecordQuery queryFromParams(HttpServletRequest req) {
         Map<String, Object> map = new HashMap<>();
-        for (String key : new String[]{"q", "status", "album", "sort", "offset", "limit"}) {
+        for (String key : new String[]{"view", "q", "status", "album", "sort", "offset", "limit"}) {
             String v = req.getParameter(key);
             if (v != null) map.put(key, v);
         }
@@ -171,6 +197,8 @@ public class RecordsServlet extends HttpServlet {
 
     private ProcessedRecordQuery queryFromMap(Map<?, ?> map) {
         ProcessedRecordQuery q = new ProcessedRecordQuery();
+        String view = str(map.get("view"));
+        q.view = "folder".equalsIgnoreCase(view) ? "folder" : "file";
         q.keyword = str(map.get("q"));
         q.album = str(map.get("album"));
         q.sort = ProcessedRecordQuery.Sort.parse(str(map.get("sort")));

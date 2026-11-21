@@ -33,6 +33,8 @@ public class ProcessedRecord {
     public Boolean sourceExists;
     public Boolean targetExists;
     public Boolean inMonitorDirectory;
+    public String folderPath;
+    public String discName;
 
     public static Status classify(String recordingId) {
         if (recordingId == null) return Status.SUCCESS;

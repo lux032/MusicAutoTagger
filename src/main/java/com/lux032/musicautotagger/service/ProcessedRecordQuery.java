@@ -1,5 +1,6 @@
 package com.lux032.musicautotagger.service;
 
+import com.lux032.musicautotagger.model.ProcessedFolderRecord;
 import com.lux032.musicautotagger.model.ProcessedRecord;
 
 import java.util.ArrayList;
@@ -37,6 +38,12 @@ public class ProcessedRecordQuery {
     public Sort sort = Sort.TIME_DESC;
     public int offset = 0;
     public int limit = 50;
+    /** 视图模式：file 或 folder。 */
+    public String view = "file";
+
+    public boolean isFolderView() {
+        return "folder".equalsIgnoreCase(view);
+    }
 
     public String normalizedKeyword() {
         return keyword == null || keyword.isBlank() ? null : keyword.trim();
@@ -58,6 +65,16 @@ public class ProcessedRecordQuery {
     public static class Page {
         public List<ProcessedRecord> items = new ArrayList<>();
         public long total;
+        public Map<String, Long> counts = new HashMap<>();
+        public int offset;
+        public int limit;
+    }
+
+    /** 按文件夹聚合的分页查询结果。 */
+    public static class FolderPage {
+        public List<ProcessedFolderRecord> items = new ArrayList<>();
+        public long total;
+        public long totalFiles;
         public Map<String, Long> counts = new HashMap<>();
         public int offset;
         public int limit;

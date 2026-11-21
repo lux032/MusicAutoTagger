@@ -1050,6 +1050,27 @@ public class ProcessedFileLogger {
         return result;
     }
 
+    /**
+     * 加载全部处理记录（供按文件夹聚合查询使用，兼容 SQLite / MySQL / 文件模式）。
+     */
+    public List<ProcessedRecord> loadAllRecords() {
+        if (!isDbMode) {
+            return readFileRecords();
+        }
+        List<ProcessedRecord> result = new ArrayList<>();
+        String sql = "SELECT " + selectColumns() + " FROM processed_files";
+        try (Connection conn = databaseService.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql);
+             ResultSet rs = pstmt.executeQuery()) {
+            while (rs.next()) {
+                result.add(mapRow(rs));
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("加载全部处理记录失败: " + e.getMessage(), e);
+        }
+        return result;
+    }
+
     /** 按路径精确查找记录（不存在的路径会被忽略）。 */
     public List<ProcessedRecord> findRecordsByPaths(Collection<String> paths) {
         List<ProcessedRecord> result = new ArrayList<>();

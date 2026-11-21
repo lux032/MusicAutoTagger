@@ -160,8 +160,51 @@ class RecordsServletTest {
         assertTrue(resp.headers().firstValue("Content-Disposition").orElse("").contains("processed-records-"));
         String csv = resp.body();
         assertTrue(csv.startsWith("\uFEFFstatus,processed_time"), "UTF-8 BOM + 表头");
+        assertTrue(csv.contains(",folder_path\r\n"), "表头末尾包含 folder_path 列");
         assertTrue(csv.contains("\"Album, \"\"Deluxe\"\"\""), "逗号与引号需正确转义");
         assertTrue(csv.contains(",'=cmd,"), "公式注入防护");
         assertEquals(5, csv.split("\r\n").length);
+    }
+
+    @Test
+    void folderViewListExpandPreviewAndForgetWorkEndToEnd() throws Exception {
+        HttpResponse<String> resp = get("/api/records/list?view=folder&sort=PATH");
+        assertEquals(200, resp.statusCode());
+        JsonObject body = gson.fromJson(resp.body(), JsonObject.class);
+        assertEquals("folder", body.get("view").getAsString());
+        assertEquals(2, body.get("total").getAsInt());
+        assertEquals(4, body.get("totalFiles").getAsInt());
+        assertEquals(1, body.getAsJsonObject("counts").get("SUCCESS").getAsInt());
+        assertEquals(1, body.getAsJsonObject("counts").get("FAILED").getAsInt());
+
+        String albumFolderPath = null;
+        for (var el : body.getAsJsonArray("items")) {
+            JsonObject f = el.getAsJsonObject();
+            if ("Album".equals(f.get("folderName").getAsString())) {
+                albumFolderPath = f.get("folderPath").getAsString();
+                assertEquals("Album, \"Deluxe\"", f.get("primaryAlbum").getAsString());
+                assertEquals(3, f.get("totalCount").getAsInt());
+                assertEquals("rg", f.get("coverReleaseGroupId").getAsString());
+            }
+        }
+        assertNotNull(albumFolderPath);
+
+        // 展开文件夹子文件
+        HttpResponse<String> filesResp = get("/api/records/folder-files?folder=" + URLEncoder.encode(albumFolderPath, StandardCharsets.UTF_8));
+        assertEquals(200, filesResp.statusCode());
+        JsonObject filesBody = gson.fromJson(filesResp.body(), JsonObject.class);
+        assertEquals(3, filesBody.getAsJsonArray("items").size());
+
+        // 按文件夹预览与删除
+        String payload = gson.toJson(java.util.Map.of("folders", java.util.List.of(albumFolderPath)));
+        JsonObject preview = gson.fromJson(post("/api/records/preview", payload, "tok").body(), JsonObject.class);
+        assertEquals(1, preview.get("folderCount").getAsInt());
+        assertEquals(3, preview.get("total").getAsInt());
+
+        JsonObject forget = gson.fromJson(post("/api/records/forget", payload, "tok").body(), JsonObject.class);
+        assertEquals(3, forget.get("removed").getAsInt());
+
+        JsonObject after = gson.fromJson(get("/api/records/list?view=folder").body(), JsonObject.class);
+        assertEquals(1, after.get("total").getAsInt());
     }
 }

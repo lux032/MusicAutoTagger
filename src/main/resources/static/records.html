@@ -39,11 +39,14 @@
             border: none; background: transparent; color: var(--text-soft); font: inherit; font-size: 13px; font-weight: 600;
             padding: 5px 12px; border-radius: 6px; cursor: pointer; transition: .15s; display: inline-flex; gap: 6px; align-items: center; white-space: nowrap;
         }
+        .tab svg { width: 14px; height: 14px; flex: 0 0 auto; }
         .tab:hover { color: var(--text); }
         .tab.active { background: #fff; color: var(--text); box-shadow: var(--shadow-sm); }
         .tab .count { font-size: 12px; font-weight: 500; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+        .view-switch .tab.active { background: var(--primary); color: #fff; box-shadow: var(--shadow-sm); }
 
         .filter-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+        .filter-spacer { flex: 1; }
         .chip {
             display: inline-flex; align-items: center; gap: 6px; background: var(--primary-soft); color: var(--primary-dark);
             border-radius: 999px; padding: 4px 6px 4px 12px; font-size: 12.5px; font-weight: 600; max-width: 100%;
@@ -88,10 +91,52 @@
         .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .2s; }
         .thumb img.loaded { opacity: 1; }
         .thumb.failed { background: var(--danger-soft) !important; color: var(--danger); }
-        .track-text { min-width: 0; }
+        .track-text { min-width: 0; flex: 1; }
+        .t-title-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
         .t-title { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .t-sub { font-size: 12px; color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .t-sub.reason { color: var(--danger); }
+
+        .folder-chevron {
+            width: 16px; height: 16px; flex: 0 0 auto; color: var(--text-mute);
+            transition: transform .16s ease, color .16s ease;
+        }
+        .folder-chevron.open { transform: rotate(90deg); color: var(--primary); }
+        .folder-album-sep { color: var(--text-mute); opacity: .55; flex: 0 0 auto; font-size: 12px; }
+        .folder-album-pill {
+            display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 6px;
+            background: var(--primary-soft); color: var(--primary-dark); font-size: 12px; font-weight: 600;
+            max-width: 48%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto;
+        }
+        .folder-album-pill svg { width: 11px; height: 11px; flex: 0 0 auto; }
+
+        .folder-block { border-bottom: 1px solid var(--border); }
+        .folder-block:last-child { border-bottom: none; }
+        .folder-block > .row { border-bottom: none; }
+        .folder-children { background: var(--bg-soft); border-top: 1px solid var(--border); }
+        .folder-children-head {
+            display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+            padding: 7px 14px 7px 46px; font-size: 12px; color: var(--text-mute);
+            border-bottom: 1px solid var(--border);
+        }
+        .folder-children-head code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px;
+            color: var(--text-soft); word-break: break-all;
+        }
+        .folder-children-msg { padding: 14px 16px 14px 46px; font-size: 12.5px; color: var(--text-mute); }
+        .folder-children-msg.err { color: var(--danger); }
+        .child-row {
+            display: grid; align-items: center; gap: 12px;
+            grid-template-columns: 22px minmax(0, 2.3fr) minmax(0, 1.4fr) 128px 116px 104px;
+            padding: 8px 12px 8px 30px; border-bottom: 1px dashed var(--border); background: transparent; cursor: pointer;
+        }
+        .child-row:last-child { border-bottom: none; }
+        .child-row:hover { background: rgba(29, 110, 240, .04); }
+        .child-dot { width: 7px; height: 7px; border-radius: 50%; margin: 0 auto; background: var(--success); }
+        .child-dot.failed { background: var(--danger); }
+        .child-dot.other { background: var(--warn); }
+        .thumb.sm { width: 32px; height: 32px; border-radius: 6px; }
+        .thumb.sm svg { width: 15px; height: 15px; }
 
         .album-link {
             border: none; background: none; font: inherit; color: var(--text-soft); cursor: pointer; padding: 0; text-align: left;
@@ -101,6 +146,8 @@
         .muted { color: var(--text-mute); }
         .status-cell { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
         .status-cell .badges { display: flex; gap: 4px; flex-wrap: wrap; }
+        .status-sub { font-size: 11.5px; color: var(--text-mute); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .status-sub.danger { color: var(--danger); }
         .warn-text { font-size: 11.5px; color: var(--warn); white-space: nowrap; }
         .time { font-size: 12.5px; color: var(--text-soft); white-space: nowrap; }
 
@@ -154,12 +201,14 @@
         .confirm-note { margin-top: 12px; font-size: 12.5px; color: var(--text-mute); line-height: 1.6; }
 
         @media (max-width: 860px) {
-            .row { grid-template-columns: 22px minmax(0, 1fr) 96px; }
-            .row .col-album, .row .col-time { display: none; }
-            .row .col-status { grid-column: 3; }
-            .row .row-actions { grid-column: 2 / 4; justify-content: flex-start; }
+            .row, .child-row { grid-template-columns: 22px minmax(0, 1fr) 96px; }
+            .row .col-album, .row .col-time, .child-row .col-album, .child-row .col-time { display: none; }
+            .row .col-status, .child-row .col-status { grid-column: 3; }
+            .row .row-actions, .child-row .row-actions { grid-column: 2 / 4; justify-content: flex-start; }
             .row.head .col-actions { display: none; }
             .row.head .row-actions { display: none; }
+            .child-row { padding-left: 16px; }
+            .folder-children-head { padding-left: 16px; }
             .detail-grid { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
             .detail-grid .v { margin-bottom: 8px; }
         }
@@ -246,6 +295,16 @@
                 <option value="TITLE" data-i18n="records.sort.title">按标题</option>
                 <option value="PATH" data-i18n="records.sort.path">按文件路径</option>
             </select>
+            <div class="tabs view-switch" id="viewSwitch" role="tablist" aria-label="view mode">
+                <button class="tab" type="button" data-view="folder">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                    <span data-i18n="records.view.folder">按文件夹</span>
+                </button>
+                <button class="tab" type="button" data-view="file">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                    <span data-i18n="records.view.file">按文件</span>
+                </button>
+            </div>
             <span class="pill" id="storagePill" style="display:none;"></span>
             <span class="pill warn" id="monitorPill" style="display:none;"></span>
         </div>
@@ -337,19 +396,29 @@
     const TF = (k, ...a) => I18n.tf(k, ...a);
 
     const ICON_NOTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>';
+    const ICON_FOLDER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
+    const ICON_DISC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>';
+    const ICON_CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>';
+    const ICON_EXPAND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+    const ICON_COLLAPSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>';
     const ICON_ALERT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
     const ICON_REID = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>';
     const ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>';
     const ICON_INFO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>';
     const ICON_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
 
-    const state = { q: '', status: 'ALL', album: '', sort: 'TIME_DESC', page: 0, size: 50 };
+    const state = { view: 'folder', q: '', status: 'ALL', album: '', sort: 'TIME_DESC', page: 0, size: 50 };
     let csrfToken = null;
-    let items = [], total = 0, counts = {}, monitoring = { active: false, paused: false };
-    let selected = new Map();      // filePath -> record
+    let items = [], total = 0, totalFiles = 0, counts = {}, monitoring = { active: false, paused: false };
+    let selected = new Map();      // filePath -> record 或 folderPath -> folderRecord
     let allMatching = false;       // 「选择全部匹配结果」：批量操作改为按筛选条件提交
+    let expandedFolders = new Set();
+    let folderFilesCache = new Map(); // folderPath -> { status: 'loading'|'ready'|'error', items: [], error: '' }
     let loadSeq = 0, loadedOnce = false;
     let detailRecord = null;
+
+    function isFolderView() { return state.view === 'folder'; }
+    function itemKey(item) { return isFolderView() ? item.folderPath : item.filePath; }
 
     // ---------------- 初始化 ----------------
     async function init() {
@@ -368,9 +437,9 @@
         syncControls();
         await load();
 
-        // 列表在第一页、按时间倒序、没有选择或弹窗时静默刷新，便于观察重新识别的进度
+        // 列表在第一页、按时间倒序、没有选择、展开或弹窗时静默刷新，便于观察重新识别的进度
         setInterval(() => {
-            if (document.hidden || selected.size || allMatching || isDialogOpen()) return;
+            if (document.hidden || selected.size || allMatching || expandedFolders.size || isDialogOpen()) return;
             if (state.page !== 0 || state.sort !== 'TIME_DESC') return;
             load({ silent: true });
         }, 15000);
@@ -378,11 +447,18 @@
 
     function readUrl() {
         const p = new URLSearchParams(location.search);
+        const urlView = p.get('view');
+        const savedView = localStorage.getItem('records.viewMode');
+        if (urlView === 'folder' || urlView === 'file') state.view = urlView;
+        else if (savedView === 'folder' || savedView === 'file') state.view = savedView;
+        else state.view = 'folder';
+
         state.q = p.get('q') || '';
         state.status = ['ALL', 'SUCCESS', 'FAILED', 'OTHER'].includes(p.get('status')) ? p.get('status') : 'ALL';
         state.album = p.get('album') || '';
         const sorts = ['TIME_DESC', 'TIME_ASC', 'ALBUM', 'ARTIST', 'TITLE', 'PATH'];
         state.sort = sorts.includes(p.get('sort')) ? p.get('sort') : 'TIME_DESC';
+        if (isFolderView() && state.sort === 'TITLE') state.sort = 'TIME_DESC';
         state.page = Math.max(0, (parseInt(p.get('page'), 10) || 1) - 1);
         const size = parseInt(p.get('size'), 10);
         if ([20, 50, 100, 200].includes(size)) state.size = size;
@@ -390,6 +466,7 @@
 
     function writeUrl() {
         const p = new URLSearchParams();
+        if (state.view !== 'folder') p.set('view', state.view);
         if (state.q) p.set('q', state.q);
         if (state.status !== 'ALL') p.set('status', state.status);
         if (state.album) p.set('album', state.album);
@@ -400,11 +477,12 @@
     }
 
     function filterObject() {
-        return { q: state.q, status: state.status, album: state.album, sort: state.sort };
+        return { view: state.view, q: state.q, status: state.status, album: state.album, sort: state.sort };
     }
 
     function queryString(withPaging) {
         const p = new URLSearchParams();
+        p.set('view', state.view);
         if (state.q) p.set('q', state.q);
         if (state.status !== 'ALL') p.set('status', state.status);
         if (state.album) p.set('album', state.album);
@@ -435,6 +513,16 @@
         document.getElementById('sizeSelect').addEventListener('change', e => {
             state.size = Number(e.target.value);
             localStorage.setItem('records.pageSize', String(state.size));
+            resetAndLoad();
+        });
+        document.getElementById('viewSwitch').addEventListener('click', e => {
+            const btn = e.target.closest('[data-view]');
+            if (!btn || btn.dataset.view === state.view) return;
+            state.view = btn.dataset.view;
+            localStorage.setItem('records.viewMode', state.view);
+            if (isFolderView() && state.sort === 'TITLE') state.sort = 'TIME_DESC';
+            expandedFolders.clear();
+            folderFilesCache.clear();
             resetAndLoad();
         });
         document.getElementById('tabs').addEventListener('click', e => {
@@ -478,13 +566,38 @@
         });
     }
 
+    function syncSortSelect() {
+        const sel = document.getElementById('sortSelect');
+        const folderOpts = [
+            ['TIME_DESC', T('records.sort.time.desc')],
+            ['TIME_ASC', T('records.sort.time.asc')],
+            ['ALBUM', T('records.sort.album')],
+            ['ARTIST', T('records.sort.artist')],
+            ['PATH', T('records.sort.folder.path')]
+        ];
+        const fileOpts = [
+            ['TIME_DESC', T('records.sort.time.desc')],
+            ['TIME_ASC', T('records.sort.time.asc')],
+            ['ALBUM', T('records.sort.album')],
+            ['ARTIST', T('records.sort.artist')],
+            ['TITLE', T('records.sort.title')],
+            ['PATH', T('records.sort.path')]
+        ];
+        const opts = isFolderView() ? folderOpts : fileOpts;
+        if (!opts.some(([v]) => v === state.sort)) state.sort = 'TIME_DESC';
+        sel.innerHTML = opts.map(([v, label]) => `<option value="${v}">${esc(label)}</option>`).join('');
+        sel.value = state.sort;
+    }
+
     function syncControls() {
         const input = document.getElementById('searchInput');
         // 正在输入时不要覆盖（静默刷新也会走到这里）
         if (document.activeElement !== input) input.value = state.q;
+        input.placeholder = isFolderView() ? T('records.search.placeholder.folder') : T('records.search.placeholder');
         document.getElementById('searchBox').classList.toggle('has-value', !!input.value);
-        document.getElementById('sortSelect').value = state.sort;
+        syncSortSelect();
         document.getElementById('sizeSelect').value = String(state.size);
+        document.querySelectorAll('#viewSwitch .tab').forEach(t => t.classList.toggle('active', t.dataset.view === state.view));
         document.querySelectorAll('#tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.status === state.status));
         const chip = document.getElementById('albumChip');
         chip.style.display = state.album ? 'inline-flex' : 'none';
@@ -530,6 +643,7 @@
             if (seq !== loadSeq) return;
             items = d.items || [];
             total = d.total || 0;
+            totalFiles = d.totalFiles || 0;
             counts = d.counts || {};
             monitoring = { active: !!d.monitoringActive, paused: !!d.monitoringPaused };
             document.getElementById('errorBox').style.display = 'none';
@@ -539,11 +653,22 @@
                 state.page = Math.max(0, Math.ceil(total / state.size) - 1);
                 return load({ silent });
             }
+            if (isFolderView()) {
+                folderFilesCache.clear();
+                const visiblePaths = new Set(items.map(f => f.folderPath));
+                for (const fp of [...expandedFolders]) {
+                    if (!visiblePaths.has(fp)) expandedFolders.delete(fp);
+                }
+            }
             loadedOnce = true;
             renderMeta(d.storage);
             renderRows();
             renderPager();
             renderSelection();
+
+            if (isFolderView() && expandedFolders.size > 0) {
+                for (const fp of expandedFolders) fetchFolderFiles(fp);
+            }
         } catch (e) {
             if (seq !== loadSeq) return;
             if (silent) return;
@@ -553,6 +678,36 @@
             if (!loadedOnce) list.innerHTML = '';
         } finally {
             if (seq === loadSeq) list.classList.remove('is-loading');
+        }
+    }
+
+    async function fetchFolderFiles(folderPath) {
+        const currentSeq = loadSeq;
+        folderFilesCache.set(folderPath, { status: 'loading', items: [], error: '' });
+        renderRows();
+        try {
+            const d = await api('/api/records/folder-files?folder=' + encodeURIComponent(folderPath));
+            if (currentSeq !== loadSeq || !isFolderView()) return;
+            folderFilesCache.set(folderPath, { status: 'ready', items: d.items || [], error: '' });
+        } catch (e) {
+            if (currentSeq !== loadSeq || !isFolderView()) return;
+            folderFilesCache.set(folderPath, { status: 'error', items: [], error: e.message });
+        }
+        renderRows();
+    }
+
+    function toggleFolderExpand(folderPath) {
+        if (expandedFolders.has(folderPath)) {
+            expandedFolders.delete(folderPath);
+            renderRows();
+            return;
+        }
+        expandedFolders.add(folderPath);
+        const cached = folderFilesCache.get(folderPath);
+        if (!cached || cached.status === 'error') {
+            fetchFolderFiles(folderPath);
+        } else {
+            renderRows();
         }
     }
 
@@ -576,6 +731,14 @@
         return !!(state.q || state.album || state.status !== 'ALL');
     }
 
+    function bindCoverImages(root) {
+        root.querySelectorAll('img[data-cover]').forEach(img => {
+            if (img.complete && img.naturalWidth > 0) img.classList.add('loaded');
+            img.onload = () => img.classList.add('loaded');
+            img.onerror = () => img.remove();
+        });
+    }
+
     function renderRows() {
         const list = document.getElementById('list');
         if (!items.length) {
@@ -589,25 +752,204 @@
             }
             return;
         }
-        const pageAll = items.length > 0 && items.every(r => allMatching || selected.has(r.filePath));
-        const pageSome = items.some(r => allMatching || selected.has(r.filePath));
+        const pageAll = items.length > 0 && items.every(r => allMatching || selected.has(itemKey(r)));
+        const pageSome = items.some(r => allMatching || selected.has(itemKey(r)));
         const sortHead = (key, label) =>
             `<button class="sort-head ${state.sort === key ? 'active' : ''}" data-sort="${key}">${esc(label)}${state.sort === key ? ' ↓' : ''}</button>`;
-        const head = `<div class="row head">
-                <input type="checkbox" id="pageCheck" ${pageAll ? 'checked' : ''} aria-label="select page">
-                <div>${sortHead('TITLE', T('records.col.track'))}</div>
-                <div class="col-album">${sortHead('ALBUM', T('records.col.album'))}</div>
-                <div class="col-status">${esc(T('records.col.status'))}</div>
-                <div class="col-time">${sortHead('TIME_DESC', T('records.col.time'))}</div>
-                <div class="row-actions"></div>
-            </div>`;
-        list.innerHTML = head + items.map(rowHtml).join('');
+        const head = isFolderView()
+            ? `<div class="row head">
+                    <input type="checkbox" id="pageCheck" ${pageAll ? 'checked' : ''} aria-label="select page">
+                    <div>${sortHead('PATH', T('records.col.folder'))}</div>
+                    <div class="col-album">${sortHead('ALBUM', T('records.col.album.path'))}</div>
+                    <div class="col-status">${esc(T('records.col.status'))}</div>
+                    <div class="col-time">${sortHead('TIME_DESC', T('records.col.time'))}</div>
+                    <div class="row-actions"></div>
+                </div>`
+            : `<div class="row head">
+                    <input type="checkbox" id="pageCheck" ${pageAll ? 'checked' : ''} aria-label="select page">
+                    <div>${sortHead('TITLE', T('records.col.track'))}</div>
+                    <div class="col-album">${sortHead('ALBUM', T('records.col.album'))}</div>
+                    <div class="col-status">${esc(T('records.col.status'))}</div>
+                    <div class="col-time">${sortHead('TIME_DESC', T('records.col.time'))}</div>
+                    <div class="row-actions"></div>
+                </div>`;
+
+        list.innerHTML = head + items.map(isFolderView() ? folderRowHtml : rowHtml).join('');
         const pc = document.getElementById('pageCheck');
         if (pc) pc.indeterminate = !pageAll && pageSome;
-        list.querySelectorAll('img[data-cover]').forEach(img => {
-            img.onload = () => img.classList.add('loaded');
-            img.onerror = () => img.remove();
-        });
+        bindCoverImages(list);
+    }
+
+    function folderDisplayName(f) {
+        return f.looseRoot ? T('records.folder.loose.root') : (f.folderName || f.folderPath || '—');
+    }
+
+    function folderRowHtml(f, i) {
+        const isSelected = allMatching || selected.has(f.folderPath);
+        const isOpen = expandedFolders.has(f.folderPath);
+        const displayName = folderDisplayName(f);
+        const hasScrapedAlbum = f.successCount > 0 && f.primaryAlbum;
+        const albums = f.albums || [];
+        const artists = f.artists || [];
+
+        let albumTagHtml = '';
+        if (hasScrapedAlbum) {
+            const albumLabel = albums.length > 1
+                ? TF('records.folder.albums.more', f.primaryAlbum, albums.length)
+                : f.primaryAlbum;
+            albumTagHtml = `<span class="folder-album-sep">·</span><span class="folder-album-pill" title="${esc(albums.join(' / '))}">${ICON_DISC}<span>${esc(albumLabel)}</span></span>`;
+        }
+
+        const subParts = [];
+        if (f.primaryArtist) {
+            subParts.push(artists.length > 1
+                ? TF('records.folder.artists.more', f.primaryArtist, artists.length)
+                : f.primaryArtist);
+        }
+        subParts.push(TF('records.folder.files.count', formatNumber(f.totalCount)));
+        if (f.discCount > 1) subParts.push(TF('records.folder.discs.count', f.discCount));
+        if (f.cueSplitCount > 0 && f.successCount > 0) subParts.push(T('records.folder.cue.included'));
+        const sub = subParts.join(' · ');
+
+        const relText = f.looseRoot ? '/' : (f.relativePath || f.folderPath || '—');
+        const albumColHtml = hasScrapedAlbum
+            ? `<button class="album-link" data-folder-album="${i}" title="${esc(TF('records.filter.by.album', f.primaryAlbum))}">${esc(f.primaryAlbum)}</button>
+               <div class="t-sub" title="${esc(f.folderPath)}">${esc(relText)}</div>`
+            : `<div class="t-sub" title="${esc(f.folderPath)}">${esc(relText)}</div>`;
+
+        return `<div class="folder-block" data-folder-i="${i}">
+                <div class="row ${isSelected ? 'selected' : ''}" data-i="${i}">
+                    <input type="checkbox" data-check="${i}" ${isSelected ? 'checked' : ''} aria-label="select">
+                    <div class="track">
+                        <span class="folder-chevron ${isOpen ? 'open' : ''}">${ICON_CHEVRON}</span>
+                        ${folderThumbHtml(f)}
+                        <div class="track-text">
+                            <div class="t-title-row">
+                                <span class="t-title" title="${esc(displayName)}">${esc(displayName)}</span>
+                                ${albumTagHtml}
+                            </div>
+                            <div class="t-sub" title="${esc(sub)}">${esc(sub) || '&nbsp;'}</div>
+                        </div>
+                    </div>
+                    <div class="col-album">${albumColHtml}</div>
+                    <div class="col-status status-cell">
+                        <div class="badges">${folderStatusBadges(f)}</div>
+                        ${folderStatusSub(f)}
+                        ${f.missingSourceCount > 0 ? `<span class="warn-text">${esc(TF('records.folder.missing.source', f.missingSourceCount))}</span>` : ''}
+                    </div>
+                    <div class="col-time time" title="${esc(f.latestProcessedTime || '')}">${esc(relTime(f.latestProcessedTime))}</div>
+                    <div class="row-actions">
+                        <button class="icon-action" data-folder-act="reidentify" data-i="${i}" title="${esc(T('records.folder.action.reidentify'))}">${ICON_REID}</button>
+                        <button class="icon-action danger" data-folder-act="forget" data-i="${i}" title="${esc(T('records.folder.action.forget'))}">${ICON_TRASH}</button>
+                        <button class="icon-action" data-folder-act="toggle" data-i="${i}" title="${esc(T(isOpen ? 'records.folder.collapse' : 'records.folder.expand'))}">${isOpen ? ICON_COLLAPSE : ICON_EXPAND}</button>
+                    </div>
+                </div>
+                ${isOpen ? folderChildrenHtml(f, i) : ''}
+            </div>`;
+    }
+
+    function folderThumbHtml(f) {
+        if (f.folderState === 'ALL_FAILED') return `<div class="thumb failed">${ICON_ALERT}</div>`;
+        const [, c2] = palette(f.primaryAlbum || f.folderName || '');
+        const q = [];
+        if (f.successCount > 0) {
+            if (f.coverReleaseGroupId) q.push('rgid=' + encodeURIComponent(f.coverReleaseGroupId));
+            if (f.coverPath) q.push('path=' + encodeURIComponent(f.coverPath));
+        }
+        const img = q.length ? `<img data-cover alt="" loading="lazy" src="/api/cover?${q.join('&')}">` : '';
+        return `<div class="thumb" style="background: ${c2};">${ICON_FOLDER}${img}</div>`;
+    }
+
+    function folderStatusBadges(f) {
+        switch (f.folderState) {
+            case 'SUCCESS':
+                return `<span class="badge confirmed">${esc(T('records.status.success'))}</span>`;
+            case 'PARTIAL_FAILED':
+                return `<span class="badge pending">${esc(T('records.folder.status.partial.failed'))}</span>`;
+            case 'ALL_FAILED':
+                return `<span class="badge rejected">${esc(T('records.status.failed'))}</span>`;
+            case 'PARTIAL_REJECTED':
+                return `<span class="badge pending">${esc(T('records.folder.status.partial.rejected'))}</span>`;
+            case 'REJECTED':
+                return `<span class="badge pending">${esc(T('records.status.rejected'))}</span>`;
+            case 'CUE_ONLY':
+                return `<span class="badge unverified">${esc(T('records.status.cue'))}</span>`;
+            default:
+                return `<span class="badge">${esc(T('records.folder.status.other'))}</span>`;
+        }
+    }
+
+    function folderStatusSub(f) {
+        if (f.folderState === 'SUCCESS') {
+            return `<span class="status-sub">${esc(TF('records.folder.count.summary', f.successCount, f.totalCount))}</span>`;
+        }
+        if (f.folderState === 'PARTIAL_FAILED') {
+            return `<span class="status-sub">${esc(TF('records.folder.count.mixed', f.successCount, f.failedCount))}</span>`;
+        }
+        if (f.folderState === 'ALL_FAILED') {
+            return `<span class="status-sub danger">${esc(TF('records.folder.count.failed', f.failedCount))}</span>`;
+        }
+        if (f.folderState === 'PARTIAL_REJECTED' || f.folderState === 'REJECTED') {
+            return `<span class="status-sub">${esc(TF('records.folder.count.rejected', f.rejectedCount))}</span>`;
+        }
+        return '';
+    }
+
+    function folderChildrenHtml(f, fi) {
+        const entry = folderFilesCache.get(f.folderPath);
+        const head = `<div class="folder-children-head">
+                <span>${esc(TF('records.folder.children.path', ''))}<code>${esc(f.folderPath)}</code></span>
+                <span>${esc(TF('records.folder.children.count', formatNumber(f.totalCount)))}</span>
+            </div>`;
+        if (!entry || entry.status === 'loading') {
+            return `<div class="folder-children">${head}<div class="folder-children-msg">${esc(T('records.folder.children.loading'))}</div></div>`;
+        }
+        if (entry.status === 'error') {
+            return `<div class="folder-children">${head}<div class="folder-children-msg err">${esc(TF('records.folder.children.failed', entry.error))}</div></div>`;
+        }
+        if (!entry.items.length) {
+            return `<div class="folder-children">${head}<div class="folder-children-msg">${esc(T('records.folder.children.empty'))}</div></div>`;
+        }
+        const rows = entry.items.map((r, ci) => childRowHtml(r, fi, ci)).join('');
+        return `<div class="folder-children">${head}${rows}</div>`;
+    }
+
+    function childRowHtml(r, fi, ci) {
+        const failed = r.status === 'FAILED';
+        const title = failed ? r.fileName : (r.title || r.fileName);
+        const subParts = [];
+        if (r.discName) subParts.push(r.discName);
+        if (failed) {
+            if (r.artist) subParts.push(r.artist);
+        } else {
+            if (r.artist) subParts.push(r.artist);
+            if (r.title && r.title !== r.fileName) subParts.push(r.fileName);
+        }
+        const sub = subParts.join(' · ');
+        const dotCls = failed ? 'failed' : (r.status === 'OTHER' ? 'other' : '');
+        return `<div class="child-row" data-fi="${fi}" data-ci="${ci}">
+                <div class="child-dot ${dotCls}"></div>
+                <div class="track">
+                    ${thumbHtml(r, true)}
+                    <div class="track-text">
+                        <div class="t-title" title="${esc(title)}">${esc(title)}</div>
+                        <div class="t-sub ${failed ? 'reason' : ''}" title="${esc(sub)}">${esc(sub) || '&nbsp;'}</div>
+                    </div>
+                </div>
+                <div class="col-album">${r.album && r.album !== 'Unknown Album'
+                    ? `<button class="album-link" data-child-album="1" data-fi="${fi}" data-ci="${ci}" title="${esc(TF('records.filter.by.album', r.album))}">${esc(r.album)}</button>`
+                    : `<span class="muted">—</span>`}</div>
+                <div class="col-status status-cell">
+                    <div class="badges">${statusBadges(r)}</div>
+                    ${r.sourceExists === false ? `<span class="warn-text">${esc(T('records.source.missing.short'))}</span>` : ''}
+                </div>
+                <div class="col-time time" title="${esc(r.processedTime || '')}">${esc(relTime(r.processedTime))}</div>
+                <div class="row-actions">
+                    <button class="icon-action" data-child-act="reidentify" data-fi="${fi}" data-ci="${ci}" title="${esc(T('records.action.reidentify'))}">${ICON_REID}</button>
+                    <button class="icon-action danger" data-child-act="forget" data-fi="${fi}" data-ci="${ci}" title="${esc(T('records.action.forget'))}">${ICON_TRASH}</button>
+                    <button class="icon-action" data-child-act="detail" data-fi="${fi}" data-ci="${ci}" title="${esc(T('records.action.detail'))}">${ICON_INFO}</button>
+                </div>
+            </div>`;
     }
 
     function rowHtml(r, i) {
@@ -640,15 +982,16 @@
             </div>`;
     }
 
-    function thumbHtml(r, big) {
-        if (r.status === 'FAILED') return `<div class="thumb failed">${ICON_ALERT}</div>`;
+    function thumbHtml(r, small) {
+        const smCls = small ? ' sm' : '';
+        if (r.status === 'FAILED') return `<div class="thumb failed${smCls}">${ICON_ALERT}</div>`;
         const [, c2] = palette(r.album || r.fileName || '');
         const q = [];
         if (r.releaseGroupId) q.push('rgid=' + encodeURIComponent(r.releaseGroupId));
         const p = r.targetExists ? r.targetFilePath : (r.sourceExists ? r.filePath : null);
         if (p) q.push('path=' + encodeURIComponent(p));
         const img = q.length ? `<img data-cover alt="" loading="lazy" src="/api/cover?${q.join('&')}">` : '';
-        return `<div class="thumb" style="background: ${c2};">${ICON_NOTE}${img}</div>`;
+        return `<div class="thumb${smCls}" style="background: ${c2};">${ICON_NOTE}${img}</div>`;
     }
 
     function statusBadges(r) {
@@ -674,7 +1017,9 @@
         pager.style.display = 'flex';
         const from = state.page * state.size + 1;
         const to = Math.min(total, from + items.length - 1);
-        document.getElementById('pagerInfo').textContent = TF('records.pager.info', formatNumber(from), formatNumber(to), formatNumber(total));
+        document.getElementById('pagerInfo').textContent = isFolderView()
+            ? TF('records.folder.pager.info', formatNumber(from), formatNumber(to), formatNumber(total), formatNumber(totalFiles))
+            : TF('records.pager.info', formatNumber(from), formatNumber(to), formatNumber(total));
         const pages = Math.max(1, Math.ceil(total / state.size));
         const cur = state.page;
         const nums = new Set([0, pages - 1, cur - 1, cur, cur + 1]);
@@ -693,17 +1038,27 @@
         const bar = document.getElementById('bulkbar');
         const count = allMatching ? total : selected.size;
         bar.classList.toggle('show', count > 0);
-        document.getElementById('bulkText').textContent = allMatching
-            ? TF('records.selected.all', formatNumber(total))
-            : TF('records.selected', formatNumber(selected.size));
+        if (isFolderView()) {
+            let fileSum = 0;
+            selected.forEach(f => { fileSum += Number(f.totalCount || 0); });
+            document.getElementById('bulkText').textContent = allMatching
+                ? TF('records.folder.selected.all', formatNumber(total), formatNumber(totalFiles))
+                : TF('records.folder.selected', formatNumber(selected.size), formatNumber(fileSum));
+        } else {
+            document.getElementById('bulkText').textContent = allMatching
+                ? TF('records.selected.all', formatNumber(total))
+                : TF('records.selected', formatNumber(selected.size));
+        }
         const link = document.getElementById('selectAllMatching');
-        const pageAll = items.length > 0 && items.every(r => selected.has(r.filePath));
+        const pageAll = items.length > 0 && items.every(r => selected.has(itemKey(r)));
         if (allMatching) {
             link.style.display = 'inline';
             link.textContent = T('records.clear.selection');
         } else if (pageAll && total > items.length) {
             link.style.display = 'inline';
-            link.textContent = TF('records.select.all.matching', formatNumber(total));
+            link.textContent = isFolderView()
+                ? TF('records.folder.select.all.matching', formatNumber(total))
+                : TF('records.select.all.matching', formatNumber(total));
         } else {
             link.style.display = 'none';
         }
@@ -712,6 +1067,14 @@
     // ---------------- 交互 ----------------
     let lastCheckedIndex = null;
 
+    function childRecordAt(el) {
+        const fi = Number(el.dataset.fi), ci = Number(el.dataset.ci);
+        const f = items[fi];
+        if (!f) return null;
+        const entry = folderFilesCache.get(f.folderPath);
+        return entry && entry.items ? entry.items[ci] : null;
+    }
+
     function onListClick(e) {
         const sortBtn = e.target.closest('[data-sort]');
         if (sortBtn) { state.sort = sortBtn.dataset.sort; resetAndLoad(); return; }
@@ -719,7 +1082,7 @@
         if (e.target.id === 'pageCheck') {
             const check = e.target.checked;
             if (allMatching && !check) { clearSelection(); return; }
-            items.forEach(r => check ? selected.set(r.filePath, r) : selected.delete(r.filePath));
+            items.forEach(r => check ? selected.set(itemKey(r), r) : selected.delete(itemKey(r)));
             renderRows(); renderSelection();
             return;
         }
@@ -729,19 +1092,61 @@
             if (allMatching) {
                 // 从「全部匹配」退回到「本页除这一条外全部选中」
                 allMatching = false;
-                items.forEach(r => selected.set(r.filePath, r));
+                items.forEach(r => selected.set(itemKey(r), r));
             }
             const on = check.checked;
             if (e.shiftKey && lastCheckedIndex !== null) {
                 const [a, b] = [Math.min(lastCheckedIndex, i), Math.max(lastCheckedIndex, i)];
-                for (let k = a; k <= b; k++) on ? selected.set(items[k].filePath, items[k]) : selected.delete(items[k].filePath);
+                for (let k = a; k <= b; k++) on ? selected.set(itemKey(items[k]), items[k]) : selected.delete(itemKey(items[k]));
             } else {
-                on ? selected.set(items[i].filePath, items[i]) : selected.delete(items[i].filePath);
+                on ? selected.set(itemKey(items[i]), items[i]) : selected.delete(itemKey(items[i]));
             }
             lastCheckedIndex = i;
             renderRows(); renderSelection();
             return;
         }
+
+        // 文件夹视图：展开子文件里的交互
+        const childAlbum = e.target.closest('[data-child-album]');
+        if (childAlbum) {
+            const r = childRecordAt(childAlbum);
+            if (r && r.album) setAlbum(r.album);
+            return;
+        }
+        const childAct = e.target.closest('[data-child-act]');
+        if (childAct) {
+            const r = childRecordAt(childAct);
+            if (!r) return;
+            if (childAct.dataset.childAct === 'detail') openDetail(r);
+            else runAction(childAct.dataset.childAct, { paths: [r.filePath] });
+            return;
+        }
+        const childRow = e.target.closest('.child-row');
+        if (childRow) {
+            if (!window.getSelection().toString()) {
+                const r = childRecordAt(childRow);
+                if (r) openDetail(r);
+            }
+            return;
+        }
+
+        // 文件夹行自身交互
+        const folderAlbumBtn = e.target.closest('[data-folder-album]');
+        if (folderAlbumBtn) {
+            const f = items[Number(folderAlbumBtn.dataset.folderAlbum)];
+            if (f && f.primaryAlbum) setAlbum(f.primaryAlbum);
+            return;
+        }
+        const folderAct = e.target.closest('[data-folder-act]');
+        if (folderAct) {
+            const f = items[Number(folderAct.dataset.i)];
+            if (!f) return;
+            if (folderAct.dataset.folderAct === 'toggle') toggleFolderExpand(f.folderPath);
+            else runAction(folderAct.dataset.folderAct, { folders: [f.folderPath] });
+            return;
+        }
+
+        // 文件视图交互
         const albumBtn = e.target.closest('[data-album]');
         if (albumBtn) { setAlbum(items[Number(albumBtn.dataset.album)].album); return; }
 
@@ -753,7 +1158,12 @@
             return;
         }
         const row = e.target.closest('.row[data-i]');
-        if (row && !window.getSelection().toString()) openDetail(items[Number(row.dataset.i)]);
+        if (row && !window.getSelection().toString()) {
+            const item = items[Number(row.dataset.i)];
+            if (!item) return;
+            if (isFolderView()) toggleFolderExpand(item.folderPath);
+            else openDetail(item);
+        }
     }
 
     function clearSelection(render = true) {
@@ -770,7 +1180,9 @@
     }
 
     function bulk(kind) {
-        const payload = allMatching ? { filter: filterObject() } : { paths: [...selected.keys()] };
+        const payload = allMatching
+            ? { filter: filterObject() }
+            : (isFolderView() ? { folders: [...selected.keys()] } : { paths: [...selected.keys()] });
         runAction(kind, payload);
     }
 
@@ -781,8 +1193,16 @@
         } catch (e) { toast(TF('records.action.failed', e.message)); return; }
         if (!preview.total) { toast(T('records.nothing.to.do')); return; }
 
+        const isFolderScope = !!(payload.folders || (payload.filter && payload.filter.view === 'folder'));
         const lines = [];
         const notes = [];
+        if (isFolderScope) {
+            lines.push(['', TF('records.folder.confirm.scope',
+                formatNumber(preview.total),
+                formatNumber(preview.successCount || 0),
+                formatNumber(preview.failedCount || 0),
+                formatNumber(preview.otherCount || 0))]);
+        }
         if (kind === 'reidentify') {
             if (preview.requeueable) lines.push(['', TF('records.confirm.requeue', preview.requeueable)]);
             if (preview.recoverableFromTarget) lines.push(['', TF('records.confirm.requeue.archived', preview.recoverableFromTarget)]);
@@ -803,9 +1223,13 @@
         const body = `<div class="dialog-subtitle" style="margin-bottom:10px;">${esc(albumText)}</div>
             <ul class="confirm-list">${lines.map(([cls, text]) => `<li class="${cls}">${esc(text)}</li>`).join('')}</ul>
             ${notes.map(n => `<div class="confirm-note">${esc(n)}</div>`).join('')}`;
-        const title = kind === 'reidentify'
-            ? TF('records.confirm.reidentify.title', preview.total)
-            : TF('records.confirm.forget.title', preview.total);
+        const title = isFolderScope
+            ? (kind === 'reidentify'
+                ? TF('records.folder.confirm.reidentify.title', formatNumber(preview.folderCount || 1), formatNumber(preview.total))
+                : TF('records.folder.confirm.forget.title', formatNumber(preview.folderCount || 1), formatNumber(preview.total)))
+            : (kind === 'reidentify'
+                ? TF('records.confirm.reidentify.title', preview.total)
+                : TF('records.confirm.forget.title', preview.total));
         const ok = await ask(title, body,
             kind === 'reidentify' ? T('records.action.reidentify') : T('records.action.forget'),
             kind !== 'reidentify');
@@ -842,6 +1266,10 @@
         add(T('records.col.album'), r.album && r.album !== 'Unknown Album'
             ? `${esc(r.album)} <button class="btn ghost sm" style="margin-left:6px;padding:2px 8px;" onclick="const a = detailAlbum(); closeDetail(); setAlbum(a);">${esc(T('records.only.this.album'))}</button>`
             : '—');
+        if (r.folderPath) {
+            add(T('records.field.folder'), `<div class="path-line"><code>${esc(r.folderPath)}</code>
+                <button class="icon-action" data-copy="${esc(r.folderPath)}" title="${esc(T('records.copy'))}">${ICON_COPY}</button></div>`);
+        }
         add(T('records.col.time'), esc(r.processedTime || '—') + (r.processedTime ? ` <span class="muted">(${esc(relTime(r.processedTime))})</span>` : ''));
         add(T('records.field.source'), pathBlock(r.filePath, r.sourceExists,
             r.sourceExists ? (r.inMonitorDirectory ? T('records.exists.in.monitor') : T('records.exists.outside')) : T('records.source.missing')));

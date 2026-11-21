@@ -164,4 +164,108 @@ class ProcessedRecordQueryTest {
         assertTrue(page.items.stream().allMatch(r -> Boolean.TRUE.equals(r.sourceExists)));
         assertTrue(page.items.stream().allMatch(r -> Boolean.TRUE.equals(r.inMonitorDirectory)));
     }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"sqlite", "file"})
+    void folderViewGroupsMultiDiscMixedStatusesCueAndLooseRoot(String mode) throws Exception {
+        ProcessedFileLogger logger = logger(mode);
+        MusicConfig config = newConfig();
+        config.setMonitorDirectory(tempDir.resolve("music").toString());
+        ProcessedRecordService service = new ProcessedRecordService(config, logger, null, null, null, () -> null);
+
+        // 1. 多碟完整成功（CD1 + CD2 自动合并到同一专辑根目录）
+        logger.markFileAsProcessed(file("MultiDisc/CD1/01.flac"), "rec-md1", "Utada", "Track 1", "SCIENCE FICTION", "rg-sf", null);
+        logger.markFileAsProcessed(file("MultiDisc/CD2/02.flac"), "rec-md2", "Utada", "Track 2", "SCIENCE FICTION", "rg-sf", null);
+
+        // 2. 成功 + CUE_SPLIT 伴随 -> 整夹仍归入 SUCCESS
+        logger.markFileAsProcessed(file("CueAlbum/whole.flac"), "CUE_SPLIT", "Utada", "whole.flac", "First Love");
+        logger.markFileAsProcessed(file("CueAlbum/01.flac"), "rec-c1", "Utada", "Automatic", "First Love", "rg-fl", null);
+
+        // 3. 部分失败（1 成功 + 1 失败）-> 归入 FAILED，folderState=PARTIAL_FAILED，保留刮削专辑名
+        logger.markFileAsProcessed(file("PartialAlbum/01.flac"), "ONLINE_SEARCH", "YOASOBI", "Idol", "THE BOOK 3", "rg-tb3", null);
+        logger.markFileAsProcessed(file("PartialAlbum/02.flac"), "FAILED", "识别失败", "02.flac", "Unknown Album");
+
+        // 4. 全失败 -> 归入 FAILED，folderState=ALL_FAILED，无刮削专辑与封面
+        logger.markFileAsProcessed(file("AllFailed/01.mp3"), "FAILED", "无候选", "01.mp3", "Unknown Album");
+
+        // 5. 监控根目录散落文件 -> 合并到 looseRoot 分组，多专辑
+        logger.markFileAsProcessed(file("loose1.flac"), "rec-l1", "Artist A", "Song A", "Album A", "rg-a", null);
+        logger.markFileAsProcessed(file("loose2.flac"), "rec-l2", "Artist B", "Song B", "Album B", "rg-b", null);
+
+        // 6. 人工驳回 -> 归入 OTHER
+        logger.markFileAsProcessed(file("RejectedAlbum/01.flac"), "REVIEW_REJECTED", "Unknown", "01.flac", "Unknown Album");
+
+        ProcessedRecordQuery folderQ = q();
+        folderQ.view = "folder";
+        ProcessedRecordQuery.FolderPage all = service.listFolders(folderQ);
+
+        assertEquals(6, all.total);
+        assertEquals(10, all.totalFiles);
+        assertEquals(6L, all.counts.get("ALL"));
+        assertEquals(3L, all.counts.get("SUCCESS"), "MultiDisc + CueAlbum + LooseRoot");
+        assertEquals(2L, all.counts.get("FAILED"), "PartialAlbum + AllFailed");
+        assertEquals(1L, all.counts.get("OTHER"), "RejectedAlbum");
+
+        var byName = new java.util.HashMap<String, com.lux032.musicautotagger.model.ProcessedFolderRecord>();
+        for (var f : all.items) {
+            byName.put(f.looseRoot ? "__LOOSE__" : f.folderName, f);
+        }
+
+        var md = byName.get("MultiDisc");
+        assertNotNull(md);
+        assertEquals(2, md.totalCount);
+        assertEquals(2, md.discCount);
+        assertEquals("SCIENCE FICTION", md.primaryAlbum);
+        assertEquals("rg-sf", md.coverReleaseGroupId);
+        assertNotNull(md.coverPath);
+
+        var cue = byName.get("CueAlbum");
+        assertEquals(ProcessedRecord.Status.SUCCESS, cue.status);
+        assertEquals(com.lux032.musicautotagger.model.ProcessedFolderRecord.FolderState.SUCCESS, cue.folderState);
+        assertEquals(1, cue.cueSplitCount);
+        assertEquals(1, cue.successCount);
+
+        var partial = byName.get("PartialAlbum");
+        assertEquals(ProcessedRecord.Status.FAILED, partial.status);
+        assertEquals(com.lux032.musicautotagger.model.ProcessedFolderRecord.FolderState.PARTIAL_FAILED, partial.folderState);
+        assertEquals("THE BOOK 3", partial.primaryAlbum);
+        assertEquals("rg-tb3", partial.coverReleaseGroupId);
+
+        var failed = byName.get("AllFailed");
+        assertEquals(com.lux032.musicautotagger.model.ProcessedFolderRecord.FolderState.ALL_FAILED, failed.folderState);
+        assertNull(failed.primaryAlbum);
+        assertNull(failed.coverReleaseGroupId);
+        assertNull(failed.coverPath);
+
+        var loose = byName.get("__LOOSE__");
+        assertNotNull(loose);
+        assertTrue(loose.looseRoot);
+        assertEquals(2, loose.totalCount);
+        assertEquals(2, loose.albums.size());
+
+        // 展开多碟目录子文件，包含 discName
+        List<ProcessedRecord> mdFiles = service.listFolderFiles(md.folderPath);
+        assertEquals(2, mdFiles.size());
+        assertEquals("CD1", mdFiles.get(0).discName);
+        assertEquals("CD2", mdFiles.get(1).discName);
+
+        // 筛选 FAILED Tab 后按文件夹解析目标：应作用于 PartialAlbum 的全部 2 条记录（含成功的那条）
+        ProcessedRecordQuery failedFolderQ = q();
+        failedFolderQ.view = "folder";
+        failedFolderQ.status = ProcessedRecord.Status.FAILED;
+        List<ProcessedRecord> targets = service.resolveTargets(List.of(), List.of(partial.folderPath), null);
+        assertEquals(2, targets.size(), "按文件夹操作应作用于该文件夹全部记录");
+
+        List<ProcessedRecord> filterTargets = service.resolveTargets(List.of(), List.of(), failedFolderQ);
+        assertEquals(3, filterTargets.size(), "PartialAlbum(2) + AllFailed(1)");
+
+        var preview = service.preview(filterTargets);
+        assertEquals(2, preview.get("folderCount"));
+        assertEquals(3, preview.get("total"));
+
+        // 文件夹视图导出：返回命中文件夹的所有文件明细并带上 folderPath
+        List<ProcessedRecord> exported = service.export(failedFolderQ, 100);
+        assertEquals(3, exported.size());
+        assertTrue(exported.stream().allMatch(r -> r.folderPath != null && !r.folderPath.isBlank()));
+    }
 }
