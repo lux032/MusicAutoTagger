@@ -106,27 +106,29 @@
             background: var(--surface); font-family: var(--mono); font-size: 11px; color: var(--text-soft);
         }
 
-        .detail { display: flex; flex-direction: column; min-height: 460px; overflow: visible; }
-        .detail-body { padding: 20px; display: flex; flex-direction: column; gap: 18px; }
+        .detail { display: flex; flex-direction: column; min-height: 460px; min-width: 0; overflow: visible; }
+        .detail-body { padding: 20px; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+        .detail-body > section { min-width: 0; }
         .detail-empty { padding: 72px 24px; text-align: center; color: var(--text-mute); }
         .detail-empty strong { display: block; font-size: 15px; color: var(--text); margin-bottom: 6px; }
 
-        .album-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+        .album-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; min-width: 0; }
         .album-title { font-size: 19px; font-weight: 700; margin: 0 0 4px; word-break: break-word; }
         .album-meta { font-size: 13px; color: var(--text-soft); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
         .album-path { font-family: var(--mono); font-size: 12px; color: var(--text-mute); word-break: break-all; margin-top: 4px; }
 
         .sec-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
         .sec-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
-        .sec-hint { font-size: 12px; color: var(--text-mute); }
+        .sec-hint { font-size: 12px; color: var(--text-mute); overflow-wrap: anywhere; }
 
         .cover-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
             gap: 12px;
+            min-width: 0;
         }
         .cover-card {
-            position: relative; display: flex; flex-direction: column; text-align: left;
+            position: relative; display: flex; flex-direction: column; text-align: left; min-width: 0; overflow: hidden;
             padding: 8px; border: 2px solid var(--border); border-radius: var(--radius);
             background: var(--surface); cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .12s;
         }
@@ -154,11 +156,11 @@
         .cover-note { font-size: 11.5px; color: var(--text-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 
         .tools-box {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+            display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; min-width: 0;
         }
-        @media (max-width: 720px) { .tools-box { grid-template-columns: 1fr; } }
+        @media (max-width: 860px) { .tools-box { grid-template-columns: minmax(0, 1fr); } }
         .tool-panel {
-            padding: 14px; border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 14px; border: 1px solid var(--border); border-radius: var(--radius); min-width: 0;
             background: var(--bg-soft); display: flex; flex-direction: column; gap: 10px;
         }
         .inline-form { display: flex; gap: 8px; align-items: center; }
@@ -193,11 +195,12 @@
         .alert-bar.ok { background: var(--success-soft); color: var(--success); border: 1px solid #bbf7d0; }
 
         .lightbox {
-            position: fixed; inset: 0; background: rgba(15,23,42,.82); z-index: 1200;
-            display: none; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out;
+            position: fixed; inset: 0; background: rgba(15,23,42,.86); z-index: 1200;
+            display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; cursor: zoom-out;
         }
         .lightbox.show { display: flex; }
-        .lightbox img { max-width: min(92vw, 900px); max-height: 88vh; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+        .lightbox img { max-width: min(92vw, 1100px); max-height: 82vh; width: auto; height: auto; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.45); background: #0f172a; }
+        .lightbox-meta { color: rgba(255,255,255,.9); font-size: 13px; text-align: center; max-width: min(90vw, 800px); overflow-wrap: anywhere; }
     </style>
 </head>
 <body>
@@ -340,6 +343,7 @@
 
 <div class="lightbox" id="lightbox" onclick="this.classList.remove('show')">
     <img id="lightboxImg" src="" alt="">
+    <div class="lightbox-meta" id="lightboxMeta"></div>
 </div>
 
 <div class="toast" id="toast" role="status"></div>
@@ -507,15 +511,19 @@
         const cardsHtml = candidates.length
             ? `<div class="cover-grid">${candidates.map(c => {
                 const sel = state.selectedSha === c.sha256;
-                const imgUrl = '/api/cover?candidateSha256=' + encodeURIComponent(c.sha256);
+                const thumbUrl = '/api/cover?candidateSha256=' + encodeURIComponent(c.sha256);
+                const fullUrl = thumbUrl + '&full=1';
+                const originTxt = originLabel(c.origin, c.originLabel)
+                    + (c.originLabel && c.originLabel !== originLabel(c.origin, c.originLabel) ? ' · ' + c.originLabel : '');
+                const dimsTxt = (c.width || '?') + '×' + (c.height || '?') + ' · ' + fmtBytes(c.bytes);
                 return `<div class="cover-card ${sel ? 'selected' : ''}" data-select-sha="${esc(c.sha256)}" role="button" tabindex="0">
                     <div class="cover-thumb">
                         <span class="cover-check">✓</span>
-                        <img loading="lazy" src="${imgUrl}" alt="">
-                        <button type="button" class="cover-zoom" data-zoom-url="${imgUrl}">${esc(t('covers.zoom'))}</button>
+                        <img loading="lazy" src="${thumbUrl}" alt="">
+                        <button type="button" class="cover-zoom" data-zoom-url="${fullUrl}" data-zoom-meta="${esc(originTxt + ' · ' + dimsTxt)}">${esc(t('covers.zoom'))}</button>
                     </div>
-                    <div class="cover-origin">${esc(originLabel(c.origin, c.originLabel))}${c.originLabel && c.originLabel !== originLabel(c.origin, c.originLabel) ? ' · ' + esc(c.originLabel) : ''}</div>
-                    <div class="cover-dims">${c.width || '?'}×${c.height || '?'} · ${fmtBytes(c.bytes)}</div>
+                    <div class="cover-origin">${esc(originTxt)}</div>
+                    <div class="cover-dims">${dimsTxt}</div>
                     ${c.note ? `<div class="cover-note" title="${esc(c.note)}">${esc(c.note)}</div>` : ''}
                 </div>`;
             }).join('')}</div>`
@@ -636,6 +644,7 @@
             btn.addEventListener('click', e => {
                 e.stopPropagation();
                 $('lightboxImg').src = btn.dataset.zoomUrl;
+                $('lightboxMeta').textContent = btn.dataset.zoomMeta || '';
                 $('lightbox').classList.add('show');
             });
         });

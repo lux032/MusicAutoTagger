@@ -93,7 +93,10 @@ public class CoverServlet extends HttpServlet {
             Path candidate = CoverCandidateCache.directory(config).resolve(candidateSha.toLowerCase());
             candidate = candidate.resolveSibling(candidate.getFileName() + ".jpg");
             if (Files.isRegularFile(candidate)) {
-                writeImage(resp, toThumbnail(Files.readAllBytes(candidate)), "image/jpeg");
+                byte[] raw = Files.readAllBytes(candidate);
+                String fullParam = trimToNull(req.getParameter("full"));
+                boolean full = "1".equals(fullParam) || "true".equalsIgnoreCase(fullParam);
+                writeImage(resp, full ? raw : toThumbnail(raw), "image/jpeg");
                 return;
             }
             resp.sendError(HttpServletResponse.SC_NOT_FOUND);
