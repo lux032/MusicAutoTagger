@@ -47,7 +47,9 @@ public class ReviewItem {
         /** 专辑定不下来（如 MusicBrainz 未收录的精选集）。旧数据 kind 为 null 时按此处理 */
         ALBUM_UNRESOLVED,
         /** 找到了最接近的版本，但本地有曲目不在该版本中（锁定专辑缺曲） */
-        TRACKS_MISSING
+        TRACKS_MISSING,
+        /** 元数据已确定但缺少封面（未入库拦截或库内扫描补图） */
+        COVER_MISSING
     }
 
     public enum Status {
@@ -84,6 +86,9 @@ public class ReviewItem {
 
     /** TRACKS_MISSING 条目的缺曲详情 */
     private MissingTracks missingTracks;
+
+    /** COVER_MISSING 条目的缺封面详情（等待补图或确认无封面入库 / 库内原地补图） */
+    private MissingCover missingCover;
 
     /** 该条目入队时是否已自动触发过联网搜索（避免重启 / 重复入队时反复搜索） */
     private boolean autoOnlineSearchTriggered;
@@ -176,6 +181,59 @@ public class ReviewItem {
         private String detectedBy;
         /** 逐首检测确定不在版本中的文件：文件名 → 指纹曲名 */
         private java.util.Map<String, String> unmatchedFiles = new java.util.LinkedHashMap<>();
+    }
+
+    /**
+     * 缺封面详情：保存已确认的专辑元数据与封面候选，用户选图或确认无封面后完成落盘/补写。
+     */
+    @Data
+    public static class MissingCover {
+        public enum Mode {
+            /** 新抓取 / 重新识别 / 待确认流转：文件尚未写入音乐库 */
+            STAGED_IMPORT,
+            /** 手动扫描音乐库发现的已归档缺封面专辑：仅原地补写音频内嵌封面与缓存 */
+            LIBRARY_EXISTING
+        }
+
+        private Mode mode = Mode.STAGED_IMPORT;
+        /** 触发来源：AUTO_SCAN / LOOSE_FILE / REIDENTIFY / REVIEW_CONFIRM / REVIEW_ARCHIVE / REVIEW_ONLINE / REVIEW_LOCAL / LIBRARY_SCAN */
+        private String sourcePipeline;
+        private String albumTitle;
+        private String albumArtist;
+        private List<String> albumArtists = new ArrayList<>();
+        private String releaseGroupId;
+        private String releaseId;
+        private String releaseDate;
+        private String releaseType;
+        private boolean compilation;
+        /** 按未收录合成归档时为 true（写入时清空年份与专辑级残留标签） */
+        private boolean unresolvedAlbum;
+        /** 监控目录根部的散落单文件 */
+        private boolean looseFile;
+        /** 自定义归档专辑目录名（联网确认带版本号等） */
+        private String archiveDirectoryName;
+        /** 特殊 recordingId 哨兵（如 ONLINE_SEARCH / LOCAL_TAGS）；普通 MusicBrainz 链路为 null */
+        private String recordingIdSentinel;
+        /** 来自「按本地标签入库」流程时的元数据快照 */
+        private boolean localArchiveDirect;
+        private String localArchiveRevision;
+        private java.util.Map<String, List<String>> localTrackArtists = new java.util.LinkedHashMap<>();
+        private List<String> localTrackArtistFallbacks = new ArrayList<>();
+        /** 联网候选 ID（若来自联网候选确认） */
+        private String onlineCandidateId;
+        /** 用户补充的自定义搜索关键词 */
+        private String customSearchQuery;
+        private long coverSearchedAt;
+        /** IDLE / SEARCHING / DONE / FAILED */
+        private String coverSearchStatus;
+        private String coverSearchNote;
+        /** 封面候选列表（字节保存在 CoverCandidateCache 磁盘目录） */
+        private List<CoverCandidateView> coverCandidates = new ArrayList<>();
+        private String selectedCoverSha256;
+        /** 用户显式确认「保持无封面」入库或保留 */
+        private boolean confirmedNoCover;
+        /** 是否已自动触发过后台搜封面 */
+        private boolean coverAutoSearchTriggered;
     }
 
     /**

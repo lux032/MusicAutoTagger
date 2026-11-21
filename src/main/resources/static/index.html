@@ -410,6 +410,11 @@
                     <span data-i18n="web.review">待确认</span>
                     <span class="nav-count" id="reviewCount">0</span>
                 </a>
+                <a class="side-link" id="navCovers" href="covers.html">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                    <span data-i18n="web.covers">缺少封面</span>
+                    <span class="nav-count" id="coversCount">0</span>
+                </a>
                 <a class="side-link" id="navRecovery" href="recovery.html">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>
                     <span data-i18n="web.recovery">重新识别</span>
@@ -468,7 +473,7 @@
                         <p class="page-desc"><span id="lastUpdate" style="display: none;"></span></p>
                     </div>
                     <div class="page-actions">
-                        <button class="btn plain" onclick="loadData(); loadLogs(); loadReviewStats(); loadRecoveryStats();">
+                        <button class="btn plain" onclick="loadData(); loadLogs(); loadReviewStats(); loadCoversStats(); loadRecoveryStats();">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                             <span id="refreshStatsText">刷新统计数据</span>
                         </button>
@@ -1056,6 +1061,14 @@
                                     <input id="cfgReviewMissingTracksAutoOnlineSearch" type="checkbox">
                                     <label for="cfgReviewMissingTracksAutoOnlineSearch" data-i18n="config.review.missing.auto.search">锁定专辑缺曲时自动联网搜索完整版本（需已配置联网搜索）</label>
                                 </div>
+                                <div class="form-row checkbox-row">
+                                    <input id="cfgCoverMissingRequireReview" type="checkbox">
+                                    <label for="cfgCoverMissingRequireReview" data-i18n="config.cover.missing.require.review">缺少封面时不直接入库，转入「缺少封面」等待补全或确认无封面入库</label>
+                                </div>
+                                <div class="form-row checkbox-row">
+                                    <input id="cfgCoverMissingAutoOnlineSearch" type="checkbox">
+                                    <label for="cfgCoverMissingAutoOnlineSearch" data-i18n="config.cover.missing.auto.search">缺少封面入队后自动在后台搜索候选封面（iTunes + AI 联网）</label>
+                                </div>
                             </div>
 
                             <div class="form-grid">
@@ -1214,6 +1227,7 @@
                 document.getElementById('restartBtn').style.display = '';
                 loadControlStatus();
                 loadReviewStats();
+                loadCoversStats();
                 loadRecoveryStats();
             } else {
                 authBar.style.display = 'none';
@@ -1273,8 +1287,28 @@
 
         // 概览右侧「等你处理」：待确认两类积压 + 重新识别入口
         const ICON_INBOX = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path><path d="M3 13h5l1 3h6l1-3h5"></path></svg>';
+        const ICON_COVER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>';
         const ICON_ARROW = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"></path><path d="m13 6 6 6-6 6"></path></svg>';
         const ICON_REDO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>';
+
+        let lastCoversStats = null;
+        async function loadCoversStats() {
+            if (!authState.authenticated) return;
+            const badge = document.getElementById('coversCount');
+            try {
+                const response = await authFetch('/api/covers/stats');
+                if (!response.ok) throw new Error('covers stats unavailable');
+                const data = await response.json();
+                const pending = Number(data.pending) || 0;
+                badge.textContent = pending > 99 ? '99+' : String(pending);
+                badge.classList.toggle('show', pending > 0);
+                lastCoversStats = data;
+            } catch (err) {
+                lastCoversStats = null;
+                badge.classList.remove('show');
+            }
+            renderAttention(lastReviewStats);
+        }
 
         function attentionRow(href, icon, title, desc, count, bad) {
             const row = document.createElement('a');
@@ -1317,14 +1351,26 @@
                     list.appendChild(row);
                 });
             }
+            const cv = lastCoversStats;
+            if (cv) {
+                list.appendChild(attentionRow('covers.html', ICON_COVER, t('web.covers'),
+                    t('dash.attention.covers.desc'), cv.pending));
+                (cv.latest || []).forEach(item => {
+                    const row = attentionRow('covers.html#item=' + encodeURIComponent(item.id), ICON_ARROW,
+                        item.albumTitle || item.folderName || '',
+                        t('dash.attention.latest') + ' · ' + t('web.covers'), null);
+                    row.classList.add('attn-item');
+                    row.title = item.albumTitle || item.folderName || '';
+                    list.appendChild(row);
+                });
+            }
             const rc = recoveryStats;
             list.appendChild(attentionRow('recovery.html', ICON_REDO, t('web.recovery'),
                 rc ? tf('dash.attention.recovery.counts', rc.partial, rc.failed) : t('dash.attention.recovery.desc'),
                 rc ? rc.partial + rc.failed : null, rc && rc.failed > 0));
         }
 
-        // 健康条「等待人工」：待确认为主数字，重新识别放在脚注；待确认入口关闭时改为展示重新识别。
-        // 「等你处理」卡片头的总数也在这里算，两处口径一致。
+        // 健康条「等待人工」：待确认 / 缺少封面 / 重新识别统一汇总展示。
         function renderWaiting(stats) {
             const valueEl = document.getElementById('waitingValue');
             if (!valueEl) return;
@@ -1333,12 +1379,18 @@
             const goEl = document.getElementById('waitingGo');
             const rcTotal = recoveryStats ? recoveryStats.partial + recoveryStats.failed : 0;
             const pending = stats ? (Number(stats.pending) || 0) : 0;
+            const coversPending = lastCoversStats ? (Number(lastCoversStats.pending) || 0) : 0;
 
             let main, unit, href;
-            if (stats) {
+            if (coversPending > 0 && pending === 0) {
+                main = coversPending; unit = t('web.covers'); href = 'covers.html';
+                footEl.textContent = rcTotal > 0 ? tf('dash.waiting.foot.recovery', rcTotal) : '';
+            } else if (stats) {
                 main = pending; unit = t('web.review'); href = 'review.html';
-                footEl.textContent = rcTotal > 0 ? tf('dash.waiting.foot.recovery', rcTotal)
-                    : (pending > 0 ? '' : t('dash.waiting.foot.none'));
+                const notes = [];
+                if (coversPending > 0) notes.push(tf('dash.waiting.foot.covers', coversPending));
+                if (rcTotal > 0) notes.push(tf('dash.waiting.foot.recovery', rcTotal));
+                footEl.textContent = notes.length ? notes.join(' · ') : (pending > 0 ? '' : t('dash.waiting.foot.none'));
             } else {
                 main = rcTotal; unit = t('web.recovery'); href = 'recovery.html';
                 footEl.textContent = rcTotal > 0 ? '' : t('dash.waiting.foot.none');
@@ -1347,10 +1399,11 @@
             unitEl.textContent = unit;
             valueEl.classList.toggle('is-hot', main > 0);
             goEl.href = href;
-            goEl.style.display = main > 0 || rcTotal > 0 ? '' : 'none';
-            if (stats && pending === 0 && rcTotal > 0) goEl.href = 'recovery.html';
+            goEl.style.display = main > 0 || coversPending > 0 || rcTotal > 0 ? '' : 'none';
+            if (stats && pending === 0 && coversPending > 0) goEl.href = 'covers.html';
+            else if (stats && pending === 0 && coversPending === 0 && rcTotal > 0) goEl.href = 'recovery.html';
 
-            const total = pending + rcTotal;
+            const total = pending + coversPending + rcTotal;
             const pill = document.getElementById('attentionTotal');
             pill.textContent = total > 99 ? '99+' : String(total);
             pill.style.display = total > 0 ? '' : 'none';
@@ -2320,6 +2373,8 @@
                 document.getElementById('cfgCueSplitOutputDirectory').value = cfg.cueSplitOutputDir || '';
                 document.getElementById('cfgReviewEnabled').checked = !!cfg.reviewEnabled;
                 document.getElementById('cfgReviewMissingTracksAutoOnlineSearch').checked = cfg.reviewMissingTracksAutoOnlineSearch !== false;
+                document.getElementById('cfgCoverMissingRequireReview').checked = cfg.coverMissingRequireReview !== false;
+                document.getElementById('cfgCoverMissingAutoOnlineSearch').checked = cfg.coverMissingAutoOnlineSearch !== false;
                 document.getElementById('cfgReleaseCountryPriority').value = cfg.releaseCountryPriority || '';
                 document.getElementById('loginLanguage').value = cfg.language || 'en_US';
                 document.getElementById('setupLanguage').value = cfg.language || 'en_US';
@@ -2401,6 +2456,8 @@
                 cueSplitOutputDir: getValue('cfgCueSplitOutputDirectory'),
                 reviewEnabled: document.getElementById('cfgReviewEnabled').checked,
                 reviewMissingTracksAutoOnlineSearch: document.getElementById('cfgReviewMissingTracksAutoOnlineSearch').checked,
+                coverMissingRequireReview: document.getElementById('cfgCoverMissingRequireReview').checked,
+                coverMissingAutoOnlineSearch: document.getElementById('cfgCoverMissingAutoOnlineSearch').checked,
                 releaseCountryPriority: getValue('cfgReleaseCountryPriority')
             };
 
@@ -2887,6 +2944,7 @@
 
         // 待确认积压数：接口很轻，30 秒一次足够
         setInterval(loadReviewStats, 30000);
+        setInterval(loadCoversStats, 30000);
         setInterval(loadRecoveryStats, 30000);
 
         // 每5秒自动刷新日志

@@ -53,6 +53,12 @@ public class FolderAlbumCache {
     private final Map<String, MissingTracksInfo> folderMissingTracks = new ConcurrentHashMap<>();
 
     /**
+     * 文件夹 -> 缺少封面拦截标记。
+     * 专辑已锁定但找不到封面时，整张专辑必须暂缓写入，收集齐所有曲目后统一进入「缺少封面」队列。
+     */
+    private final Set<String> missingCoverFolders = ConcurrentHashMap.newKeySet();
+
+    /**
      * 文件夹级锁：把「自动写入授权 + 写入」与「判定缺曲 / 未确定」串行化。
      * 加锁顺序固定为 folderLock → folderAlbumCache，避免死锁。
      */
@@ -685,7 +691,28 @@ public class FolderAlbumCache {
         if (folderPath != null) {
             unresolvedFolders.remove(folderPath);
             folderMissingTracks.remove(folderPath);
+            missingCoverFolders.remove(folderPath);
             failureHandoffFolders.remove(folderPath);
+        }
+    }
+
+    public void markFolderCoverMissing(String folderPath) {
+        if (folderPath != null && !folderPath.isEmpty()) {
+            synchronized (folderLock(folderPath)) {
+                missingCoverFolders.add(folderPath);
+            }
+        }
+    }
+
+    public boolean isFolderCoverMissing(String folderPath) {
+        return folderPath != null && missingCoverFolders.contains(folderPath);
+    }
+
+    public void clearFolderCoverMissing(String folderPath) {
+        if (folderPath != null) {
+            synchronized (folderLock(folderPath)) {
+                missingCoverFolders.remove(folderPath);
+            }
         }
     }
 
@@ -782,6 +809,7 @@ public class FolderAlbumCache {
      */
     public boolean isAutomaticWriteAllowed(String folderPath) {
         synchronized (folderAlbumCache) {
+            if (missingCoverFolders.contains(folderPath)) return false;
             if (!unresolvedFolders.contains(folderPath)) return true;
             CachedAlbumInfo current = folderAlbumCache.get(folderPath);
             return current != null && current.getSource() != null && current.getSource().isManual();

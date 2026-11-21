@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>缺少封面 · 音乐自动标签器</title>
+    <link rel="icon" type="image/png" href="logo.png">
+    <link rel="stylesheet" href="app.css">
+    <style>
+        .main { padding-bottom: 24px; }
+        .page-head { margin-bottom: 16px; }
+        .page-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+        .scan-bar {
+            display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+            padding: 10px 14px; margin-bottom: 14px; border-radius: var(--radius);
+            background: var(--primary-soft); border: 1px solid var(--primary-line);
+            font-size: 13px; color: var(--primary-dark);
+        }
+        .scan-bar[hidden] { display: none; }
+        .scan-bar .scan-text { flex: 1 1 240px; min-width: 0; font-weight: 500; }
+
+        .desk {
+            display: grid;
+            grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+            gap: 16px;
+            align-items: start;
+        }
+        @media (max-width: 960px) {
+            .desk { grid-template-columns: 1fr; }
+            .desk[data-view="detail"] .queue { display: none; }
+            .desk[data-view="queue"] .detail { display: none; }
+        }
+        .back-btn { display: none; margin-bottom: 10px; }
+        @media (max-width: 960px) { .back-btn { display: inline-flex; } }
+
+        .queue {
+            display: flex; flex-direction: column; overflow: hidden;
+            position: sticky; top: 18px; max-height: calc(100vh - 36px);
+        }
+        @media (max-width: 960px) { .queue { position: static; max-height: none; } }
+        .queue-top { padding: 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+        .queue-search { position: relative; display: flex; align-items: center; }
+        .queue-search svg { position: absolute; left: 10px; width: 15px; height: 15px; color: var(--text-mute); pointer-events: none; }
+        .queue-search input {
+            width: 100%; height: 34px; padding: 0 28px 0 32px;
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            background: var(--bg-soft); color: var(--text); font: inherit; font-size: 13px;
+        }
+        .queue-search input:focus { outline: none; border-color: var(--primary); background: var(--surface); box-shadow: 0 0 0 3px var(--primary-soft); }
+        .search-clear {
+            position: absolute; right: 6px; width: 22px; height: 22px; border: 0; border-radius: 50%;
+            background: transparent; color: var(--text-mute); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+        }
+        .search-clear:hover { background: var(--border); color: var(--text); }
+        .search-clear[hidden] { display: none; }
+        .queue-filter select {
+            width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--border);
+            border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px;
+        }
+        .mode-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .chip {
+            display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px;
+            border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+            color: var(--text-soft); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+        }
+        .chip:hover { background: var(--bg-soft); color: var(--text); }
+        .chip .n { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-mute); }
+        .chip.active { background: var(--text); border-color: var(--text); color: #fff; }
+        .chip.active .n { color: rgba(255,255,255,.78); }
+
+        .queue-list { flex: 1 1 auto; overflow-y: auto; }
+        .queue-empty { padding: 36px 20px; text-align: center; color: var(--text-mute); font-size: 13px; }
+        .queue-empty strong { display: block; color: var(--text-soft); font-size: 14px; margin-bottom: 6px; }
+        .q-item {
+            display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
+            padding: 11px 14px; border: 0; border-bottom: 1px solid var(--border);
+            background: var(--surface); color: var(--text); font: inherit; cursor: pointer;
+            border-left: 3px solid transparent; transition: background .12s;
+        }
+        .q-item:hover { background: var(--bg-soft); }
+        .q-item.active { background: var(--primary-soft); border-left-color: var(--primary); }
+        .q-title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .q-sub { font-size: 12px; color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .q-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+        .pill {
+            display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 8px;
+            font-size: 11px; font-weight: 600; background: var(--bg-soft); color: var(--text-soft);
+            border: 1px solid var(--border); font-variant-numeric: tabular-nums;
+        }
+        .pill.staged { background: #fff7ed; color: #c2410c; border-color: #fed7aa; }
+        .pill.library { background: var(--primary-soft); color: var(--primary-dark); border-color: var(--primary-line); }
+        .pill.ok { background: var(--success-soft); color: var(--success); border-color: #b7ebc6; }
+        .pill.cand { background: #f5f0ff; color: #6d28d9; border-color: #ded0fb; }
+        .q-live { font-size: 11.5px; color: var(--primary-dark); font-weight: 600; margin-top: 2px; }
+
+        .queue-foot {
+            padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bg-soft);
+            font-size: 11.5px; color: var(--text-mute); display: flex; align-items: center; gap: 5px;
+        }
+        .queue-foot kbd {
+            padding: 1px 5px; border: 1px solid var(--border-strong); border-radius: 4px;
+            background: var(--surface); font-family: var(--mono); font-size: 11px; color: var(--text-soft);
+        }
+
+        .detail { display: flex; flex-direction: column; min-height: 460px; overflow: visible; }
+        .detail-body { padding: 20px; display: flex; flex-direction: column; gap: 18px; }
+        .detail-empty { padding: 72px 24px; text-align: center; color: var(--text-mute); }
+        .detail-empty strong { display: block; font-size: 15px; color: var(--text); margin-bottom: 6px; }
+
+        .album-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+        .album-title { font-size: 19px; font-weight: 700; margin: 0 0 4px; word-break: break-word; }
+        .album-meta { font-size: 13px; color: var(--text-soft); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .album-path { font-family: var(--mono); font-size: 12px; color: var(--text-mute); word-break: break-all; margin-top: 4px; }
+
+        .sec-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+        .sec-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
+        .sec-hint { font-size: 12px; color: var(--text-mute); }
+
+        .cover-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+            gap: 12px;
+        }
+        .cover-card {
+            position: relative; display: flex; flex-direction: column; text-align: left;
+            padding: 8px; border: 2px solid var(--border); border-radius: var(--radius);
+            background: var(--surface); cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .12s;
+        }
+        .cover-card:hover { border-color: var(--primary); }
+        .cover-card.selected { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); background: #fafcff; }
+        .cover-thumb {
+            position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: 6px;
+            overflow: hidden; background: var(--bg-soft); margin-bottom: 8px;
+        }
+        .cover-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .cover-zoom {
+            position: absolute; right: 6px; bottom: 6px; border: 0; border-radius: 6px;
+            padding: 3px 7px; font-size: 11px; font-weight: 600; cursor: pointer;
+            background: rgba(15,23,42,.72); color: #fff;
+        }
+        .cover-zoom:hover { background: rgba(15,23,42,.92); }
+        .cover-check {
+            position: absolute; left: 6px; top: 6px; width: 22px; height: 22px; border-radius: 50%;
+            background: var(--primary); color: #fff; display: none; align-items: center; justify-content: center;
+            font-size: 13px; font-weight: 700; box-shadow: 0 2px 6px rgba(0,0,0,.22);
+        }
+        .cover-card.selected .cover-check { display: inline-flex; }
+        .cover-origin { font-size: 12px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .cover-dims { font-size: 11.5px; color: var(--text-mute); font-variant-numeric: tabular-nums; margin-top: 2px; }
+        .cover-note { font-size: 11.5px; color: var(--text-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+
+        .tools-box {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+        }
+        @media (max-width: 720px) { .tools-box { grid-template-columns: 1fr; } }
+        .tool-panel {
+            padding: 14px; border: 1px solid var(--border); border-radius: var(--radius);
+            background: var(--bg-soft); display: flex; flex-direction: column; gap: 10px;
+        }
+        .inline-form { display: flex; gap: 8px; align-items: center; }
+        .inline-form input[type="text"], .inline-form input[type="url"] {
+            flex: 1 1 auto; min-width: 0; height: 34px; padding: 0 10px;
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            background: var(--surface); color: var(--text); font: inherit; font-size: 13px;
+        }
+        .inline-form input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+
+        .dropzone {
+            border: 1.5px dashed var(--border-strong); border-radius: var(--radius-sm);
+            background: var(--surface); padding: 16px 12px; text-align: center;
+            cursor: pointer; font-size: 12.5px; color: var(--text-soft); transition: border-color .15s, background .15s;
+        }
+        .dropzone:hover, .dropzone.dragover { border-color: var(--primary); background: var(--primary-soft); color: var(--primary-dark); }
+
+        .decision {
+            position: sticky; bottom: 0; padding: 12px 20px; border-top: 1px solid var(--border);
+            background: rgba(255,255,255,.96); backdrop-filter: blur(8px);
+            display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+            border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+        }
+        .decision[hidden] { display: none; }
+        .decision-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .decision-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+        .table-wrap { border: 1px solid var(--border); border-radius: var(--radius); overflow: auto; }
+        .alert-bar { padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; }
+        .alert-bar.err { background: var(--danger-soft); color: var(--danger); border: 1px solid #fecaca; }
+        .alert-bar.info { background: var(--primary-soft); color: var(--primary-dark); border: 1px solid var(--primary-line); }
+        .alert-bar.ok { background: var(--success-soft); color: var(--success); border: 1px solid #bbf7d0; }
+
+        .lightbox {
+            position: fixed; inset: 0; background: rgba(15,23,42,.82); z-index: 1200;
+            display: none; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out;
+        }
+        .lightbox.show { display: flex; }
+        .lightbox img { max-width: min(92vw, 900px); max-height: 88vh; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+
+        .toast {
+            position: fixed; right: 20px; bottom: 20px; z-index: 1100; max-width: 420px;
+            padding: 11px 16px; border-radius: var(--radius); background: var(--text); color: #fff;
+            font-size: 13px; box-shadow: 0 10px 30px rgba(15,23,42,.24); display: none;
+        }
+    </style>
+</head>
+<body>
+<div class="app">
+<aside class="side" id="appSide">
+    <a class="brand" href="index.html">
+        <img src="logo.png" alt="Music Auto Tagger">
+        <span>
+            <span class="brand-title" data-i18n="web.brand">音乐自动标签器</span>
+            <span class="brand-subtitle" data-i18n="web.subtitle">实时监控 · 智能整理 · 数据统计</span>
+        </span>
+    </a>
+    <button class="side-toggle" onclick="Shell.toggleNav()" aria-label="menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        <span data-i18n="web.menu">菜单</span>
+    </button>
+    <nav class="side-nav" id="navBar">
+        <a class="side-link" href="index.html">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"></path></svg>
+            <span data-i18n="web.nav.overview">概览</span>
+        </a>
+        <div class="side-group" data-i18n="web.nav.group.work">需要处理</div>
+        <a class="side-link" href="review.html" id="navReview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path><path d="M3 13h5l1 3h6l1-3h5"></path></svg>
+            <span data-i18n="web.review">待确认</span>
+            <span class="nav-count" id="reviewCount">0</span>
+        </a>
+        <a class="side-link active" href="covers.html" aria-current="page" id="navCovers">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+            <span data-i18n="web.covers">缺少封面</span>
+            <span class="nav-count" id="coversCount">0</span>
+        </a>
+        <a class="side-link" href="recovery.html" id="navRecovery">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>
+            <span data-i18n="web.recovery">重新识别</span>
+            <span class="nav-count" id="recoveryCount">0</span>
+        </a>
+        <div class="side-group" data-i18n="web.nav.group.library">资料</div>
+        <a class="side-link" href="records.html">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg>
+            <span data-i18n="web.records">处理记录</span>
+        </a>
+        <a class="side-link" href="index.html#settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.61.77 1.03 1.42 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            <span data-i18n="web.settings">设置</span>
+        </a>
+    </nav>
+</aside>
+
+<main class="main">
+    <div class="page-head">
+        <div>
+            <h1 class="page-title" data-i18n="covers.page.title">缺少封面</h1>
+            <p class="page-desc" data-i18n="covers.page.subtitle">刮削成功或重新识别后缺少封面的专辑会停在这里，补全封面或人工确认保持无封面后才入库</p>
+        </div>
+        <div class="page-actions">
+            <button class="btn ghost" id="scanLibraryBtn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 21l-4.35-4.35"></path><circle cx="11" cy="11" r="7"></circle></svg>
+                <span data-i18n="covers.scan.btn">扫描音乐库缺封面专辑</span>
+            </button>
+            <button class="btn ghost" id="batchSearchBtn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                <span data-i18n="covers.batch.search.btn">为未搜索条目批量搜封面</span>
+            </button>
+            <button class="btn ghost" id="refreshBtn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                <span data-i18n="review.nav.refresh">刷新</span>
+            </button>
+        </div>
+    </div>
+
+    <div class="scan-bar" id="scanBar" hidden>
+        <span class="scan-text" id="scanText"></span>
+        <button class="btn danger-soft sm" id="scanCancelBtn" type="button" hidden data-i18n="covers.scan.stop">停止扫描</button>
+    </div>
+
+    <div class="desk" id="desk" data-view="queue">
+        <section class="card queue">
+            <div class="queue-top">
+                <div class="queue-search">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                    <input id="searchInput" type="text" autocomplete="off" spellcheck="false"
+                           placeholder="搜索专辑名、艺术家、文件夹或曲名" data-i18n-placeholder="covers.search.placeholder">
+                    <button type="button" class="search-clear" id="searchClear" hidden aria-label="clear">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                    </button>
+                </div>
+                <div class="queue-filter">
+                    <select id="statusFilter">
+                        <option value="PENDING_REVIEW" data-i18n="covers.filter.pending">待处理</option>
+                        <option value="ALL" data-i18n="covers.filter.all">全部</option>
+                        <option value="CONFIRMED" data-i18n="covers.filter.confirmed">已处理</option>
+                        <option value="REJECTED" data-i18n="covers.filter.rejected">已忽略</option>
+                    </select>
+                </div>
+                <div class="mode-chips" id="modeChips"></div>
+            </div>
+            <div class="queue-list" id="list"><div class="queue-empty" data-i18n="review.loading">加载中...</div></div>
+            <div class="queue-foot"><kbd>J</kbd><kbd>K</kbd><span data-i18n="review.queue.keys">切换条目</span><kbd style="margin-left:8px">/</kbd><span data-i18n="review.queue.keys.search">搜索</span></div>
+        </section>
+
+        <section class="card detail" id="detailCard">
+            <div class="detail-body" id="detail"></div>
+            <div class="decision" id="decision" hidden></div>
+        </section>
+    </div>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <a href="https://032.im" target="_blank" rel="noopener">Lux032</a>
+            <span class="footer-divider">|</span>
+            <a href="https://github.com/lux032/MusicAutoTagger" target="_blank" rel="noopener">Music Auto Tagger</a>
+        </div>
+    </footer>
+</main>
+</div>
+
+<div class="overlay" id="askDialog" role="dialog" aria-modal="true">
+    <div class="dialog" style="width:min(480px,95vw);">
+        <div class="dialog-title" id="askTitle"></div>
+        <div class="dialog-stack" id="askBody" style="margin-top:12px;"></div>
+        <div class="dialog-actions">
+            <button class="btn ghost" id="askCancel" type="button" data-i18n="web.cancel">取消</button>
+            <button class="btn primary" id="askOk" type="button"></button>
+        </div>
+    </div>
+</div>
+
+<div class="overlay" id="duplicateDialog" role="dialog" aria-modal="true">
+    <div class="dialog" style="width:min(540px,95vw);">
+        <div class="dialog-title" data-i18n="review.duplicate.title">音乐库中已存在相同音频</div>
+        <div class="dialog-stack" id="duplicateList" style="margin-top:12px;"></div>
+        <div class="dialog-actions">
+            <button class="btn ghost" id="dupCancelBtn" type="button" data-i18n="web.cancel">取消</button>
+            <button class="btn ghost" id="dupKeepBtn" type="button" data-i18n="review.duplicate.keep">保留两份</button>
+            <button class="btn primary" id="dupReplaceBtn" type="button" data-i18n="review.duplicate.replace">替换旧归档</button>
+        </div>
+    </div>
+</div>
+
+<div class="lightbox" id="lightbox" onclick="this.classList.remove('show')">
+    <img id="lightboxImg" src="" alt="">
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="i18n.js"></script>
+<script src="shell.js"></script>
+<script src="search-queue.js"></script>
+<script>
+(function () {
+    const $ = id => document.getElementById(id);
+    const t = (k, d) => (window.I18n ? I18n.t(k, d) : (d || k));
+    const tf = (k, ...a) => (window.I18n ? I18n.tf(k, ...a) : k);
+
+    const state = {
+        csrfToken: null,
+        items: [],
+        currentId: null,
+        item: null,
+        selectedSha: null,
+        modeFilter: 'ALL',
+        busy: false,
+        alert: null,
+        scanPollTimer: null,
+        wasScanRunning: false,
+        askResolve: null,
+        dupContext: null
+    };
+
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function fmtBytes(n) {
+        const v = Number(n) || 0;
+        if (v < 1024) return v + ' B';
+        if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB';
+        return (v / 1024 / 1024).toFixed(2) + ' MB';
+    }
+
+    function fmtDur(sec) {
+        const s = Number(sec) || 0;
+        if (s <= 0) return '-';
+        const m = Math.floor(s / 60), r = Math.floor(s % 60);
+        return m + ':' + String(r).padStart(2, '0');
+    }
+
+    function toast(msg) {
+        const el = $('toast');
+        el.textContent = msg;
+        el.style.display = 'block';
+        clearTimeout(el._t);
+        el._t = setTimeout(() => { el.style.display = 'none'; }, 3800);
+    }
+
+    async function api(path, opt = {}) {
+        opt.headers = opt.headers || {};
+        if (state.csrfToken && opt.method && opt.method.toUpperCase() !== 'GET') {
+            opt.headers['X-CSRF-Token'] = state.csrfToken;
+        }
+        if (opt.body && !(opt.body instanceof File) && !(opt.body instanceof Blob) && !opt.headers['Content-Type']) {
+            opt.headers['Content-Type'] = 'application/json';
+        }
+        const resp = await fetch(path, { credentials: 'same-origin', ...opt });
+        let data = {};
+        try { data = await resp.json(); } catch (e) {}
+        if (!resp.ok) {
+            const err = new Error(data.error || ('HTTP ' + resp.status));
+            err.status = resp.status;
+            err.data = data;
+            throw err;
+        }
+        return data;
+    }
+
+    async function ensureAuth() {
+        const data = await api('/api/auth/status');
+        if (!data.authenticated) {
+            location.href = 'index.html';
+            return false;
+        }
+        state.csrfToken = data.csrfToken;
+        return true;
+    }
+
+    function visibleItems() {
+        if (state.modeFilter === 'ALL') return state.items;
+        return state.items.filter(i => i.mode === state.modeFilter);
+    }
+
+    function renderModeChips() {
+        const staged = state.items.filter(i => i.mode === 'STAGED_IMPORT').length;
+        const lib = state.items.filter(i => i.mode === 'LIBRARY_EXISTING').length;
+        const chips = [
+            { id: 'ALL', label: t('covers.chip.all', '全部'), count: state.items.length },
+            { id: 'STAGED_IMPORT', label: t('covers.chip.staged', '待入库拦截'), count: staged },
+            { id: 'LIBRARY_EXISTING', label: t('covers.chip.library', '音乐库补图'), count: lib }
+        ];
+        $('modeChips').innerHTML = chips.map(c =>
+            `<button type="button" class="chip ${state.modeFilter === c.id ? 'active' : ''}" data-mode="${c.id}">
+                <span>${esc(c.label)}</span><span class="n">${c.count}</span>
+            </button>`
+        ).join('');
+    }
+
+    function renderList() {
+        renderModeChips();
+        const rows = visibleItems();
+        const box = $('list');
+        if (!rows.length) {
+            box.innerHTML = `<div class="queue-empty"><strong>${esc(t('covers.empty.title'))}</strong><div>${esc(t('covers.empty.desc'))}</div></div>`;
+            return;
+        }
+        box.innerHTML = rows.map(item => {
+            const active = item.id === state.currentId;
+            const sqTask = window.SearchQueue ? SearchQueue.findForReview(item.id) : null;
+            const live = sqTask && (sqTask.status === 'RUNNING' || sqTask.status === 'QUEUED')
+                ? `<div class="q-live">${esc(sqTask.status === 'RUNNING' ? SearchQueue.stageText(sqTask) : t('sq.stage.QUEUED'))}</div>` : '';
+            const modeCls = item.mode === 'LIBRARY_EXISTING' ? 'library' : 'staged';
+            const modeLbl = item.mode === 'LIBRARY_EXISTING' ? t('covers.mode.library') : t('covers.mode.staged');
+            const candBadge = item.candidateCount > 0 ? `<span class="pill cand">${item.candidateCount} 候选</span>` : '';
+            const statusBadge = item.status === 'CONFIRMED'
+                ? `<span class="pill ok">${esc(item.confirmedNoCover ? t('covers.status.confirmed.nocover') : t('covers.status.confirmed.withcover'))}</span>`
+                : (item.status === 'REJECTED' ? `<span class="pill">${esc(t('covers.filter.rejected'))}</span>` : '');
+            return `<button type="button" class="q-item ${active ? 'active' : ''}" data-id="${esc(item.id)}">
+                <div class="q-title">${esc(item.albumTitle || item.folderName || '')}</div>
+                <div class="q-sub">${esc(item.albumArtist || '')} · ${item.fileCount || 0} ${esc(t('unit.tracks', '首'))}</div>
+                <div class="q-tags">
+                    <span class="pill ${modeCls}">${esc(modeLbl)}</span>
+                    ${candBadge}${statusBadge}
+                </div>
+                ${live}
+            </button>`;
+        }).join('');
+    }
+
+    function originLabel(origin, fallback) {
+        const key = 'review.online.cover.origin.' + origin;
+        const translated = t(key, '');
+        if (translated && translated !== key) return translated;
+        return fallback || origin || '';
+    }
+
+    function renderDetail() {
+        const item = state.item;
+        const body = $('detail');
+        const dec = $('decision');
+        if (!item) {
+            body.innerHTML = `<div class="detail-empty"><strong>${esc(t('covers.empty.title'))}</strong><div>${esc(t('covers.empty.desc'))}</div></div>`;
+            dec.hidden = true;
+            return;
+        }
+
+        const isPending = item.status === 'PENDING_REVIEW';
+        const isLib = item.mode === 'LIBRARY_EXISTING';
+        const candidates = item.coverCandidates || [];
+        const sqTask = window.SearchQueue ? SearchQueue.findForReview(item.id) : null;
+        const searching = sqTask && (sqTask.status === 'RUNNING' || sqTask.status === 'QUEUED');
+
+        const alertHtml = state.alert
+            ? `<div class="alert-bar ${state.alert.tone || 'info'}">${esc(state.alert.text)}</div>` : '';
+        const liveSearchHtml = searching
+            ? `<div class="alert-bar info">${esc(sqTask.status === 'RUNNING' ? SearchQueue.stageText(sqTask) : t('sq.stage.QUEUED'))}</div>` : '';
+        const noteHtml = (!searching && item.coverSearchNote)
+            ? `<div class="sec-hint">${esc(item.coverSearchNote)}</div>` : '';
+
+        const cardsHtml = candidates.length
+            ? `<div class="cover-grid">${candidates.map(c => {
+                const sel = state.selectedSha === c.sha256;
+                const imgUrl = '/api/cover?candidateSha256=' + encodeURIComponent(c.sha256);
+                return `<div class="cover-card ${sel ? 'selected' : ''}" data-select-sha="${esc(c.sha256)}" role="button" tabindex="0">
+                    <div class="cover-thumb">
+                        <span class="cover-check">✓</span>
+                        <img loading="lazy" src="${imgUrl}" alt="">
+                        <button type="button" class="cover-zoom" data-zoom-url="${imgUrl}">${esc(t('covers.zoom'))}</button>
+                    </div>
+                    <div class="cover-origin">${esc(originLabel(c.origin, c.originLabel))}${c.originLabel && c.originLabel !== originLabel(c.origin, c.originLabel) ? ' · ' + esc(c.originLabel) : ''}</div>
+                    <div class="cover-dims">${c.width || '?'}×${c.height || '?'} · ${fmtBytes(c.bytes)}</div>
+                    ${c.note ? `<div class="cover-note" title="${esc(c.note)}">${esc(c.note)}</div>` : ''}
+                </div>`;
+            }).join('')}</div>`
+            : `<div class="alert-bar info">${esc(t('covers.candidates.empty'))}</div>`;
+
+        const toolsHtml = isPending ? `
+            <div class="tools-box">
+                <div class="tool-panel">
+                    <div class="sec-title">${esc(t('covers.search.btn'))}</div>
+                    <div class="inline-form">
+                        <input id="customQueryInput" type="text" value="${esc(item.customSearchQuery || '')}"
+                               placeholder="${esc(t('covers.search.query.placeholder'))}">
+                        <button type="button" class="btn soft" id="runSearchBtn" ${searching ? 'disabled' : ''}>${esc(t('covers.search.btn'))}</button>
+                    </div>
+                    ${noteHtml}
+                </div>
+                <div class="tool-panel">
+                    <div class="sec-title">${esc(t('covers.upload.title'))}</div>
+                    <label class="dropzone" id="uploadDropzone">
+                        <input type="file" id="uploadInput" accept="image/*" hidden>
+                        <span id="uploadLabel">${esc(t('covers.upload.drop'))}</span>
+                    </label>
+                    <div class="inline-form">
+                        <input id="coverUrlInput" type="url" placeholder="${esc(t('covers.url.placeholder'))}">
+                        <button type="button" class="btn ghost" id="fetchUrlBtn">${esc(t('covers.url.btn'))}</button>
+                    </div>
+                </div>
+            </div>` : '';
+
+        const files = item.files || [];
+        const trackRows = files.map((f, idx) => `<tr>
+            <td>${idx + 1}</td>
+            <td>${esc(f.title || f.fileName || '')}</td>
+            <td>${esc(f.artist || '')}</td>
+            <td style="font-family:var(--mono);font-size:12px;">${esc(f.fileName || '')}</td>
+            <td style="text-align:right;">${fmtDur(f.duration)}</td>
+        </tr>`).join('');
+
+        const pipeKey = 'covers.pipeline.' + (item.sourcePipeline || 'AUTO_SCAN');
+        body.innerHTML = `
+            <button type="button" class="btn ghost sm back-btn" id="backQueueBtn">← ${esc(t('review.back.queue'))}</button>
+            ${alertHtml}
+            ${liveSearchHtml}
+            <div class="album-head">
+                <div>
+                    <h2 class="album-title">${esc(item.albumTitle || item.folderName || '')}</h2>
+                    <div class="album-meta">
+                        <span>${esc(item.albumArtist || '')}</span>
+                        ${item.releaseDate ? `<span>· ${esc(item.releaseDate)}</span>` : ''}
+                        <span>· ${files.length} ${esc(t('unit.tracks', '首'))}</span>
+                        <span class="pill ${isLib ? 'library' : 'staged'}">${esc(isLib ? t('covers.mode.library') : t('covers.mode.staged'))}</span>
+                        <span class="pill">${esc(t(pipeKey, item.sourcePipeline || ''))}</span>
+                    </div>
+                    <div class="album-path">${esc(item.folderPath || '')}</div>
+                    ${item.resolutionNote ? `<div class="sec-hint" style="margin-top:6px;">${esc(item.resolutionNote)}</div>` : ''}
+                </div>
+            </div>
+
+            <section>
+                <div class="sec-head">
+                    <span class="sec-title">${esc(tf('covers.candidates.title', candidates.length))}</span>
+                    <span class="sec-hint">${esc(t('covers.candidates.hint'))}</span>
+                </div>
+                ${cardsHtml}
+            </section>
+
+            ${toolsHtml}
+
+            <details>
+                <summary style="cursor:pointer;font-weight:600;font-size:13px;">${esc(tf('covers.tracks.title', files.length))}</summary>
+                <div class="table-wrap" style="margin-top:10px;">
+                    <table class="table">
+                        <thead><tr><th>#</th><th>${esc(t('review.table.track', '曲名'))}</th><th>${esc(t('review.table.artist', '艺术家'))}</th><th>${esc(t('review.table.filename', '文件名'))}</th><th style="text-align:right;">${esc(t('review.table.length', '时长'))}</th></tr></thead>
+                        <tbody>${trackRows}</tbody>
+                    </table>
+                </div>
+            </details>
+        `;
+
+        if (isPending) {
+            dec.hidden = false;
+            dec.innerHTML = `
+                <div class="decision-left">
+                    <button type="button" class="btn primary" id="applyCoverBtn" ${(!state.selectedSha || state.busy) ? 'disabled' : ''}>
+                        ${esc(isLib ? t('covers.action.apply.library') : t('covers.action.apply.staged'))}
+                    </button>
+                    <button type="button" class="btn ghost" id="confirmNoCoverBtn" ${state.busy ? 'disabled' : ''}>
+                        ${esc(isLib ? t('covers.action.nocover.library') : t('covers.action.nocover.staged'))}
+                    </button>
+                </div>
+                <div class="decision-right">
+                    <button type="button" class="btn danger-soft" id="rejectBtn" ${state.busy ? 'disabled' : ''}>${esc(t('covers.action.reject'))}</button>
+                </div>`;
+        } else if (item.status === 'REJECTED') {
+            dec.hidden = false;
+            dec.innerHTML = `<div class="decision-left">
+                <button type="button" class="btn soft" id="unrejectBtn" ${state.busy ? 'disabled' : ''}>${esc(t('covers.action.unreject'))}</button>
+            </div>`;
+        } else {
+            dec.hidden = true;
+        }
+
+        bindDetailEvents();
+    }
+
+    function bindDetailEvents() {
+        const backBtn = $('backQueueBtn');
+        if (backBtn) backBtn.onclick = () => { $('desk').dataset.view = 'queue'; };
+
+        $('detail').querySelectorAll('[data-select-sha]').forEach(el => {
+            el.addEventListener('click', e => {
+                if (e.target.closest('[data-zoom-url]')) return;
+                state.selectedSha = el.dataset.selectSha;
+                renderDetail();
+            });
+        });
+        $('detail').querySelectorAll('[data-zoom-url]').forEach(btn => {
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+                $('lightboxImg').src = btn.dataset.zoomUrl;
+                $('lightbox').classList.add('show');
+            });
+        });
+
+        const searchBtn = $('runSearchBtn');
+        if (searchBtn) searchBtn.onclick = runCoverSearch;
+
+        const uploadInput = $('uploadInput');
+        const dropzone = $('uploadDropzone');
+        if (uploadInput && dropzone) {
+            uploadInput.onchange = () => {
+                if (uploadInput.files && uploadInput.files[0]) uploadFile(uploadInput.files[0]);
+            };
+            dropzone.ondragover = e => { e.preventDefault(); dropzone.classList.add('dragover'); };
+            dropzone.ondragleave = () => dropzone.classList.remove('dragover');
+            dropzone.ondrop = e => {
+                e.preventDefault();
+                dropzone.classList.remove('dragover');
+                const file = e.dataTransfer?.files?.[0];
+                if (file) uploadFile(file);
+            };
+        }
+
+        const fetchUrlBtn = $('fetchUrlBtn');
+        if (fetchUrlBtn) fetchUrlBtn.onclick = fetchByUrl;
+
+        const applyBtn = $('applyCoverBtn');
+        if (applyBtn) applyBtn.onclick = () => executeApplyCover();
+
+        const noCoverBtn = $('confirmNoCoverBtn');
+        if (noCoverBtn) noCoverBtn.onclick = () => confirmAndRunNoCover();
+
+        const rejectBtn = $('rejectBtn');
+        if (rejectBtn) rejectBtn.onclick = () => confirmAndRunReject();
+
+        const unrejectBtn = $('unrejectBtn');
+        if (unrejectBtn) unrejectBtn.onclick = () => runUnreject();
+    }
+
+    async function loadList({ keepSelection = true } = {}) {
+        const status = $('statusFilter').value;
+        const q = $('searchInput').value.trim();
+        const params = new URLSearchParams({ status });
+        if (q) params.set('q', q);
+        const data = await api('/api/covers/list?' + params.toString());
+        state.items = data.items || [];
+        const rows = visibleItems();
+        let nextId = null;
+        const hashId = readHashItemId();
+        if (hashId && rows.some(x => x.id === hashId)) {
+            nextId = hashId;
+            history.replaceState(null, '', 'covers.html');
+        } else if (keepSelection && state.currentId && rows.some(x => x.id === state.currentId)) {
+            nextId = state.currentId;
+        } else if (rows.length) {
+            nextId = rows[0].id;
+        }
+        renderList();
+        if (nextId) {
+            await selectItem(nextId, false);
+        } else {
+            state.currentId = null;
+            state.item = null;
+            state.selectedSha = null;
+            renderDetail();
+        }
+        if (window.Shell) Shell.refreshCounts();
+    }
+
+    async function selectItem(id, openMobileDetail = true) {
+        state.currentId = id;
+        state.alert = null;
+        renderList();
+        if (openMobileDetail) $('desk').dataset.view = 'detail';
+        try {
+            const data = await api('/api/covers/item?id=' + encodeURIComponent(id));
+            state.item = data.item;
+            const cands = state.item.coverCandidates || [];
+            if (state.item.selectedCoverSha256 && cands.some(c => c.sha256 === state.item.selectedCoverSha256)) {
+                state.selectedSha = state.item.selectedCoverSha256;
+            } else if (state.selectedSha && cands.some(c => c.sha256 === state.selectedSha)) {
+                // keep current selection
+            } else {
+                state.selectedSha = cands.length ? cands[0].sha256 : null;
+            }
+            renderDetail();
+        } catch (e) {
+            state.alert = { tone: 'err', text: e.message };
+            renderDetail();
+        }
+    }
+
+    async function runCoverSearch() {
+        if (!state.item) return;
+        const customQuery = $('customQueryInput') ? $('customQueryInput').value.trim() : '';
+        try {
+            await api('/api/covers/search', {
+                method: 'POST',
+                body: JSON.stringify({ id: state.item.id, customQuery })
+            });
+            toast(t('covers.search.queued'));
+            if (window.SearchQueue) await SearchQueue.refresh();
+            renderList();
+            renderDetail();
+        } catch (e) {
+            toast(e.message);
+        }
+    }
+
+    async function uploadFile(file) {
+        if (!state.item) return;
+        const label = $('uploadLabel');
+        if (label) label.textContent = t('covers.upload.uploading');
+        try {
+            const data = await api('/api/covers/upload?id=' + encodeURIComponent(state.item.id), {
+                method: 'POST',
+                headers: {
+                    'Content-Type': file.type || 'application/octet-stream',
+                    'X-File-Name': encodeURIComponent(file.name || 'upload.jpg')
+                },
+                body: file
+            });
+            state.item = data.item;
+            state.selectedSha = data.candidate ? data.candidate.sha256 : state.selectedSha;
+            state.alert = { tone: 'ok', text: t('covers.upload.done') };
+            renderDetail();
+            loadList({ keepSelection: true });
+        } catch (e) {
+            state.alert = { tone: 'err', text: e.message };
+            renderDetail();
+        }
+    }
+
+    async function fetchByUrl() {
+        if (!state.item) return;
+        const url = $('coverUrlInput') ? $('coverUrlInput').value.trim() : '';
+        if (!url) return;
+        const btn = $('fetchUrlBtn');
+        if (btn) btn.disabled = true;
+        try {
+            const data = await api('/api/covers/fetch-url', {
+                method: 'POST',
+                body: JSON.stringify({ id: state.item.id, url })
+            });
+            state.item = data.item;
+            state.selectedSha = data.candidate ? data.candidate.sha256 : state.selectedSha;
+            state.alert = { tone: 'ok', text: t('covers.url.done') };
+            renderDetail();
+            loadList({ keepSelection: true });
+        } catch (e) {
+            state.alert = { tone: 'err', text: e.message };
+            renderDetail();
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    async function executeApplyCover(duplicatePolicy) {
+        if (!state.item || !state.selectedSha || state.busy) return;
+        state.busy = true;
+        state.alert = null;
+        renderDetail();
+        const isLib = state.item.mode === 'LIBRARY_EXISTING';
+        try {
+            await api('/api/covers/apply', {
+                method: 'POST',
+                body: JSON.stringify({
+                    id: state.item.id,
+                    selectedCoverSha256: state.selectedSha,
+                    duplicatePolicy
+                })
+            });
+            toast(isLib ? t('covers.applied.library.ok') : t('covers.applied.ok'));
+            state.busy = false;
+            await loadList({ keepSelection: false });
+        } catch (e) {
+            state.busy = false;
+            if (e.message === 'online.duplicate.exists' && Array.isArray(e.data?.duplicates)) {
+                openDuplicateDialog({ type: 'apply' }, e.data.duplicates);
+                renderDetail();
+                return;
+            }
+            state.alert = { tone: 'err', text: e.message };
+            renderDetail();
+        }
+    }
+
+    async function confirmAndRunNoCover() {
+        if (!state.item || state.busy) return;
+        const isLib = state.item.mode === 'LIBRARY_EXISTING';
+        const ok = await ask(
+            t('covers.confirm.nocover.title'),
+            isLib ? t('covers.confirm.nocover.library.desc') : t('covers.confirm.nocover.staged.desc'),
+            isLib ? t('covers.action.nocover.library') : t('covers.action.nocover.staged')
+        );
+        if (!ok) return;
+        await executeNoCover();
+    }
+
+    async function executeNoCover(duplicatePolicy) {
+        if (!state.item || state.busy) return;
+        state.busy = true;
+        state.alert = null;
+        renderDetail();
+        try {
+            await api('/api/covers/confirm-no-cover', {
+                method: 'POST',
+                body: JSON.stringify({ id: state.item.id, duplicatePolicy })
+            });
+            toast(t('covers.nocover.ok'));
+            state.busy = false;
+            await loadList({ keepSelection: false });
+        } catch (e) {
+            state.busy = false;
+            if (e.message === 'online.duplicate.exists' && Array.isArray(e.data?.duplicates)) {
+                openDuplicateDialog({ type: 'nocover' }, e.data.duplicates);
+                renderDetail();
+                return;
+            }
+            state.alert = { tone: 'err', text: e.message };
+            renderDetail();
+        }
+    }
+
+    async function confirmAndRunReject() {
+        if (!state.item || state.busy) return;
+        const isLib = state.item.mode === 'LIBRARY_EXISTING';
+        const ok = await ask(
+            t('covers.confirm.reject.title'),
+            isLib ? t('covers.confirm.reject.library.desc') : t('covers.confirm.reject.staged.desc'),
+            t('covers.action.reject')
+        );
+        if (!ok) return;
+        state.busy = true;
+        renderDetail();
+        try {
+            await api('/api/covers/reject', { method: 'POST', body: JSON.stringify({ id: state.item.id }) });
+            toast(t('covers.rejected.ok'));
+            state.busy = false;
+            await loadList({ keepSelection: false });
+        } catch (e) {
+            state.busy = false;
+            state.alert = { tone: 'err', text: e.message };
+            renderDetail();
+        }
+    }
+
+    async function runUnreject() {
+        if (!state.item || state.busy) return;
+        state.busy = true;
+        renderDetail();
+        try {
+            await api('/api/covers/unreject', { method: 'POST', body: JSON.stringify({ id: state.item.id }) });
+            toast(t('covers.unrejected.ok'));
+            state.busy = false;
+            await loadList({ keepSelection: false });
+        } catch (e) {
+            state.busy = false;
+            state.alert = { tone: 'err', text: e.message };
+            renderDetail();
+        }
+    }
+
+    // ==================== 手动扫描输出音乐库 ====================
+    async function pollScanStatus() {
+        try {
+            const s = await api('/api/covers/scan/status');
+            renderScanStatus(s);
+            if (s.running) {
+                state.wasScanRunning = true;
+                clearTimeout(state.scanPollTimer);
+                state.scanPollTimer = setTimeout(pollScanStatus, 1200);
+            } else if (state.wasScanRunning) {
+                state.wasScanRunning = false;
+                await loadList({ keepSelection: true });
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    function renderScanStatus(s) {
+        const bar = $('scanBar');
+        const text = $('scanText');
+        const cancelBtn = $('scanCancelBtn');
+        const startBtn = $('scanLibraryBtn');
+        if (!s || (!s.running && !s.message)) {
+            bar.hidden = true;
+            startBtn.disabled = false;
+            return;
+        }
+        bar.hidden = false;
+        if (s.running) {
+            startBtn.disabled = true;
+            cancelBtn.hidden = false;
+            text.textContent = tf('covers.scan.running', s.currentAlbum || '...', s.scannedAlbums || 0, s.foundMissing || 0);
+        } else {
+            startBtn.disabled = false;
+            cancelBtn.hidden = true;
+            text.textContent = s.message || '';
+        }
+    }
+
+    async function startLibraryScan() {
+        try {
+            const data = await api('/api/covers/scan/start', { method: 'POST', body: '{}' });
+            toast(t('covers.scan.started'));
+            state.wasScanRunning = true;
+            renderScanStatus(data.scan);
+            pollScanStatus();
+        } catch (e) {
+            toast(e.message);
+            pollScanStatus();
+        }
+    }
+
+    async function cancelLibraryScan() {
+        try {
+            await api('/api/covers/scan/cancel', { method: 'POST', body: '{}' });
+            toast(t('covers.scan.cancelled'));
+        } catch (e) { toast(e.message); }
+    }
+
+    async function batchSearchCovers() {
+        try {
+            const res = await api('/api/covers/batch-search', { method: 'POST', body: '{}' });
+            const n = Number(res.enqueued) || 0;
+            toast(n > 0 ? tf('covers.batch.search.done', n) : t('covers.batch.search.none'));
+            if (window.SearchQueue) await SearchQueue.refresh();
+        } catch (e) { toast(e.message); }
+    }
+
+    // ==================== 弹窗 ====================
+    function ask(title, bodyText, okLabel) {
+        $('askTitle').textContent = title;
+        $('askBody').innerHTML = `<div style="font-size:13.5px;color:var(--text-soft);line-height:1.6;">${esc(bodyText)}</div>`;
+        $('askOk').textContent = okLabel;
+        $('askDialog').classList.add('show');
+        return new Promise(resolve => { state.askResolve = resolve; });
+    }
+
+    function closeAsk(result) {
+        $('askDialog').classList.remove('show');
+        const r = state.askResolve;
+        state.askResolve = null;
+        if (r) r(result);
+    }
+
+    function openDuplicateDialog(ctx, duplicates) {
+        state.dupContext = ctx;
+        $('duplicateList').innerHTML = duplicates.map(d =>
+            `<div style="font-size:12.5px;"><strong style="font-family:var(--mono);word-break:break-all;">${esc(d.path)}</strong></div>`
+        ).join('');
+        $('dupReplaceBtn').disabled = !duplicates.some(d => d.replaceable);
+        $('duplicateDialog').classList.add('show');
+    }
+
+    function closeDuplicateDialog(policy) {
+        $('duplicateDialog').classList.remove('show');
+        const ctx = state.dupContext;
+        state.dupContext = null;
+        if (!policy || !ctx) return;
+        if (ctx.type === 'apply') executeApplyCover(policy);
+        else if (ctx.type === 'nocover') executeNoCover(policy);
+    }
+
+    function readHashItemId() {
+        const m = location.hash.match(/item=([^&]+)/);
+        return m ? decodeURIComponent(m[1]) : null;
+    }
+
+    // ==================== 事件绑定与初始化 ====================
+    $('list').addEventListener('click', e => {
+        const btn = e.target.closest('.q-item');
+        if (btn && btn.dataset.id) selectItem(btn.dataset.id, true);
+    });
+    $('modeChips').addEventListener('click', e => {
+        const chip = e.target.closest('.chip');
+        if (!chip) return;
+        state.modeFilter = chip.dataset.mode || 'ALL';
+        renderList();
+        const rows = visibleItems();
+        if (rows.length && !rows.some(x => x.id === state.currentId)) {
+            selectItem(rows[0].id, false);
+        } else if (!rows.length) {
+            state.currentId = null;
+            state.item = null;
+            renderDetail();
+        }
+    });
+    $('statusFilter').addEventListener('change', () => loadList({ keepSelection: false }));
+    let searchTimer = null;
+    $('searchInput').addEventListener('input', () => {
+        $('searchClear').hidden = !$('searchInput').value;
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => loadList({ keepSelection: true }), 220);
+    });
+    $('searchClear').addEventListener('click', () => {
+        $('searchInput').value = '';
+        $('searchClear').hidden = true;
+        loadList({ keepSelection: true });
+    });
+    $('refreshBtn').addEventListener('click', () => loadList({ keepSelection: true }));
+    $('scanLibraryBtn').addEventListener('click', startLibraryScan);
+    $('scanCancelBtn').addEventListener('click', cancelLibraryScan);
+    $('batchSearchBtn').addEventListener('click', batchSearchCovers);
+    $('askCancel').addEventListener('click', () => closeAsk(false));
+    $('askOk').addEventListener('click', () => closeAsk(true));
+    $('dupCancelBtn').addEventListener('click', () => closeDuplicateDialog(null));
+    $('dupKeepBtn').addEventListener('click', () => closeDuplicateDialog('KEEP_BOTH'));
+    $('dupReplaceBtn').addEventListener('click', () => closeDuplicateDialog('REPLACE'));
+
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') {
+            $('lightbox').classList.remove('show');
+            if ($('askDialog').classList.contains('show')) closeAsk(false);
+            if ($('duplicateDialog').classList.contains('show')) closeDuplicateDialog(null);
+            return;
+        }
+        const tag = (e.target && e.target.tagName) || '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (e.key === '/') { e.preventDefault(); $('searchInput').focus(); return; }
+        if (e.key === 'j' || e.key === 'k') {
+            const rows = visibleItems();
+            if (!rows.length) return;
+            const idx = rows.findIndex(x => x.id === state.currentId);
+            const next = e.key === 'j' ? Math.min(rows.length - 1, idx + 1) : Math.max(0, idx - 1);
+            if (rows[next]) selectItem(rows[next].id, false);
+        }
+    });
+
+    window.addEventListener('mat:search-queue', async ev => {
+        renderList();
+        const newly = ev.detail?.newlyFinished || [];
+        if (newly.some(t => t.origin === 'MISSING_COVER_AUTO' || t.origin === 'MISSING_COVER_MANUAL')) {
+            await loadList({ keepSelection: true });
+        } else if (state.item) {
+            renderDetail();
+        }
+    });
+
+    (async () => {
+        if (window.I18n) await I18n.init();
+        if (!(await ensureAuth())) return;
+        if (window.SearchQueue) {
+            SearchQueue.init({
+                getCsrf: () => state.csrfToken,
+                onToast: toast,
+                onNavigateCover: id => selectItem(id, true)
+            });
+        }
+        await loadList({ keepSelection: false });
+        pollScanStatus();
+    })();
+})();
+</script>
+</body>
+</html>

@@ -51,8 +51,25 @@
         }
     }
 
+    // 「缺少封面」积压计数
+    async function refreshCoversCount() {
+        const badge = document.getElementById('coversCount');
+        if (!badge) return;
+        try {
+            const resp = await fetch('/api/covers/stats', { credentials: 'same-origin' });
+            if (!resp.ok) throw new Error('covers stats unavailable');
+            const data = await resp.json();
+            const pending = Number(data.pending) || 0;
+            badge.textContent = pending > 99 ? '99+' : String(pending);
+            badge.classList.toggle('show', pending > 0);
+        } catch (e) {
+            badge.classList.remove('show');
+        }
+    }
+
     function refreshCounts() {
         refreshReviewCount();
+        refreshCoversCount();
         refreshRecoveryCount();
     }
 
@@ -61,5 +78,5 @@
         setInterval(refreshCounts, 30000);
     });
 
-    global.Shell = { toggleNav, refreshReviewCount, refreshRecoveryCount, refreshCounts };
+    global.Shell = { toggleNav, refreshReviewCount, refreshCoversCount, refreshRecoveryCount, refreshCounts };
 })(window);

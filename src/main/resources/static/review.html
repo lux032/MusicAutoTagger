@@ -408,6 +408,11 @@
                 <span data-i18n="web.review">待确认</span>
                 <span class="nav-count" id="reviewCount">0</span>
             </a>
+            <a class="side-link" href="covers.html" id="navCovers">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                <span data-i18n="web.covers">缺少封面</span>
+                <span class="nav-count" id="coversCount">0</span>
+            </a>
             <a class="side-link" href="recovery.html" id="navRecovery">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>
                 <span data-i18n="web.recovery">重新识别</span>
@@ -534,6 +539,10 @@
                     <button class="btn ghost sm" type="button" id="noCoverBtn" data-i18n="review.online.cover.none">不使用封面</button>
                 </div>
                 <div id="coverChoices" class="cover-grid"><span class="hint" data-i18n="review.online.cover.loading">正在加载可用封面…</span></div>
+                <label class="hint" style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
+                    <input type="checkbox" id="ocConfirmNoCover" style="width:auto;">
+                    <span data-i18n="review.online.cover.confirm.none">明确不使用封面，直接无封面入库（勾选后不转入「缺少封面」等待）</span>
+                </label>
             </div>
             <div class="dialog-error" id="onlineError"></div>
         </div>
@@ -1745,6 +1754,12 @@
         const filter = $('statusFilter').value;
         const resolvedOut = item && item.status !== beforeStatus && filter !== 'ALL' && item.status !== filter;
 
+        if (data.movedToMissingCover) {
+            toast(folderName + ' — ' + t('review.moved.to.covers'));
+            await loadList({ keepSelection: false });
+            if (window.Shell) Shell.refreshCounts();
+            return;
+        }
         if (item && item.status === 'PENDING_REVIEW' && key !== 'unreject') {
             // 仍在待确认：搜索/展开/LLM 正常；确认类操作说明部分失败，必须持续提示
             if (key === 'llm') {
@@ -2188,6 +2203,11 @@
             el.setAttribute('aria-pressed', on ? 'true' : 'false');
         });
         $('noCoverBtn').classList.toggle('soft', !sha);
+        const cb = $('ocConfirmNoCover');
+        if (cb) {
+            if (sha) { cb.checked = false; cb.disabled = true; }
+            else { cb.disabled = false; }
+        }
     }
 
     async function loadCoverChoices(itemId, candidateId) {
@@ -2224,6 +2244,7 @@
         $('ocDate').value = c.releaseDate || '';
         $('ocEdition').value = c.edition || '';
         $('ocDir').value = '';
+        if ($('ocConfirmNoCover')) { $('ocConfirmNoCover').checked = false; $('ocConfirmNoCover').disabled = false; }
         $('onlineError').style.display = 'none';
         chooseCover(null);
         openOverlay('onlineDialog');
@@ -2248,7 +2269,8 @@
             releaseDate: $('ocDate').value.trim(),
             edition: $('ocEdition').value.trim(),
             archiveDirectoryName: $('ocDir').value.trim(),
-            selectedCoverSha256: pendingCoverSha256
+            selectedCoverSha256: pendingCoverSha256,
+            confirmNoCover: !pendingCoverSha256 && !!$('ocConfirmNoCover')?.checked
         };
         if (!payload.albumTitle) {
             const err = $('onlineError');

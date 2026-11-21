@@ -5,13 +5,14 @@ import lombok.Data;
 /** Lightweight cover choice persisted in the review queue; image bytes stay on disk. */
 @Data
 public class CoverCandidateView {
-    public enum Origin { MUSICBRAINZ, FOLDER, EMBEDDED, LLM_URL }
+    public enum Origin { MUSICBRAINZ, FOLDER, EMBEDDED, LLM_URL, ITUNES, USER_UPLOAD, USER_URL }
 
     private String sha256;
     private Origin origin;
     private String originLabel;
     private String sourceUrl;
     private String sourceFileName;
+    private String note;
     private int width;
     private int height;
     private long bytes;

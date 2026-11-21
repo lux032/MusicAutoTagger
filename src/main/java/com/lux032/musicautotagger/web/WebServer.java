@@ -151,6 +151,17 @@ public class WebServer {
             servletHandler.addServlet(new ServletHolder(reviewServlet), "/api/review/*");
         }
 
+        // 注册「缺少封面」专用 API（补图 / 上传 / AI+iTunes 搜索 / 确认无封面 / 手动库扫描）
+        if (lifecycleManager != null && lifecycleManager.getCoverMissingService() != null && reviewQueueService != null) {
+            servletHandler.addServlet(
+                new ServletHolder(new CoverMissingServlet(
+                    config,
+                    reviewQueueService,
+                    lifecycleManager.getCoverMissingService(),
+                    recoveryService == null ? null : recoveryService.getSearchQueueService())),
+                "/api/covers/*");
+        }
+
         if (lifecycleManager != null && lifecycleManager.getLyricsBackfillService() != null) {
             servletHandler.addServlet(new ServletHolder(new LyricsBackfillServlet(lifecycleManager.getLyricsBackfillService())),
                 "/api/lyrics-backfill/*");

@@ -1727,5 +1727,53 @@ public class TagWriterService {
         }
     }
 
+    /**
+     * 原子写入封面到已归档音频文件（先在同目录写临时副本再原子替换，避免中途失败损坏原文件）。
+     */
+    public boolean embedCoverAtomically(File audioFile, byte[] coverArtData) {
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            if (audioFile == null || !audioFile.isFile() || coverArtData == null || coverArtData.length == 0) {
+                return false;
+            }
+            if (FlacId3Stripper.hasUnsafeId3(audioFile)) {
+                log.warn("跳过无法安全保护 ID3 歌词的 FLAC: {}", audioFile);
+                return false;
+            }
+            Path sourcePath = audioFile.toPath();
+            String name = audioFile.getName();
+            int dot = name.lastIndexOf('.');
+            String extension = dot >= 0 ? name.substring(dot) : "";
+            Path staged = null;
+            try {
+                staged = Files.createTempFile(sourcePath.getParent(), ".cover-write-", extension);
+                Files.copy(sourcePath, staged, StandardCopyOption.REPLACE_EXISTING);
+                File stagedFile = staged.toFile();
+                FlacId3Stripper.stripId3FromFlac(stagedFile);
+                AudioFile audioFileObj = AudioFileIO.read(stagedFile);
+                Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
+                applyArtwork(tag, coverArtData);
+                audioFileObj.commit();
+                ensureWritablePermissions(staged, false);
+                try {
+                    Files.move(staged, sourcePath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(staged, sourcePath, StandardCopyOption.REPLACE_EXISTING);
+                }
+                log.info("原子补写封面成功: {}", audioFile.getName());
+                return true;
+            } catch (Exception e) {
+                log.error("原子补写封面失败: {}", audioFile.getName(), e);
+                return false;
+            } finally {
+                if (staged != null) {
+                    try {
+                        Files.deleteIfExists(staged);
+                    } catch (IOException ignored) {
+                    }
+                }
+            }
+        }
+    }
+
 }
 

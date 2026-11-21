@@ -16,6 +16,7 @@
     let tickTimer = null;
     let getCsrfFn = () => null;
     let onNavigateReviewFn = null;
+    let onNavigateCoverFn = null;
     let onToastFn = null;
     let snapshot = null;
     let snapshotReceivedAt = 0;
@@ -120,6 +121,11 @@
             case 'ROUND2_NATIVE_SEARCH': return t('sq.stage.ROUND2_NATIVE_SEARCH');
             case 'ROUND2_NATIVE_RETRY': return tf('sq.stage.ROUND2_NATIVE_RETRY', cur || 1, cit || 1);
             case 'ROUND2_MATCHING': return t('sq.stage.ROUND2_MATCHING');
+            case 'COVER_LOCAL_CHECK': return t('sq.stage.COVER_LOCAL_CHECK');
+            case 'COVER_ITUNES_SEARCH': return t('sq.stage.COVER_ITUNES_SEARCH');
+            case 'COVER_AI_SEARCH': return t('sq.stage.COVER_AI_SEARCH');
+            case 'COVER_DOWNLOADING': return tf('sq.stage.COVER_DOWNLOADING', cur, tot || 1);
+            case 'COVER_DONE': return t('sq.stage.COVER_DONE');
             default: return t('sq.stage.QUEUED');
         }
     }
@@ -141,10 +147,17 @@
         return t('sq.short.r2');
     }
 
+    function isCoverOrigin(origin) {
+        return origin === 'MISSING_COVER_AUTO' || origin === 'MISSING_COVER_MANUAL';
+    }
+
     function resultSummary(task) {
         if (!task) return '';
         const sec = elapsedSeconds(task);
         if (task.status === 'SUCCEEDED') {
+            if (isCoverOrigin(task.origin)) {
+                return tf('sq.result.covers.found', task.candidateCount || 0, sec);
+            }
             if ((task.candidateCount || 0) > 0) {
                 const cov = Math.round((Number(task.bestCoverage) || 0) * 100) + '%';
                 return tf('sq.result.found', task.candidateCount, cov, sec);
@@ -173,6 +186,7 @@
     }
 
     function providerLabel(provider) {
+        if (provider === 'itunes') return t('sq.provider.itunes', 'iTunes');
         return provider === 'tavily' ? t('sq.provider.tavily') : t('sq.provider.native');
     }
 
@@ -255,6 +269,15 @@
     function navigateReview(reviewItemId, taskId) {
         if (taskId) markRead(taskId);
         closeDrawer();
+        const task = allTasks().find(x => (taskId && x.id === taskId) || (reviewItemId && x.reviewItemId === reviewItemId));
+        if (task && isCoverOrigin(task.origin)) {
+            if (onNavigateCoverFn) {
+                onNavigateCoverFn(reviewItemId, taskId);
+            } else {
+                location.href = 'covers.html#item=' + encodeURIComponent(reviewItemId);
+            }
+            return;
+        }
         if (onNavigateReviewFn) {
             onNavigateReviewFn(reviewItemId, taskId);
         } else {
@@ -627,6 +650,7 @@
         if (options.getCsrf) getCsrfFn = options.getCsrf;
         else if (options.csrfToken) { const tok = options.csrfToken; getCsrfFn = () => tok; }
         if (options.onNavigateReview) onNavigateReviewFn = options.onNavigateReview;
+        if (options.onNavigateCover) onNavigateCoverFn = options.onNavigateCover;
         if (options.onToast) onToastFn = options.onToast;
         ensureChrome();
         if (!initialized) {

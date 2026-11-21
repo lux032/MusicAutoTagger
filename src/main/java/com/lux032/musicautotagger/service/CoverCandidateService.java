@@ -1,32 +1,47 @@
 package com.lux032.musicautotagger.service;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
+import com.lux032.musicautotagger.service.llm.LlmClient;
 import com.lux032.musicautotagger.util.ProcessRunner;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
 import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 
 /** Collects cover choices on demand and keeps their bytes outside review JSON. */
 @Slf4j
 public class CoverCandidateService implements AutoCloseable {
     private static final int MIN_SCORE = 80;
     private static final long TTL_MILLIS = 7L * 86_400_000L;
+    private static final int MAX_ITUNES_CANDIDATES = 5;
     private final MusicConfig config;
     private final MusicBrainzClient musicBrainzClient;
     private final CoverArtService coverArtService;
     private final CoverArtCache coverArtCache;
     private final UntrustedImageFetcher fetcher = new UntrustedImageFetcher();
+    private final HttpClient httpClient;
     private final Path cacheDirectory;
 
     public CoverCandidateService(MusicConfig config, MusicBrainzClient musicBrainzClient,
@@ -35,8 +50,13 @@ public class CoverCandidateService implements AutoCloseable {
         this.musicBrainzClient = musicBrainzClient;
         this.coverArtService = coverArtService;
         this.coverArtCache = coverArtCache;
+        this.httpClient = LlmClient.buildHttpClient(config);
         this.cacheDirectory = CoverCandidateCache.directory(config);
         cleanupExpired();
+    }
+
+    public CoverArtService getCoverArtService() {
+        return coverArtService;
     }
 
     public List<CoverCandidateView> collect(ReviewItem item, ReviewItem.OnlineCandidate candidate,
@@ -92,36 +112,287 @@ public class CoverCandidateService implements AutoCloseable {
         return one.stream().findFirst();
     }
 
+    /**
+     * 校验并按项目统一规则（ImageCompressor: 最大边 1200px、<=2MB JPEG）压缩用户上传的封面图片。
+     */
+    public Optional<CoverCandidateView> ingestUploadedBytes(byte[] rawBytes, String originalFileName) {
+        if (rawBytes == null || rawBytes.length == 0 || rawBytes.length > ImageCompressor.MAX_INPUT_BYTES) {
+            return Optional.empty();
+        }
+        cleanupExpired();
+        List<CoverCandidateView> one = new ArrayList<>();
+        String safeName = meaningful(originalFileName) ? new File(originalFileName).getName() : "upload.jpg";
+        add(one, rawBytes, CoverCandidateView.Origin.USER_UPLOAD, "本地上传", null, safeName, null, null);
+        return one.stream().findFirst();
+    }
+
+    /**
+     * 通过 SSRF 防护下载器拉取图片 URL 并走统一压缩规则入候选缓存。
+     */
+    public Optional<CoverCandidateView> ingestFromUrl(String url, CoverCandidateView.Origin origin,
+                                                      String label, String note) {
+        if (!meaningful(url)) {
+            return Optional.empty();
+        }
+        cleanupExpired();
+        String trimmed = url.trim();
+        Optional<UntrustedImageFetcher.Result> fetched = fetcher.fetch(trimmed);
+        if (fetched.isEmpty()) {
+            return Optional.empty();
+        }
+        List<CoverCandidateView> one = new ArrayList<>();
+        String effectiveLabel = meaningful(label) ? label : domain(trimmed);
+        addInspected(one, fetched.get(), origin, effectiveLabel, trimmed, null, null, note);
+        return one.stream().findFirst();
+    }
+
+    /**
+     * 按已知 Release Group ID 重查 Cover Art Archive（应对当时网络失败或社区后续补图）。
+     */
+    public Optional<CoverCandidateView> fetchMusicBrainzCoverByRgid(String releaseGroupId) {
+        if (!meaningful(releaseGroupId) || musicBrainzClient == null) {
+            return Optional.empty();
+        }
+        try {
+            MusicBrainzClient.CoverArtResolution resolution =
+                musicBrainzClient.resolveCoverArtByReleaseGroupId(releaseGroupId);
+            if (resolution == null || !meaningful(resolution.getCoverArtUrl())) {
+                return Optional.empty();
+            }
+            byte[] data = musicBrainzClient.downloadCoverArt(resolution.getCoverArtUrl());
+            if (data == null || data.length == 0) {
+                return Optional.empty();
+            }
+            List<CoverCandidateView> one = new ArrayList<>();
+            add(one, data, CoverCandidateView.Origin.MUSICBRAINZ, "MusicBrainz",
+                resolution.getCoverArtUrl(), null, releaseGroupId, null);
+            return one.stream().findFirst();
+        } catch (Exception e) {
+            log.debug("MusicBrainz rgid cover fetch failed ({}): {}", releaseGroupId, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 收集本地封面候选（专辑目录图片 + 同专辑其他曲目已有的内嵌封面），全部走统一压缩规则。
+     */
+    public List<CoverCandidateView> collectLocalCandidates(List<File> audioFiles, File albumRoot) {
+        cleanupExpired();
+        List<CoverCandidateView> result = new ArrayList<>();
+        if (albumRoot != null && albumRoot.isDirectory()) {
+            File coverFile = coverArtService.findCoverFileInDirectory(albumRoot);
+            if (coverFile != null) {
+                try {
+                    if (Files.size(coverFile.toPath()) <= ImageCompressor.MAX_INPUT_BYTES) {
+                        add(result, Files.readAllBytes(coverFile.toPath()), CoverCandidateView.Origin.FOLDER,
+                            albumRoot.getName(), null, coverFile.getName(), null, null);
+                    }
+                } catch (Exception e) {
+                    log.debug("Unable to read local cover {}: {}", coverFile, e.getMessage());
+                }
+            }
+        }
+        if (audioFiles != null) {
+            for (File audio : audioFiles) {
+                if (audio == null || !audio.isFile()) continue;
+                byte[] embedded = coverArtService.extractEmbeddedCover(audio);
+                if (add(result, embedded, CoverCandidateView.Origin.EMBEDDED, audio.getName(),
+                        null, audio.getName(), null, null)) {
+                    break;
+                }
+            }
+        }
+        return deduplicate(result);
+    }
+
+    /**
+     * 查询 iTunes / Apple Music 公开免费接口获取高清封面候选（只生成候选，绝不自动入库）。
+     */
+    public List<CoverCandidateView> searchItunesCovers(String albumTitle, String albumArtist, String customQuery) {
+        cleanupExpired();
+        List<String> terms = buildItunesTerms(albumTitle, albumArtist, customQuery);
+        if (terms.isEmpty()) {
+            return List.of();
+        }
+        boolean preferJp = containsCjk(albumTitle) || containsCjk(albumArtist) || containsCjk(customQuery);
+        List<String> countries = preferJp ? List.of("jp", "us") : List.of("us", "jp");
+        List<CoverCandidateView> candidates = new ArrayList<>();
+        Set<String> seenArtworkUrls = new LinkedHashSet<>();
+
+        for (String term : terms) {
+            for (String country : countries) {
+                if (candidates.size() >= MAX_ITUNES_CANDIDATES) {
+                    return deduplicate(candidates);
+                }
+                List<ItunesHit> hits = queryItunesApi(term, country);
+                for (ItunesHit hit : hits) {
+                    if (candidates.size() >= MAX_ITUNES_CANDIDATES) {
+                        break;
+                    }
+                    if (!seenArtworkUrls.add(hit.artworkUrl)) {
+                        continue;
+                    }
+                    String hiRes = upgradeItunesArtworkUrl(hit.artworkUrl, 1200);
+                    Optional<CoverCandidateView> view = ingestFromUrl(
+                        hiRes, CoverCandidateView.Origin.ITUNES, "Apple Music / iTunes", hit.label);
+                    if (view.isEmpty()) {
+                        String midRes = upgradeItunesArtworkUrl(hit.artworkUrl, 600);
+                        view = ingestFromUrl(
+                            midRes, CoverCandidateView.Origin.ITUNES, "Apple Music / iTunes", hit.label);
+                    }
+                    view.ifPresent(candidates::add);
+                }
+                if (!candidates.isEmpty() && country.equals(countries.get(0))) {
+                    break;
+                }
+            }
+            if (candidates.size() >= 3) {
+                break;
+            }
+        }
+        return deduplicate(candidates);
+    }
+
+    private record ItunesHit(String artworkUrl, String label) {}
+
+    private List<ItunesHit> queryItunesApi(String term, String country) {
+        List<ItunesHit> hits = new ArrayList<>();
+        try {
+            String encoded = URLEncoder.encode(term, StandardCharsets.UTF_8);
+            String apiUrl = "https://itunes.apple.com/search?term=" + encoded
+                + "&entity=album&limit=5&country=" + country;
+            HttpRequest request = HttpRequest.newBuilder(URI.create(apiUrl))
+                .header("User-Agent", config.getUserAgent() != null ? config.getUserAgent() : "MusicAutoTagger/1.0")
+                .header("Accept", "application/json")
+                .timeout(Duration.ofSeconds(12))
+                .GET()
+                .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() < 200 || response.statusCode() >= 300 || !meaningful(response.body())) {
+                return hits;
+            }
+            JsonObject root = JsonParser.parseString(response.body()).getAsJsonObject();
+            JsonArray results = root.getAsJsonArray("results");
+            if (results == null) {
+                return hits;
+            }
+            for (JsonElement el : results) {
+                if (!el.isJsonObject()) continue;
+                JsonObject obj = el.getAsJsonObject();
+                String artwork = obj.has("artworkUrl100") && !obj.get("artworkUrl100").isJsonNull()
+                    ? obj.get("artworkUrl100").getAsString() : null;
+                if (!meaningful(artwork)) continue;
+                String col = obj.has("collectionName") && !obj.get("collectionName").isJsonNull()
+                    ? obj.get("collectionName").getAsString() : "";
+                String art = obj.has("artistName") && !obj.get("artistName").isJsonNull()
+                    ? obj.get("artistName").getAsString() : "";
+                String label = meaningful(art) ? art + " - " + col : col;
+                hits.add(new ItunesHit(artwork, label));
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            log.debug("iTunes cover search failed (term={}, country={}): {}", term, country, e.getMessage());
+        }
+        return hits;
+    }
+
+    static String upgradeItunesArtworkUrl(String url, int size) {
+        if (url == null) return null;
+        return url.replaceAll("/\\d+x\\d+bb(\\.[a-zA-Z0-9]+)$", "/" + size + "x" + size + "bb.jpg");
+    }
+
+    private static List<String> buildItunesTerms(String albumTitle, String albumArtist, String customQuery) {
+        Set<String> terms = new LinkedHashSet<>();
+        if (meaningful(customQuery)) {
+            terms.add(customQuery.trim());
+        }
+        String cleanAlbum = meaningful(albumTitle) ? albumTitle.trim() : "";
+        String cleanArtist = meaningful(albumArtist) && !"Various Artists".equalsIgnoreCase(albumArtist.trim())
+            && !"VA".equalsIgnoreCase(albumArtist.trim()) ? albumArtist.trim() : "";
+        if (!cleanAlbum.isEmpty() && !cleanArtist.isEmpty()) {
+            terms.add(cleanArtist + " " + cleanAlbum);
+        }
+        if (!cleanAlbum.isEmpty()) {
+            terms.add(cleanAlbum);
+        }
+        return new ArrayList<>(terms);
+    }
+
+    private static boolean containsCjk(String text) {
+        if (text == null) return false;
+        for (int i = 0; i < text.length(); i++) {
+            Character.UnicodeBlock block = Character.UnicodeBlock.of(text.charAt(i));
+            if (block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
+                || block == Character.UnicodeBlock.HIRAGANA
+                || block == Character.UnicodeBlock.KATAKANA) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean add(List<CoverCandidateView> target, byte[] data, CoverCandidateView.Origin origin,
                         String label, String url, String fileName, String rgid) {
+        return add(target, data, origin, label, url, fileName, rgid, null);
+    }
+
+    private boolean add(List<CoverCandidateView> target, byte[] data, CoverCandidateView.Origin origin,
+                        String label, String url, String fileName, String rgid, String note) {
         if (data == null || data.length == 0) return false;
         Optional<UntrustedImageFetcher.Result> inspected = UntrustedImageFetcher.inspect(data);
         if (inspected.isEmpty()) inspected = convertWithFfmpeg(data);
         if (inspected.isEmpty()) return false;
-        addInspected(target, inspected.get(), origin, label, url, fileName, rgid);
-        return true;
+        return addInspected(target, inspected.get(), origin, label, url, fileName, rgid, note);
     }
 
     private void addInspected(List<CoverCandidateView> target, UntrustedImageFetcher.Result image,
                               CoverCandidateView.Origin origin, String label, String url,
                               String fileName, String rgid) {
+        addInspected(target, image, origin, label, url, fileName, rgid, null);
+    }
+
+    private boolean addInspected(List<CoverCandidateView> target, UntrustedImageFetcher.Result image,
+                                 CoverCandidateView.Origin origin, String label, String url,
+                                 String fileName, String rgid, String note) {
         try {
-            byte[] jpeg = image.data();
+            byte[] raw = image.data();
             if (!"image/jpeg".equals(image.mime())) {
-                Optional<UntrustedImageFetcher.Result> converted = convertWithFfmpeg(jpeg);
-                if (converted.isEmpty()) return;
-                image = converted.get(); jpeg = image.data();
+                Optional<UntrustedImageFetcher.Result> converted = convertWithFfmpeg(raw);
+                if (converted.isPresent()) {
+                    raw = converted.get().data();
+                }
             }
+            // 所有封面候选路径统一走项目现有的 ImageCompressor 压缩规则（最大边 1200px，<=2MB JPEG）
+            byte[] jpeg = ImageCompressor.compressImage(raw, ffmpegPath());
+            if (jpeg == null || jpeg.length == 0) {
+                log.debug("Cover candidate rejected by ImageCompressor ({})", label);
+                return false;
+            }
+            Optional<UntrustedImageFetcher.Result> compressedInfo = UntrustedImageFetcher.inspect(jpeg);
+            int width = compressedInfo.map(UntrustedImageFetcher.Result::width).orElse(image.width());
+            int height = compressedInfo.map(UntrustedImageFetcher.Result::height).orElse(image.height());
+
             String sha = sha256(jpeg);
             Files.createDirectories(cacheDirectory);
             Path destination = cacheDirectory.resolve(sha + ".jpg");
             if (!Files.isRegularFile(destination)) Files.write(destination, jpeg);
             CoverCandidateView view = new CoverCandidateView();
             view.setSha256(sha); view.setOrigin(origin); view.setOriginLabel(label); view.setSourceUrl(url);
-            view.setSourceFileName(fileName); view.setWidth(image.width()); view.setHeight(image.height());
+            view.setSourceFileName(fileName); view.setNote(note);
+            view.setWidth(width); view.setHeight(height);
             view.setBytes(jpeg.length); view.setMime("image/jpeg"); view.setReleaseGroupId(rgid);
             target.add(view);
-        } catch (Exception e) { log.debug("Unable to cache cover candidate: {}", e.getMessage()); }
+            return true;
+        } catch (Exception e) {
+            log.debug("Unable to cache cover candidate: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private String ffmpegPath() {
+        String ffmpeg = config == null ? null : config.getAudioNormalizeFfmpegPath();
+        return (ffmpeg == null || ffmpeg.isBlank()) ? "ffmpeg" : ffmpeg.trim();
     }
 
     private Optional<UntrustedImageFetcher.Result> convertWithFfmpeg(byte[] data) {
@@ -130,9 +401,7 @@ public class CoverCandidateService implements AutoCloseable {
             dir = Files.createTempDirectory("cover-candidate-");
             Path input = dir.resolve("input.image"), output = dir.resolve("output.jpg");
             Files.write(input, data);
-            String ffmpeg = config.getAudioNormalizeFfmpegPath();
-            if (ffmpeg == null || ffmpeg.isBlank()) ffmpeg = "ffmpeg";
-            ProcessRunner.Result result = ProcessRunner.execute(List.of(ffmpeg, "-y", "-i", input.toString(),
+            ProcessRunner.Result result = ProcessRunner.execute(List.of(ffmpegPath(), "-y", "-i", input.toString(),
                 "-frames:v", "1", output.toString()), 20);
             if (!result.isSuccess() || !Files.isRegularFile(output)) return Optional.empty();
             return UntrustedImageFetcher.inspect(Files.readAllBytes(output));
@@ -152,7 +421,11 @@ public class CoverCandidateService implements AutoCloseable {
         try {
             Path file = cacheDirectory.resolve(sha.toLowerCase(Locale.ROOT) + ".jpg");
             if (!Files.isRegularFile(file)) return Optional.empty();
-            return Optional.of(new ResolvedCover(Files.readAllBytes(file), selected.getOrigin(), selected.getReleaseGroupId()));
+            byte[] bytes = Files.readAllBytes(file);
+            // 兜底确保旧缓存候选在写入前也符合 ImageCompressor 压缩规则
+            byte[] compressed = ImageCompressor.compressImage(bytes, ffmpegPath());
+            if (compressed == null || compressed.length == 0) return Optional.empty();
+            return Optional.of(new ResolvedCover(compressed, selected.getOrigin(), selected.getReleaseGroupId()));
         } catch (Exception e) { return Optional.empty(); }
     }
 
@@ -160,6 +433,16 @@ public class CoverCandidateService implements AutoCloseable {
         if (cover.origin() == CoverCandidateView.Origin.MUSICBRAINZ && meaningful(cover.releaseGroupId())) {
             coverArtCache.cacheCoverByReleaseGroupId(cover.releaseGroupId(), cover.data());
         }
+    }
+
+    public void cacheCoverForReleaseGroup(String releaseGroupId, byte[] compressedData) {
+        if (meaningful(releaseGroupId) && compressedData != null && compressedData.length > 0 && coverArtCache != null) {
+            coverArtCache.cacheCoverByReleaseGroupId(releaseGroupId, compressedData);
+        }
+    }
+
+    public static List<CoverCandidateView> deduplicateCandidates(List<CoverCandidateView> input) {
+        return deduplicate(input);
     }
 
     private void cleanupExpired() {

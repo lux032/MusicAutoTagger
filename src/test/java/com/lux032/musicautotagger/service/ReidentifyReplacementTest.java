@@ -55,6 +55,7 @@ class ReidentifyReplacementTest {
         config.setProcessedFileLogPath(dir.resolve("processed.log").toString());
         config.setAutoRename(true);
         config.setExportLyricsToFile(false);
+        config.setCoverMissingRequireReview(false);
 
         tagWriter = new TagWriterService(config);
         logger = new ProcessedFileLogger(config, null);

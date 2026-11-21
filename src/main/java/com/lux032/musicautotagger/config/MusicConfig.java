@@ -103,6 +103,10 @@ public class MusicConfig {
     private boolean reviewEnabled;
     /** 「锁定专辑缺曲」条目入队时自动触发一轮联网搜索（需已配置联网搜索） */
     private boolean reviewMissingTracksAutoOnlineSearch;
+    /** 「缺少封面」时拦截不直接入库，进入「缺少封面」菜单等待补全或人工确认无封面入库（独立于 review.enabled） */
+    private boolean coverMissingRequireReview;
+    /** 「缺少封面」条目入队时自动触发后台封面搜索（iTunes + AI 联网找图） */
+    private boolean coverMissingAutoOnlineSearch;
     private String reviewQueuePath;        // 待确认队列 JSON 路径
     private String reviewStagingDirectory; // 转码暂存目录（长期挂起时不能占用临时目录）
 
@@ -251,6 +255,8 @@ public class MusicConfig {
         // 人工确认队列默认配置
         this.reviewEnabled = false;
         this.reviewMissingTracksAutoOnlineSearch = true;
+        this.coverMissingRequireReview = true;
+        this.coverMissingAutoOnlineSearch = true;
         this.reviewQueuePath = "data/review-queue.json";
         this.reviewStagingDirectory = "data/review-staging";
 
@@ -544,6 +550,14 @@ public class MusicConfig {
             if (props.containsKey("review.missingTracks.autoOnlineSearch")) {
                 this.reviewMissingTracksAutoOnlineSearch =
                     Boolean.parseBoolean(props.getProperty("review.missingTracks.autoOnlineSearch"));
+            }
+            if (props.containsKey("cover.missing.requireReview")) {
+                this.coverMissingRequireReview =
+                    Boolean.parseBoolean(props.getProperty("cover.missing.requireReview"));
+            }
+            if (props.containsKey("cover.missing.autoOnlineSearch")) {
+                this.coverMissingAutoOnlineSearch =
+                    Boolean.parseBoolean(props.getProperty("cover.missing.autoOnlineSearch"));
             }
             if (props.containsKey("review.queuePath")) {
                 this.reviewQueuePath = props.getProperty("review.queuePath");
@@ -918,6 +932,8 @@ public class MusicConfig {
         }
         props.setProperty("review.enabled", String.valueOf(reviewEnabled));
         props.setProperty("review.missingTracks.autoOnlineSearch", String.valueOf(reviewMissingTracksAutoOnlineSearch));
+        props.setProperty("cover.missing.requireReview", String.valueOf(coverMissingRequireReview));
+        props.setProperty("cover.missing.autoOnlineSearch", String.valueOf(coverMissingAutoOnlineSearch));
         if (reviewQueuePath != null) {
             props.setProperty("review.queuePath", reviewQueuePath);
         }

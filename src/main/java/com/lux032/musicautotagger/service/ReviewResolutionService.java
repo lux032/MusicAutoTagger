@@ -322,6 +322,16 @@ public class ReviewResolutionService {
         item.setResolvedCompilation(chosen.isCompilation());
         item.setResolvedTrackCount(chosen.getTrackCount());
 
+        if (result != null && result.isQueuedForMissingCover()) {
+            ReviewItem transitioned = reviewQueue.get(item.getId());
+            if (transitioned != null && transitioned.getMissingCover() != null) {
+                transitioned.getMissingCover().setSourcePipeline("REVIEW_CONFIRM");
+                reviewQueue.update(transitioned);
+                return transitioned;
+            }
+            return item;
+        }
+
         finish(item, result, ReviewItem.Status.CONFIRMED, "人工确认: " + albumTitle);
         return item;
     }
@@ -346,6 +356,16 @@ public class ReviewResolutionService {
         // 关键：allowReviewQueue=false，否则会把刚取出的条目又塞回队列
         AlbumBatchProcessor.BatchProcessResult result =
             albumBatchProcessor.processPendingFilesAsUnresolvedAlbum(folderPath, false);
+
+        if (result != null && result.isQueuedForMissingCover()) {
+            ReviewItem transitioned = reviewQueue.get(item.getId());
+            if (transitioned != null && transitioned.getMissingCover() != null) {
+                transitioned.getMissingCover().setSourcePipeline("REVIEW_ARCHIVE");
+                reviewQueue.update(transitioned);
+                return transitioned;
+            }
+            return item;
+        }
 
         finish(item, result, ReviewItem.Status.ARCHIVED_UNVERIFIED,
             "人工按 MusicBrainz 未收录归档（verified=false）");

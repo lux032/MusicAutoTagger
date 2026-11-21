@@ -56,6 +56,7 @@ class MultiArtistAssistTest {
         config.setProcessedFileLogPath(dir.resolve("processed.log").toString());
         config.setCollapseAlbumArtistToVariousArtists(false);
         config.setExportLyricsToFile(false);
+        config.setCoverMissingRequireReview(false);
         config.setAutoRename(true);
         config.setReviewEnabled(false);
         tagWriter = new TagWriterService(config);

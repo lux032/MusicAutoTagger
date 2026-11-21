@@ -45,6 +45,8 @@ import java.util.Map;
 public class ReviewServlet extends HttpServlet {
 
     private static final String SESSION_CSRF_KEY = "csrfToken";
+    private static final java.util.Set<ReviewItem.Kind> REVIEW_ONLY_KINDS =
+        java.util.Set.of(ReviewItem.Kind.ALBUM_UNRESOLVED, ReviewItem.Kind.TRACKS_MISSING);
 
     private final ReviewQueueService reviewQueue;
     private final ReviewResolutionService resolutionService;
@@ -81,13 +83,13 @@ public class ReviewServlet extends HttpServlet {
                     return;
                 case "stats":
                     respond(resp, 200, Map.of(
-                        "pending", reviewQueue.countPending(),
+                        "pending", reviewQueue.countPendingNonCover(),
                         "pendingAlbum", reviewQueue.countPending(ReviewItem.Kind.ALBUM_UNRESOLVED),
                         "pendingMissingTracks", reviewQueue.countPending(ReviewItem.Kind.TRACKS_MISSING),
-                        "rejected", reviewQueue.countRejected(),
+                        "rejected", reviewQueue.countRejectedNonCover(),
                         // 概览页直接列出最新的几条并带上原因，点一下就落在那一条上
                         "latest", latestPending(LATEST_PENDING_LIMIT),
-                        "total", reviewQueue.list(null).size(),
+                        "total", reviewQueue.listByKinds(null, REVIEW_ONLY_KINDS).size(),
                         // 面板靠这个开关决定要不要显示「待确认」入口：
                         // 关闭且队列为空时隐藏，但队列里还有遗留条目就必须继续显示，否则那些条目无法处置
                         "enabled", resolutionService.getConfig().isReviewEnabled(),
@@ -125,12 +127,14 @@ public class ReviewServlet extends HttpServlet {
                 case "confirm": {
                     ReviewItem item = resolutionService.confirmCandidate(
                         id, str(body.get("releaseId")), str(body.get("releaseGroupId")));
-                    respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
+                    respond(resp, 200, Map.of("success", true, "item", toDetail(item),
+                        "movedToMissingCover", item.effectiveKind() == ReviewItem.Kind.COVER_MISSING));
                     return;
                 }
                 case "archive": {
                     ReviewItem item = resolutionService.archiveAsUnverified(id);
-                    respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
+                    respond(resp, 200, Map.of("success", true, "item", toDetail(item),
+                        "movedToMissingCover", item.effectiveKind() == ReviewItem.Kind.COVER_MISSING));
                     return;
                 }
                 case "reject": {
@@ -208,7 +212,8 @@ public class ReviewServlet extends HttpServlet {
                             trackArtistLists(body.get("trackArtists")), strList(body.get("trackArtistFallbacks")),
                             duplicatePolicy(str(body.get("duplicatePolicy"))));
                     }
-                    respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
+                    respond(resp, 200, Map.of("success", true, "item", toDetail(item),
+                        "movedToMissingCover", item.effectiveKind() == ReviewItem.Kind.COVER_MISSING));
                     return;
                 }
                 case "online-confirm": {
@@ -217,8 +222,9 @@ public class ReviewServlet extends HttpServlet {
                         str(body.get("albumTitle")), str(body.get("albumArtist")), str(body.get("releaseDate")),
                         str(body.get("edition")), str(body.get("archiveDirectoryName")),
                         str(body.get("selectedCoverSha256")), duplicatePolicy(str(body.get("duplicatePolicy"))),
-                        strList(body.get("albumArtists")));
-                    respond(resp, 200, Map.of("success", true, "item", toDetail(item)));
+                        strList(body.get("albumArtists")), Boolean.TRUE.equals(body.get("confirmNoCover")));
+                    respond(resp, 200, Map.of("success", true, "item", toDetail(item),
+                        "movedToMissingCover", item.effectiveKind() == ReviewItem.Kind.COVER_MISSING));
                     return;
                 }
                 case "llm": {
@@ -310,7 +316,7 @@ public class ReviewServlet extends HttpServlet {
         String query = req.getParameter("q");
         boolean searching = query != null && !query.trim().isEmpty();
         List<Map<String, Object>> summaries = new ArrayList<>();
-        for (ReviewItem item : reviewQueue.list(filter)) {
+        for (ReviewItem item : reviewQueue.listByKinds(filter, REVIEW_ONLY_KINDS)) {
             String hit = ReviewQueueService.matchQuery(item, query);
             if (hit == null) {
                 continue;
@@ -321,7 +327,7 @@ public class ReviewServlet extends HttpServlet {
             }
             summaries.add(summary);
         }
-        respond(resp, 200, Map.of("items", summaries, "pending", reviewQueue.countPending()));
+        respond(resp, 200, Map.of("items", summaries, "pending", reviewQueue.countPendingNonCover()));
     }
 
     private void handleItem(HttpServletRequest req, HttpServletResponse resp)
@@ -349,7 +355,7 @@ public class ReviewServlet extends HttpServlet {
 
     private List<Map<String, Object>> latestPending(int limit) {
         List<Map<String, Object>> latest = new ArrayList<>();
-        for (ReviewItem item : reviewQueue.list(ReviewItem.Status.PENDING_REVIEW)) {
+        for (ReviewItem item : reviewQueue.listByKinds(ReviewItem.Status.PENDING_REVIEW, REVIEW_ONLY_KINDS)) {
             if (latest.size() >= limit) {
                 break;
             }

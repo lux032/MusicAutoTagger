@@ -76,6 +76,18 @@ public class TavilyWebSearchClient implements WebSearchClient {
     @Override
     public SearchResponse search(String systemPrompt, String userPrompt, ProgressListener progress)
             throws LlmClient.LlmException {
+        return searchInternal(systemPrompt, userPrompt, progress, false);
+    }
+
+    @Override
+    public SearchResponse searchImages(String systemPrompt, String userPrompt, ProgressListener progress)
+            throws LlmClient.LlmException {
+        return searchInternal(systemPrompt, userPrompt, progress, true);
+    }
+
+    private SearchResponse searchInternal(String systemPrompt, String userPrompt, ProgressListener progress,
+                                          boolean includeImages)
+            throws LlmClient.LlmException {
         if (!hasEnabledEndpoint()) {
             throw new LlmClient.LlmException("llm.web.search.unavailable: tavily.apiKey or llm endpoint missing");
         }
@@ -95,7 +107,7 @@ public class TavilyWebSearchClient implements WebSearchClient {
             String query = queries.get(i);
             notifyProgress(progress, "WEB_SEARCH", i + 1, totalQueries, result.getCitations().size(), query);
             try {
-                collect(query, result);
+                collect(query, result, includeImages);
                 notifyProgress(progress, "WEB_SEARCH", i + 1, totalQueries, result.getCitations().size(), query);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -110,7 +122,7 @@ public class TavilyWebSearchClient implements WebSearchClient {
             }
         }
 
-        if (result.getCitations().isEmpty()) {
+        if (result.getCitations().isEmpty() && result.getImages().isEmpty()) {
             throw new LlmClient.LlmException("llm.web.search.no.results: " + String.join(" | ", failures));
         }
 
@@ -118,7 +130,14 @@ public class TavilyWebSearchClient implements WebSearchClient {
         notifyProgress(progress, "SUMMARIZING", totalQueries, totalQueries, result.getCitations().size(), null);
 
         // 归纳阶段走普通 chat completions，不需要端点支持任何工具协议
-        String prompt = userPrompt + "\n\n" + renderEvidence(result.getCitations());
+        StringBuilder evidence = new StringBuilder(renderEvidence(result.getCitations()));
+        if (includeImages && !result.getImages().isEmpty()) {
+            evidence.append("\n\nRETRIEVED IMAGE URLS:\n");
+            for (String img : result.getImages()) {
+                evidence.append("- ").append(img).append('\n');
+            }
+        }
+        String prompt = userPrompt + "\n\n" + evidence;
         LlmClient.LlmResponse summary = llmClient.complete(
             systemPrompt, prompt, config.getLlmWebSearchMaxTokens());
 
@@ -236,13 +255,16 @@ public class TavilyWebSearchClient implements WebSearchClient {
 
     // ==================== 第二步：调用 Tavily ====================
 
-    private void collect(String query, SearchResponse result) throws Exception {
+    private void collect(String query, SearchResponse result, boolean includeImages) throws Exception {
         JsonObject body = new JsonObject();
         body.addProperty("query", query);
         body.addProperty("search_depth", depth());
         body.addProperty("max_results", config.getTavilyMaxResults());
         body.addProperty("include_answer", false);
         body.addProperty("include_raw_content", false);
+        if (includeImages) {
+            body.addProperty("include_images", true);
+        }
 
         List<String> domains = config.getTavilyIncludeDomains();
         if (domains != null && !domains.isEmpty()) {
@@ -284,6 +306,15 @@ public class TavilyWebSearchClient implements WebSearchClient {
                 string(item, "url"),
                 string(item, "title"),
                 truncate(string(item, "content"), SNIPPET_LIMIT)));
+        }
+        if (includeImages && json != null && json.has("images") && json.get("images").isJsonArray()) {
+            for (JsonElement imgEl : json.getAsJsonArray("images")) {
+                if (imgEl.isJsonPrimitive()) {
+                    result.addImageUrl(imgEl.getAsString());
+                } else if (imgEl.isJsonObject()) {
+                    result.addImageUrl(string(imgEl.getAsJsonObject(), "url"));
+                }
+            }
         }
     }
 

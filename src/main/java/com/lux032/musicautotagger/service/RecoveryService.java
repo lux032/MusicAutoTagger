@@ -252,13 +252,15 @@ public class RecoveryService implements AutoCloseable {
             if (job.status == JobStatus.WAITING_REVIEW && job.reviewItemId != null && reviewQueue != null) {
                 ReviewItem reviewItem = reviewQueue.get(job.reviewItemId);
                 if (reviewItem != null) {
+                    view.put("reviewKind", reviewItem.effectiveKind().name());
+                    boolean isCoverMissing = reviewItem.effectiveKind() == ReviewItem.Kind.COVER_MISSING;
                     if (reviewItem.getStatus() == ReviewItem.Status.CONFIRMED
                             || reviewItem.getStatus() == ReviewItem.Status.ARCHIVED_UNVERIFIED) {
                         view.put("status", JobStatus.SUCCEEDED.name());
-                        view.put("message", "已在待确认页面确认完成");
+                        view.put("message", isCoverMissing ? "已在缺少封面页面确认完成" : "已在待确认页面确认完成");
                     } else if (reviewItem.getStatus() == ReviewItem.Status.REJECTED) {
                         view.put("status", JobStatus.FAILED.name());
-                        view.put("message", "已在待确认页面驳回");
+                        view.put("message", isCoverMissing ? "已在缺少封面页面忽略" : "已在待确认页面驳回");
                     }
                 } else {
                     view.put("status", JobStatus.FAILED.name());
@@ -330,10 +332,14 @@ public class RecoveryService implements AutoCloseable {
                         reviewQueue.updatePending(queued.getId(), target -> {
                             if (meaningful(displayName)) target.setFolderName(displayName);
                             target.setStagingDir(stagedDir.getAbsolutePath());
+                            if (target.effectiveKind() == ReviewItem.Kind.COVER_MISSING && target.getMissingCover() != null) {
+                                target.getMissingCover().setSourcePipeline("REIDENTIFY");
+                            }
                             return true;
                         });
                     }
-                    LogCollector.addLog("WARN", "重新识别转入待人工确认: " + label);
+                    boolean coverMissing = queued != null && queued.effectiveKind() == ReviewItem.Kind.COVER_MISSING;
+                    LogCollector.addLog("WARN", (coverMissing ? "重新识别缺少封面，已转入「缺少封面」等待补图: " : "重新识别转入待人工确认: ") + label);
                     return;
                 }
 
@@ -563,7 +569,34 @@ public class RecoveryService implements AutoCloseable {
                 return item;
             }
             Set<String> inherit = trackArtistFallbacks == null ? Set.of() : new LinkedHashSet<>(trackArtistFallbacks);
-            return archiveLocalTags(item, source, revision, album, artist, artists, trackArtists, inherit, duplicatePolicy);
+            return archiveLocalTags(item, source, revision, album, artist, artists, trackArtists, inherit,
+                duplicatePolicy, null, true);
+        } finally {
+            runningPaths.remove(runningKey);
+        }
+    }
+
+    /** 「缺少封面」页补图或确认无封面后，继续完成之前暂缓的「按本地标签入库」。 */
+    public synchronized ReviewItem commitDeferredLocalMissingCover(ReviewItem item, byte[] coverBytes,
+                                                                   DuplicatePolicy duplicatePolicy) throws IOException {
+        if (item == null || item.getMissingCover() == null) throw new IOException("item.not.found");
+        ReviewItem.MissingCover mc = item.getMissingCover();
+        File source = localArchiveSource(item);
+        String runningKey = source.getCanonicalPath();
+        if (!runningPaths.add(runningKey)) throw new IOException("recovery.already.running");
+        try {
+            if (item.getRecoveryCommitState() == ReviewItem.RecoveryCommitState.COMMITTED) {
+                finishCommittedRecovery(item);
+                return item;
+            }
+            LocalArchiveSources fresh = localArchiveSources(source, item);
+            Map<String, List<String>> trackArtists = mc.getLocalTrackArtists() == null
+                ? Map.of() : mc.getLocalTrackArtists();
+            Set<String> inherit = mc.getLocalTrackArtistFallbacks() == null
+                ? Set.of() : new LinkedHashSet<>(mc.getLocalTrackArtistFallbacks());
+            return archiveLocalTags(item, source, fresh.revision(), mc.getAlbumTitle(), mc.getAlbumArtist(),
+                mc.getAlbumArtists(), trackArtists, inherit,
+                duplicatePolicy == null ? DuplicatePolicy.ASK : duplicatePolicy, coverBytes, false);
         } finally {
             runningPaths.remove(runningKey);
         }
@@ -571,7 +604,8 @@ public class RecoveryService implements AutoCloseable {
 
     private ReviewItem archiveLocalTags(ReviewItem item, File source, String revision, String album, String artist,
                                         List<String> artists, Map<String, List<String>> trackArtists,
-                                        Set<String> inherit, DuplicatePolicy duplicatePolicy) throws IOException {
+                                        Set<String> inherit, DuplicatePolicy duplicatePolicy,
+                                        byte[] explicitCoverArt, boolean allowMissingCoverIntercept) throws IOException {
         List<String> albumNames = ArtistCreditSupport.cleanNames(artists);
         if (!meaningful(album) || !meaningful(artist) || albumNames.isEmpty()) {
             throw new IOException("local.archive.metadata.required");
@@ -586,6 +620,39 @@ public class RecoveryService implements AutoCloseable {
             || inherit.stream().anyMatch(trackArtists::containsKey)
             || trackArtists.values().stream().anyMatch(names -> names == null || names.isEmpty())) {
             throw new IOException("local.archive.tracks.invalid");
+        }
+
+        byte[] coverToEmbed = null;
+        if (explicitCoverArt != null && explicitCoverArt.length > 0) {
+            coverToEmbed = compressCoverBytes(explicitCoverArt);
+        } else {
+            boolean allHaveEmbedded = true;
+            for (Path src : snapshot.files().values()) {
+                if (!tagWriter.hasEmbeddedCover(src.toFile())) {
+                    allHaveEmbedded = false;
+                    break;
+                }
+            }
+            if (!allHaveEmbedded) {
+                coverToEmbed = findLocalFallbackCover(source, snapshot.files().values().stream().map(Path::toFile).toList());
+                if ((coverToEmbed == null || coverToEmbed.length == 0)
+                    && allowMissingCoverIntercept
+                    && config.isCoverMissingRequireReview()) {
+                    ReviewItem.MissingCover details = new ReviewItem.MissingCover();
+                    details.setMode(ReviewItem.MissingCover.Mode.STAGED_IMPORT);
+                    details.setSourcePipeline("REVIEW_LOCAL");
+                    details.setLocalArchiveDirect(true);
+                    details.setLocalArchiveRevision(revision);
+                    details.setAlbumTitle(album);
+                    details.setAlbumArtist(artist);
+                    details.setAlbumArtists(new ArrayList<>(albumNames));
+                    details.setLocalTrackArtists(new LinkedHashMap<>(trackArtists));
+                    details.setLocalTrackArtistFallbacks(new ArrayList<>(inherit));
+                    details.setRecordingIdSentinel("LOCAL_TAGS");
+                    return reviewQueue.transitionToMissingCover(
+                        item, details, "本地标签已确认，但缺少封面，等待补全或确认无封面入库");
+                }
+            }
         }
 
         Path artistDir = Path.of(FileNameSanitizer.sanitize(artist));
@@ -604,6 +671,9 @@ public class RecoveryService implements AutoCloseable {
                 if (!Files.isRegularFile(copy, LinkOption.NOFOLLOW_LINKS)) throw new IOException("local.archive.stale");
                 tagWriter.writeLocalArchiveTags(copy, album, artist, albumNames, trackArtists.get(entry.getKey()),
                     inherit.contains(entry.getKey()));
+                if (coverToEmbed != null && coverToEmbed.length > 0) {
+                    tagWriter.embedCoverAtomically(copy.toFile(), coverToEmbed);
+                }
             }
             if (!snapshot.revision().equals(localArchiveSources(source, item).revision())) {
                 throw new IOException("local.archive.stale");
@@ -750,6 +820,44 @@ public class RecoveryService implements AutoCloseable {
                                                            String selectedCoverSha256,
                                                            DuplicatePolicy duplicatePolicy,
                                                            List<String> manualAlbumArtists) throws IOException {
+        return confirmOnlineCandidate(itemId, candidateId, albumTitle, albumArtist, releaseDate, edition,
+            archiveDirectoryName, selectedCoverSha256, duplicatePolicy, manualAlbumArtists, false);
+    }
+
+    public synchronized ReviewItem confirmOnlineCandidate(String itemId, String candidateId,
+                                                           String albumTitle, String albumArtist,
+                                                           String releaseDate, String edition,
+                                                           String archiveDirectoryName,
+                                                           String selectedCoverSha256,
+                                                           DuplicatePolicy duplicatePolicy,
+                                                           List<String> manualAlbumArtists,
+                                                           boolean confirmNoCover) throws IOException {
+        return confirmOnlineCandidateInternal(itemId, candidateId, albumTitle, albumArtist, releaseDate, edition,
+            archiveDirectoryName, selectedCoverSha256, null, duplicatePolicy, manualAlbumArtists, confirmNoCover, true);
+    }
+
+    /** 「缺少封面」页补图或确认无封面后，继续完成之前暂缓的「联网候选确认入库」。 */
+    public synchronized ReviewItem commitDeferredOnlineMissingCover(ReviewItem item, byte[] coverBytes,
+                                                                    DuplicatePolicy duplicatePolicy) throws IOException {
+        if (item == null || item.getMissingCover() == null) throw new IOException("item.not.found");
+        ReviewItem.MissingCover mc = item.getMissingCover();
+        return confirmOnlineCandidateInternal(item.getId(), mc.getOnlineCandidateId(),
+            mc.getAlbumTitle(), mc.getAlbumArtist(), mc.getReleaseDate(), null,
+            mc.getArchiveDirectoryName(), null, coverBytes,
+            duplicatePolicy == null ? DuplicatePolicy.ASK : duplicatePolicy,
+            mc.getAlbumArtists(), coverBytes == null || coverBytes.length == 0, false);
+    }
+
+    private ReviewItem confirmOnlineCandidateInternal(String itemId, String candidateId,
+                                                      String albumTitle, String albumArtist,
+                                                      String releaseDate, String edition,
+                                                      String archiveDirectoryName,
+                                                      String selectedCoverSha256,
+                                                      byte[] directCoverBytes,
+                                                      DuplicatePolicy duplicatePolicy,
+                                                      List<String> manualAlbumArtists,
+                                                      boolean confirmNoCover,
+                                                      boolean allowMissingCoverIntercept) throws IOException {
         ReviewItem item = reviewQueue.get(itemId);
         if (item == null) throw new IOException("item.not.found");
         if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) throw new IOException("item.already.resolved");
@@ -856,7 +964,9 @@ public class RecoveryService implements AutoCloseable {
 
         CoverCandidateService.ResolvedCover selectedCover = null;
         byte[] cover = null;
-        if (meaningful(selectedCoverSha256)) {
+        if (directCoverBytes != null && directCoverBytes.length > 0) {
+            cover = compressCoverBytes(directCoverBytes);
+        } else if (meaningful(selectedCoverSha256)) {
             selectedCover = coverCandidateService.resolveBySha256(
                 selectedCoverSha256, chosen.getCoverCandidates())
                 .orElseThrow(() -> new IOException("cover.selection.expired"));
@@ -864,6 +974,30 @@ public class RecoveryService implements AutoCloseable {
             chosen.setSelectedCoverSha256(selectedCoverSha256);
         } else {
             chosen.setSelectedCoverSha256(null);
+            if (!confirmNoCover) {
+                cover = findLocalFallbackCover(source, originalFiles);
+                if ((cover == null || cover.length == 0)
+                    && allowMissingCoverIntercept
+                    && config.isCoverMissingRequireReview()) {
+                    ReviewItem.MissingCover details = new ReviewItem.MissingCover();
+                    details.setMode(ReviewItem.MissingCover.Mode.STAGED_IMPORT);
+                    details.setSourcePipeline("REVIEW_ONLINE");
+                    details.setAlbumTitle(finalAlbum);
+                    details.setAlbumArtist(finalArtist);
+                    if (finalAlbumArtists != null && !finalAlbumArtists.isEmpty()) {
+                        details.setAlbumArtists(new ArrayList<>(finalAlbumArtists));
+                    }
+                    details.setReleaseDate(finalDate);
+                    details.setArchiveDirectoryName(albumDir);
+                    details.setRecordingIdSentinel("ONLINE_SEARCH");
+                    details.setOnlineCandidateId(candidateId);
+                    if (chosen.getCoverCandidates() != null && !chosen.getCoverCandidates().isEmpty()) {
+                        details.setCoverCandidates(new ArrayList<>(chosen.getCoverCandidates()));
+                    }
+                    return reviewQueue.transitionToMissingCover(
+                        item, details, "联网候选已确认，但缺少封面，等待补全或确认无封面入库");
+                }
+            }
         }
 
         File workRoot = resolveWorkRoot().resolve("online-" + item.getId()).toFile();
@@ -974,6 +1108,48 @@ public class RecoveryService implements AutoCloseable {
         }
         finishCommittedRecovery(item);
         return item;
+    }
+
+    /** 供「缺少封面」服务在提交完来自 recovery 目录的条目后统一回收隔离副本。 */
+    public void retireRecoveryCopyIfNeeded(ReviewItem item) throws IOException {
+        if (item == null || item.getRecoverySourceType() == null || item.getRecoverySourcePath() == null) {
+            return;
+        }
+        finishCommittedRecovery(item);
+    }
+
+    private byte[] compressCoverBytes(byte[] raw) {
+        if (raw == null || raw.length == 0) return null;
+        if (coverCandidateService != null && coverCandidateService.getCoverArtService() != null) {
+            return coverCandidateService.getCoverArtService().compressCover(raw);
+        }
+        String ffmpeg = config == null ? null : config.getAudioNormalizeFfmpegPath();
+        return ImageCompressor.compressImage(raw, (ffmpeg == null || ffmpeg.isBlank()) ? "ffmpeg" : ffmpeg);
+    }
+
+    private byte[] findLocalFallbackCover(File source, List<File> audioFiles) {
+        CoverArtService cas = coverCandidateService != null ? coverCandidateService.getCoverArtService() : null;
+        if (cas != null) {
+            if (source != null) {
+                File dir = source.isDirectory() ? source : source.getParentFile();
+                if (dir != null) {
+                    byte[] dirCover = cas.findCoverInDirectory(dir);
+                    if (dirCover != null && dirCover.length > 0) return dirCover;
+                    File root = cas.resolveAlbumRootDirectory(dir);
+                    if (root != null && !root.equals(dir)) {
+                        dirCover = cas.findCoverInDirectory(root);
+                        if (dirCover != null && dirCover.length > 0) return dirCover;
+                    }
+                }
+            }
+            if (audioFiles != null) {
+                for (File f : audioFiles) {
+                    byte[] embedded = cas.extractEmbeddedCover(f);
+                    if (embedded != null && embedded.length > 0) return embedded;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -1639,14 +1815,33 @@ public class RecoveryService implements AutoCloseable {
             String reviewFolder = processingTarget.isDirectory()
                 ? processingTarget.getAbsolutePath() : processingTarget.getParentFile().getAbsolutePath();
             if (reviewQueue != null && reviewQueue.isFolderUnderReview(reviewFolder)) {
-                // 待确认阶段不应留下任何正式输出；候选和文件引用已由队列持久化。
+                // 待确认 / 缺少封面阶段不应留下任何正式输出；候选和文件引用已由队列持久化。
                 ReviewItem queued = reviewQueue.findPendingByFolder(reviewFolder);
-                if (queued != null) job.reviewItemId = queued.getId();
+                boolean isCoverMissing = false;
+                if (queued != null) {
+                    job.reviewItemId = queued.getId();
+                    isCoverMissing = queued.effectiveKind() == ReviewItem.Kind.COVER_MISSING;
+                    if (isCoverMissing) {
+                        final boolean attachRecoverySource = (singleFileWorkspace == null);
+                        reviewQueue.updatePending(queued.getId(), itemToUpdate -> {
+                            if (attachRecoverySource) {
+                                itemToUpdate.setRecoverySourceType(job.sourceType.name());
+                                itemToUpdate.setRecoverySourcePath(target.getAbsolutePath());
+                            }
+                            if (itemToUpdate.getMissingCover() != null) {
+                                itemToUpdate.getMissingCover().setSourcePipeline("REIDENTIFY");
+                            }
+                            return true;
+                        });
+                    }
+                }
                 deleteRecursively(reidentifyWorkRoot.toPath());
                 if (singleFileWorkspace != null) {
                     Files.deleteIfExists(target.toPath());
                 }
-                complete(job, JobStatus.WAITING_REVIEW, "重新识别后进入待人工确认队列，文件已转交待确认页");
+                complete(job, JobStatus.WAITING_REVIEW,
+                    isCoverMissing ? "重新识别后缺少封面，已转入「缺少封面」页面等待补图"
+                        : "重新识别后进入待人工确认队列，文件已转交待确认页");
             } else if (failed == 0 && succeeded == audioFiles.size()) {
                 Map<String, Path> tempTargets = collectTempRelativeTargets(reidentifyWorkRoot.toPath(), audioFiles);
                 try {

@@ -42,6 +42,8 @@ public class ApplicationLifecycleManager {
     private CoverArtService coverArtService;
     private CoverBackfillService coverBackfillService;
     private CoverCandidateService coverCandidateService;
+    private CoverSearchService coverSearchService;
+    private CoverMissingService coverMissingService;
     private FileSystemUtils fileSystemUtils;
     private FailedFileHandler failedFileHandler;
     private AlbumBatchProcessor albumBatchProcessor;
@@ -115,6 +117,7 @@ public class ApplicationLifecycleManager {
         // Level 3: 初始化新增的服务
         log.info(I18nUtil.getMessage("app.init.cover.art.service"));
         coverArtService = new CoverArtService(coverArtCache, musicBrainzClient);
+        coverArtService.setFfmpegPath(config.getAudioNormalizeFfmpegPath());
         coverCandidateService = new CoverCandidateService(
             config, musicBrainzClient, coverArtService, coverArtCache);
         
@@ -178,12 +181,29 @@ public class ApplicationLifecycleManager {
             config, audioFileProcessorService, processedLogger, reviewQueueService, folderAlbumCache,
             failedFileHandler, fileSystemUtils, tagWriter, fingerprintService, coverCandidateService);
 
+        // 「缺少封面」多源搜图 + 处置 + 手动库扫描服务
+        coverSearchService = new CoverSearchService(config, reviewQueueService, coverCandidateService);
+        coverMissingService = new CoverMissingService(
+            config, reviewQueueService, folderAlbumCache, albumBatchProcessor,
+            tagWriter, coverCandidateService, processedLogger);
+        coverMissingService.setRecoveryService(recoveryService);
+        coverMissingService.setCoverSearchService(coverSearchService);
+        if (recoveryService.getSearchQueueService() != null) {
+            recoveryService.getSearchQueueService().setCoverSearchService(coverSearchService);
+        }
+
         // 「锁定专辑缺曲」条目入队后自动排入统一 LLM 联网搜索队列（低优先级，不抢占手动触发）。
         reviewQueueService.setMissingTracksEnqueuedListener(this::scheduleMissingTracksOnlineSearch);
-        // 上次关机前已入队、但自动搜索尚未真正执行的缺曲条目：启动时补跑
+        // 「缺少封面」新入库拦截条目入队后自动排入统一搜索队列找封面（库内扫描不自动触发）。
+        reviewQueueService.setMissingCoverEnqueuedListener(this::scheduleMissingCoverSearch);
+        // 上次关机前已入队、但自动搜索尚未真正执行的缺曲/缺封面条目：启动时补跑
         for (com.lux032.musicautotagger.model.ReviewItem pendingItem
                 : reviewQueueService.pendingMissingTracksWithoutAutoSearch()) {
             scheduleMissingTracksOnlineSearch(pendingItem);
+        }
+        for (com.lux032.musicautotagger.model.ReviewItem pendingCover
+                : reviewQueueService.pendingMissingCoverWithoutAutoSearch()) {
+            scheduleMissingCoverSearch(pendingCover);
         }
         
         // Level 4: 初始化文件监控服务
@@ -192,7 +212,8 @@ public class ApplicationLifecycleManager {
         fileMonitor.setFileReadyCallbackWithResult(audioFileProcessorService::processAudioFile);
         fileMonitor.setAutoProcessingSkipPredicate(file -> {
             java.io.File albumRoot = fileSystemUtils.getAlbumRootDirectory(file);
-            return albumRoot != null && reviewQueueService.isFolderUnderReview(albumRoot.getAbsolutePath());
+            return (albumRoot != null && reviewQueueService.isFolderUnderReview(albumRoot.getAbsolutePath()))
+                || reviewQueueService.isFolderUnderReview(file.getAbsolutePath());
         });
 
         // 处理记录管理（Web 「处理记录」页面）
@@ -287,6 +308,14 @@ public class ApplicationLifecycleManager {
         recoveryService.getSearchQueueService().enqueueMissingTracksAuto(queued);
     }
 
+    private void scheduleMissingCoverSearch(com.lux032.musicautotagger.model.ReviewItem queued) {
+        if (queued == null || recoveryService == null || recoveryService.getSearchQueueService() == null
+            || !config.isCoverMissingAutoOnlineSearch()) {
+            return;
+        }
+        recoveryService.getSearchQueueService().enqueueMissingCoverAuto(queued);
+    }
+
     public void shutdown() {
         if (!shutdownCalled.compareAndSet(false, true)) {
             return;
@@ -295,6 +324,9 @@ public class ApplicationLifecycleManager {
 
         try {
             // 按依赖关系逆序关闭服务
+            if (coverMissingService != null) {
+                coverMissingService.close();
+            }
             if (recoveryService != null) {
                 recoveryService.close();
             }

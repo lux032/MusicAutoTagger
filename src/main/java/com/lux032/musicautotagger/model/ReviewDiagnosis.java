@@ -27,6 +27,8 @@ public final class ReviewDiagnosis {
     public static final String LOW_CONFIDENCE = "LOW_CONFIDENCE";
     /** 锁定专辑缺曲 */
     public static final String TRACKS_MISSING = "TRACKS_MISSING";
+    /** 缺少封面（等待补全封面或人工确认保持无封面入库） */
+    public static final String COVER_MISSING = "COVER_MISSING";
     /** 从「重新识别」转入的联网辅助识别 */
     public static final String ONLINE_ASSIST = "ONLINE_ASSIST";
     /** 兜底：专辑未能确定，但没有更具体的诊断（含旧版本入队的条目） */
@@ -74,6 +76,9 @@ public final class ReviewDiagnosis {
         }
         if (item.effectiveKind() == ReviewItem.Kind.TRACKS_MISSING) {
             return TRACKS_MISSING;
+        }
+        if (item.effectiveKind() == ReviewItem.Kind.COVER_MISSING) {
+            return COVER_MISSING;
         }
         if (item.getRecoverySourceType() != null) {
             return ONLINE_ASSIST;

@@ -406,6 +406,12 @@ review.enabled=false
 # 待确认的「锁定专辑缺曲」Tab。已配置联网搜索时，入队后自动搜一轮完整版本。
 review.missingTracks.autoOnlineSearch=true
 
+# 缺少封面时不直接入库，转入「缺少封面」菜单等待补图或人工确认无封面入库（独立于 review.enabled）
+cover.missing.requireReview=true
+
+# 缺少封面条目入队后自动进入后台队列搜寻封面候选（iTunes + AI 联网）
+cover.missing.autoOnlineSearch=true
+
 # 待确认队列持久化文件（JSON），必须能跨重启保留
 review.queuePath=data/review-queue.json
 

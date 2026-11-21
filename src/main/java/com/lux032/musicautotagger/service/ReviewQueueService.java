@@ -84,14 +84,19 @@ public class ReviewQueueService {
 
     /** 返回新入队优先的列表，不以更新时间排序，避免搜索或处置让旧条目跳到顶部。 */
     public synchronized List<ReviewItem> list(ReviewItem.Status statusFilter) {
+        return listByKinds(statusFilter, null);
+    }
+
+    /** 按状态和条目类型集合过滤列表（新入队优先） */
+    public synchronized List<ReviewItem> listByKinds(ReviewItem.Status statusFilter,
+                                                     java.util.Set<ReviewItem.Kind> kinds) {
         List<ReviewItem> result = new ArrayList<>();
         for (ReviewItem item : items.values()) {
-            if (statusFilter == null || statusFilter == item.getStatus()) {
+            if ((statusFilter == null || statusFilter == item.getStatus())
+                && (kinds == null || kinds.contains(item.effectiveKind()))) {
                 result.add(item);
             }
         }
-        // 先反转插入顺序，再稳定地按创建时间排序：同毫秒入队、或旧数据缺少时间时，后加入的在前。
-        // 只排序查询结果，不改变内部队列及其持久化顺序。
         Collections.reverse(result);
         result.sort(Comparator.comparingLong(ReviewItem::getCreatedAt).reversed());
         return result;
@@ -116,7 +121,10 @@ public class ReviewQueueService {
         }
         if (containsIgnoreCase(item.getFolderName(), q) || containsIgnoreCase(item.getFolderPath(), q)
             || containsIgnoreCase(item.getSynthesizedAlbumTitle(), q)
-            || containsIgnoreCase(item.getSynthesizedAlbumArtist(), q)) {
+            || containsIgnoreCase(item.getSynthesizedAlbumArtist(), q)
+            || (item.getMissingCover() != null && (
+                containsIgnoreCase(item.getMissingCover().getAlbumTitle(), q)
+                || containsIgnoreCase(item.getMissingCover().getAlbumArtist(), q)))) {
             return "";
         }
         if (item.getFiles() != null) {
@@ -273,6 +281,22 @@ public class ReviewQueueService {
         return result;
     }
 
+    /** 待处理、尚未自动搜过封面的「缺少封面」拦截条目（启动时补跑用，仅限新入库拦截模式） */
+    public synchronized List<ReviewItem> pendingMissingCoverWithoutAutoSearch() {
+        List<ReviewItem> result = new ArrayList<>();
+        for (ReviewItem item : items.values()) {
+            if (item.getStatus() == ReviewItem.Status.PENDING_REVIEW
+                && item.effectiveKind() == ReviewItem.Kind.COVER_MISSING
+                && item.getMissingCover() != null
+                && item.getMissingCover().getMode() == ReviewItem.MissingCover.Mode.STAGED_IMPORT
+                && !item.getMissingCover().isCoverAutoSearchTriggered()
+                && item.getMissingCover().getCoverSearchedAt() <= 0L) {
+                result.add(item);
+            }
+        }
+        return result;
+    }
+
     public synchronized int countPending() {
         int count = 0;
         for (ReviewItem item : items.values()) {
@@ -281,6 +305,23 @@ public class ReviewQueueService {
             }
         }
         return count;
+    }
+
+    /** 「待确认」页面统计（不含「缺少封面」） */
+    public synchronized int countPendingNonCover() {
+        int count = 0;
+        for (ReviewItem item : items.values()) {
+            if (item.getStatus() == ReviewItem.Status.PENDING_REVIEW
+                && item.effectiveKind() != ReviewItem.Kind.COVER_MISSING) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** 「缺少封面」页面待处理数量 */
+    public synchronized int countPendingMissingCover() {
+        return countPending(ReviewItem.Kind.COVER_MISSING);
     }
 
     /** 按条目类型统计待确认数量（面板 Tab 角标） */
@@ -302,6 +343,43 @@ public class ReviewQueueService {
             }
         }
         return count;
+    }
+
+    public synchronized int countRejectedNonCover() {
+        int count = 0;
+        for (ReviewItem item : items.values()) {
+            if (item.getStatus() == ReviewItem.Status.REJECTED
+                && item.effectiveKind() != ReviewItem.Kind.COVER_MISSING) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    public synchronized int countRejectedMissingCover() {
+        int count = 0;
+        for (ReviewItem item : items.values()) {
+            if (item.getStatus() == ReviewItem.Status.REJECTED
+                && item.effectiveKind() == ReviewItem.Kind.COVER_MISSING) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** 库内已归档专辑是否曾被用户明确确认「保持无封面」（手动扫描音乐库时跳过） */
+    public synchronized boolean isLibraryFolderConfirmedNoCover(String folderPath) {
+        if (folderPath == null) return false;
+        for (ReviewItem item : items.values()) {
+            if (item.effectiveKind() == ReviewItem.Kind.COVER_MISSING
+                && item.getStatus() == ReviewItem.Status.CONFIRMED
+                && folderPath.equals(item.getFolderPath())
+                && item.getMissingCover() != null
+                && item.getMissingCover().isConfirmedNoCover()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -390,8 +468,170 @@ public class ReviewQueueService {
     /** 缺曲条目入队后的回调（用于自动联网搜索），在队列锁外异步执行更安全 */
     private volatile java.util.function.Consumer<ReviewItem> missingTracksEnqueuedListener;
 
+    /** 缺少封面条目入队后的回调（用于自动搜封面），在队列锁外异步执行更安全 */
+    private volatile java.util.function.Consumer<ReviewItem> missingCoverEnqueuedListener;
+
     public void setMissingTracksEnqueuedListener(java.util.function.Consumer<ReviewItem> listener) {
         this.missingTracksEnqueuedListener = listener;
+    }
+
+    public void setMissingCoverEnqueuedListener(java.util.function.Consumer<ReviewItem> listener) {
+        this.missingCoverEnqueuedListener = listener;
+    }
+
+    /**
+     * 「缺少封面」入队（新入库拦截：自动刮削 / 散落单文件 / 重新识别）。
+     */
+    public ReviewItem enqueueMissingCover(String folderPath,
+                                          List<FolderAlbumCache.PendingFile> pendingFiles,
+                                          ReviewItem.MissingCover details,
+                                          String reason) {
+        if (details == null) {
+            return null;
+        }
+        String effectiveReason = (reason == null || reason.isBlank())
+            ? "缺少封面，等待补全封面或人工确认保持无封面入库" : reason;
+        FolderAlbumCache.CachedAlbumInfo synthesized = new FolderAlbumCache.CachedAlbumInfo(
+            details.getReleaseGroupId(),
+            details.getReleaseId(),
+            details.getAlbumTitle(),
+            details.getAlbumArtist(),
+            pendingFiles == null ? 0 : pendingFiles.size(),
+            details.getReleaseDate() != null ? details.getReleaseDate() : "",
+            details.getReleaseType(),
+            details.isCompilation(),
+            1.0,
+            FolderAlbumCache.CacheSource.UNKNOWN
+        );
+        ReviewItem item;
+        synchronized (this) {
+            item = enqueueInternal(folderPath, pendingFiles, synthesized, null, null,
+                effectiveReason, 1.0, target -> {
+                    target.setKind(ReviewItem.Kind.COVER_MISSING);
+                    applyDiagnosis(target, ReviewDiagnosis.of(ReviewDiagnosis.COVER_MISSING));
+                    if (details.getMode() == null) {
+                        details.setMode(ReviewItem.MissingCover.Mode.STAGED_IMPORT);
+                    }
+                    if (details.getCoverSearchStatus() == null) {
+                        details.setCoverSearchStatus("IDLE");
+                    }
+                    target.setMissingCover(details);
+                });
+        }
+        notifyMissingCoverEnqueued(item);
+        return item;
+    }
+
+    /**
+     * 把现有的待确认条目（选定 MB 版本 / 按未收录归档 / 联网候选 / 本地标签入库）原位流转为「缺少封面」。
+     * 保留原有的 stagingDir、recoverySourceType、recoverySourcePath、files 等全部上下文。
+     */
+    public ReviewItem transitionToMissingCover(ReviewItem existing,
+                                               ReviewItem.MissingCover details,
+                                               String reason) {
+        if (existing == null || details == null) {
+            return null;
+        }
+        ReviewItem updated;
+        synchronized (this) {
+            ReviewItem item = items.get(existing.getId());
+            if (item == null) {
+                item = existing;
+                items.put(item.getId(), item);
+            }
+            item.setKind(ReviewItem.Kind.COVER_MISSING);
+            item.setStatus(ReviewItem.Status.PENDING_REVIEW);
+            applyDiagnosis(item, ReviewDiagnosis.of(ReviewDiagnosis.COVER_MISSING));
+            item.setReason((reason == null || reason.isBlank())
+                ? "已确认元数据但缺少封面，等待补全或确认无封面入库" : reason);
+            if (details.getAlbumTitle() != null && !details.getAlbumTitle().isBlank()) {
+                item.setSynthesizedAlbumTitle(details.getAlbumTitle());
+            }
+            if (details.getAlbumArtist() != null && !details.getAlbumArtist().isBlank()) {
+                item.setSynthesizedAlbumArtist(details.getAlbumArtist());
+            }
+            if (details.getMode() == null) {
+                details.setMode(ReviewItem.MissingCover.Mode.STAGED_IMPORT);
+            }
+            if (details.getCoverSearchStatus() == null) {
+                details.setCoverSearchStatus("IDLE");
+            }
+            item.setMissingCover(details);
+            item.setResolutionNote(null);
+            item.setUpdatedAt(System.currentTimeMillis());
+            saveQuietly();
+            updated = item;
+        }
+        log.warn("缺少封面，条目已转入「缺少封面」等待处理: {} ({})",
+            updated.getFolderName(), details.getAlbumTitle());
+        LogCollector.addLog("WARN", "缺少封面，已转入「缺少封面」等待补图: " + updated.getFolderName());
+        notifyMissingCoverEnqueued(updated);
+        return updated;
+    }
+
+    /**
+     * 手动扫描输出音乐库发现的已归档缺封面专辑入队（不自动触发 AI 搜图，由用户在页面手动或批量触发）。
+     */
+    public synchronized ReviewItem enqueueLibraryMissingCover(String folderPath,
+                                                              List<File> audioFiles,
+                                                              TagWriterService tagWriter,
+                                                              ReviewItem.MissingCover details) {
+        if (folderPath == null || audioFiles == null || audioFiles.isEmpty() || details == null) {
+            return null;
+        }
+        ReviewItem existing = findPendingByFolder(folderPath);
+        if (existing != null) {
+            return existing;
+        }
+        ReviewItem item = new ReviewItem();
+        item.setId(UUID.randomUUID().toString());
+        long now = System.currentTimeMillis();
+        item.setCreatedAt(now);
+        item.setUpdatedAt(now);
+        item.setFolderPath(folderPath);
+        item.setFolderName(new File(folderPath).getName());
+        item.setStatus(ReviewItem.Status.PENDING_REVIEW);
+        item.setKind(ReviewItem.Kind.COVER_MISSING);
+        applyDiagnosis(item, ReviewDiagnosis.of(ReviewDiagnosis.COVER_MISSING));
+        item.setReason("扫描音乐库发现缺少内嵌封面");
+        item.setConfidence(1.0);
+        item.setSynthesizedAlbumTitle(details.getAlbumTitle());
+        item.setSynthesizedAlbumArtist(details.getAlbumArtist());
+        details.setMode(ReviewItem.MissingCover.Mode.LIBRARY_EXISTING);
+        details.setSourcePipeline("LIBRARY_SCAN");
+        if (details.getCoverSearchStatus() == null) {
+            details.setCoverSearchStatus("IDLE");
+        }
+        item.setMissingCover(details);
+
+        List<ReviewItem.FileEntry> entries = new ArrayList<>();
+        for (File audio : audioFiles) {
+            ReviewItem.FileEntry entry = new ReviewItem.FileEntry();
+            entry.setOriginalPath(audio.getAbsolutePath());
+            entry.setFileName(audio.getName());
+            MusicMetadata md = tagWriter == null ? null : tagWriter.readTags(audio);
+            entry.setMetadata(md == null ? new MusicMetadata() : stripHeavyFields(md));
+            if (md != null) entry.setDuration(md.getDuration());
+            entries.add(entry);
+        }
+        item.setFiles(entries);
+        items.put(item.getId(), item);
+        saveQuietly();
+        return item;
+    }
+
+    private void notifyMissingCoverEnqueued(ReviewItem item) {
+        java.util.function.Consumer<ReviewItem> listener = missingCoverEnqueuedListener;
+        if (item != null && listener != null
+            && item.getMissingCover() != null
+            && item.getMissingCover().getMode() == ReviewItem.MissingCover.Mode.STAGED_IMPORT
+            && !item.getMissingCover().isCoverAutoSearchTriggered()) {
+            try {
+                listener.accept(item);
+            } catch (Exception e) {
+                log.warn("缺少封面入队回调失败（不影响条目本身）: {}", e.getMessage());
+            }
+        }
     }
 
     /**
@@ -563,15 +803,26 @@ public class ReviewQueueService {
             }
         }
 
-        log.warn("========================================");
-        log.warn("⚠ 专辑无法确定，已放入「待人工确认」队列");
-        log.warn("  文件夹: {}", item.getFolderName());
-        log.warn("  文件数: {}", entries.size());
-        log.warn("  候选专辑数: {}", item.getCandidates().size());
-        log.warn("  统一置信度: {}", String.format("%.2f", confidence));
-        log.warn("  文件保持原样，未写入任何标签，等待在 Web 面板中确认");
-        log.warn("========================================");
-        LogCollector.addLog("WARN", "专辑待人工确认: " + item.getFolderName());
+        if (item.effectiveKind() == ReviewItem.Kind.COVER_MISSING) {
+            log.warn("========================================");
+            log.warn("⚠ 缺少封面，已暂停入库并放入「缺少封面」队列");
+            log.warn("  文件夹: {}", item.getFolderName());
+            log.warn("  专辑: {}", item.getMissingCover() != null ? item.getMissingCover().getAlbumTitle() : item.getSynthesizedAlbumTitle());
+            log.warn("  文件数: {}", entries.size());
+            log.warn("  等待在 Web 面板补全封面或确认无封面入库");
+            log.warn("========================================");
+            LogCollector.addLog("WARN", "缺少封面，已暂缓入库等待处理: " + item.getFolderName());
+        } else {
+            log.warn("========================================");
+            log.warn("⚠ 专辑无法确定，已放入「待人工确认」队列");
+            log.warn("  文件夹: {}", item.getFolderName());
+            log.warn("  文件数: {}", entries.size());
+            log.warn("  候选专辑数: {}", item.getCandidates().size());
+            log.warn("  统一置信度: {}", String.format("%.2f", confidence));
+            log.warn("  文件保持原样，未写入任何标签，等待在 Web 面板中确认");
+            log.warn("========================================");
+            LogCollector.addLog("WARN", "专辑待人工确认: " + item.getFolderName());
+        }
 
         return item;
     }
@@ -653,10 +904,12 @@ public class ReviewQueueService {
         // 注意：这里只「登记计划」，真正的移动要等 JSON 落盘成功之后。
         File processing = pending.getProcessingFile();
         if (processing != null && !processing.equals(original) && processing.exists()) {
-            Path target = stagingDir.resolve(processing.getName());
-            entry.setStagedPath(target.toAbsolutePath().toString());
-            plannedMoves.add(new StagingMove(entry, processing.toPath(), target,
-                pending.getProcessingTempDir()));
+            Path target = stagingDir.resolve(processing.getName()).toAbsolutePath().normalize();
+            entry.setStagedPath(target.toString());
+            if (!processing.toPath().toAbsolutePath().normalize().equals(target)) {
+                plannedMoves.add(new StagingMove(entry, processing.toPath(), target,
+                    pending.getProcessingTempDir()));
+            }
         } else {
             deleteQuietly(pending.getProcessingTempDir());
         }

@@ -45,7 +45,9 @@ public class OnlineSearchQueueService implements AutoCloseable {
     public enum Origin {
         REVIEW_MANUAL,
         RECOVERY_MANUAL,
-        MISSING_TRACKS_AUTO
+        MISSING_TRACKS_AUTO,
+        MISSING_COVER_MANUAL,
+        MISSING_COVER_AUTO
     }
 
     public enum Status {
@@ -59,6 +61,7 @@ public class OnlineSearchQueueService implements AutoCloseable {
     private final MusicConfig config;
     private final ReviewQueueService reviewQueue;
     private final OnlineIdentificationService onlineIdentificationService;
+    private volatile CoverSearchService coverSearchService;
     private final ExecutorService workers;
     private final Object lock = new Object();
     private final AtomicLong orderGenerator = new AtomicLong(1);
@@ -87,6 +90,14 @@ public class OnlineSearchQueueService implements AutoCloseable {
 
     public void setRecoveryOtherJobsSupplier(Supplier<List<Map<String, Object>>> supplier) {
         this.recoveryOtherJobsSupplier = supplier;
+    }
+
+    public void setCoverSearchService(CoverSearchService coverSearchService) {
+        this.coverSearchService = coverSearchService;
+    }
+
+    public boolean isCoverSearchAvailable() {
+        return coverSearchService != null;
     }
 
     public boolean isAvailable() {
@@ -231,13 +242,133 @@ public class OnlineSearchQueueService implements AutoCloseable {
             folderName,
             queuedItem.getId(),
             fileCount,
-            false
+            false,
+            null
         );
+    }
+
+    /** 「缺少封面」页面手动触发搜封面（本地/CAA + iTunes + AI 联网，高优先级）。 */
+    public EnqueueResult enqueueMissingCover(String itemId, String customQuery) throws IOException {
+        if (coverSearchService == null) {
+            throw new IOException("cover.search.unavailable");
+        }
+        if (reviewQueue == null || itemId == null || itemId.isBlank()) {
+            throw new IOException("item.not.found");
+        }
+        ReviewItem item = reviewQueue.get(itemId);
+        if (item == null || item.effectiveKind() != ReviewItem.Kind.COVER_MISSING) {
+            throw new IOException("item.not.found");
+        }
+        if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) {
+            throw new IOException("item.already.resolved");
+        }
+        String canonicalPath = canonicalPath(new File(item.getFolderPath()));
+        int fileCount = item.getFiles() == null ? 0 : item.getFiles().size();
+        String label = item.getMissingCover() != null && item.getMissingCover().getAlbumTitle() != null
+            && !item.getMissingCover().getAlbumTitle().isBlank()
+            ? item.getMissingCover().getAlbumTitle()
+            : (item.getFolderName() != null && !item.getFolderName().isBlank()
+                ? item.getFolderName() : new File(item.getFolderPath()).getName());
+        return enqueueInternal(
+            Origin.MISSING_COVER_MANUAL,
+            PRIORITY_MANUAL,
+            null,
+            null,
+            canonicalPath,
+            item.getFolderPath(),
+            label,
+            item.getId(),
+            fileCount,
+            false,
+            customQuery
+        );
+    }
+
+    /** 「缺少封面」新入库拦截条目自动入队搜封面（低优先级，不抢占手动触发）。 */
+    public EnqueueResult enqueueMissingCoverAuto(ReviewItem queuedItem) {
+        if (closed || queuedItem == null || coverSearchService == null) {
+            return null;
+        }
+        if (config != null && !config.isCoverMissingAutoOnlineSearch()) {
+            return null;
+        }
+        if (queuedItem.getStatus() != ReviewItem.Status.PENDING_REVIEW
+            || queuedItem.effectiveKind() != ReviewItem.Kind.COVER_MISSING
+            || queuedItem.getMissingCover() == null
+            || queuedItem.getMissingCover().isCoverAutoSearchTriggered()
+            || queuedItem.getMissingCover().getCoverSearchedAt() > 0L) {
+            return null;
+        }
+        String canonicalPath = canonicalPath(new File(queuedItem.getFolderPath()));
+        int fileCount = queuedItem.getFiles() == null ? 0 : queuedItem.getFiles().size();
+        String label = queuedItem.getMissingCover().getAlbumTitle() != null
+            && !queuedItem.getMissingCover().getAlbumTitle().isBlank()
+            ? queuedItem.getMissingCover().getAlbumTitle() : queuedItem.getFolderName();
+        return enqueueInternal(
+            Origin.MISSING_COVER_AUTO,
+            PRIORITY_AUTO,
+            null,
+            null,
+            canonicalPath,
+            queuedItem.getFolderPath(),
+            label,
+            queuedItem.getId(),
+            fileCount,
+            false,
+            null
+        );
+    }
+
+    /** 为「缺少封面」中未搜索过的待处理条目批量入队搜封面。 */
+    public Map<String, Object> enqueueBatchForMissingCovers(List<String> itemIds) throws IOException {
+        if (coverSearchService == null) {
+            throw new IOException("cover.search.unavailable");
+        }
+        if (reviewQueue == null) {
+            return Map.of("enqueued", 0, "skipped", 0);
+        }
+        List<ReviewItem> targets = new ArrayList<>();
+        if (itemIds != null && !itemIds.isEmpty()) {
+            for (String id : itemIds) {
+                ReviewItem item = reviewQueue.get(id);
+                if (item != null && item.getStatus() == ReviewItem.Status.PENDING_REVIEW
+                    && item.effectiveKind() == ReviewItem.Kind.COVER_MISSING) {
+                    targets.add(item);
+                }
+            }
+        } else {
+            for (ReviewItem item : reviewQueue.listByKinds(
+                    ReviewItem.Status.PENDING_REVIEW, java.util.Set.of(ReviewItem.Kind.COVER_MISSING))) {
+                if (item.getMissingCover() == null || item.getMissingCover().getCoverSearchedAt() <= 0L) {
+                    targets.add(item);
+                }
+            }
+        }
+        int enqueued = 0;
+        int skipped = 0;
+        for (ReviewItem item : targets) {
+            try {
+                EnqueueResult res = enqueueMissingCover(item.getId(), null);
+                if (res != null && !res.alreadyActive()) enqueued++;
+                else skipped++;
+            } catch (IOException e) {
+                skipped++;
+            }
+        }
+        return Map.of("enqueued", enqueued, "skipped", skipped);
     }
 
     private EnqueueResult enqueueInternal(Origin origin, int priority, String sourceType, String relativePath,
                                           String canonicalPath, String rawPath, String folderName,
                                           String reviewItemId, int fileCount, boolean analyzeCover) {
+        return enqueueInternal(origin, priority, sourceType, relativePath, canonicalPath, rawPath,
+            folderName, reviewItemId, fileCount, analyzeCover, null);
+    }
+
+    private EnqueueResult enqueueInternal(Origin origin, int priority, String sourceType, String relativePath,
+                                          String canonicalPath, String rawPath, String folderName,
+                                          String reviewItemId, int fileCount, boolean analyzeCover,
+                                          String customQuery) {
         synchronized (lock) {
             if (closed) {
                 return new EnqueueResult(null, false, false);
@@ -272,7 +403,11 @@ public class OnlineSearchQueueService implements AutoCloseable {
             task.reviewItemId = reviewItemId;
             task.fileCount = fileCount;
             task.analyzeCover = analyzeCover;
-            task.engine = onlineIdentificationService != null ? onlineIdentificationService.activeProviderName() : "native";
+            task.customQuery = customQuery;
+            task.engine = (origin == Origin.MISSING_COVER_AUTO || origin == Origin.MISSING_COVER_MANUAL)
+                ? (coverSearchService != null && coverSearchService.isAiSearchAvailable()
+                    ? coverSearchService.activeProviderName() : "itunes")
+                : (onlineIdentificationService != null ? onlineIdentificationService.activeProviderName() : "native");
             task.status = Status.QUEUED;
             task.stageCode = "QUEUED";
             task.stepIndex = 0;
@@ -346,19 +481,29 @@ public class OnlineSearchQueueService implements AutoCloseable {
 
     /** 重试已失败或已中止的任务（以手动高优先级重新入队） */
     public EnqueueResult retry(String taskId) throws IOException {
-        if (!isAvailable()) {
-            throw new IOException("llm.web.search.unavailable");
-        }
         SearchTask old;
         synchronized (lock) {
             old = findInList(finished, taskId);
             if (old == null || (old.status != Status.FAILED && old.status != Status.CANCELLED)) {
                 throw new IOException("search.task.not.retryable");
             }
+            boolean isCoverTask = old.origin == Origin.MISSING_COVER_AUTO || old.origin == Origin.MISSING_COVER_MANUAL;
+            if (!isCoverTask && !isAvailable()) {
+                throw new IOException("llm.web.search.unavailable");
+            }
+            if (isCoverTask && coverSearchService == null) {
+                throw new IOException("cover.search.unavailable");
+            }
             finished.remove(old);
             tasksById.remove(old.id);
         }
 
+        if (old.origin == Origin.MISSING_COVER_AUTO || old.origin == Origin.MISSING_COVER_MANUAL) {
+            if (old.reviewItemId != null) {
+                return enqueueMissingCover(old.reviewItemId, old.customQuery);
+            }
+            throw new IOException("item.not.found");
+        }
         if (old.sourceType != null && old.relativePath != null) {
             File target = new File(old.rawFolderPath != null ? old.rawFolderPath : old.folderPath);
             if (!target.exists()) {
@@ -417,10 +562,16 @@ public class OnlineSearchQueueService implements AutoCloseable {
         while (running.size() < limit && !queued.isEmpty()) {
             SearchTask next = queued.remove(0);
             next.status = Status.RUNNING;
-            next.engine = onlineIdentificationService != null ? onlineIdentificationService.activeProviderName() : next.engine;
+            if (next.origin == Origin.MISSING_COVER_AUTO || next.origin == Origin.MISSING_COVER_MANUAL) {
+                next.engine = (coverSearchService != null && coverSearchService.isAiSearchAvailable())
+                    ? coverSearchService.activeProviderName() : "itunes";
+                next.stageCode = "COVER_LOCAL_CHECK";
+            } else {
+                next.engine = onlineIdentificationService != null ? onlineIdentificationService.activeProviderName() : next.engine;
+                next.stageCode = "COLLECTING";
+            }
             next.startedAt = System.currentTimeMillis();
             next.updatedAt = next.startedAt;
-            next.stageCode = "COLLECTING";
             next.stepIndex = 0;
             next.round = 1;
             next.percent = 6;
@@ -447,6 +598,23 @@ public class OnlineSearchQueueService implements AutoCloseable {
                 log.info("缺曲条目自动联网搜索: {}", task.rawFolderPath);
             }
 
+            if (task.origin == Origin.MISSING_COVER_AUTO && task.reviewItemId != null && reviewQueue != null) {
+                boolean claimed = reviewQueue.updatePending(task.reviewItemId, item -> {
+                    if (item.getMissingCover() == null
+                        || item.getMissingCover().isCoverAutoSearchTriggered()
+                        || item.getMissingCover().getCoverSearchedAt() > 0L) {
+                        return false;
+                    }
+                    item.getMissingCover().setCoverAutoSearchTriggered(true);
+                    return true;
+                });
+                if (!claimed) {
+                    finishSkipped(task);
+                    return;
+                }
+                log.info("缺少封面条目自动搜索封面: {}", task.folderName);
+            }
+
             if (task.cancelRequested || Thread.currentThread().isInterrupted()) {
                 finishCancelled(task);
                 return;
@@ -455,7 +623,9 @@ public class OnlineSearchQueueService implements AutoCloseable {
             OnlineIdentificationService.SearchProgressListener listener = progress -> applyProgress(task, progress);
             File folder = new File(task.rawFolderPath != null ? task.rawFolderPath : task.folderPath);
             ReviewItem result;
-            if (task.origin == Origin.RECOVERY_MANUAL) {
+            if (task.origin == Origin.MISSING_COVER_AUTO || task.origin == Origin.MISSING_COVER_MANUAL) {
+                result = coverSearchService.searchCoversForItem(task.reviewItemId, task.customQuery, listener);
+            } else if (task.origin == Origin.RECOVERY_MANUAL) {
                 result = onlineIdentificationService.search(folder, task.sourceType, task.analyzeCover, listener);
             } else {
                 result = onlineIdentificationService.searchForExistingItem(task.reviewItemId, folder, task.analyzeCover, listener);
@@ -511,12 +681,21 @@ public class OnlineSearchQueueService implements AutoCloseable {
     }
 
     private void finishSucceeded(SearchTask task, ReviewItem result) {
-        int candCount = result.getOnlineCandidates() == null ? 0 : result.getOnlineCandidates().size();
-        int clueCount = result.getOnlineClues() == null ? 0 : result.getOnlineClues().size();
+        boolean isCoverTask = task.origin == Origin.MISSING_COVER_AUTO || task.origin == Origin.MISSING_COVER_MANUAL;
+        int candCount;
+        int clueCount;
         double bestCov = 0;
-        if (result.getOnlineCandidates() != null) {
-            for (ReviewItem.OnlineCandidate c : result.getOnlineCandidates()) {
-                bestCov = Math.max(bestCov, SystemSuggestionCalculator.reliableCoverage(result, c));
+        if (isCoverTask) {
+            candCount = (result.getMissingCover() != null && result.getMissingCover().getCoverCandidates() != null)
+                ? result.getMissingCover().getCoverCandidates().size() : 0;
+            clueCount = 0;
+        } else {
+            candCount = result.getOnlineCandidates() == null ? 0 : result.getOnlineCandidates().size();
+            clueCount = result.getOnlineClues() == null ? 0 : result.getOnlineClues().size();
+            if (result.getOnlineCandidates() != null) {
+                for (ReviewItem.OnlineCandidate c : result.getOnlineCandidates()) {
+                    bestCov = Math.max(bestCov, SystemSuggestionCalculator.reliableCoverage(result, c));
+                }
             }
         }
         synchronized (lock) {
@@ -534,8 +713,12 @@ public class OnlineSearchQueueService implements AutoCloseable {
             recordFinishedLocked(task);
             dispatchNextLocked();
         }
-        LogCollector.addLog("SUCCESS", "LLM 联网搜索完成: " + task.folderName
-            + "（候选 " + candCount + "，线索 " + clueCount + "）");
+        if (isCoverTask) {
+            LogCollector.addLog("SUCCESS", "封面搜索完成: " + task.folderName + "（候选封面 " + candCount + " 张）");
+        } else {
+            LogCollector.addLog("SUCCESS", "LLM 联网搜索完成: " + task.folderName
+                + "（候选 " + candCount + "，线索 " + clueCount + "）");
+        }
     }
 
     private void finishFailed(SearchTask task, Exception e) {
@@ -817,6 +1000,7 @@ public class OnlineSearchQueueService implements AutoCloseable {
         private String reviewItemId;
         private int fileCount;
         private boolean analyzeCover;
+        private String customQuery;
         private String engine;
 
         private Status status;

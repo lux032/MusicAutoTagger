@@ -29,6 +29,7 @@ class RecoveryServiceArchiveIntegrityTest {
         config.setReviewStagingDirectory(dir.resolve("staging").toString());
         config.setProcessedFileLogPath(dir.resolve("processed.log").toString());
         config.setAutoRename(true);
+        config.setCoverMissingRequireReview(false);
         Path source = Files.createDirectory(dir.resolve("source"));
         List<File> files = new ArrayList<>();
         Map<String, MusicMetadata> metadata = new HashMap<>();

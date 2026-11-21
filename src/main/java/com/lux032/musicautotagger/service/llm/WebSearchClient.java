@@ -42,6 +42,15 @@ public interface WebSearchClient {
         return search(systemPrompt, userPrompt);
     }
 
+    /**
+     * 面向封面图片检索的联网搜索：默认复用 {@link #search(String, String, ProgressListener)}，
+     * Tavily 等支持图片直链返回的检索器会额外开启 include_images 并填充 {@link SearchResponse#getImages()}。
+     */
+    default SearchResponse searchImages(String systemPrompt, String userPrompt, ProgressListener progress)
+            throws LlmClient.LlmException {
+        return search(systemPrompt, userPrompt, progress);
+    }
+
     /** 供日志 / 落库展示的实现名，例如 native-openai / tavily */
     String name();
 
@@ -86,6 +95,7 @@ public interface WebSearchClient {
         private String model;
         private int endpointIndex;
         private List<Citation> citations = new ArrayList<>();
+        private List<String> images = new ArrayList<>();
 
         /** URL 去重后追加 */
         public void addCitation(Citation citation) {
@@ -98,6 +108,17 @@ public interface WebSearchClient {
                 }
             }
             citations.add(citation);
+        }
+
+        /** 图片直链去重后追加 */
+        public void addImageUrl(String url) {
+            if (url == null || url.isBlank()) {
+                return;
+            }
+            String trimmed = url.trim();
+            if (!images.contains(trimmed)) {
+                images.add(trimmed);
+            }
         }
     }
 

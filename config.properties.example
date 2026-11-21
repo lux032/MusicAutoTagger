@@ -460,6 +460,12 @@ review.enabled=false
 # complete edition automatically when such an item is queued.
 review.missingTracks.autoOnlineSearch=true
 
+# Hold releases with missing cover art under "Missing Covers" instead of archiving directly (independent of review.enabled).
+cover.missing.requireReview=true
+
+# Automatically queue background cover search (iTunes + AI web search) when a missing-cover release is held.
+cover.missing.autoOnlineSearch=true
+
 # Persisted review queue (JSON). Must survive restarts.
 review.queuePath=data/review-queue.json
 

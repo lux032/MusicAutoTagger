@@ -185,8 +185,10 @@ public class AudioFileProcessorService {
             // 0.5.2 阶段六 #18：该文件夹已进入「待人工确认」队列时，不得再自动处理。
             // 待确认的文件故意不写标签、不改名、不移动，也就不会被记为 processed，
             // 如果不在这里拦住，下一轮扫描会反复重新识别并重复入队。
-            if (reviewQueueService != null && reviewQueueService.isFolderUnderReview(folderPath)) {
-                log.info("文件夹已在待人工确认队列中，跳过自动处理: {}", albumRootDir.getName());
+            if (reviewQueueService != null
+                && (reviewQueueService.isFolderUnderReview(folderPath)
+                    || reviewQueueService.isFolderUnderReview(originalAudioFile.getAbsolutePath()))) {
+                log.info("文件/文件夹已在待人工确认或缺少封面队列中，跳过自动处理: {}", originalAudioFile.getName());
                 return ProcessResult.SUCCESS;
             }
 
@@ -721,37 +723,106 @@ public class AudioFileProcessorService {
             }
 
             // 4.9 按锁定专辑写入：授权检查与写入放在同一把文件夹锁里。
-            // 识别期间（联网请求较慢）另一线程可能已把文件夹判为未确定 / 缺曲；
-            // 判定也要拿这把锁，因此不会出现「检查通过后、写入前被判缺曲」的窗口。
+            // 识别期间（联网请求较慢）另一线程可能已把文件夹判为未确定 / 缺曲 / 缺封面；
+            // 判定也要拿这把锁，因此不会出现「检查通过后、写入前被判缺曲或缺封面」的窗口。
             boolean writtenWithLock = false;
             if (lockedAlbumTitle != null && !isLooseFileInMonitorRoot) {
-                log.info("使用已锁定的专辑信息: {}", lockedAlbumTitle);
-                int flushed = albumBatchProcessor.writeWithFolderLock(folderPath, processingAudioFile,
-                    originalAudioFile, detailedMetadata, coverArtData, isQuickScanMode);
-                writtenWithLock = flushed >= 0;
-                if (flushed > 0) {
-                    folderUnprocessedCounts.remove(folderPath);
-                    fileSystemUtils.invalidateInspection(folderPath);
+                if ((coverArtData == null || coverArtData.length == 0)
+                    && reviewQueueService != null
+                    && config.isCoverMissingRequireReview()) {
+                    // 整文件夹再查一次本地兜底（可能其他曲目内嵌了封面或专辑根目录有图）
+                    byte[] folderFallback = coverArtService.findFallbackCoverForFolder(folderPath);
+                    if (folderFallback != null && folderFallback.length > 0) {
+                        coverArtData = folderFallback;
+                    } else {
+                        log.warn("锁定专辑「{}」缺少封面，整张专辑暂缓入库并收集待入「缺少封面」队列", lockedAlbumTitle);
+                        folderAlbumCache.markFolderCoverMissing(folderPath);
+                    }
                 }
-                if (!writtenWithLock) {
-                    // 改走「未锁定」分支只识别不写入
-                    log.warn("文件夹已在处理期间被判定为未确定 / 缺曲，本文件不按旧锁定写入: {}",
-                        originalAudioFile.getName());
-                    lockedAlbumTitle = null;
-                    lockedAlbumArtist = null;
-                    lockedReleaseGroupId = null;
-                    lockedReleaseId = null;
-                    lockedReleaseDate = null;
+                if (!folderAlbumCache.isFolderCoverMissing(folderPath)) {
+                    log.info("使用已锁定的专辑信息: {}", lockedAlbumTitle);
+                    int flushed = albumBatchProcessor.writeWithFolderLock(folderPath, processingAudioFile,
+                        originalAudioFile, detailedMetadata, coverArtData, isQuickScanMode);
+                    writtenWithLock = flushed >= 0;
+                    if (flushed > 0) {
+                        folderUnprocessedCounts.remove(folderPath);
+                        fileSystemUtils.invalidateInspection(folderPath);
+                    }
+                    if (!writtenWithLock) {
+                        // 改走「未锁定」分支只识别不写入
+                        log.warn("文件夹已在处理期间被判定为未确定 / 缺曲 / 缺封面，本文件不按旧锁定写入: {}",
+                            originalAudioFile.getName());
+                        if (!folderAlbumCache.isFolderCoverMissing(folderPath)) {
+                            lockedAlbumTitle = null;
+                            lockedAlbumArtist = null;
+                            lockedReleaseGroupId = null;
+                            lockedReleaseId = null;
+                            lockedReleaseDate = null;
+                        }
+                    }
                 }
             }
 
             // 5. 文件夹级别的专辑锁定处理
-            // 注意：散落文件跳过专辑锁定和投票机制，直接处理
+            // 注意：散落文件跳过专辑锁定和投票机制，直接处理（缺封面时同样拦截）
             if (isLooseFileInMonitorRoot) {
+                if ((coverArtData == null || coverArtData.length == 0)
+                    && reviewQueueService != null
+                    && config.isCoverMissingRequireReview()) {
+                    com.lux032.musicautotagger.model.ReviewItem.MissingCover details =
+                        new com.lux032.musicautotagger.model.ReviewItem.MissingCover();
+                    details.setMode(com.lux032.musicautotagger.model.ReviewItem.MissingCover.Mode.STAGED_IMPORT);
+                    details.setSourcePipeline(tagWriter.isOutputRootOverridden() ? "REIDENTIFY" : "LOOSE_FILE");
+                    details.setLooseFile(true);
+                    details.setAlbumTitle(detailedMetadata.getAlbum() != null && !detailedMetadata.getAlbum().isBlank()
+                        ? detailedMetadata.getAlbum() : detailedMetadata.getTitle());
+                    details.setAlbumArtist(detailedMetadata.getAlbumArtist() != null && !detailedMetadata.getAlbumArtist().isBlank()
+                        ? detailedMetadata.getAlbumArtist() : detailedMetadata.getArtist());
+                    if (detailedMetadata.getAlbumArtists() != null && !detailedMetadata.getAlbumArtists().isEmpty()) {
+                        details.setAlbumArtists(new ArrayList<>(detailedMetadata.getAlbumArtists()));
+                    }
+                    details.setReleaseGroupId(detailedMetadata.getReleaseGroupId());
+                    details.setReleaseId(detailedMetadata.getReleaseId());
+                    details.setReleaseDate(detailedMetadata.getReleaseDate());
+                    details.setReleaseType(detailedMetadata.getReleaseType());
+                    details.setCompilation(detailedMetadata.isCompilation());
+
+                    FolderAlbumCache.PendingFile pendingLoose = new FolderAlbumCache.PendingFile(
+                        originalAudioFile,
+                        processingAudioFile,
+                        normalizationResult != null ? normalizationResult.getTempDirectory() : null,
+                        detailedMetadata,
+                        null
+                    );
+                    com.lux032.musicautotagger.model.ReviewItem queued = reviewQueueService.enqueueMissingCover(
+                        originalAudioFile.getAbsolutePath(),
+                        java.util.List.of(pendingLoose),
+                        details,
+                        "散落单曲缺少封面，等待补全或确认无封面入库"
+                    );
+                    if (queued != null) {
+                        deferNormalizationCleanup = normalizationResult != null && normalizationResult.isConverted();
+                        return ProcessResult.SUCCESS;
+                    }
+                }
                 log.info("散落文件保底处理：直接写入元数据（随缘模式）");
                 albumBatchProcessor.processAndWriteFile(processingAudioFile, originalAudioFile, detailedMetadata, coverArtData, false);
             } else if (writtenWithLock) {
                 // 已在 4.9 按锁定专辑写入
+            } else if (folderAlbumCache.isFolderCoverMissing(folderPath)) {
+                // 锁定专辑缺封面：收集齐整张专辑所有文件后统一入「缺少封面」队列，不重新走投票
+                if (!albumBatchProcessor.addPendingFile(
+                    folderPath,
+                    originalAudioFile,
+                    processingAudioFile,
+                    normalizationResult != null ? normalizationResult.getTempDirectory() : null,
+                    detailedMetadata,
+                    coverArtData
+                )) {
+                    return ProcessResult.SUCCESS;
+                }
+                deferNormalizationCleanup = normalizationResult != null && normalizationResult.isConverted();
+                finalizePendingIfComplete(folderPath, albumRootDir, musicFilesInFolder);
             } else {
                 // 未锁定专辑：收集样本进行投票
                 log.info("启用文件夹级别专辑锁定（{}首音乐文件）", musicFilesInFolder);
@@ -870,10 +941,11 @@ public class AudioFileProcessorService {
         }
     }
 
-    /** 文件夹是否正处于收集阶段：已有待处理文件，或已被判定缺曲 */
+    /** 文件夹是否正处于收集阶段：已有待处理文件，或已被判定缺曲 / 缺封面 */
     private boolean isFolderCollecting(String folderPath) {
         return albumBatchProcessor.getPendingFileCount(folderPath) > 0
-            || folderAlbumCache.getMissingTracksInfo(folderPath) != null;
+            || folderAlbumCache.getMissingTracksInfo(folderPath) != null
+            || folderAlbumCache.isFolderCoverMissing(folderPath);
     }
 
     private static String stripExtension(String name) {
