@@ -1,11 +1,14 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-i18n-title-key="covers.page.title">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>缺少封面 · 音乐自动标签器</title>
     <link rel="icon" type="image/png" href="logo.png">
-    <link rel="stylesheet" href="app.css">
+    <link rel="stylesheet" href="app.css?v=11">
+    <script src="i18n.js?v=1"></script>
+    <script src="shell.js?v=2"></script>
+    <script src="search-queue.js?v=2"></script>
     <style>
         .main { padding-bottom: 24px; }
         .page-head { margin-bottom: 16px; }
@@ -195,18 +198,12 @@
         }
         .lightbox.show { display: flex; }
         .lightbox img { max-width: min(92vw, 900px); max-height: 88vh; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
-
-        .toast {
-            position: fixed; right: 20px; bottom: 20px; z-index: 1100; max-width: 420px;
-            padding: 11px 16px; border-radius: var(--radius); background: var(--text); color: #fff;
-            font-size: 13px; box-shadow: 0 10px 30px rgba(15,23,42,.24); display: none;
-        }
     </style>
 </head>
 <body>
-<div class="app">
+<div class="shell">
 <aside class="side" id="appSide">
-    <a class="brand" href="index.html">
+    <a class="side-brand" href="index.html">
         <img src="logo.png" alt="Music Auto Tagger">
         <span>
             <span class="brand-title" data-i18n="web.brand">音乐自动标签器</span>
@@ -335,7 +332,7 @@
         <div class="dialog-stack" id="duplicateList" style="margin-top:12px;"></div>
         <div class="dialog-actions">
             <button class="btn ghost" id="dupCancelBtn" type="button" data-i18n="web.cancel">取消</button>
-            <button class="btn ghost" id="dupKeepBtn" type="button" data-i18n="review.duplicate.keep">保留两份</button>
+            <button class="btn ghost" id="dupKeepBtn" type="button" data-i18n="review.duplicate.keep.both">保留两份</button>
             <button class="btn primary" id="dupReplaceBtn" type="button" data-i18n="review.duplicate.replace">替换旧归档</button>
         </div>
     </div>
@@ -345,11 +342,8 @@
     <img id="lightboxImg" src="" alt="">
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status"></div>
 
-<script src="i18n.js"></script>
-<script src="shell.js"></script>
-<script src="search-queue.js"></script>
 <script>
 (function () {
     const $ = id => document.getElementById(id);
@@ -464,7 +458,7 @@
                 ? `<div class="q-live">${esc(sqTask.status === 'RUNNING' ? SearchQueue.stageText(sqTask) : t('sq.stage.QUEUED'))}</div>` : '';
             const modeCls = item.mode === 'LIBRARY_EXISTING' ? 'library' : 'staged';
             const modeLbl = item.mode === 'LIBRARY_EXISTING' ? t('covers.mode.library') : t('covers.mode.staged');
-            const candBadge = item.candidateCount > 0 ? `<span class="pill cand">${item.candidateCount} 候选</span>` : '';
+            const candBadge = item.candidateCount > 0 ? `<span class="pill cand">${esc(tf('covers.candidates.title', item.candidateCount))}</span>` : '';
             const statusBadge = item.status === 'CONFIRMED'
                 ? `<span class="pill ok">${esc(item.confirmedNoCover ? t('covers.status.confirmed.nocover') : t('covers.status.confirmed.withcover'))}</span>`
                 : (item.status === 'REJECTED' ? `<span class="pill">${esc(t('covers.filter.rejected'))}</span>` : '');
@@ -1082,17 +1076,25 @@
     });
 
     (async () => {
-        if (window.I18n) await I18n.init();
-        if (!(await ensureAuth())) return;
-        if (window.SearchQueue) {
-            SearchQueue.init({
-                getCsrf: () => state.csrfToken,
-                onToast: toast,
-                onNavigateCover: id => selectItem(id, true)
-            });
+        try {
+            if (window.I18n) {
+                await I18n.load();
+                I18n.apply();
+            }
+            if (!(await ensureAuth())) return;
+            if (window.SearchQueue) {
+                SearchQueue.init({
+                    getCsrf: () => state.csrfToken,
+                    onToast: toast,
+                    onNavigateCover: id => selectItem(id, true)
+                });
+            }
+            await loadList({ keepSelection: false });
+            pollScanStatus();
+        } catch (e) {
+            console.error('covers page init failed', e);
+            toast(e && e.message ? e.message : 'Init failed');
         }
-        await loadList({ keepSelection: false });
-        pollScanStatus();
     })();
 })();
 </script>
