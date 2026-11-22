@@ -132,6 +132,18 @@
 
     function shortStage(task) {
         if (!task) return '';
+        if (isCoverOrigin(task.origin)) {
+            switch (task.stageCode) {
+                case 'COVER_LOCAL_CHECK': return t('sq.short.cover.local');
+                case 'COVER_ITUNES_SEARCH': return t('sq.short.cover.itunes');
+                case 'COVER_AI_SEARCH': return t('sq.short.cover.ai');
+                case 'COVER_DOWNLOADING':
+                    return task.stageTotal > 0
+                        ? `${t('sq.short.cover.download')} ${task.stageCurrent}/${task.stageTotal}`
+                        : t('sq.short.cover.download');
+                default: return t('sq.short.cover.local');
+            }
+        }
         const step = Number(task.stepIndex) || 0;
         if (step <= 0) return t('sq.short.collecting');
         if (step === 1) {
@@ -149,6 +161,12 @@
 
     function isCoverOrigin(origin) {
         return origin === 'MISSING_COVER_AUTO' || origin === 'MISSING_COVER_MANUAL';
+    }
+
+    function isCoverTarget(task, reviewKind) {
+        if (reviewKind === 'COVER_MISSING') return true;
+        if (!task) return false;
+        return task.reviewKind === 'COVER_MISSING' || isCoverOrigin(task.origin);
     }
 
     function resultSummary(task) {
@@ -172,7 +190,8 @@
 
     function stepTrackHtml(task) {
         const step = Number(task?.stepIndex) || 0;
-        const inRound2 = Number(task?.round) >= 2 || step >= 3;
+        const coverMode = isCoverOrigin(task?.origin);
+        const inRound2 = coverMode || Number(task?.round) >= 2 || step >= 3;
         return '<div class="sq-step-track">' + [0, 1, 2, 3].map(idx => {
             if (idx === 3 && !inRound2) return '<span class="sq-step-seg opt"></span>';
             if (step > idx) return '<span class="sq-step-seg done"></span>';
@@ -257,8 +276,9 @@
         const act = btn.dataset.sqAct;
         const taskId = btn.dataset.taskId;
         const reviewId = btn.dataset.reviewId;
+        const reviewKind = btn.dataset.reviewKind;
         if (act === 'open-drawer') { openDrawer(taskId || null); return; }
-        if (act === 'goto-review' && reviewId) { navigateReview(reviewId, taskId); return; }
+        if (act === 'goto-review' && reviewId) { navigateReview(reviewId, taskId, reviewKind); return; }
         if (act === 'prioritize' && taskId) { prioritize(taskId); return; }
         if (act === 'cancel' && taskId) { cancel(taskId); return; }
         if (act === 'retry' && taskId) { retry(taskId); return; }
@@ -266,11 +286,11 @@
         if (act === 'clear-finished') { clearFinished(); return; }
     }
 
-    function navigateReview(reviewItemId, taskId) {
+    function navigateReview(reviewItemId, taskId, reviewKind) {
         if (taskId) markRead(taskId);
         closeDrawer();
         const task = allTasks().find(x => (taskId && x.id === taskId) || (reviewItemId && x.reviewItemId === reviewItemId));
-        if (task && isCoverOrigin(task.origin)) {
+        if (isCoverTarget(task, reviewKind)) {
             if (onNavigateCoverFn) {
                 onNavigateCoverFn(reviewItemId, taskId);
             } else {
@@ -371,7 +391,7 @@
                     failed.length ? `<span class="sq-pill fail">${esc(tf('sq.bar.chip.fail', failed.length))}</span>` : ''
                 ].join('');
                 const quickBtn = !running.length && unreadDone.length && unreadDone[0].reviewItemId
-                    ? `<button type="button" class="btn soft sm" data-sq-act="goto-review" data-review-id="${esc(unreadDone[0].reviewItemId)}" data-task-id="${esc(unreadDone[0].id)}">${esc(t('sq.bar.goto.latest'))}</button>` : '';
+                    ? `<button type="button" class="btn soft sm" data-sq-act="goto-review" data-review-id="${esc(unreadDone[0].reviewItemId)}" data-review-kind="${esc(unreadDone[0].reviewKind || '')}" data-task-id="${esc(unreadDone[0].id)}">${esc(t('sq.bar.goto.latest'))}</button>` : '';
 
                 bar.className = cls;
                 bar.innerHTML = `<div class="gtb-lead">${leadHtml}</div>
@@ -416,7 +436,7 @@
                 </div>
                 ${stepTrackHtml(task)}
                 <div class="sq-task-foot">
-                    ${task.reviewItemId ? `<button type="button" class="btn ghost xs" data-sq-act="goto-review" data-review-id="${esc(task.reviewItemId)}" data-task-id="${esc(task.id)}">${esc(t('sq.act.view.item'))}</button>` : ''}
+                    ${task.reviewItemId ? `<button type="button" class="btn ghost xs" data-sq-act="goto-review" data-review-id="${esc(task.reviewItemId)}" data-review-kind="${esc(task.reviewKind || '')}" data-task-id="${esc(task.id)}">${esc(t('sq.act.view.item'))}</button>` : ''}
                     <button type="button" class="btn danger-soft xs" data-sq-act="cancel" data-task-id="${esc(task.id)}" ${task.cancelRequested ? 'disabled' : ''}>${esc(task.cancelRequested ? t('sq.act.aborting') : t('sq.act.abort'))}</button>
                 </div>
             </div>`;
@@ -447,6 +467,7 @@
             const isFail = task.status === 'FAILED';
             const pillCls = isOk ? 'ok' : (isFail ? 'fail' : 'wait');
             const statusKey = 'sq.status.' + String(task.status || '').toLowerCase();
+            const gotoLabel = isCoverTarget(task) ? t('sq.act.goto.covers') : t('sq.act.goto.review');
             return `<div class="sq-task ${isFail ? 'fail' : ''}">
                 <div class="sq-task-r1">
                     <div class="sq-task-name">${esc(task.folderName || '')}</div>
@@ -455,7 +476,7 @@
                 <div class="sq-task-meta">${esc(resultSummary(task))}</div>
                 <div class="sq-task-foot">
                     ${(isOk || (task.status === 'CANCELLED' && task.round1Saved)) && task.reviewItemId
-                        ? `<button type="button" class="btn soft xs" data-sq-act="goto-review" data-review-id="${esc(task.reviewItemId)}" data-task-id="${esc(task.id)}">${esc(t('sq.act.goto.review'))}</button>` : ''}
+                        ? `<button type="button" class="btn soft xs" data-sq-act="goto-review" data-review-id="${esc(task.reviewItemId)}" data-review-kind="${esc(task.reviewKind || '')}" data-task-id="${esc(task.id)}">${esc(gotoLabel)}</button>` : ''}
                     ${isFail || task.status === 'CANCELLED'
                         ? `<button type="button" class="btn soft xs" data-sq-act="retry" data-task-id="${esc(task.id)}">${esc(t('sq.act.retry'))}</button>` : ''}
                 </div>
@@ -467,13 +488,14 @@
             ${otherJobs.map(j => {
                 const st = j.status || '';
                 const pillCls = st === 'RUNNING' ? 'run' : (st === 'QUEUED' ? 'wait' : (st === 'SUCCEEDED' ? 'ok' : (st === 'FAILED' ? 'fail' : 'info')));
+                const gotoLabel = j.reviewKind === 'COVER_MISSING' ? t('sq.act.goto.covers') : t('sq.act.goto.review');
                 return `<div class="sq-task">
                     <div class="sq-task-r1">
                         <div class="sq-task-name">${esc(j.relativePath || '')}</div>
                         <span class="sq-pill ${pillCls}">${esc(t('recovery.status.' + (st === 'WAITING_REVIEW' ? 'waiting' : st.toLowerCase()), st))}</span>
                     </div>
                     <div class="sq-task-meta">${esc(j.message || t('recovery.job.processing'))}</div>
-                    ${j.reviewItemId ? `<div class="sq-task-foot"><button type="button" class="btn soft xs" data-sq-act="goto-review" data-review-id="${esc(j.reviewItemId)}">${esc(t('sq.act.goto.review'))}</button></div>` : ''}
+                    ${j.reviewItemId ? `<div class="sq-task-foot"><button type="button" class="btn soft xs" data-sq-act="goto-review" data-review-id="${esc(j.reviewItemId)}" data-review-kind="${esc(j.reviewKind || '')}">${esc(gotoLabel)}</button></div>` : ''}
                 </div>`;
             }).join('')}
         </div>` : '';

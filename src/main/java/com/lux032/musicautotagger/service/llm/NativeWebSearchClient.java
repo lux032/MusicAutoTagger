@@ -20,10 +20,24 @@ import java.util.List;
 @Slf4j
 public class NativeWebSearchClient implements WebSearchClient {
     private final MusicConfig config;
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build();
+    private volatile HttpClient http;
     private final Gson gson = new Gson();
 
     public NativeWebSearchClient(MusicConfig config) { this.config = config; }
+
+    private HttpClient http() {
+        HttpClient client = this.http;
+        if (client == null) {
+            synchronized (this) {
+                client = this.http;
+                if (client == null) {
+                    client = LlmClient.buildHttpClient(config);
+                    this.http = client;
+                }
+            }
+        }
+        return client;
+    }
 
     @Override
     public String name() { return "native"; }
@@ -199,7 +213,7 @@ public class NativeWebSearchClient implements WebSearchClient {
             builder.header("x-api-key", key).header("anthropic-version", "2023-06-01")
                 .header("anthropic-beta", "web-search-2025-03-05");
         } else builder.header("Authorization", "Bearer " + key);
-        HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = http().send(builder.build(), HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() == 429 || response.statusCode() >= 500) throw new Retryable("http " + response.statusCode());
         if (response.statusCode() != 200) throw new IllegalStateException("http " + response.statusCode() + ": " + truncate(response.body()));
         JsonObject json = gson.fromJson(response.body(), JsonObject.class);

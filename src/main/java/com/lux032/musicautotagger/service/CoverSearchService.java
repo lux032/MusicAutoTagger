@@ -109,103 +109,142 @@ public class CoverSearchService {
             return true;
         });
 
-        List<CoverCandidateView> collected = new ArrayList<>();
-        // 保留用户已经手动上传 / 手动拉取 URL 的候选，避免重新搜索把它们冲掉
-        if (mc.getCoverCandidates() != null) {
-            for (CoverCandidateView existing : mc.getCoverCandidates()) {
-                if (existing != null && (existing.getOrigin() == CoverCandidateView.Origin.USER_UPLOAD
-                    || existing.getOrigin() == CoverCandidateView.Origin.USER_URL)) {
-                    collected.add(existing);
-                }
-            }
-        }
-
-        // Step 0: 本地 + MusicBrainz CAA 复查
-        emit(progress, 0, "COVER_LOCAL_CHECK", 0, 0, 0, 12, albumTitle, itemId, fileCount);
-        List<File> audioFiles = resolveAudioFiles(item);
-        File albumRoot = resolveAlbumRoot(item, audioFiles);
-        collected.addAll(coverCandidateService.collectLocalCandidates(audioFiles, albumRoot));
-        if (meaningful(mc.getReleaseGroupId())) {
-            coverCandidateService.fetchMusicBrainzCoverByRgid(mc.getReleaseGroupId()).ifPresent(collected::add);
-        }
-        checkInterrupted();
-
-        // Step 1: Apple Music / iTunes 免费高清封面
-        emit(progress, 1, "COVER_ITUNES_SEARCH", 1, 2, collected.size(), 35, albumTitle, itemId, fileCount);
-        int itunesCount = 0;
         try {
-            List<CoverCandidateView> itunesHits =
-                coverCandidateService.searchItunesCovers(albumTitle, albumArtist, effectiveQuery);
-            itunesCount = itunesHits.size();
-            collected.addAll(itunesHits);
-        } catch (Exception e) {
-            log.debug("iTunes cover search error for {}: {}", albumTitle, e.getMessage());
-        }
-        checkInterrupted();
-
-        // Step 2: AI 联网搜封面（可选，已配置联网搜索时执行）
-        int aiCount = 0;
-        String aiNote = null;
-        WebSearchClient client = searchClient();
-        if (client.hasEnabledEndpoint()) {
-            emit(progress, 2, "COVER_AI_SEARCH", 2, 2, collected.size(), 58, albumTitle, itemId, fileCount);
-            try {
-                String prompt = buildCoverPrompt(item, mc, albumTitle, albumArtist, effectiveQuery);
-                WebSearchClient.ProgressListener bridge = (stage, cur, tot, cit, detail) -> {
-                    int pct = "SUMMARIZING".equals(stage) ? 80 : 68;
-                    emit(progress, 2, "COVER_AI_SEARCH", cur, Math.max(tot, 1), cit, pct, detail, itemId, fileCount);
-                };
-                WebSearchClient.SearchResponse resp = client.searchImages(SYSTEM_PROMPT, prompt, bridge);
-                checkInterrupted();
-                Map<String, CandidateHint> urlsToFetch = extractCandidateUrls(resp);
-                emit(progress, 3, "COVER_DOWNLOADING", 0, urlsToFetch.size(), collected.size(), 86, albumTitle, itemId, fileCount);
-                int idx = 0;
-                for (Map.Entry<String, CandidateHint> entry : urlsToFetch.entrySet()) {
-                    checkInterrupted();
-                    if (idx >= MAX_AI_IMAGE_URLS) break;
-                    idx++;
-                    CandidateHint hint = entry.getValue();
-                    Optional<CoverCandidateView> fetched = coverCandidateService.ingestFromUrl(
-                        entry.getKey(),
-                        CoverCandidateView.Origin.LLM_URL,
-                        meaningful(hint.source) ? hint.source : null,
-                        hint.note);
-                    if (fetched.isPresent()) {
-                        collected.add(fetched.get());
-                        aiCount++;
+            List<CoverCandidateView> collected = new ArrayList<>();
+            // 保留用户已经手动上传 / 手动拉取 URL 的候选，避免重新搜索把它们冲掉
+            if (mc.getCoverCandidates() != null) {
+                for (CoverCandidateView existing : mc.getCoverCandidates()) {
+                    if (existing != null && (existing.getOrigin() == CoverCandidateView.Origin.USER_UPLOAD
+                        || existing.getOrigin() == CoverCandidateView.Origin.USER_URL)) {
+                        collected.add(existing);
                     }
-                    emit(progress, 3, "COVER_DOWNLOADING", idx, Math.min(urlsToFetch.size(), MAX_AI_IMAGE_URLS),
-                        collected.size(), 86 + (int) Math.round(12.0 * idx / Math.max(1, Math.min(urlsToFetch.size(), MAX_AI_IMAGE_URLS))),
-                        albumTitle, itemId, fileCount);
                 }
-                aiNote = extractSearchNotes(resp);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                throw ie;
-            } catch (Exception e) {
-                log.warn("AI 搜封面失败 [{}]: {}", albumTitle, e.getMessage());
-                aiNote = "AI 搜索未完成: " + e.getMessage();
             }
-        } else {
-            aiNote = "未配置 AI 联网搜索，仅执行了 iTunes 与本地检索";
+
+            // Step 0: 本地 + MusicBrainz CAA 复查
+            emit(progress, 0, "COVER_LOCAL_CHECK", 0, 0, 0, 12, albumTitle, itemId, fileCount);
+            List<File> audioFiles = resolveAudioFiles(item);
+            File albumRoot = resolveAlbumRoot(item, audioFiles);
+            collected.addAll(coverCandidateService.collectLocalCandidates(audioFiles, albumRoot));
+            if (meaningful(mc.getReleaseGroupId())) {
+                coverCandidateService.fetchMusicBrainzCoverByRgid(mc.getReleaseGroupId()).ifPresent(collected::add);
+            }
+            checkInterrupted();
+
+            // Step 1: Apple Music / iTunes 免费高清封面
+            emit(progress, 1, "COVER_ITUNES_SEARCH", 1, 2, collected.size(), 35, albumTitle, itemId, fileCount);
+            int itunesCount = 0;
+            try {
+                List<CoverCandidateView> itunesHits =
+                    coverCandidateService.searchItunesCovers(albumTitle, albumArtist, effectiveQuery);
+                itunesCount = itunesHits.size();
+                collected.addAll(itunesHits);
+            } catch (Exception e) {
+                log.debug("iTunes cover search error for {}: {}", albumTitle, e.getMessage());
+            }
+            checkInterrupted();
+
+            // Step 2: AI 联网搜封面（可选，已配置联网搜索时执行）
+            int aiCount = 0;
+            String aiNote = null;
+            WebSearchClient client = searchClient();
+            if (client.hasEnabledEndpoint()) {
+                emit(progress, 2, "COVER_AI_SEARCH", 2, 2, collected.size(), 58, albumTitle, itemId, fileCount);
+                try {
+                    String prompt = buildCoverPrompt(item, mc, albumTitle, albumArtist, effectiveQuery);
+                    WebSearchClient.ProgressListener bridge = (stage, cur, tot, cit, detail) -> {
+                        int pct = "SUMMARIZING".equals(stage) ? 80 : 68;
+                        emit(progress, 2, "COVER_AI_SEARCH", cur, Math.max(tot, 1), cit, pct, detail, itemId, fileCount);
+                    };
+                    WebSearchClient.SearchResponse resp = client.searchImages(SYSTEM_PROMPT, prompt, bridge);
+                    checkInterrupted();
+                    Map<String, CandidateHint> urlsToFetch = extractCandidateUrls(resp);
+                    emit(progress, 3, "COVER_DOWNLOADING", 0, urlsToFetch.size(), collected.size(), 86, albumTitle, itemId, fileCount);
+                    int idx = 0;
+                    for (Map.Entry<String, CandidateHint> entry : urlsToFetch.entrySet()) {
+                        checkInterrupted();
+                        if (idx >= MAX_AI_IMAGE_URLS) break;
+                        idx++;
+                        CandidateHint hint = entry.getValue();
+                        Optional<CoverCandidateView> fetched = coverCandidateService.ingestFromUrl(
+                            entry.getKey(),
+                            CoverCandidateView.Origin.LLM_URL,
+                            meaningful(hint.source) ? hint.source : null,
+                            hint.note);
+                        if (fetched.isPresent()) {
+                            collected.add(fetched.get());
+                            aiCount++;
+                        }
+                        checkInterrupted();
+                        emit(progress, 3, "COVER_DOWNLOADING", idx, Math.min(urlsToFetch.size(), MAX_AI_IMAGE_URLS),
+                            collected.size(), 86 + (int) Math.round(12.0 * idx / Math.max(1, Math.min(urlsToFetch.size(), MAX_AI_IMAGE_URLS))),
+                            albumTitle, itemId, fileCount);
+                    }
+                    aiNote = extractSearchNotes(resp);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw ie;
+                } catch (Exception e) {
+                    log.warn("AI 搜封面失败 [{}]: {}", albumTitle, e.getMessage());
+                    aiNote = "AI 搜索未完成: " + e.getMessage();
+                }
+            } else {
+                aiNote = "未配置 AI 联网搜索，仅执行了 iTunes 与本地检索";
+            }
+
+            List<CoverCandidateView> deduped = CoverCandidateService.deduplicateCandidates(collected);
+            long now = System.currentTimeMillis();
+            final int finalItunesCount = itunesCount;
+            final int finalAiCount = aiCount;
+            final String finalAiNote = aiNote;
+            final int[] finalTotalHolder = { deduped.size() };
+
+            reviewQueue.updatePending(itemId, target -> {
+                ReviewItem.MissingCover liveMc = target.getMissingCover();
+                if (liveMc == null) return false;
+                // 二次合并锁内实时候选：保护用户在后台搜索运行期间刚上传或拉取链接的图片不被覆盖
+                List<CoverCandidateView> merged = new ArrayList<>();
+                if (liveMc.getCoverCandidates() != null) {
+                    for (CoverCandidateView existing : liveMc.getCoverCandidates()) {
+                        if (existing != null && (existing.getOrigin() == CoverCandidateView.Origin.USER_UPLOAD
+                            || existing.getOrigin() == CoverCandidateView.Origin.USER_URL)) {
+                            merged.add(existing);
+                        }
+                    }
+                }
+                merged.addAll(deduped);
+                List<CoverCandidateView> finalList = CoverCandidateService.deduplicateCandidates(merged);
+                finalTotalHolder[0] = finalList.size();
+                liveMc.setCoverCandidates(new ArrayList<>(finalList));
+                liveMc.setCoverSearchedAt(now);
+                liveMc.setCoverSearchStatus("DONE");
+                liveMc.setCoverSearchNote(buildSummaryNote(finalList.size(), finalItunesCount, finalAiCount, finalAiNote));
+                return true;
+            });
+
+            String summary = buildSummaryNote(finalTotalHolder[0], itunesCount, aiCount, aiNote);
+            emit(progress, 3, "COVER_DONE", finalTotalHolder[0], finalTotalHolder[0], finalTotalHolder[0], 100, summary, itemId, fileCount);
+            log.info("封面搜索完成 [{}]: 共 {} 张候选（iTunes {}, AI {}）", albumTitle, finalTotalHolder[0], itunesCount, aiCount);
+            return reviewQueue.get(itemId);
+        } catch (InterruptedException ie) {
+            reviewQueue.updatePending(itemId, target -> {
+                ReviewItem.MissingCover liveMc = target.getMissingCover();
+                if (liveMc == null || !"SEARCHING".equals(liveMc.getCoverSearchStatus())) return false;
+                liveMc.setCoverSearchStatus(liveMc.getCoverSearchedAt() > 0 ? "DONE" : "IDLE");
+                return true;
+            });
+            Thread.currentThread().interrupt();
+            throw ie;
+        } catch (Exception e) {
+            reviewQueue.updatePending(itemId, target -> {
+                ReviewItem.MissingCover liveMc = target.getMissingCover();
+                if (liveMc == null) return false;
+                liveMc.setCoverSearchStatus("FAILED");
+                liveMc.setCoverSearchNote("搜索异常: " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                return true;
+            });
+            throw e;
         }
-
-        List<CoverCandidateView> deduped = CoverCandidateService.deduplicateCandidates(collected);
-        String summary = buildSummaryNote(deduped.size(), itunesCount, aiCount, aiNote);
-        long now = System.currentTimeMillis();
-
-        reviewQueue.updatePending(itemId, target -> {
-            if (target.getMissingCover() == null) return false;
-            target.getMissingCover().setCoverCandidates(new ArrayList<>(deduped));
-            target.getMissingCover().setCoverSearchedAt(now);
-            target.getMissingCover().setCoverSearchStatus("DONE");
-            target.getMissingCover().setCoverSearchNote(summary);
-            return true;
-        });
-
-        emit(progress, 3, "COVER_DONE", deduped.size(), deduped.size(), deduped.size(), 100, summary, itemId, fileCount);
-        log.info("封面搜索完成 [{}]: 共 {} 张候选（iTunes {}, AI {}）", albumTitle, deduped.size(), itunesCount, aiCount);
-        return reviewQueue.get(itemId);
     }
 
     private record CandidateHint(String source, String note) {}

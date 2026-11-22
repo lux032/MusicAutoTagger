@@ -928,7 +928,8 @@ public class ReviewQueueService {
     // ==================== 状态变更 ====================
 
     /**
-     * 标记条目已处置，并清理暂存目录。
+     * 标记条目已处置，并在完成归档后清理暂存目录。
+     * 注意：REJECTED（忽略）状态下保留暂存/重识别临时目录，支持后续「撤销忽略」无损恢复。
      */
     public synchronized void markResolved(ReviewItem item, ReviewItem.Status status, String note) {
         if (item == null) {
@@ -937,7 +938,9 @@ public class ReviewQueueService {
         item.setStatus(status);
         item.setResolutionNote(note);
         item.setUpdatedAt(System.currentTimeMillis());
-        cleanupStaging(item);
+        if (status != ReviewItem.Status.REJECTED) {
+            cleanupStaging(item);
+        }
         saveQuietly();
     }
 
@@ -1007,28 +1010,67 @@ public class ReviewQueueService {
     }
 
     private void cleanupStaging(ReviewItem item) {
+        Path reprocessRoot = findReprocessRoot(item);
         String stagingDir = item.getStagingDir();
-        if (stagingDir == null) {
+        if (stagingDir != null) {
+            Path dir = Paths.get(stagingDir);
+            if (Files.isDirectory(dir)) {
+                deleteRecursivelyQuietly(dir);
+            }
+            item.setStagingDir(null);
+        }
+        if (reprocessRoot != null && Files.exists(reprocessRoot)) {
+            deleteRecursivelyQuietly(reprocessRoot);
+        }
+        item.setReprocessDir(null);
+    }
+
+    /**
+     * 定位「处理记录 -> 重新识别」生成的临时根目录（reprocess-*）。
+     * 普通监控目录条目的 stagingDir 为 review-staging/<itemId>，此方法返回 null。
+     */
+    public static Path findReprocessRoot(ReviewItem item) {
+        if (item == null) {
+            return null;
+        }
+        for (String candidate : new String[] { item.getReprocessDir(), item.getFolderPath(), item.getStagingDir() }) {
+            Path root = reprocessAncestor(candidate);
+            if (root != null) {
+                return root;
+            }
+        }
+        return null;
+    }
+
+    private static Path reprocessAncestor(String rawPath) {
+        if (rawPath == null || rawPath.isBlank()) {
+            return null;
+        }
+        try {
+            Path cur = Paths.get(rawPath.trim()).toAbsolutePath().normalize();
+            while (cur != null) {
+                Path fn = cur.getFileName();
+                if (fn != null && fn.toString().startsWith("reprocess-")) {
+                    return cur;
+                }
+                cur = cur.getParent();
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private void deleteRecursivelyQuietly(Path root) {
+        if (root == null || !Files.exists(root)) {
             return;
         }
-        Path dir = Paths.get(stagingDir);
-        if (!Files.isDirectory(dir)) {
-            return;
-        }
-        try (java.util.stream.Stream<Path> paths = Files.list(dir)) {
-            for (Path path : paths.collect(java.util.stream.Collectors.toList())) {
-                deleteQuietly(path);
+        try (java.util.stream.Stream<Path> walk = Files.walk(root)) {
+            for (Path p : walk.sorted(Comparator.reverseOrder()).toList()) {
+                deleteQuietly(p);
             }
         } catch (IOException e) {
-            log.debug("清理暂存目录内容失败: {} - {}", dir, e.getMessage());
+            log.debug("递归清理暂存目录失败: {} - {}", root, e.getMessage());
         }
-        deleteQuietly(dir);
-        Path parent = dir.getParent();
-        if (parent != null && parent.getFileName() != null
-                && parent.getFileName().toString().startsWith("reprocess-")) {
-            deleteQuietly(parent);
-        }
-        item.setStagingDir(null);
     }
 
     private void deleteQuietly(Path path) {

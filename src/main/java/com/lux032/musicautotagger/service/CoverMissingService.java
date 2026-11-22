@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -47,6 +48,11 @@ public class CoverMissingService implements AutoCloseable {
     private final ProcessedFileLogger processedLogger;
     private RecoveryService recoveryService;
     private CoverSearchService coverSearchService;
+    private final Map<String, Object> itemLocks = new ConcurrentHashMap<>();
+
+    private Object itemLock(String id) {
+        return itemLocks.computeIfAbsent(id == null ? "" : id, k -> new Object());
+    }
 
     // 手动音乐库缺封面扫描器（严格仅由用户手动触发）
     private final ExecutorService scanExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -95,9 +101,9 @@ public class CoverMissingService implements AutoCloseable {
 
     // ==================== 候选补充（上传 / URL） ====================
 
-    public synchronized CoverCandidateView uploadCover(String id, byte[] rawBytes, String fileName)
+    public CoverCandidateView uploadCover(String id, byte[] rawBytes, String fileName)
             throws ReviewResolutionService.ResolutionException {
-        ReviewItem item = requirePendingMissingCover(id);
+        requirePendingMissingCover(id);
         if (rawBytes == null || rawBytes.length == 0) {
             throw new ReviewResolutionService.ResolutionException(400, "cover.upload.empty");
         }
@@ -106,110 +112,127 @@ public class CoverMissingService implements AutoCloseable {
         }
         CoverCandidateView view = coverCandidateService.ingestUploadedBytes(rawBytes, fileName)
             .orElseThrow(() -> new ReviewResolutionService.ResolutionException(400, "cover.upload.invalid"));
-        prependCandidate(item, view);
+        synchronized (itemLock(id)) {
+            ReviewItem item = requirePendingMissingCover(id);
+            prependCandidate(item, view);
+        }
         return view;
     }
 
-    public synchronized CoverCandidateView fetchCoverByUrl(String id, String url)
+    public CoverCandidateView fetchCoverByUrl(String id, String url)
             throws ReviewResolutionService.ResolutionException {
-        ReviewItem item = requirePendingMissingCover(id);
+        requirePendingMissingCover(id);
         if (!meaningful(url)) {
             throw new ReviewResolutionService.ResolutionException(400, "cover.url.required");
         }
         CoverCandidateView view = coverCandidateService.ingestFromUrl(
                 url.trim(), CoverCandidateView.Origin.USER_URL, null, null)
             .orElseThrow(() -> new ReviewResolutionService.ResolutionException(400, "cover.url.fetch.failed"));
-        prependCandidate(item, view);
+        synchronized (itemLock(id)) {
+            ReviewItem item = requirePendingMissingCover(id);
+            prependCandidate(item, view);
+        }
         return view;
     }
 
     private void prependCandidate(ReviewItem item, CoverCandidateView view) {
-        ReviewItem.MissingCover mc = item.getMissingCover();
-        List<CoverCandidateView> list = new ArrayList<>();
-        list.add(view);
-        if (mc.getCoverCandidates() != null) {
-            list.addAll(mc.getCoverCandidates());
-        }
-        mc.setCoverCandidates(CoverCandidateService.deduplicateCandidates(list));
-        mc.setSelectedCoverSha256(view.getSha256());
-        reviewQueue.update(item);
+        reviewQueue.updatePending(item.getId(), target -> {
+            ReviewItem.MissingCover mc = target.getMissingCover();
+            if (mc == null) return false;
+            List<CoverCandidateView> list = new ArrayList<>();
+            list.add(view);
+            if (mc.getCoverCandidates() != null) {
+                list.addAll(mc.getCoverCandidates());
+            }
+            mc.setCoverCandidates(CoverCandidateService.deduplicateCandidates(list));
+            mc.setSelectedCoverSha256(view.getSha256());
+            return true;
+        });
     }
 
     // ==================== 处置：应用封面 / 确认无封面 / 忽略 ====================
 
-    public synchronized ReviewItem applyCover(String id, String selectedCoverSha256,
-                                              RecoveryService.DuplicatePolicy duplicatePolicy)
+    public ReviewItem applyCover(String id, String selectedCoverSha256,
+                                 RecoveryService.DuplicatePolicy duplicatePolicy)
             throws ReviewResolutionService.ResolutionException, IOException {
-        ReviewItem item = requirePendingMissingCover(id);
-        if (!meaningful(selectedCoverSha256)) {
-            throw new ReviewResolutionService.ResolutionException(400, "cover.selection.required");
+        synchronized (itemLock(id)) {
+            ReviewItem item = requirePendingMissingCover(id);
+            if (!meaningful(selectedCoverSha256)) {
+                throw new ReviewResolutionService.ResolutionException(400, "cover.selection.required");
+            }
+            ReviewItem.MissingCover mc = item.getMissingCover();
+            CoverCandidateService.ResolvedCover resolved = coverCandidateService.resolveBySha256(
+                    selectedCoverSha256.trim(), mc.getCoverCandidates())
+                .orElseThrow(() -> new ReviewResolutionService.ResolutionException(410, "cover.selection.expired"));
+            return resolveItem(item, resolved.data(), selectedCoverSha256.trim(), false, duplicatePolicy);
         }
-        ReviewItem.MissingCover mc = item.getMissingCover();
-        CoverCandidateService.ResolvedCover resolved = coverCandidateService.resolveBySha256(
-                selectedCoverSha256.trim(), mc.getCoverCandidates())
-            .orElseThrow(() -> new ReviewResolutionService.ResolutionException(410, "cover.selection.expired"));
-        return resolveItem(item, resolved.data(), selectedCoverSha256.trim(), false, duplicatePolicy);
     }
 
-    public synchronized ReviewItem confirmNoCover(String id, RecoveryService.DuplicatePolicy duplicatePolicy)
+    public ReviewItem confirmNoCover(String id, RecoveryService.DuplicatePolicy duplicatePolicy)
             throws ReviewResolutionService.ResolutionException, IOException {
-        ReviewItem item = requirePendingMissingCover(id);
-        return resolveItem(item, null, null, true, duplicatePolicy);
+        synchronized (itemLock(id)) {
+            ReviewItem item = requirePendingMissingCover(id);
+            return resolveItem(item, null, null, true, duplicatePolicy);
+        }
     }
 
-    public synchronized ReviewItem reject(String id, String note)
+    public ReviewItem reject(String id, String note)
             throws ReviewResolutionService.ResolutionException {
-        ReviewItem item = requirePendingMissingCover(id);
-        ReviewItem.MissingCover mc = item.getMissingCover();
-        boolean isLibrary = mc.getMode() == ReviewItem.MissingCover.Mode.LIBRARY_EXISTING;
+        synchronized (itemLock(id)) {
+            ReviewItem item = requirePendingMissingCover(id);
+            ReviewItem.MissingCover mc = item.getMissingCover();
+            boolean isLibrary = mc.getMode() == ReviewItem.MissingCover.Mode.LIBRARY_EXISTING;
 
-        if (!isLibrary && item.getFiles() != null) {
-            for (ReviewItem.FileEntry entry : item.getFiles()) {
-                if (entry == null || !meaningful(entry.getOriginalPath())) continue;
-                try {
-                    processedLogger.markFileAsProcessed(
-                        new File(entry.getOriginalPath()),
-                        "REVIEW_REJECTED",
-                        entry.getMetadata() != null && meaningful(entry.getMetadata().getArtist())
-                            ? entry.getMetadata().getArtist() : "Unknown Artist",
-                        entry.getMetadata() != null && meaningful(entry.getMetadata().getTitle())
-                            ? entry.getMetadata().getTitle() : entry.getFileName(),
-                        meaningful(mc.getAlbumTitle()) ? mc.getAlbumTitle() : "Unknown Album"
-                    );
-                } catch (Exception e) {
-                    log.warn("记录被忽略的缺封面文件失败: {} - {}", entry.getFileName(), e.getMessage());
+            if (!isLibrary && item.getFiles() != null) {
+                for (ReviewItem.FileEntry entry : item.getFiles()) {
+                    if (entry == null || !meaningful(entry.getOriginalPath())) continue;
+                    try {
+                        processedLogger.markFileAsProcessed(
+                            new File(entry.getOriginalPath()),
+                            "REVIEW_REJECTED",
+                            entry.getMetadata() != null && meaningful(entry.getMetadata().getArtist())
+                                ? entry.getMetadata().getArtist() : "Unknown Artist",
+                            entry.getMetadata() != null && meaningful(entry.getMetadata().getTitle())
+                                ? entry.getMetadata().getTitle() : entry.getFileName(),
+                            meaningful(mc.getAlbumTitle()) ? mc.getAlbumTitle() : "Unknown Album"
+                        );
+                    } catch (Exception e) {
+                        log.warn("记录被忽略的缺封面文件失败: {} - {}", entry.getFileName(), e.getMessage());
+                    }
                 }
             }
+            String effectiveNote = meaningful(note)
+                ? note.trim() : (isLibrary ? "已从缺少封面列表移出" : "人工标记为忽略/不入库");
+            reviewQueue.markResolved(item, ReviewItem.Status.REJECTED, effectiveNote);
+            return item;
         }
-        String effectiveNote = meaningful(note)
-            ? note.trim() : (isLibrary ? "已从缺少封面列表移出" : "人工标记为忽略/不入库");
-        reviewQueue.markResolved(item, ReviewItem.Status.REJECTED, effectiveNote);
-        return item;
     }
 
-    public synchronized ReviewItem unreject(String id) throws ReviewResolutionService.ResolutionException {
-        ReviewItem item = requireMissingCoverItem(id);
-        if (item.getStatus() != ReviewItem.Status.REJECTED) {
-            throw new ReviewResolutionService.ResolutionException(409, "item.not.rejected");
-        }
-        if (reviewQueue.hasOtherPendingForFolder(item.getFolderPath(), id)) {
-            throw new ReviewResolutionService.ResolutionException(409, "folder.already.pending");
-        }
-        boolean isLibrary = item.getMissingCover().getMode() == ReviewItem.MissingCover.Mode.LIBRARY_EXISTING;
-        if (!isLibrary && item.getFiles() != null) {
-            for (ReviewItem.FileEntry entry : item.getFiles()) {
-                if (entry == null || !meaningful(entry.getOriginalPath())) continue;
-                try {
-                    processedLogger.removeProcessedRecord(new File(entry.getOriginalPath()));
-                } catch (Exception e) {
-                    log.warn("撤销缺封面忽略记录失败: {} - {}", entry.getFileName(), e.getMessage());
+    public ReviewItem unreject(String id) throws ReviewResolutionService.ResolutionException {
+        synchronized (itemLock(id)) {
+            ReviewItem item = requireMissingCoverItem(id);
+            if (item.getStatus() != ReviewItem.Status.REJECTED) {
+                throw new ReviewResolutionService.ResolutionException(409, "item.not.rejected");
+            }
+            if (reviewQueue.hasOtherPendingForFolder(item.getFolderPath(), id)) {
+                throw new ReviewResolutionService.ResolutionException(409, "folder.already.pending");
+            }
+            boolean isLibrary = item.getMissingCover().getMode() == ReviewItem.MissingCover.Mode.LIBRARY_EXISTING;
+            if (!isLibrary && item.getFiles() != null) {
+                for (ReviewItem.FileEntry entry : item.getFiles()) {
+                    if (entry == null || !meaningful(entry.getOriginalPath())) continue;
+                    try {
+                        processedLogger.removeProcessedRecord(new File(entry.getOriginalPath()));
+                    } catch (Exception e) {
+                        log.warn("撤销缺封面忽略记录失败: {} - {}", entry.getFileName(), e.getMessage());
+                    }
                 }
             }
+            item.setStatus(ReviewItem.Status.PENDING_REVIEW);
+            item.setResolutionNote(null);
+            reviewQueue.update(item);
+            return item;
         }
-        item.setStatus(ReviewItem.Status.PENDING_REVIEW);
-        item.setResolutionNote(null);
-        reviewQueue.update(item);
-        return item;
     }
 
     private ReviewItem resolveItem(ReviewItem item, byte[] coverBytes, String selectedSha,
@@ -392,12 +415,15 @@ public class CoverMissingService implements AutoCloseable {
     /**
      * 来自暂存重识别（reprocess-*）或隔离恢复目录（partial/failed）的条目，
      * 源文件会在提交后清理/回收；把处理记录的 file_path 迁移到最终落盘路径，避免处理记录立即断链。
+     * 注意：普通监控目录条目虽然也有转码 stagingDir（review-staging/<itemId>），但其原始文件留在监控目录内，
+     * 绝不能删除其监控路径上的处理记录，否则下一轮扫描会重复刮削甚至死循环入队。
      */
     private void finalizeTemporarySourceRecords(ReviewItem item) {
         if (processedLogger == null || item == null || item.getFiles() == null) {
             return;
         }
-        boolean temporarySource = meaningful(item.getStagingDir())
+        Path reprocessRoot = ReviewQueueService.findReprocessRoot(item);
+        boolean temporarySource = reprocessRoot != null
             || (meaningful(item.getRecoverySourceType()) && meaningful(item.getRecoverySourcePath()));
         if (!temporarySource) {
             return;
@@ -428,13 +454,9 @@ public class CoverMissingService implements AutoCloseable {
             }
         }
         // 来自「处理记录 -> 重新识别」的 reprocess-* 暂存目录，确认完成后清理
-        if (meaningful(item.getStagingDir())) {
-            Path staged = Path.of(item.getStagingDir());
-            Path parent = staged.getParent();
-            if (parent != null && parent.getFileName() != null
-                && parent.getFileName().toString().startsWith("reprocess-")) {
-                deleteRecursivelyQuietly(parent);
-            }
+        Path reprocessRoot = ReviewQueueService.findReprocessRoot(item);
+        if (reprocessRoot != null) {
+            deleteRecursivelyQuietly(reprocessRoot);
         }
     }
 

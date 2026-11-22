@@ -1648,6 +1648,7 @@ public class FolderAlbumCache {
         folderCandidates.remove(folderPath);
         folderDiagnoses.remove(folderPath);
         folderMissingTracks.remove(folderPath);
+        missingCoverFolders.remove(folderPath);
         log.info("已清除文件夹专辑缓存: {}", folderPath);
     }
     

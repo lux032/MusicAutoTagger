@@ -47,13 +47,26 @@ public class TavilyWebSearchClient implements WebSearchClient {
 
     private final MusicConfig config;
     private final LlmClient llmClient;
-    private final HttpClient http;
+    private volatile HttpClient http;
     private final Gson gson = new Gson();
 
     public TavilyWebSearchClient(MusicConfig config, LlmClient llmClient) {
         this.config = config;
         this.llmClient = llmClient;
-        this.http = LlmClient.buildHttpClient(config);
+    }
+
+    private HttpClient http() {
+        HttpClient client = this.http;
+        if (client == null) {
+            synchronized (this) {
+                client = this.http;
+                if (client == null) {
+                    client = LlmClient.buildHttpClient(config);
+                    this.http = client;
+                }
+            }
+        }
+        return client;
     }
 
     @Override
@@ -281,7 +294,7 @@ public class TavilyWebSearchClient implements WebSearchClient {
             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)))
             .build();
 
-        HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = http().send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new IllegalStateException("tavily http " + response.statusCode()
                 + ": " + truncate(response.body(), 300));

@@ -382,6 +382,7 @@ public class ReviewResolutionService {
     private void finish(ReviewItem item, AlbumBatchProcessor.BatchProcessResult result,
                         ReviewItem.Status successStatus, String note) {
         if (result != null && result.isFullySuccessful()) {
+            finalizeReprocessSourceRecords(item);
             reviewQueue.markResolved(item, successStatus, note);
             return;
         }
@@ -721,11 +722,36 @@ public class ReviewResolutionService {
 
     private ReviewItem requirePending(String id) throws ResolutionException {
         ReviewItem item = requireItem(id);
+        if (item.effectiveKind() == ReviewItem.Kind.COVER_MISSING) {
+            throw new ResolutionException(409, "item.already.resolved");
+        }
         if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) {
             // 幂等保护：重复点击 / 并发请求不得把同一批文件再写一遍
             throw new ResolutionException(409, "item.already.resolved");
         }
         return item;
+    }
+
+    private void finalizeReprocessSourceRecords(ReviewItem item) {
+        if (processedLogger == null || item == null || item.getFiles() == null
+                || ReviewQueueService.findReprocessRoot(item) == null) {
+            return;
+        }
+        for (ReviewItem.FileEntry entry : item.getFiles()) {
+            if (entry == null || entry.getOriginalPath() == null || entry.getOriginalPath().isBlank()) continue;
+            File source = new File(entry.getOriginalPath());
+            List<com.lux032.musicautotagger.model.ProcessedRecord> recs =
+                processedLogger.findRecordsByPaths(List.of(source.getAbsolutePath()));
+            if (recs == null || recs.isEmpty()) continue;
+            com.lux032.musicautotagger.model.ProcessedRecord rec = recs.get(0);
+            if (rec.targetFilePath == null || rec.targetFilePath.isBlank()) continue;
+            File target = new File(rec.targetFilePath);
+            if (!target.isFile()) continue;
+            processedLogger.removeProcessedRecord(source);
+            processedLogger.markFileAsProcessed(
+                target, rec.recordingId, rec.artist, rec.title, rec.album, rec.releaseGroupId,
+                target.getAbsolutePath());
+        }
     }
 
     public MusicConfig getConfig() {

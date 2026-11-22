@@ -37,12 +37,25 @@ public class LlmClient {
     private static final long BASE_BACKOFF_MILLIS = 800L;
 
     private final MusicConfig config;
-    private final HttpClient httpClient;
+    private volatile HttpClient httpClient;
     private final Gson gson = new Gson();
 
     public LlmClient(MusicConfig config) {
         this.config = config;
-        this.httpClient = buildHttpClient(config);
+    }
+
+    private HttpClient httpClient() {
+        HttpClient client = this.httpClient;
+        if (client == null) {
+            synchronized (this) {
+                client = this.httpClient;
+                if (client == null) {
+                    client = buildHttpClient(config);
+                    this.httpClient = client;
+                }
+            }
+        }
+        return client;
     }
 
     /** 调用失败（所有端点、所有重试都用尽） */
@@ -176,7 +189,7 @@ public class LlmClient {
 
         HttpResponse<String> response;
         try {
-            response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            response = httpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString());
         } catch (java.io.IOException e) {
             throw new RetryableException("network: " + e.getMessage(), e);
         } catch (InterruptedException e) {

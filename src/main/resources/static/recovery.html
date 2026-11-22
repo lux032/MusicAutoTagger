@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="app.css?v=11">
     <script src="i18n.js?v=1"></script>
     <script src="shell.js?v=2"></script>
-    <script src="search-queue.js?v=2"></script>
+    <script src="search-queue.js?v=3"></script>
     <style>
         .tabs { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; max-width: 100%; overflow-x: auto; }
 
@@ -411,7 +411,8 @@
             if (action === 'sq-retry' && taskId) { SearchQueue.retry(taskId); return; }
             if (action === 'sq-goto' && reviewId) {
                 if (taskId) SearchQueue.markRead(taskId);
-                location.href = 'review.html#item=' + encodeURIComponent(reviewId);
+                const page = btn.dataset.reviewKind === 'COVER_MISSING' ? 'covers.html' : 'review.html';
+                location.href = page + '#item=' + encodeURIComponent(reviewId);
                 return;
             }
             if (action === 'restore-trash' || action === 'delete-trash') {
@@ -673,7 +674,8 @@
                 actions = `${(task.queuePosition || 1) > 1 ? `<button class="btn ghost sm" data-action="sq-prioritize" data-task-id="${esc(task.id)}">${esc(T('sq.act.prioritize'))}</button>` : ''}
                     <button class="btn danger-soft sm" data-action="sq-cancel" data-task-id="${esc(task.id)}">${esc(T('sq.act.remove'))}</button>`;
             } else if (isOk && task.reviewItemId) {
-                actions = `<button class="btn primary sm" data-action="sq-goto" data-review-id="${esc(task.reviewItemId)}" data-task-id="${esc(task.id)}">${esc(T('sq.act.goto.review'))}</button>
+                const gotoLabel = task.reviewKind === 'COVER_MISSING' ? T('sq.act.goto.covers') : T('sq.act.goto.review');
+                actions = `<button class="btn primary sm" data-action="sq-goto" data-review-id="${esc(task.reviewItemId)}" data-review-kind="${esc(task.reviewKind || '')}" data-task-id="${esc(task.id)}">${esc(gotoLabel)}</button>
                     <button class="btn ghost sm" ${locked || !onlineSearchAvailable ? 'disabled' : ''} data-action="retry-online" data-idx="${idx}">${esc(T('sq.act.re_search'))}</button>
                     <button class="btn ghost sm" ${locked ? 'disabled' : ''} data-action="dismiss" data-idx="${idx}">${esc(T('recovery.btn.dismiss'))}</button>`;
             } else {

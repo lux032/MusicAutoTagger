@@ -2,6 +2,7 @@ package com.lux032.musicautotagger.service;
 
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.model.ProcessedRecord;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.LlmClient;
 import com.lux032.musicautotagger.service.llm.WebSearchClient;
@@ -418,6 +419,247 @@ class CoverMissingWorkflowTest {
         assertEquals("Metaphor Orchestral Album", page.items.get(0).folderName);
         assertEquals(2, page.items.get(0).discCount);
         assertEquals(2, page.items.get(0).totalCount);
+    }
+
+    @Test
+    void normalMonitorStagedAudioKeepsProcessedRecordOnMonitorSourceFile() throws Exception {
+        // Regression test for Issue #1: normal monitorDirectory items whose normalized audio was copied
+        // into review-staging/<id> MUST keep their ProcessedRecord keyed on the monitor source file!
+        Path albumDir = Files.createDirectory(monitorDir.resolve("NormalizedMonitorAlbum"));
+        File monitorSource = createFlac(albumDir.resolve("01Source.flac"), "Track1", "Artist", "NormAlbum", "Artist", null);
+        Path normTempDir = Files.createDirectory(tempDir.resolve("norm-tmp"));
+        File normalizedTemp = Files.copy(monitorSource.toPath(), normTempDir.resolve("01Source-norm.flac")).toFile();
+
+        MusicMetadata md = new MusicMetadata();
+        md.setRecordingId("rec-norm-1");
+        md.setTitle("Track1");
+        md.setArtist("Artist");
+        md.setAlbum("NormAlbum");
+        md.setAlbumArtist("Artist");
+        md.setTrackNo("1");
+
+        batchProcessor.addPendingFile(albumDir.toString(), monitorSource, normalizedTemp, normTempDir, md, null);
+        FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
+            "rg-norm", "rel-norm", "NormAlbum", "Artist",
+            1, "2026-02-01", 1.0, FolderAlbumCache.CacheSource.DURATION_SEQUENCE);
+
+        AlbumBatchProcessor.BatchProcessResult intercepted =
+            batchProcessor.processPendingFilesWithAlbum(albumDir.toString(), albumInfo, false);
+        assertTrue(intercepted.isQueuedForMissingCover());
+        ReviewItem queued = reviewQueue.get(intercepted.getQueuedReviewItemId());
+        assertNotNull(queued.getStagingDir(), "Normalized temp file should be staged into review-staging/<id>");
+        Path reviewStagingDir = Path.of(queued.getStagingDir());
+        assertTrue(Files.isDirectory(reviewStagingDir));
+
+        try (CoverMissingService service = new CoverMissingService(
+                config, reviewQueue, folderAlbumCache, batchProcessor, tagWriter, coverCandidateService, processedLogger)) {
+            CoverCandidateView uploaded = service.uploadCover(queued.getId(), createImageBytes(600, 600, "jpg"), "c.jpg");
+            service.applyCover(queued.getId(), uploaded.getSha256(), RecoveryService.DuplicatePolicy.ASK);
+        }
+
+        assertTrue(Files.isRegularFile(monitorSource.toPath()), "Monitor source file remains in monitor directory");
+        assertTrue(processedLogger.isFileProcessed(monitorSource),
+            "ProcessedRecord MUST stay keyed on monitor source file so next scan does not re-process endlessly");
+        assertFalse(Files.exists(reviewStagingDir), "review-staging/<id> directory should be cleaned after confirmation");
+    }
+
+    @Test
+    void reprocessPendingReviewTransitionToMissingCoverCleansReprocessDirAndBlocksDoubleConfirm() throws Exception {
+        // Regression test for Issue #2 & ReviewResolutionService COVER_MISSING guard
+        Path reprocessRoot = Files.createDirectories(Path.of(config.getReviewStagingDirectory()).resolve("reprocess-xyz"));
+        Path stagedAlbumDir = Files.createDirectories(reprocessRoot.resolve("UnverifiedBonus"));
+        File stagedFlac = createFlac(stagedAlbumDir.resolve("01Song.flac"), "Song", "Singer", "UnverifiedBonus", "Singer", null);
+
+        MusicMetadata md = new MusicMetadata();
+        md.setRecordingId("rec-u-1");
+        md.setTitle("Song");
+        md.setArtist("Singer");
+        md.setAlbum("UnverifiedBonus");
+        md.setAlbumArtist("Singer");
+        md.setTrackNo("1");
+        FolderAlbumCache.PendingFile pf = new FolderAlbumCache.PendingFile(stagedFlac, stagedFlac, null, md, null);
+
+        FolderAlbumCache.CachedAlbumInfo synth = new FolderAlbumCache.CachedAlbumInfo(
+            null, null, "UnverifiedBonus", "Singer", 1, "", 0.0, FolderAlbumCache.CacheSource.DURATION_SEQUENCE);
+        ReviewItem item = reviewQueue.enqueue(
+            stagedAlbumDir.toString(), List.of(pf), synth, List.of(), List.of(120), "no match", 0.0);
+        assertNotNull(item);
+        reviewQueue.updatePending(item.getId(), target -> {
+            target.setReprocessDir(reprocessRoot.toAbsolutePath().toString());
+            return true;
+        });
+
+        ReviewResolutionService resolutionService = new ReviewResolutionService(
+            config, reviewQueue, folderAlbumCache, batchProcessor, null, new DurationSequenceService(), processedLogger);
+        ReviewItem transitioned = resolutionService.archiveAsUnverified(item.getId());
+        assertEquals(ReviewItem.Kind.COVER_MISSING, transitioned.effectiveKind(),
+            "Should transition to COVER_MISSING when cover is absent");
+
+        // Double-confirming from review.html must be rejected with 409
+        ReviewResolutionService.ResolutionException ex = assertThrows(
+            ReviewResolutionService.ResolutionException.class,
+            () -> resolutionService.archiveAsUnverified(item.getId()));
+        assertEquals(409, ex.getHttpStatus());
+
+        try (CoverMissingService coverService = new CoverMissingService(
+                config, reviewQueue, folderAlbumCache, batchProcessor, tagWriter, coverCandidateService, processedLogger)) {
+            coverService.confirmNoCover(item.getId(), RecoveryService.DuplicatePolicy.ASK);
+        }
+
+        Path archived = outputDir.resolve("Singer/UnverifiedBonus/01. Singer - Song.flac");
+        assertTrue(Files.isRegularFile(archived));
+        assertFalse(Files.exists(reprocessRoot), "reprocess-* root must be deleted after COVER_MISSING confirmation");
+        assertTrue(processedLogger.findRecordsByPaths(List.of(stagedFlac.getAbsolutePath())).isEmpty(),
+            "ProcessedRecord must not point to deleted reprocess-* path");
+        assertEquals(1, processedLogger.findRecordsByPaths(List.of(archived.toString())).size(),
+            "ProcessedRecord must migrate to final archived file path");
+    }
+
+    @Test
+    void userUploadDuringBackgroundCoverSearchIsPreservedAtFront() throws Exception {
+        // Regression test for Issue #4: concurrent user upload while CoverSearchService runs
+        Path albumDir = Files.createDirectory(monitorDir.resolve("RaceAlbum"));
+        File flac = createFlac(albumDir.resolve("01.flac"), "T", "A", "RaceAlbum", "A", null);
+        ReviewItem.MissingCover details = new ReviewItem.MissingCover();
+        details.setMode(ReviewItem.MissingCover.Mode.STAGED_IMPORT);
+        details.setAlbumTitle("RaceAlbum");
+        details.setAlbumArtist("A");
+        ReviewItem item = reviewQueue.enqueueMissingCover(
+            albumDir.toString(),
+            List.of(new FolderAlbumCache.PendingFile(flac, flac, null, new MusicMetadata(), null)),
+            details, "race");
+
+        java.util.concurrent.CountDownLatch searchEntered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch allowSearchFinish = new java.util.concurrent.CountDownLatch(1);
+
+        WebSearchClient blockingSearch = new WebSearchClient() {
+            @Override public boolean hasEnabledEndpoint() { return true; }
+            @Override public String name() { return "tavily"; }
+            @Override public SearchResponse search(String s, String u) { return searchImages(s, u, null); }
+            @Override public SearchResponse searchImages(String sys, String usr, ProgressListener p) {
+                searchEntered.countDown();
+                try {
+                    allowSearchFinish.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+                SearchResponse r = new SearchResponse();
+                r.setText("{\"cover_urls\":[],\"search_notes\":\"done\"}");
+                return r;
+            }
+        };
+
+        CoverCandidateService noNetworkCandidates = new CoverCandidateService(
+                config, new MusicBrainzClient(config), coverArtService, coverArtCache) {
+            @Override
+            public List<CoverCandidateView> searchItunesCovers(String albumTitle, String albumArtist, String customQuery) {
+                return List.of();
+            }
+        };
+        CoverSearchService searchService = new CoverSearchService(config, reviewQueue, noNetworkCandidates, blockingSearch);
+
+        try (CoverMissingService coverService = new CoverMissingService(
+                config, reviewQueue, folderAlbumCache, batchProcessor, tagWriter, noNetworkCandidates, processedLogger)) {
+            Thread bg = new Thread(() -> {
+                try {
+                    searchService.searchCoversForItem(item.getId(), null, null);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            bg.start();
+            assertTrue(searchEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            // User uploads a cover while background search is mid-flight
+            CoverCandidateView userUploaded = coverService.uploadCover(
+                item.getId(), createImageBytes(700, 700, "png"), "my_scan.png");
+
+            allowSearchFinish.countDown();
+            bg.join(5000);
+
+            ReviewItem updated = reviewQueue.get(item.getId());
+            List<CoverCandidateView> cands = updated.getMissingCover().getCoverCandidates();
+            assertFalse(cands.isEmpty(), "User uploaded cover must not be wiped by background search");
+            assertEquals(userUploaded.getSha256(), cands.get(0).getSha256());
+            assertEquals(CoverCandidateView.Origin.USER_UPLOAD, cands.get(0).getOrigin());
+            assertEquals(userUploaded.getSha256(), updated.getMissingCover().getSelectedCoverSha256());
+        }
+    }
+
+    @Test
+    void multiDiscStagedReidentifySubmitsSingleTaskPreservingDiscSubfolders() throws Exception {
+        // Regression test for Issue #3: archived Disc 1 + Disc 2 must stay in ONE reprocess-* task with Disc subfolders
+        Path archivedAlbum = outputDir.resolve("Composer/Symphony Box");
+        File d1 = createFlac(archivedAlbum.resolve("Disc 1/01.flac"), "Mov 1", "Composer", "Symphony Box", "Composer", null);
+        File d2 = createFlac(archivedAlbum.resolve("Disc 2/01.flac"), "Mov 2", "Composer", "Symphony Box", "Composer", null);
+
+        File goneSrc1 = tempDir.resolve("gone-monitor/Symphony Box/Disc 1/01.flac").toFile();
+        File goneSrc2 = tempDir.resolve("gone-monitor/Symphony Box/Disc 2/01.flac").toFile();
+        processedLogger.markFileAsProcessed(goneSrc1, "r1", "Composer", "Mov 1", "Symphony Box", null, d1.getAbsolutePath());
+        processedLogger.markFileAsProcessed(goneSrc2, "r2", "Composer", "Mov 2", "Symphony Box", null, d2.getAbsolutePath());
+
+        List<File> capturedAlbumRoots = new ArrayList<>();
+        List<List<RecoveryService.StagedReidentifyFile>> capturedBatches = new ArrayList<>();
+
+        try (RecoveryService spyRecovery = new RecoveryService(
+                config, null, processedLogger, reviewQueue, folderAlbumCache, null,
+                new com.lux032.musicautotagger.util.FileSystemUtils(config), tagWriter, null, null) {
+            @Override
+            java.util.concurrent.Future<?> submitStagedReidentify(
+                    File stagedDir, String displayName, List<StagedReidentifyFile> files, List<String> recordsToRemove) {
+                capturedAlbumRoots.add(stagedDir);
+                capturedBatches.add(new ArrayList<>(files));
+                return java.util.concurrent.CompletableFuture.completedFuture(null);
+            }
+        }) {
+            ProcessedRecordService recordService = new ProcessedRecordService(
+                config, processedLogger, folderAlbumCache, coverArtService,
+                new com.lux032.musicautotagger.util.FileSystemUtils(config), () -> null);
+            recordService.setRecoveryService(spyRecovery);
+            recordService.setReviewQueueService(reviewQueue);
+
+            List<ProcessedRecord> targets = recordService.resolveTargets(
+                List.of(goneSrc1.getAbsolutePath(), goneSrc2.getAbsolutePath()), null);
+            Map<String, Object> res = recordService.reidentify(targets);
+            assertEquals(2, res.get("recoveryQueued"));
+        }
+
+        assertEquals(1, capturedBatches.size(), "Multi-disc album must be submitted as a SINGLE combined reidentify job");
+        List<RecoveryService.StagedReidentifyFile> staged = capturedBatches.get(0);
+        assertEquals(2, staged.size());
+        assertEquals("Disc 1", staged.get(0).staged().getParentFile().getName());
+        assertEquals("01.flac", staged.get(0).staged().getName());
+        assertEquals("Disc 2", staged.get(1).staged().getParentFile().getName());
+        assertEquals("01.flac", staged.get(1).staged().getName());
+    }
+
+    @Test
+    void shutdownWithIncompleteMissingCoverFolderPreservesMonitorFilesWithoutPartialQueue() throws Exception {
+        // Regression test for Issue #5: shutdown when only 2 of 4 tracks were collected must NOT enqueue a 2-track COVER_MISSING item
+        Path albumDir = Files.createDirectory(monitorDir.resolve("ShutdownPartialAlbum"));
+        File f1 = createFlac(albumDir.resolve("01.flac"), "T1", "Artist", "ShutdownPartialAlbum", "Artist", null);
+        File f2 = createFlac(albumDir.resolve("02.flac"), "T2", "Artist", "ShutdownPartialAlbum", "Artist", null);
+        File f3 = createFlac(albumDir.resolve("03.flac"), "T3", "Artist", "ShutdownPartialAlbum", "Artist", null);
+        File f4 = createFlac(albumDir.resolve("04.flac"), "T4", "Artist", "ShutdownPartialAlbum", "Artist", null);
+
+        FolderAlbumCache.CachedAlbumInfo locked = new FolderAlbumCache.CachedAlbumInfo(
+            "rg-sd", "rel-sd", "ShutdownPartialAlbum", "Artist",
+            4, "2026-01-01", 1.0, FolderAlbumCache.CacheSource.DURATION_SEQUENCE);
+        folderAlbumCache.forceSetFolderAlbum(albumDir.toString(), locked);
+
+        MusicMetadata md1 = new MusicMetadata(); md1.setTitle("T1"); md1.setArtist("Artist"); md1.setTrackNo("1");
+        MusicMetadata md2 = new MusicMetadata(); md2.setTitle("T2"); md2.setArtist("Artist"); md2.setTrackNo("2");
+        batchProcessor.addPendingFile(albumDir.toString(), f1, f1, null, md1, null);
+        batchProcessor.addPendingFile(albumDir.toString(), f2, f2, null, md2, null);
+
+        batchProcessor.processAllPendingFilesBeforeShutdown();
+
+        assertEquals(0, reviewQueue.countPendingMissingCover(),
+            "Incomplete folder on shutdown must not enqueue a partial COVER_MISSING item");
+        assertEquals(0, batchProcessor.getPendingFileCount(albumDir.toString()));
+        assertFalse(processedLogger.isFileProcessed(f1));
+        assertFalse(processedLogger.isFileProcessed(f3));
+        assertTrue(f4.isFile());
     }
 
     private Map<String, Object> awaitScan(CoverMissingService service) throws InterruptedException {

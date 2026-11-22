@@ -166,6 +166,10 @@ public class CoverMissingServlet extends HttpServlet {
                     }
                     OnlineSearchQueueService.EnqueueResult res =
                         searchQueue.enqueueMissingCover(id, str(body.get("customQuery")));
+                    if (res == null || res.task() == null) {
+                        respond(resp, 503, Map.of("error", "search.queue.closed"));
+                        return;
+                    }
                     if (res.alreadyActive()) {
                         respond(resp, 409, Map.of("error", "recovery.already.running", "task", res.task()));
                         return;
@@ -213,7 +217,7 @@ public class CoverMissingServlet extends HttpServlet {
             int status = switch (msg) {
                 case "item.not.found" -> 404;
                 case "item.already.resolved", "recovery.already.running" -> 409;
-                case "cover.search.unavailable" -> 503;
+                case "cover.search.unavailable", "search.queue.closed" -> 503;
                 default -> 400;
             };
             respond(resp, status, Map.of("error", msg));

@@ -331,7 +331,7 @@ public class RecoveryService implements AutoCloseable {
                     if (queued != null) {
                         reviewQueue.updatePending(queued.getId(), target -> {
                             if (meaningful(displayName)) target.setFolderName(displayName);
-                            target.setStagingDir(stagedDir.getAbsolutePath());
+                            target.setReprocessDir(stagedCleanupRoot.toAbsolutePath().toString());
                             if (target.effectiveKind() == ReviewItem.Kind.COVER_MISSING && target.getMissingCover() != null) {
                                 target.getMissingCover().setSourcePipeline("REIDENTIFY");
                             }

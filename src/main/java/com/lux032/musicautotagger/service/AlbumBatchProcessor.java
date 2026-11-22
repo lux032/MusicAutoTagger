@@ -6,6 +6,7 @@ import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
 import com.lux032.musicautotagger.util.ArtistCreditSupport;
+import com.lux032.musicautotagger.util.FileSystemUtils;
 import com.lux032.musicautotagger.util.I18nUtil;
 
 import java.io.File;
@@ -932,13 +933,22 @@ public class AlbumBatchProcessor {
 
             log.info("处理文件夹: {} ({} 个待处理文件)", new File(folderPath).getName(), pendingFiles.size());
 
+            boolean allCollected = hasCollectedAllUnprocessedInFolder(folderPath, pendingFiles);
+
             // 检查是否已有缓存的专辑信息
             FolderAlbumCache.CachedAlbumInfo cachedAlbum = folderAlbumCache.getFolderAlbum(folderPath, pendingFiles.size());
 
             if (cachedAlbum != null) {
                 // 有缓存的专辑信息，使用它处理
                 log.info("使用缓存的专辑信息: {}", cachedAlbum.getAlbumTitle());
-                processPendingFilesWithAlbum(folderPath, cachedAlbum);
+                BatchProcessResult res = processPendingFilesWithAlbum(
+                    folderPath, cachedAlbum, false, null, true, allCollected);
+                if (res != null && res.isDeferringForMissingCover()) {
+                    log.info("关闭前文件夹「{}」尚未收齐且缺少封面，保留监控目录原文件留待下次启动完整处理",
+                        new File(folderPath).getName());
+                    discardPendingFiles(folderPath);
+                    folderAlbumCache.clearFolderCoverMissing(folderPath);
+                }
             } else {
                 // 关键修复：以前这里会「拿第一个文件的专辑当整张专辑」，
                 // 导致精选集被整个归到第一首歌所属的旧专辑下。现在改为不猜。
@@ -946,7 +956,14 @@ public class AlbumBatchProcessor {
                 MusicMetadata metadata = (MusicMetadata) firstPending.getMetadata();
 
                 if (metadata != null) {
-                    processPendingFilesAsUnresolvedAlbum(folderPath);
+                    if (!allCollected && reviewQueueService != null && config != null
+                        && (config.isReviewEnabled() || config.isCoverMissingRequireReview())) {
+                        log.info("关闭前文件夹「{}」尚未收齐 ({} 首已缓存)，保留监控目录原文件留待下次启动完整识别",
+                            new File(folderPath).getName(), pendingFiles.size());
+                        discardPendingFiles(folderPath);
+                    } else {
+                        processPendingFilesAsUnresolvedAlbum(folderPath);
+                    }
                 } else {
                     // 元数据也没有，直接写入每个文件自己的元数据
                     log.warn("无法确定专辑信息，直接写入每个文件自己的元数据");
@@ -1079,13 +1096,45 @@ public class AlbumBatchProcessor {
             if (lockedInfo != null && pendingCount > 0) {
                 log.info("专辑在收集中途锁定，先写出已积压的 {} 个待处理文件: {}",
                     pendingCount, lockedInfo.getAlbumTitle());
-                processPendingFilesWithAlbum(folderPath, lockedInfo);
+                BatchProcessResult batchResult = processPendingFilesWithAlbum(
+                    folderPath, lockedInfo, false, coverArtData, true, false);
+                if (batchResult != null
+                    && (batchResult.isDeferringForMissingCover() || batchResult.isQueuedForMissingCover())) {
+                    return -1;
+                }
                 flushed = pendingCount;
             }
             applyLockedReleaseTags(lockedInfo, metadata);
             processAndWriteFile(processingFile, originalFile, metadata, coverArtData, isQuickScanMode);
             return flushed;
         }
+    }
+
+    private boolean hasCollectedAllUnprocessedInFolder(String folderPath, List<FolderAlbumCache.PendingFile> pendingFiles) {
+        if (folderPath == null || pendingFiles == null || pendingFiles.isEmpty() || config == null) {
+            return true;
+        }
+        File folder = new File(folderPath);
+        if (!folder.isDirectory()) {
+            return true;
+        }
+        FileSystemUtils fsUtils = new FileSystemUtils(config);
+        File sampleAudio = pendingFiles.get(0).getAudioFile();
+        if (sampleAudio != null && fsUtils.isLooseFileInMonitorRoot(sampleAudio)) {
+            return true;
+        }
+        List<File> albumFiles = new ArrayList<>();
+        fsUtils.collectAudioFilesForMarking(folder, albumFiles);
+        if (albumFiles.isEmpty()) {
+            return true;
+        }
+        int unprocessed = 0;
+        for (File f : albumFiles) {
+            if (processedLogger == null || !processedLogger.isFileProcessed(f)) {
+                unprocessed++;
+            }
+        }
+        return pendingFiles.size() >= unprocessed;
     }
 
     private void applyLockedReleaseTags(FolderAlbumCache.CachedAlbumInfo lockedInfo, MusicMetadata metadata) {

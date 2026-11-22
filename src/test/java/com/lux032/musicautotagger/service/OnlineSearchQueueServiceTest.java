@@ -1,6 +1,7 @@
 package com.lux032.musicautotagger.service;
 
 import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.model.ProcessedRecord;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.LlmClient;
 import com.lux032.musicautotagger.service.llm.WebSearchClient;
@@ -272,6 +273,93 @@ class OnlineSearchQueueServiceTest {
             ReviewItem refreshed = reviewQueue.get(item.getId());
             assertEquals(1, refreshed.getOnlineCandidates().size());
             assertEquals("RecoveredAlbum", refreshed.getOnlineCandidates().get(0).getTitle());
+        }
+    }
+
+    @Test
+    void manualCoverPromotePreservesCustomQueryAndFailedRetryKeepsFinishedHistory() throws Exception {
+        MusicConfig cfg = createConfig(1);
+        ReviewQueueService reviewQueue = new ReviewQueueService(cfg);
+        ReviewItem blocker = enqueueDummyReview(reviewQueue, "Blocker");
+
+        Path coverDir = Files.createDirectories(tempDir.resolve("CoverTarget"));
+        File audio = Files.write(coverDir.resolve("01.flac"), new byte[]{1, 2, 3}).toFile();
+        ReviewItem.MissingCover mc = new ReviewItem.MissingCover();
+        mc.setMode(ReviewItem.MissingCover.Mode.STAGED_IMPORT);
+        mc.setAlbumTitle("CoverTarget");
+        mc.setAlbumArtist("Artist");
+        ReviewItem coverItem = reviewQueue.enqueueMissingCover(
+            coverDir.toString(),
+            List.of(new FolderAlbumCache.PendingFile(audio, audio, null, new com.lux032.musicautotagger.model.MusicMetadata(), null)),
+            mc, "missing cover");
+
+        CountDownLatch blockerRunning = new CountDownLatch(1);
+        CountDownLatch releaseBlocker = new CountDownLatch(1);
+        List<String> capturedCoverQueries = Collections.synchronizedList(new ArrayList<>());
+
+        WebSearchClient client = new WebSearchClient() {
+            @Override public boolean hasEnabledEndpoint() { return true; }
+            @Override public String name() { return "tavily"; }
+            @Override public SearchResponse search(String sys, String usr) {
+                blockerRunning.countDown();
+                try { releaseBlocker.await(5, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                return validResponse("Blocker", false);
+            }
+        };
+
+        CoverSearchService stubCoverSearch = new CoverSearchService(cfg, reviewQueue, null, null) {
+            @Override public boolean isAiSearchAvailable() { return true; }
+            @Override public String activeProviderName() { return "tavily"; }
+            @Override
+            public ReviewItem searchCoversForItem(String reviewItemId, String customQuery,
+                                                  OnlineIdentificationService.SearchProgressListener listener) {
+                capturedCoverQueries.add(customQuery);
+                throw new RuntimeException("simulated network timeout");
+            }
+        };
+
+        OnlineIdentificationService online = new OnlineIdentificationService(cfg, reviewQueue, stubTagWriter(cfg), null, null, client);
+        try (OnlineSearchQueueService sq = new OnlineSearchQueueService(cfg, reviewQueue, online)) {
+            sq.setCoverSearchService(stubCoverSearch);
+
+            // Occupy worker with blocker
+            sq.enqueueReviewItem(blocker.getId(), false);
+            assertTrue(blockerRunning.await(5, TimeUnit.SECONDS));
+
+            // Enqueue auto cover task (priority=auto), then promote via manual enqueue WITH customQuery
+            sq.enqueueMissingCoverAuto(coverItem);
+            OnlineSearchQueueService.EnqueueResult promoted = sq.enqueueMissingCover(coverItem.getId(), "  VTCL-60500 jacket  ");
+            assertTrue(promoted.promoted(), "Queued auto cover task should be promoted to manual");
+
+            releaseBlocker.countDown();
+            long deadline = System.currentTimeMillis() + 5000;
+            while (System.currentTimeMillis() < deadline) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> counts = (Map<String, Object>) sq.getSnapshot().get("counts");
+                if (((Number) counts.get("failed")).intValue() == 1) break;
+                Thread.sleep(25);
+            }
+
+            assertEquals(List.of("VTCL-60500 jacket"), capturedCoverQueries,
+                "Promoted manual customQuery must be forwarded to CoverSearchService");
+            assertNotEquals("SEARCHING", reviewQueue.get(coverItem.getId()).getMissingCover().getCoverSearchStatus(),
+                "Failed cover search must reset SEARCHING status");
+
+            // Mark coverItem resolved so retry() fails with item.already.resolved -> task must remain in finished!
+            reviewQueue.markResolved(reviewQueue.get(coverItem.getId()), ReviewItem.Status.CONFIRMED, "done");
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> finishedBefore = (List<Map<String, Object>>) sq.getSnapshot().get("finished");
+            String failedTaskId = finishedBefore.stream()
+                .filter(m -> "FAILED".equals(m.get("status")))
+                .map(m -> String.valueOf(m.get("id"))).findFirst().orElseThrow();
+
+            java.io.IOException retryErr = assertThrows(java.io.IOException.class, () -> sq.retry(failedTaskId));
+            assertEquals("item.already.resolved", retryErr.getMessage());
+
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> finishedAfter = (List<Map<String, Object>>) sq.getSnapshot().get("finished");
+            assertTrue(finishedAfter.stream().anyMatch(m -> failedTaskId.equals(m.get("id"))),
+                "Failed retry() must not drop the task from finished history");
         }
     }
 }

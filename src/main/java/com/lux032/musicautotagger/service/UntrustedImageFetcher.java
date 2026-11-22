@@ -69,6 +69,13 @@ public class UntrustedImageFetcher implements AutoCloseable {
         try {
             future = executor.submit(() -> fetchInternal(url, activeRequest));
             return future.get(20, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            HttpGet request = activeRequest.get();
+            if (request != null) request.abort();
+            if (future != null) future.cancel(true);
+            Thread.currentThread().interrupt();
+            log.debug("Untrusted image fetch interrupted: {}", url);
+            return Optional.empty();
         } catch (TimeoutException e) {
             HttpGet request = activeRequest.get();
             if (request != null) request.abort();

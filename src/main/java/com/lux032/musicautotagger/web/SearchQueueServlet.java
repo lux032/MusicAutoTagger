@@ -84,7 +84,11 @@ public class SearchQueueServlet extends HttpServlet {
                 }
                 case "retry" -> {
                     OnlineSearchQueueService.EnqueueResult result = queueService.retry(str(body.get("taskId")));
-                    respond(resp, 202, Map.of("success", true, "task", result.task()));
+                    if (result == null || result.task() == null) {
+                        respond(resp, 503, Map.of("error", "search.queue.closed"));
+                    } else {
+                        respond(resp, 202, Map.of("success", true, "task", result.task()));
+                    }
                 }
                 case "clear-queued" -> {
                     int cleared = queueService.clearQueued();
@@ -99,7 +103,7 @@ public class SearchQueueServlet extends HttpServlet {
         } catch (IOException e) {
             String message = e.getMessage() == null ? "search.queue.failed" : e.getMessage();
             int status = switch (message) {
-                case "llm.web.search.unavailable" -> 503;
+                case "llm.web.search.unavailable", "cover.search.unavailable", "search.queue.closed" -> 503;
                 case "item.not.found", "recovery.item.not.found", "search.task.not.found" -> 404;
                 case "item.already.resolved", "recovery.already.running" -> 409;
                 default -> 400;

@@ -120,6 +120,9 @@ public class ReviewItem {
     /** 转码暂存目录（长期挂起时不能占用临时目录，需挪到暂存区） */
     private String stagingDir;
 
+    /** 「处理记录 -> 重新识别」创建的临时副本根目录（reprocess-*），独立于转码 stagingDir，避免状态流转时被覆盖 */
+    private String reprocessDir;
+
     /** 人工处置结果说明 */
     private String resolutionNote;
 

@@ -155,6 +155,9 @@ public class OnlineSearchQueueService implements AutoCloseable {
     // ==================== 入队入口 ====================
 
     public EnqueueResult enqueueReviewItem(String reviewItemId, boolean analyzeCover) throws IOException {
+        if (closed) {
+            throw new IOException("search.queue.closed");
+        }
         if (!isAvailable()) {
             throw new IOException("llm.web.search.unavailable");
         }
@@ -189,6 +192,9 @@ public class OnlineSearchQueueService implements AutoCloseable {
 
     public EnqueueResult enqueueRecoveryTarget(String sourceType, String relativePath, File target,
                                                int fileCount, boolean analyzeCover) throws IOException {
+        if (closed) {
+            throw new IOException("search.queue.closed");
+        }
         if (!isAvailable()) {
             throw new IOException("llm.web.search.unavailable");
         }
@@ -249,6 +255,9 @@ public class OnlineSearchQueueService implements AutoCloseable {
 
     /** 「缺少封面」页面手动触发搜封面（本地/CAA + iTunes + AI 联网，高优先级）。 */
     public EnqueueResult enqueueMissingCover(String itemId, String customQuery) throws IOException {
+        if (closed) {
+            throw new IOException("search.queue.closed");
+        }
         if (coverSearchService == null) {
             throw new IOException("cover.search.unavailable");
         }
@@ -321,6 +330,9 @@ public class OnlineSearchQueueService implements AutoCloseable {
 
     /** 为「缺少封面」中未搜索过的待处理条目批量入队搜封面。 */
     public Map<String, Object> enqueueBatchForMissingCovers(List<String> itemIds) throws IOException {
+        if (closed) {
+            throw new IOException("search.queue.closed");
+        }
         if (coverSearchService == null) {
             throw new IOException("cover.search.unavailable");
         }
@@ -377,17 +389,23 @@ public class OnlineSearchQueueService implements AutoCloseable {
             // 去重：按 reviewItemId 或规范化文件夹路径查是否已在队列或运行中
             SearchTask existing = findActiveLocked(canonicalPath, reviewItemId);
             if (existing != null) {
-                // 若已有的是排队中的后台自动任务，而用户现在手动点了搜索 → 直接升格为手动高优先级！
-                if (existing.status == Status.QUEUED && existing.priority > priority) {
-                    existing.priority = priority;
-                    existing.origin = origin;
-                    existing.orderSeq = orderGenerator.getAndIncrement();
-                    existing.updatedAt = System.currentTimeMillis();
-                    sortQueuedLocked();
-                    dispatchNextLocked();
-                    return new EnqueueResult(existing.toView(queuePositionLocked(existing.id)), false, true);
+                if (existing.status == Status.QUEUED) {
+                    existing.analyzeCover = existing.analyzeCover || analyzeCover;
+                    if (customQuery != null && !customQuery.isBlank()) {
+                        existing.customQuery = customQuery.trim();
+                    }
+                    // 若已有的是排队中的后台自动任务，而用户现在手动点了搜索 → 直接升格为手动高优先级！
+                    if (existing.priority > priority) {
+                        existing.priority = priority;
+                        existing.origin = origin;
+                        existing.orderSeq = orderGenerator.getAndIncrement();
+                        existing.updatedAt = System.currentTimeMillis();
+                        sortQueuedLocked();
+                        dispatchNextLocked();
+                        return new EnqueueResult(taskToView(existing, queuePositionLocked(existing.id)), false, true);
+                    }
                 }
-                return new EnqueueResult(existing.toView(queuePositionLocked(existing.id)), true, false);
+                return new EnqueueResult(taskToView(existing, queuePositionLocked(existing.id)), true, false);
             }
 
             SearchTask task = new SearchTask();
@@ -420,7 +438,7 @@ public class OnlineSearchQueueService implements AutoCloseable {
             tasksById.put(task.id, task);
             sortQueuedLocked();
             dispatchNextLocked();
-            return new EnqueueResult(task.toView(queuePositionLocked(task.id)), false, false);
+            return new EnqueueResult(taskToView(task, queuePositionLocked(task.id)), false, false);
         }
     }
 
@@ -441,7 +459,7 @@ public class OnlineSearchQueueService implements AutoCloseable {
             target.orderSeq = minOrder - 1;
             target.updatedAt = System.currentTimeMillis();
             sortQueuedLocked();
-            return target.toView(queuePositionLocked(target.id));
+            return taskToView(target, queuePositionLocked(target.id));
         }
     }
 
@@ -481,6 +499,9 @@ public class OnlineSearchQueueService implements AutoCloseable {
 
     /** 重试已失败或已中止的任务（以手动高优先级重新入队） */
     public EnqueueResult retry(String taskId) throws IOException {
+        if (closed) {
+            throw new IOException("search.queue.closed");
+        }
         SearchTask old;
         synchronized (lock) {
             old = findInList(finished, taskId);
@@ -494,27 +515,32 @@ public class OnlineSearchQueueService implements AutoCloseable {
             if (isCoverTask && coverSearchService == null) {
                 throw new IOException("cover.search.unavailable");
             }
-            finished.remove(old);
-            tasksById.remove(old.id);
         }
 
+        EnqueueResult result;
         if (old.origin == Origin.MISSING_COVER_AUTO || old.origin == Origin.MISSING_COVER_MANUAL) {
-            if (old.reviewItemId != null) {
-                return enqueueMissingCover(old.reviewItemId, old.customQuery);
+            if (old.reviewItemId == null) {
+                throw new IOException("item.not.found");
             }
-            throw new IOException("item.not.found");
-        }
-        if (old.sourceType != null && old.relativePath != null) {
+            result = enqueueMissingCover(old.reviewItemId, old.customQuery);
+        } else if (old.sourceType != null && old.relativePath != null) {
             File target = new File(old.rawFolderPath != null ? old.rawFolderPath : old.folderPath);
             if (!target.exists()) {
                 throw new IOException("recovery.item.not.found");
             }
-            return enqueueRecoveryTarget(old.sourceType, old.relativePath, target, old.fileCount, old.analyzeCover);
+            result = enqueueRecoveryTarget(old.sourceType, old.relativePath, target, old.fileCount, old.analyzeCover);
+        } else if (old.reviewItemId != null) {
+            result = enqueueReviewItem(old.reviewItemId, old.analyzeCover);
+        } else {
+            throw new IOException("item.not.found");
         }
-        if (old.reviewItemId != null) {
-            return enqueueReviewItem(old.reviewItemId, old.analyzeCover);
+
+        synchronized (lock) {
+            if (finished.remove(old)) {
+                tasksById.remove(old.id);
+            }
         }
-        throw new IOException("item.not.found");
+        return result;
     }
 
     /** 清空所有排队等待中的任务（不影响正在运行中的任务） */
@@ -725,6 +751,7 @@ public class OnlineSearchQueueService implements AutoCloseable {
         String err = e.getMessage() == null || e.getMessage().isBlank()
             ? e.getClass().getSimpleName() : e.getMessage();
         log.warn("LLM 联网搜索任务失败: {} - {}", task.folderName, err);
+        resetStuckCoverSearchStatus(task, "FAILED", err);
         synchronized (lock) {
             running.remove(task);
             task.status = Status.FAILED;
@@ -739,6 +766,7 @@ public class OnlineSearchQueueService implements AutoCloseable {
     }
 
     private void finishCancelled(SearchTask task) {
+        resetStuckCoverSearchStatus(task, "IDLE", null);
         synchronized (lock) {
             running.remove(task);
             task.status = Status.CANCELLED;
@@ -750,6 +778,28 @@ public class OnlineSearchQueueService implements AutoCloseable {
         }
         LogCollector.addLog("WARN", "已中止 LLM 联网搜索: " + task.folderName
             + (task.round1Saved ? "（已保留第 1 轮结果）" : ""));
+    }
+
+    private void resetStuckCoverSearchStatus(SearchTask task, String fallbackStatus, String errorNote) {
+        if ((task.origin != Origin.MISSING_COVER_AUTO && task.origin != Origin.MISSING_COVER_MANUAL)
+            || task.reviewItemId == null || reviewQueue == null) {
+            return;
+        }
+        reviewQueue.updatePending(task.reviewItemId, target -> {
+            ReviewItem.MissingCover mc = target.getMissingCover();
+            if (mc == null || !"SEARCHING".equals(mc.getCoverSearchStatus())) {
+                return false;
+            }
+            if ("IDLE".equals(fallbackStatus) && mc.getCoverSearchedAt() > 0L) {
+                mc.setCoverSearchStatus("DONE");
+            } else {
+                mc.setCoverSearchStatus(fallbackStatus);
+            }
+            if (errorNote != null && !errorNote.isBlank()) {
+                mc.setCoverSearchNote("搜索失败: " + errorNote);
+            }
+            return true;
+        });
     }
 
     /** 条目在排队期间已被人工确认/忽略，静默结束不进失败记录 */
@@ -783,13 +833,13 @@ public class OnlineSearchQueueService implements AutoCloseable {
             // 如果用户在设置里调高了并发上限，顺便补位
             dispatchNextLocked();
             for (SearchTask t : running) {
-                runningViews.add(t.toView(null));
+                runningViews.add(taskToView(t, null));
             }
             for (int i = 0; i < queued.size(); i++) {
-                queuedViews.add(queued.get(i).toView(i + 1));
+                queuedViews.add(taskToView(queued.get(i), i + 1));
             }
             for (SearchTask t : finished) {
-                finishedViews.add(t.toView(null));
+                finishedViews.add(taskToView(t, null));
                 if (t.status == Status.SUCCEEDED) succeededCount++;
                 else if (t.status == Status.FAILED) failedCount++;
                 else if (t.status == Status.CANCELLED) cancelledCount++;
@@ -888,13 +938,17 @@ public class OnlineSearchQueueService implements AutoCloseable {
                 if (t.reviewItemId != null && reviewQueue != null) {
                     ReviewItem item = reviewQueue.get(t.reviewItemId);
                     if (item != null) {
+                        view.put("reviewKind", item.effectiveKind().name());
+                        boolean isCoverMissing = item.effectiveKind() == ReviewItem.Kind.COVER_MISSING;
                         if (item.getStatus() == ReviewItem.Status.CONFIRMED
                                 || item.getStatus() == ReviewItem.Status.ARCHIVED_UNVERIFIED) {
                             status = RecoveryService.JobStatus.SUCCEEDED.name();
-                            message = "已在待确认页面确认完成";
+                            message = isCoverMissing ? "已在缺少封面页面确认完成" : "已在待确认页面确认完成";
                         } else if (item.getStatus() == ReviewItem.Status.REJECTED) {
                             status = RecoveryService.JobStatus.FAILED.name();
-                            message = "已在待确认页面驳回";
+                            message = isCoverMissing ? "已在缺少封面页面忽略" : "已在待确认页面驳回";
+                        } else if (isCoverMissing) {
+                            message = "元数据已确认，缺少封面待补全";
                         }
                     } else {
                         status = RecoveryService.JobStatus.FAILED.name();
@@ -973,6 +1027,25 @@ public class OnlineSearchQueueService implements AutoCloseable {
             cur = cur.getCause();
         }
         return false;
+    }
+
+    private Map<String, Object> taskToView(SearchTask task, Integer queuePosition) {
+        Map<String, Object> view = task.toView(queuePosition);
+        String reviewKind = null;
+        if (task.reviewItemId != null && reviewQueue != null) {
+            ReviewItem item = reviewQueue.get(task.reviewItemId);
+            if (item != null) {
+                reviewKind = item.effectiveKind().name();
+            }
+        }
+        if (reviewKind == null
+            && (task.origin == Origin.MISSING_COVER_AUTO || task.origin == Origin.MISSING_COVER_MANUAL)) {
+            reviewKind = ReviewItem.Kind.COVER_MISSING.name();
+        }
+        if (reviewKind != null) {
+            view.put("reviewKind", reviewKind);
+        }
+        return view;
     }
 
     private String canonicalPath(File file) {

@@ -41,7 +41,7 @@ public class CoverCandidateService implements AutoCloseable {
     private final CoverArtService coverArtService;
     private final CoverArtCache coverArtCache;
     private final UntrustedImageFetcher fetcher = new UntrustedImageFetcher();
-    private final HttpClient httpClient;
+    private volatile HttpClient httpClient;
     private final Path cacheDirectory;
 
     public CoverCandidateService(MusicConfig config, MusicBrainzClient musicBrainzClient,
@@ -50,9 +50,22 @@ public class CoverCandidateService implements AutoCloseable {
         this.musicBrainzClient = musicBrainzClient;
         this.coverArtService = coverArtService;
         this.coverArtCache = coverArtCache;
-        this.httpClient = LlmClient.buildHttpClient(config);
         this.cacheDirectory = CoverCandidateCache.directory(config);
         cleanupExpired();
+    }
+
+    private HttpClient httpClient() {
+        HttpClient client = this.httpClient;
+        if (client == null) {
+            synchronized (this) {
+                client = this.httpClient;
+                if (client == null) {
+                    client = LlmClient.buildHttpClient(config);
+                    this.httpClient = client;
+                }
+            }
+        }
+        return client;
     }
 
     public CoverArtService getCoverArtService() {
@@ -220,13 +233,16 @@ public class CoverCandidateService implements AutoCloseable {
         Set<String> seenArtworkUrls = new LinkedHashSet<>();
 
         for (String term : terms) {
+            if (Thread.currentThread().isInterrupted()) {
+                return deduplicate(candidates);
+            }
             for (String country : countries) {
-                if (candidates.size() >= MAX_ITUNES_CANDIDATES) {
+                if (Thread.currentThread().isInterrupted() || candidates.size() >= MAX_ITUNES_CANDIDATES) {
                     return deduplicate(candidates);
                 }
                 List<ItunesHit> hits = queryItunesApi(term, country);
                 for (ItunesHit hit : hits) {
-                    if (candidates.size() >= MAX_ITUNES_CANDIDATES) {
+                    if (Thread.currentThread().isInterrupted() || candidates.size() >= MAX_ITUNES_CANDIDATES) {
                         break;
                     }
                     if (!seenArtworkUrls.add(hit.artworkUrl)) {
@@ -267,7 +283,7 @@ public class CoverCandidateService implements AutoCloseable {
                 .timeout(Duration.ofSeconds(12))
                 .GET()
                 .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            HttpResponse<String> response = httpClient().send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() < 200 || response.statusCode() >= 300 || !meaningful(response.body())) {
                 return hits;
             }
@@ -357,13 +373,8 @@ public class CoverCandidateService implements AutoCloseable {
                                  String fileName, String rgid, String note) {
         try {
             byte[] raw = image.data();
-            if (!"image/jpeg".equals(image.mime())) {
-                Optional<UntrustedImageFetcher.Result> converted = convertWithFfmpeg(raw);
-                if (converted.isPresent()) {
-                    raw = converted.get().data();
-                }
-            }
-            // 所有封面候选路径统一走项目现有的 ImageCompressor 压缩规则（最大边 1200px，<=2MB JPEG）
+            // 所有封面候选路径统一走项目现有的 ImageCompressor 压缩规则（最大边 1200px，<=2MB JPEG；
+            // PNG/JPEG/GIF/BMP 直接由 ImageIO 解码，WebP 等格式由 ImageCompressor 内置 ffmpeg 兜底转换，避免二次有损压缩）
             byte[] jpeg = ImageCompressor.compressImage(raw, ffmpegPath());
             if (jpeg == null || jpeg.length == 0) {
                 log.debug("Cover candidate rejected by ImageCompressor ({})", label);

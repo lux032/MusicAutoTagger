@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.service;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.ProcessedFolderRecord;
 import com.lux032.musicautotagger.model.ProcessedRecord;
+import com.lux032.musicautotagger.util.AudioFileOrdering;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FileSystemUtils;
 import lombok.extern.slf4j.Slf4j;
@@ -90,8 +91,8 @@ public class ProcessedRecordService {
 
     /** 按文件夹（专辑根目录）聚合分页查询。 */
     public ProcessedRecordQuery.FolderPage listFolders(ProcessedRecordQuery query) {
-        Path monitorRoot = monitorRoot();
-        FolderFilterResult filtered = filterFolderGroups(query, monitorRoot);
+        FolderResolver resolver = new FolderResolver();
+        FolderFilterResult filtered = filterFolderGroups(query, resolver);
         ProcessedRecordQuery.FolderPage page = new ProcessedRecordQuery.FolderPage();
         page.offset = query.safeOffset();
         page.limit = query.safeLimit();
@@ -118,15 +119,15 @@ public class ProcessedRecordService {
         if (folderPath == null || folderPath.isBlank()) {
             return List.of();
         }
-        Path monitorRoot = monitorRoot();
+        FolderResolver resolver = new FolderResolver();
         String targetKey = normalizeFolderKey(canonicalOrNormalized(new File(folderPath)).toString());
         List<ProcessedRecord> matched = new ArrayList<>();
         for (ProcessedRecord r : logger.loadAllRecords()) {
-            FolderInfo info = resolveFolderInfo(r.filePath, monitorRoot);
+            FolderInfo info = resolver.resolve(r.filePath);
             if (targetKey.equals(normalizeFolderKey(info.folderPath))) {
                 r.folderPath = info.folderPath;
                 r.discName = info.discName;
-                enrich(r, monitorRoot);
+                enrich(r, resolver.monitorRoot);
                 matched.add(r);
             }
         }
@@ -137,14 +138,14 @@ public class ProcessedRecordService {
 
     /** 解析单个文件路径所属的文件夹（专辑根目录）路径。 */
     public String resolveFolderPath(String filePath) {
-        return resolveFolderInfo(filePath, monitorRoot()).folderPath;
+        return new FolderResolver().resolve(filePath).folderPath;
     }
 
     /** 导出：不分页，最多 limit 条，不做文件探测（导出大量记录时逐个 stat 太慢）。 */
     public List<ProcessedRecord> export(ProcessedRecordQuery query, int limit) {
-        Path monitorRoot = monitorRoot();
+        FolderResolver resolver = new FolderResolver();
         if (query != null && query.isFolderView()) {
-            FolderFilterResult filtered = filterFolderGroups(query, monitorRoot);
+            FolderFilterResult filtered = filterFolderGroups(query, resolver);
             List<ProcessedRecord> result = new ArrayList<>();
             for (FolderGroup g : filtered.matched) {
                 List<ProcessedRecord> children = new ArrayList<>(g.records);
@@ -160,7 +161,7 @@ public class ProcessedRecordService {
         }
         List<ProcessedRecord> records = logger.findRecords(query, limit);
         for (ProcessedRecord r : records) {
-            r.folderPath = resolveFolderInfo(r.filePath, monitorRoot).folderPath;
+            r.folderPath = resolver.resolve(r.filePath).folderPath;
         }
         return records;
     }
@@ -179,7 +180,7 @@ public class ProcessedRecordService {
             return logger.findRecordsByPaths(limited);
         }
         if (folders != null && !folders.isEmpty()) {
-            Path monitorRoot = monitorRoot();
+            FolderResolver resolver = new FolderResolver();
             Set<String> wantedKeys = new LinkedHashSet<>();
             for (String f : folders) {
                 if (f != null && !f.isBlank()) {
@@ -189,7 +190,7 @@ public class ProcessedRecordService {
             if (wantedKeys.isEmpty()) return List.of();
             List<ProcessedRecord> matched = new ArrayList<>();
             for (ProcessedRecord r : logger.loadAllRecords()) {
-                FolderInfo info = resolveFolderInfo(r.filePath, monitorRoot);
+                FolderInfo info = resolver.resolve(r.filePath);
                 if (wantedKeys.contains(normalizeFolderKey(info.folderPath))) {
                     matched.add(r);
                     if (matched.size() >= MAX_BATCH) break;
@@ -199,7 +200,7 @@ public class ProcessedRecordService {
         }
         if (filter != null) {
             if (filter.isFolderView()) {
-                FolderFilterResult filtered = filterFolderGroups(filter, monitorRoot());
+                FolderFilterResult filtered = filterFolderGroups(filter, new FolderResolver());
                 List<ProcessedRecord> matched = new ArrayList<>();
                 for (FolderGroup g : filtered.matched) {
                     for (ProcessedRecord r : g.records) {
@@ -216,14 +217,14 @@ public class ProcessedRecordService {
 
     /** 操作前预览：让前端在确认框里准确告诉用户会发生什么。 */
     public Map<String, Object> preview(List<ProcessedRecord> targets) {
-        Path monitorRoot = monitorRoot();
+        FolderResolver resolver = new FolderResolver();
         int requeueable = 0, missing = 0, outside = 0, success = 0, failed = 0, other = 0;
         int recoverableFromTarget = 0, reviewBlockedCount = 0;
         Set<String> albums = new LinkedHashSet<>();
         Set<String> folderKeys = new HashSet<>();
         for (ProcessedRecord r : targets) {
-            enrich(r, monitorRoot);
-            folderKeys.add(normalizeFolderKey(resolveFolderInfo(r.filePath, monitorRoot).folderPath));
+            enrich(r, resolver.monitorRoot);
+            folderKeys.add(normalizeFolderKey(resolver.resolve(r.filePath).folderPath));
             if (r.status == ProcessedRecord.Status.SUCCESS) success++;
             else if (r.status == ProcessedRecord.Status.FAILED) failed++;
             else other++;
@@ -360,25 +361,32 @@ public class ProcessedRecordService {
         if (records.isEmpty() || recoveryService == null) {
             return 0;
         }
-        Map<String, List<ProcessedRecord>> groups = new LinkedHashMap<>();
+        FolderResolver resolver = new FolderResolver();
+        record StagedCandidate(ProcessedRecord record, File usable, FolderInfo folderInfo) {}
+        Map<String, List<StagedCandidate>> groups = new LinkedHashMap<>();
         for (ProcessedRecord r : records) {
             File usable = Boolean.TRUE.equals(r.sourceExists) ? new File(r.filePath) : new File(r.targetFilePath);
-            String key = usable.getParentFile() != null
-                ? usable.getParentFile().getAbsolutePath() : usable.getAbsolutePath();
-            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(r);
+            FolderInfo info = resolver.resolve(usable.getAbsolutePath());
+            String key = (info.looseRoot || resolver.isConfiguredRoot(info.folderPath))
+                ? normalizeFolderKey(usable.getAbsolutePath())
+                : normalizeFolderKey(info.folderPath);
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(new StagedCandidate(r, usable, info));
         }
 
         int submittedCount = 0;
-        for (List<ProcessedRecord> group : groups.values()) {
+        for (List<StagedCandidate> group : groups.values()) {
             String displayName = null;
-            for (ProcessedRecord r : group) {
-                File usable = Boolean.TRUE.equals(r.sourceExists) ? new File(r.filePath) : new File(r.targetFilePath);
+            for (StagedCandidate item : group) {
+                ProcessedRecord r = item.record();
                 if (r.album != null && !r.album.isBlank() && !"Unknown Album".equalsIgnoreCase(r.album)) {
                     displayName = r.album;
                     break;
                 }
                 if (displayName == null) {
-                    displayName = usable.getParentFile() != null ? usable.getParentFile().getName() : usable.getName();
+                    String candidateName = item.folderInfo().folderName;
+                    displayName = (candidateName != null && !candidateName.isBlank())
+                        ? candidateName
+                        : (item.usable().getParentFile() != null ? item.usable().getParentFile().getName() : item.usable().getName());
                 }
             }
             String safeFolder = FileNameSanitizer.sanitize(displayName == null ? "reidentify-album" : displayName);
@@ -389,11 +397,22 @@ public class ProcessedRecordService {
             Path taskRoot = resolveStagingRoot().resolve("reprocess-" + UUID.randomUUID());
             Path albumStagingDir = taskRoot.resolve(safeFolder);
             List<RecoveryService.StagedReidentifyFile> stagedFiles = new ArrayList<>();
+            List<ProcessedRecord> groupRecords = new ArrayList<>(group.size());
             try {
                 Files.createDirectories(albumStagingDir);
-                for (ProcessedRecord r : group) {
-                    File usable = Boolean.TRUE.equals(r.sourceExists) ? new File(r.filePath) : new File(r.targetFilePath);
-                    Path staged = uniqueTarget(albumStagingDir, usable.getName());
+                for (StagedCandidate item : group) {
+                    ProcessedRecord r = item.record();
+                    groupRecords.add(r);
+                    File usable = item.usable();
+                    Path targetDir = albumStagingDir;
+                    if (item.folderInfo().discName != null && !item.folderInfo().discName.isBlank()) {
+                        String safeDisc = FileNameSanitizer.sanitize(item.folderInfo().discName);
+                        if (!safeDisc.isBlank() && !".".equals(safeDisc) && !"..".equals(safeDisc)) {
+                            targetDir = albumStagingDir.resolve(safeDisc);
+                            Files.createDirectories(targetDir);
+                        }
+                    }
+                    Path staged = uniqueTarget(targetDir, usable.getName());
                     Files.copy(usable.toPath(), staged, StandardCopyOption.REPLACE_EXISTING);
                     Path oldTarget = replacementRegistry == null ? null
                         : replacementRegistry.findOldTarget(usable).orElse(null);
@@ -402,6 +421,8 @@ public class ProcessedRecordService {
                     }
                     stagedFiles.add(new RecoveryService.StagedReidentifyFile(staged.toFile(), usable, oldTarget));
                 }
+                Comparator<File> fileOrder = AudioFileOrdering.comparator();
+                stagedFiles.sort((a, b) -> fileOrder.compare(a.staged(), b.staged()));
             } catch (IOException e) {
                 log.error("准备重新识别暂存副本失败: {}", e.getMessage(), e);
                 LogCollector.addLog("ERROR", "准备重新识别副本失败: " + e.getMessage());
@@ -410,7 +431,7 @@ public class ProcessedRecordService {
             }
 
             try {
-                recoveryService.submitStagedReidentify(albumStagingDir.toFile(), displayName, stagedFiles, paths(group));
+                recoveryService.submitStagedReidentify(albumStagingDir.toFile(), displayName, stagedFiles, paths(groupRecords));
             } catch (java.util.concurrent.RejectedExecutionException e) {
                 deleteQuietly(taskRoot);
                 LogCollector.addLog("ERROR", "恢复服务已停止，未能提交重新识别: " + displayName);
@@ -557,8 +578,8 @@ public class ProcessedRecordService {
         }
     }
 
-    private FolderFilterResult filterFolderGroups(ProcessedRecordQuery query, Path monitorRoot) {
-        List<FolderGroup> allGroups = groupByFolder(logger.loadAllRecords(), monitorRoot);
+    private FolderFilterResult filterFolderGroups(ProcessedRecordQuery query, FolderResolver resolver) {
+        List<FolderGroup> allGroups = groupByFolder(logger.loadAllRecords(), resolver);
         String album = query == null ? null : query.normalizedAlbum();
         String kw = query == null ? null : query.normalizedKeyword();
         String lowerKw = kw == null ? null : kw.toLowerCase(Locale.ROOT);
@@ -595,10 +616,10 @@ public class ProcessedRecordService {
         return new FolderFilterResult(matched, counts);
     }
 
-    private List<FolderGroup> groupByFolder(List<ProcessedRecord> records, Path monitorRoot) {
+    private List<FolderGroup> groupByFolder(List<ProcessedRecord> records, FolderResolver resolver) {
         Map<String, FolderGroup> groups = new LinkedHashMap<>();
         for (ProcessedRecord r : records) {
-            FolderInfo info = resolveFolderInfo(r.filePath, monitorRoot);
+            FolderInfo info = resolver.resolve(r.filePath);
             String key = normalizeFolderKey(info.folderPath);
             FolderGroup g = groups.get(key);
             if (g == null) {
@@ -716,67 +737,103 @@ public class ProcessedRecordService {
         }
     }
 
-    private FolderInfo resolveFolderInfo(String filePath, Path monitorRoot) {
-        if (filePath == null || filePath.isBlank()) {
-            return new FolderInfo("", "", "", false, null);
-        }
-        File source = new File(filePath);
-        File parent = source.getParentFile();
-        if (parent == null) {
-            String p = canonicalOrNormalized(source).toString();
-            return new FolderInfo(p, p, p, false, null);
-        }
-        Path parentPath = canonicalOrNormalized(parent);
-        if (monitorRoot != null && parentPath.equals(monitorRoot)) {
-            return new FolderInfo(monitorRoot.toString(), fileNameOf(monitorRoot), "", true, null);
-        }
-
-        String parentName = fileNameOf(parentPath);
-        Path resolved = parentPath;
-        String discName = null;
-        if (FileSystemUtils.isDiscFolderName(parentName)) {
-            Path grand = parentPath.getParent();
-            if (grand != null && canAscendFromDiscFolder(parentPath, grand, monitorRoot)) {
-                resolved = grand;
-                discName = parentName;
-            }
-        }
-
-        String folderPath = resolved.toString();
-        String folderName = fileNameOf(resolved);
-        String relativePath = folderPath;
-        if (monitorRoot != null && resolved.startsWith(monitorRoot)) {
-            relativePath = monitorRoot.relativize(resolved).toString().replace('\\', '/');
-        }
-        return new FolderInfo(folderPath, folderName, relativePath, false, discName);
-    }
-
     /**
-     * 判断碟片子目录（Disc 1 / CD 2 等）是否允许上升一级到专辑根目录：
-     * - 位于监控目录内时，只要父目录不是监控根目录本身即可上升；
-     * - 位于监控目录外（如重新识别 / 恢复目录 / 输出音乐库）时，同样允许上升到专辑目录，
-     *   仅阻止上升到文件系统根或各配置根目录本身，避免多碟专辑被拆成 Disc 1 / Disc 2 两行。
+     * 按单次请求缓存父目录规范化路径与配置根目录，避免对数万条处理记录逐条重复调用
+     * {@code File.getCanonicalFile()} 造成昂贵的磁盘 I/O。
      */
-    private boolean canAscendFromDiscFolder(Path parentPath, Path grand, Path monitorRoot) {
-        if (grand.getParent() == null) {
-            return false;
+    private final class FolderResolver {
+        final Path monitorRoot;
+        private final List<Path> configuredRoots;
+        private final Set<String> configuredRootKeys;
+        private final Map<String, FolderInfo> byParent = new HashMap<>();
+
+        FolderResolver() {
+            this.monitorRoot = monitorRoot();
+            List<Path> roots = new ArrayList<>(3);
+            Set<String> rootKeys = new HashSet<>(4);
+            if (config != null) {
+                for (String rootDir : new String[] {
+                    config.getOutputDirectory(),
+                    config.getFailedDirectory(),
+                    config.getPartialDirectory()
+                }) {
+                    if (rootDir != null && !rootDir.isBlank()) {
+                        Path p = canonicalOrNormalized(new File(rootDir));
+                        roots.add(p);
+                        rootKeys.add(normalizeFolderKey(p.toString()));
+                    }
+                }
+            }
+            this.configuredRoots = roots;
+            this.configuredRootKeys = rootKeys;
         }
-        if (monitorRoot != null && parentPath.startsWith(monitorRoot)) {
-            return !grand.equals(monitorRoot) && grand.startsWith(monitorRoot);
+
+        boolean isConfiguredRoot(String folderPath) {
+            return folderPath != null && configuredRootKeys.contains(normalizeFolderKey(folderPath));
         }
-        for (String rootDir : new String[] {
-            config == null ? null : config.getOutputDirectory(),
-            config == null ? null : config.getFailedDirectory(),
-            config == null ? null : config.getPartialDirectory()
-        }) {
-            if (rootDir != null && !rootDir.isBlank()) {
-                Path configuredRoot = canonicalOrNormalized(new File(rootDir));
+
+        FolderInfo resolve(String filePath) {
+            if (filePath == null || filePath.isBlank()) {
+                return new FolderInfo("", "", "", false, null);
+            }
+            File source = new File(filePath);
+            File parent = source.getParentFile();
+            if (parent == null) {
+                String p = canonicalOrNormalized(source).toString();
+                return new FolderInfo(p, p, p, false, null);
+            }
+            String parentKey = normalizeFolderKey(parent.getPath());
+            FolderInfo cached = byParent.get(parentKey);
+            if (cached != null) {
+                return cached;
+            }
+            Path parentPath = canonicalOrNormalized(parent);
+            FolderInfo computed;
+            if (monitorRoot != null && parentPath.equals(monitorRoot)) {
+                computed = new FolderInfo(monitorRoot.toString(), fileNameOf(monitorRoot), "", true, null);
+            } else {
+                String parentName = fileNameOf(parentPath);
+                Path resolved = parentPath;
+                String discName = null;
+                if (FileSystemUtils.isDiscFolderName(parentName)) {
+                    Path grand = parentPath.getParent();
+                    if (grand != null && canAscendFromDiscFolder(parentPath, grand)) {
+                        resolved = grand;
+                        discName = parentName;
+                    }
+                }
+                String folderPath = resolved.toString();
+                String folderName = fileNameOf(resolved);
+                String relativePath = folderPath;
+                if (monitorRoot != null && resolved.startsWith(monitorRoot)) {
+                    relativePath = monitorRoot.relativize(resolved).toString().replace('\\', '/');
+                }
+                computed = new FolderInfo(folderPath, folderName, relativePath, false, discName);
+            }
+            byParent.put(parentKey, computed);
+            return computed;
+        }
+
+        /**
+         * 判断碟片子目录（Disc 1 / CD 2 等）是否允许上升一级到专辑根目录：
+         * - 位于监控目录内时，只要父目录不是监控根目录本身即可上升；
+         * - 位于监控目录外（如重新识别 / 恢复目录 / 输出音乐库）时，同样允许上升到专辑目录，
+         *   仅阻止上升到文件系统根或各配置根目录本身，避免多碟专辑被拆成 Disc 1 / Disc 2 两行。
+         */
+        private boolean canAscendFromDiscFolder(Path parentPath, Path grand) {
+            if (grand.getParent() == null) {
+                return false;
+            }
+            if (monitorRoot != null && parentPath.startsWith(monitorRoot)) {
+                return !grand.equals(monitorRoot) && grand.startsWith(monitorRoot);
+            }
+            for (Path configuredRoot : configuredRoots) {
                 if (grand.equals(configuredRoot)) {
                     return false;
                 }
             }
+            return true;
         }
-        return true;
     }
 
     private static Path canonicalOrNormalized(File file) {
