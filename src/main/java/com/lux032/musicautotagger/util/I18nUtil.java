@@ -8,6 +8,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.text.MessageFormat;
 import java.util.Properties;
+import java.util.regex.Pattern;
 
 /**
  * 国际化工具类
@@ -16,34 +17,50 @@ import java.util.Properties;
 @Slf4j
 public class I18nUtil {
 
-    private static Properties messages;
-    private static String currentLanguage = "en_US"; // 默认英文
+    private static final Pattern MESSAGE_FORMAT_PLACEHOLDER = Pattern.compile("\\{\\d+\\}");
+    private static volatile Properties messages;
+    private static volatile String currentLanguage = "en_US"; // 默认英文
 
     /**
-     * 初始化国际化资源
+     * 初始化国际化资源（先在本地填充完 Properties 再原子发布到 volatile 引用，避免并发线程看到半初始化态）。
      * @param language 语言代码，如 zh_CN 或 en_US
      */
-    public static void init(String language) {
+    public static synchronized void init(String language) {
         if (language == null || language.trim().isEmpty()) {
             language = "en_US";
         }
+        String normalized = language.trim();
+        Properties loaded = new Properties();
+        String resourceFile = "/messages_" + normalized + ".properties";
 
-        currentLanguage = language;
-        messages = new Properties();
-
-        String resourceFile = "/messages_" + language + ".properties";
-
-        try (InputStream is = I18nUtil.class.getResourceAsStream(resourceFile);
-             InputStreamReader reader = new InputStreamReader(is, StandardCharsets.UTF_8)) {
-            messages.load(reader);
+        try (InputStream is = I18nUtil.class.getResourceAsStream(resourceFile)) {
+            if (is == null) {
+                throw new IOException("Resource not found: " + resourceFile);
+            }
+            try (InputStreamReader reader = new InputStreamReader(is, StandardCharsets.UTF_8)) {
+                loaded.load(reader);
+            }
+            messages = loaded;
+            currentLanguage = normalized;
             log.info("Successfully loaded i18n resource file: {}", resourceFile);
-        } catch (IOException | NullPointerException e) {
+        } catch (IOException e) {
             log.error("Failed to load i18n resource file: {}, falling back to default English", resourceFile, e);
-            // 如果加载失败，尝试加载默认英文资源
-            if (!"en_US".equals(language)) {
+            if (!"en_US".equals(normalized)) {
                 init("en_US");
+            } else {
+                messages = loaded;
+                currentLanguage = "en_US";
             }
         }
+    }
+
+    private static Properties ensureMessages() {
+        Properties current = messages;
+        if (current == null) {
+            init(currentLanguage);
+            current = messages;
+        }
+        return current;
     }
 
     /**
@@ -52,10 +69,7 @@ public class I18nUtil {
      * @return 对应语言的消息文本，如果找不到则返回键本身
      */
     public static String getMessage(String key) {
-        if (messages == null) {
-            init(currentLanguage);
-        }
-        return messages.getProperty(key, key);
+        return ensureMessages().getProperty(key, key);
     }
 
     /**
@@ -65,10 +79,7 @@ public class I18nUtil {
      * @return 对应语言的消息文本，如果找不到则返回默认值
      */
     public static String getMessageWithDefault(String key, String defaultValue) {
-        if (messages == null) {
-            init(currentLanguage);
-        }
-        return messages.getProperty(key, defaultValue);
+        return ensureMessages().getProperty(key, defaultValue);
     }
 
     /**
@@ -79,10 +90,7 @@ public class I18nUtil {
      * @return 格式化后的消息文本
      */
     public static String getMessage(String key, Object... args) {
-        if (messages == null) {
-            init(currentLanguage);
-        }
-        String pattern = messages.getProperty(key, key);
+        String pattern = ensureMessages().getProperty(key, key);
         if (args == null || args.length == 0) {
             return pattern;
         }
@@ -90,18 +98,18 @@ public class I18nUtil {
     }
 
     /**
-     * 格式化消息，同时支持 SLF4J 风格 {} 和 MessageFormat 风格 {0} {1} 占位符
+     * 格式化消息，同时支持 SLF4J 风格 {} 和 MessageFormat 风格 {0} {1} 占位符（兼容多行模板）
      * @param pattern 消息模板
      * @param args 参数数组
      * @return 格式化后的消息
      */
-    private static String formatMessage(String pattern, Object... args) {
+    public static String formatMessage(String pattern, Object... args) {
         if (pattern == null || args == null || args.length == 0) {
             return pattern;
         }
 
-        // 检查是否包含 MessageFormat 风格的占位符 {0}, {1} 等
-        if (pattern.matches(".*\\{\\d+\\}.*")) {
+        // 使用 Matcher.find() 替代 String.matches(".*\\{\\d+\\}.*")，避免含换行符文案失效
+        if (MESSAGE_FORMAT_PLACEHOLDER.matcher(pattern).find()) {
             try {
                 return MessageFormat.format(pattern, args);
             } catch (Exception e) {
@@ -146,10 +154,7 @@ public class I18nUtil {
      * @return Properties对象
      */
     public static Properties getAllMessages() {
-        if (messages == null) {
-            init(currentLanguage);
-        }
-        return messages;
+        return ensureMessages();
     }
 }
 

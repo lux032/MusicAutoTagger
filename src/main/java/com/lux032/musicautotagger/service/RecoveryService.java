@@ -12,6 +12,7 @@ import com.lux032.musicautotagger.service.llm.LlmClient;
 import com.lux032.musicautotagger.util.ArtistCreditSupport;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FileSystemUtils;
+import com.lux032.musicautotagger.util.I18nUtil;
 import com.lux032.musicautotagger.util.MetadataUtils;
 import lombok.extern.slf4j.Slf4j;
 
@@ -87,6 +88,10 @@ public class RecoveryService implements AutoCloseable {
     });
     private final Map<String, RecoveryJob> jobs = new ConcurrentHashMap<>();
     private final Set<String> runningPaths = ConcurrentHashMap.newKeySet();
+    private static final long SUMMARY_CACHE_TTL_MS = 5_000L;
+    private volatile Map<String, Object> summaryCache;
+    private volatile long summaryCacheAt;
+    private volatile long summaryCacheStamp;
 
     public RecoveryService(MusicConfig config,
                            AudioFileProcessorService processor,
@@ -330,6 +335,118 @@ public class RecoveryService implements AutoCloseable {
         return result;
     }
 
+    /**
+     * 轻量级恢复积压统计（供侧栏与概览角标轮询使用）。
+     * 相比 listItems() 省去了音频文件排序收集、canonicalPath/autoArchiveRegistry 查询以及任务视图构造，
+     * 并附带短 TTL + 根目录 mtime 校验缓存。
+     */
+    public Map<String, Object> countItemsSummary() {
+        long now = System.currentTimeMillis();
+        long stamp = summaryRootsStamp();
+        Map<String, Object> cached = summaryCache;
+        if (cached != null && (now - summaryCacheAt) < SUMMARY_CACHE_TTL_MS && stamp == summaryCacheStamp) {
+            return new LinkedHashMap<>(cached);
+        }
+        int partial = countRootItems(config.getPartialDirectory());
+        int failed = countRootItems(config.getFailedDirectory());
+        int trash = countTrash();
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("partial", partial);
+        summary.put("failed", failed);
+        summary.put("total", partial + failed);
+        summary.put("trashCount", trash);
+        summaryCache = summary;
+        summaryCacheAt = now;
+        summaryCacheStamp = stamp;
+        return new LinkedHashMap<>(summary);
+    }
+
+    public void invalidateSummaryCache() {
+        summaryCache = null;
+        summaryCacheAt = 0L;
+    }
+
+    private long summaryRootsStamp() {
+        long h = directoryStamp(config.getPartialDirectory());
+        h = h * 31L + directoryStamp(config.getFailedDirectory());
+        h = h * 31L + directoryStamp(trashRoot().toString());
+        return h;
+    }
+
+    private long directoryStamp(String dirPath) {
+        if (dirPath == null || dirPath.trim().isEmpty()) {
+            return 0L;
+        }
+        File dir = new File(dirPath.trim());
+        if (!dir.isDirectory()) {
+            return 0L;
+        }
+        return dir.lastModified();
+    }
+
+    private int countRootItems(String configuredRoot) {
+        if (configuredRoot == null || configuredRoot.trim().isEmpty()) {
+            return 0;
+        }
+        File root = new File(configuredRoot.trim());
+        if (!root.isDirectory()) {
+            return 0;
+        }
+        return countRootEntries(root);
+    }
+
+    private int countRootEntries(File dir) {
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return 0;
+        }
+        int count = 0;
+        for (File child : children) {
+            if (child.getName().startsWith(".recovery-")) {
+                continue;
+            }
+            if (Files.isSymbolicLink(child.toPath())) {
+                continue;
+            }
+            if (!child.isDirectory() && !fileSystemUtils.isMusicFile(child)) {
+                continue;
+            }
+            if (child.isDirectory() && isGroupingOnlyDirectory(child)) {
+                count += countRootEntries(child);
+                continue;
+            }
+            if (hasAnyAudioFile(child)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private boolean hasAnyAudioFile(File target) {
+        if (target == null || !target.exists() || Files.isSymbolicLink(target.toPath())) {
+            return false;
+        }
+        if (target.isFile()) {
+            return fileSystemUtils.isMusicFile(target);
+        }
+        File[] entries = target.listFiles();
+        if (entries == null) {
+            return false;
+        }
+        for (File entry : entries) {
+            if (Files.isSymbolicLink(entry.toPath())) {
+                continue;
+            }
+            if (entry.isFile() && fileSystemUtils.isMusicFile(entry)) {
+                return true;
+            }
+            if (entry.isDirectory() && hasAnyAudioFile(entry)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public List<Map<String, Object>> listJobs() {
         List<Map<String, Object>> result = new ArrayList<>(listOtherJobs());
         if (searchQueueService != null) {
@@ -354,14 +471,14 @@ public class RecoveryService implements AutoCloseable {
                     if (reviewItem.getStatus() == ReviewItem.Status.CONFIRMED
                             || reviewItem.getStatus() == ReviewItem.Status.ARCHIVED_UNVERIFIED) {
                         view.put("status", JobStatus.SUCCEEDED.name());
-                        view.put("message", isCoverMissing ? "已在缺少封面页面确认完成" : "已在待确认页面确认完成");
+                        view.put("message", I18nUtil.getMessage(isCoverMissing ? "recovery.job.done.cover" : "recovery.job.done.review"));
                     } else if (reviewItem.getStatus() == ReviewItem.Status.REJECTED) {
                         view.put("status", JobStatus.FAILED.name());
-                        view.put("message", isCoverMissing ? "已在缺少封面页面忽略" : "已在待确认页面驳回");
+                        view.put("message", I18nUtil.getMessage(isCoverMissing ? "recovery.job.rejected.cover" : "recovery.job.rejected.review"));
                     }
                 } else {
                     view.put("status", JobStatus.FAILED.name());
-                    view.put("message", "待确认条目已移除");
+                    view.put("message", I18nUtil.getMessage("recovery.job.removed"));
                 }
             }
             result.add(view);
@@ -369,12 +486,15 @@ public class RecoveryService implements AutoCloseable {
         return result;
     }
 
-    /** 统计回收站当前条目数量（仅统计主体条目，忽略 manifest .json）。 */
+    /** 统计回收站当前条目数量（仅统计主体条目，忽略 manifest .json 与临时替换备份）。 */
     public int countTrash() {
         Path root = trashRoot();
         if (!Files.isDirectory(root)) return 0;
         try (var stream = Files.list(root)) {
-            return (int) stream.filter(p -> !p.getFileName().toString().endsWith(".json")).count();
+            return (int) stream.filter(p -> {
+                String name = p.getFileName().toString();
+                return !name.endsWith(".json") && !name.startsWith(PENDING_REPLACE_PREFIX);
+            }).count();
         } catch (Exception e) {
             return 0;
         }
@@ -620,6 +740,7 @@ public class RecoveryService implements AutoCloseable {
         Files.createDirectories(target.toPath().getParent());
         moveAcrossDevices(entry, target.toPath());
         Files.deleteIfExists(manifest);
+        invalidateSummaryCache();
         LogCollector.addLog("SUCCESS", "已从回收站恢复: " + relativePath + " → " + sourceType);
     }
 
@@ -633,6 +754,7 @@ public class RecoveryService implements AutoCloseable {
             Files.createDirectories(target.getParent());
             moveAcrossDevices(entry, target);
             Files.deleteIfExists(manifest);
+            invalidateSummaryCache();
             LogCollector.addLog("SUCCESS", "已从回收站还原到音乐库: " + displayOutputPath(target));
         }
     }
@@ -642,6 +764,7 @@ public class RecoveryService implements AutoCloseable {
         Path entry = resolveTrashEntry(id);
         deleteRecursively(entry);
         Files.deleteIfExists(entry.resolveSibling(entry.getFileName() + ".json"));
+        invalidateSummaryCache();
         LogCollector.addLog("WARN", "已删除回收站条目: " + id);
     }
 
@@ -2103,6 +2226,7 @@ public class RecoveryService implements AutoCloseable {
         job.status = status;
         job.message = message;
         job.updatedAt = System.currentTimeMillis();
+        invalidateSummaryCache();
         LogCollector.addLog(status == JobStatus.SUCCEEDED ? "SUCCESS" :
             status == JobStatus.WAITING_REVIEW ? "WARN" : "ERROR",
             "人工恢复: " + job.relativePath + " - " + message);
@@ -2333,6 +2457,7 @@ public class RecoveryService implements AutoCloseable {
         int retention = config.getRecoveryTrashRetentionDays();
         if (retention == 0) {
             deleteRecursively(source.toPath());
+            invalidateSummaryCache();
             return;
         }
         Path root = trashRoot();
@@ -2348,6 +2473,7 @@ public class RecoveryService implements AutoCloseable {
         manifest.addProperty("relativePath", relativePath);
         manifest.addProperty("trashedAt", trashedAt);
         Files.writeString(target.resolveSibling(target.getFileName() + ".json"), gson.toJson(manifest));
+        invalidateSummaryCache();
     }
 
     /**

@@ -2,6 +2,7 @@ package com.lux032.musicautotagger.service;
 
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.ReviewItem;
+import com.lux032.musicautotagger.util.I18nUtil;
 import com.lux032.musicautotagger.web.SystemSuggestionCalculator;
 import lombok.extern.slf4j.Slf4j;
 
@@ -984,20 +985,20 @@ public class OnlineSearchQueueService implements AutoCloseable {
             String message;
             if (t.status() == Status.QUEUED) {
                 status = "QUEUED";
-                message = "排队中（第 " + (t.queuePosition() != null ? t.queuePosition() : 1) + " 位）";
+                message = I18nUtil.getMessage("recovery.job.queued", t.queuePosition() != null ? t.queuePosition() : 1);
             } else if (t.status() == Status.RUNNING) {
                 status = RecoveryService.JobStatus.RUNNING.name();
-                message = "联网搜索进行中";
+                message = I18nUtil.getMessage("recovery.job.running");
             } else if (t.status() == Status.FAILED) {
                 status = RecoveryService.JobStatus.FAILED.name();
                 message = t.errorMessage();
             } else if (t.status() == Status.CANCELLED) {
                 status = RecoveryService.JobStatus.FAILED.name();
-                message = t.round1Saved() ? "已中止（保留了第 1 轮结果）" : "已手动中止";
+                message = I18nUtil.getMessage(t.round1Saved() ? "recovery.job.cancelled.kept" : "recovery.job.cancelled");
             } else {
                 // SUCCEEDED -> 与旧 RecoveryService.listJobs 语义保持 100% 一致
                 status = RecoveryService.JobStatus.WAITING_REVIEW.name();
-                message = "联网搜索完成，候选已进入待确认页面";
+                message = I18nUtil.getMessage("recovery.job.waiting");
                 if (t.reviewItemId() != null && reviewQueue != null) {
                     ReviewItem item = reviewQueue.get(t.reviewItemId());
                     if (item != null) {
@@ -1006,16 +1007,16 @@ public class OnlineSearchQueueService implements AutoCloseable {
                         if (item.getStatus() == ReviewItem.Status.CONFIRMED
                                 || item.getStatus() == ReviewItem.Status.ARCHIVED_UNVERIFIED) {
                             status = RecoveryService.JobStatus.SUCCEEDED.name();
-                            message = isCoverMissing ? "已在缺少封面页面确认完成" : "已在待确认页面确认完成";
+                            message = I18nUtil.getMessage(isCoverMissing ? "recovery.job.done.cover" : "recovery.job.done.review");
                         } else if (item.getStatus() == ReviewItem.Status.REJECTED) {
                             status = RecoveryService.JobStatus.FAILED.name();
-                            message = isCoverMissing ? "已在缺少封面页面忽略" : "已在待确认页面驳回";
+                            message = I18nUtil.getMessage(isCoverMissing ? "recovery.job.rejected.cover" : "recovery.job.rejected.review");
                         } else if (isCoverMissing) {
-                            message = "元数据已确认，缺少封面待补全";
+                            message = I18nUtil.getMessage("recovery.job.waiting.cover");
                         }
                     } else {
                         status = RecoveryService.JobStatus.FAILED.name();
-                        message = "待确认条目已移除";
+                        message = I18nUtil.getMessage("recovery.job.removed");
                     }
                 }
             }

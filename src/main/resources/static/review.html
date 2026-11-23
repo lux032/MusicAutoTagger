@@ -454,8 +454,8 @@
                 <div class="queue-search">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
                     <input id="searchInput" type="text" autocomplete="off" spellcheck="false" enterkeyhint="search"
-                           placeholder="搜索文件夹、文件名或曲名" data-i18n-placeholder="review.search.placeholder" aria-label="搜索">
-                    <button type="button" class="search-clear" id="searchClear" hidden aria-label="清除">
+                           placeholder="搜索文件夹、文件名或曲名" data-i18n-placeholder="review.search.placeholder" data-i18n-aria="aria.search" aria-label="Search">
+                    <button type="button" class="search-clear" id="searchClear" hidden data-i18n-aria="aria.clear" aria-label="Clear">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
                     </button>
                 </div>
@@ -656,7 +656,8 @@
         busy: {},           // id -> {key, label, start}，允许在一条忙的时候去处理别的条目
         alerts: {},         // id -> {tone, text}，持续显示直到关闭或下一次操作
         flash: null,        // 上一条处理结果（自动跳到下一条时显示）
-        menuOpen: false
+        menuOpen: false,
+        lastDetailSearchSig: ''
     };
 
     // ==================== 基础 ====================
@@ -751,7 +752,12 @@
         options.headers = options.headers || {};
         if (state.csrf) options.headers['X-CSRF-Token'] = state.csrf;
         if (options.body) options.headers['Content-Type'] = 'application/json';
-        const resp = await fetch(path, options);
+        const resp = await fetch(path, { credentials: 'same-origin', ...options });
+        if (resp.status === 401) {
+            if (window.SearchQueue && typeof SearchQueue.stop === 'function') SearchQueue.stop();
+            location.href = '/index.html';
+            throw new Error('unauthorized');
+        }
         let data = {};
         try { data = await resp.json(); } catch (e) { /* ignore */ }
         if (!resp.ok) {
@@ -881,6 +887,26 @@
         return !!(task && task.status === 'SUCCEEDED' && SearchQueue.isUnread(task.id));
     }
 
+    function detailSearchSig(item) {
+        const task = item ? searchTaskFor(item.id) : null;
+        if (!task) return '';
+        return [task.id, task.status, task.stageCode, task.percent, task.queuePosition, task.cancelRequested, task.errorMessage].join('|');
+    }
+
+    /** 局部更新详情页的联网搜索进度卡片与决策栏，避免 1.5s 轮询全量重写 #detail 折叠 <details> 或丢失焦点 */
+    function syncDetailSearchLiveCard() {
+        if (!state.item) return;
+        const sig = detailSearchSig(state.item);
+        if (sig === state.lastDetailSearchSig) return;
+        state.lastDetailSearchSig = sig;
+        const slot = $('detailSearchLiveSlot');
+        if (slot) {
+            const html = renderSearchLiveCard(state.item);
+            if (slot.innerHTML !== html) slot.innerHTML = html;
+        }
+        renderDecision();
+    }
+
     async function onSearchQueueUpdate(e) {
         const snap = e.detail?.snapshot;
         const newlyFinished = e.detail?.newlyFinished || [];
@@ -891,7 +917,7 @@
         renderChips();
         renderList();
         if (state.item) {
-            renderDetail();
+            syncDetailSearchLiveCard();
         }
         if (newlyFinished.length) {
             await loadList();
@@ -1243,7 +1269,7 @@
             <dl class="d-facts">${facts.map(([k, v]) => `<div><dt>${escapeHtml(t(k))}</dt><dd>${escapeHtml(v)}</dd></div>`).join('')}</dl>
             ${renderFlash()}
             ${renderAlert(item)}
-            ${renderSearchLiveCard(item)}
+            <div id="detailSearchLiveSlot">${renderSearchLiveCard(item)}</div>
             ${renderResolution(item)}
             ${renderMissingTracks(item)}
             ${pending ? renderVerdict(item) : ''}
@@ -1259,6 +1285,7 @@
             </div>
             <div style="height: 14px"></div>
         `;
+        state.lastDetailSearchSig = detailSearchSig(item);
         renderDecision();
     }
 
@@ -1573,7 +1600,7 @@
         return `<section class="sec">
             <div class="sec-head"><span class="sec-title">${escapeHtml(t('review.section.online'))}</span>
                 ${stale ? `<span class="tag stale">${escapeHtml(t('review.evidence.stale'))}</span>` : ''}
-                <span class="sec-meta">${escapeHtml(tf('review.online.meta', item.onlineSearchProvider || '', item.onlineSearchModel || '', item.onlineSearchedAt ? new Date(item.onlineSearchedAt).toLocaleString() : '-'))}</span></div>
+                <span class="sec-meta">${escapeHtml(tf('review.online.meta', item.onlineSearchProvider || '', item.onlineSearchModel || '', item.onlineSearchedAt ? new Date(item.onlineSearchedAt).toLocaleString(I18n.language === 'zh_CN' ? 'zh-CN' : 'en-US') : '-'))}</span></div>
             ${stale && pending ? `<div class="banner warn" style="margin:0 0 10px">${ICON.warn}<div class="grow">${escapeHtml(t('review.online.select.stale'))}</div></div>` : ''}
             ${cards ? `<div class="cands" ${pending ? 'role="radiogroup"' : ''}>${cards}</div>` : `<div class="hint">${escapeHtml(t('review.online.none'))}</div>`}
             ${clues.length ? `<details class="plain-details" style="margin-top:10px"><summary>${escapeHtml(tf('review.clues.summary', clues.length))}</summary>
@@ -2499,9 +2526,9 @@
             if (abs < 3600) return rtf.format(Math.round(sec / 60), 'minute');
             if (abs < 86400) return rtf.format(Math.round(sec / 3600), 'hour');
             if (abs < 86400 * 30) return rtf.format(Math.round(sec / 86400), 'day');
-            return new Date(ms).toLocaleDateString();
+            return new Date(ms).toLocaleDateString(I18n.language === 'zh_CN' ? 'zh-CN' : 'en-US');
         } catch (e) {
-            return new Date(ms).toLocaleDateString();
+            return new Date(ms).toLocaleDateString(I18n.language === 'zh_CN' ? 'zh-CN' : 'en-US');
         }
     }
 

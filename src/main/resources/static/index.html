@@ -322,7 +322,7 @@
                     </div>
                 </div>
                 <div class="dialog-actions">
-                    <button class="btn primary" onclick="submitLogin()" data-i18n="web.login.submit">登录</button>
+                    <button class="btn primary" id="loginSubmitBtn" onclick="submitLogin()" data-i18n="web.login.submit">登录</button>
                 </div>
             </div>
             <div id="setupPanel" style="display: none;">
@@ -352,7 +352,7 @@
                     </div>
                 </div>
                 <div class="dialog-actions">
-                    <button class="btn primary" onclick="submitSetup()" data-i18n="web.setup.submit">创建管理员</button>
+                    <button class="btn primary" id="setupSubmitBtn" onclick="submitSetup()" data-i18n="web.setup.submit">创建管理员</button>
                 </div>
             </div>
         </div>
@@ -380,7 +380,7 @@
             </div>
             <div class="dialog-actions">
                 <button class="btn ghost" onclick="closeChangePassword()" data-i18n="web.cancel">取消</button>
-                <button class="btn primary" onclick="submitChangePassword()" data-i18n="web.change.password.submit">更新密码</button>
+                <button class="btn primary" id="changePasswordSubmitBtn" onclick="submitChangePassword()" data-i18n="web.change.password.submit">更新密码</button>
             </div>
         </div>
     </div>
@@ -637,7 +637,7 @@
                                 <div class="form-row">
                                     <label for="cfgPartialDirectory" class="label-with-tip">
                                         <span data-i18n="config.partial.directory">部分识别目录</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.partial.directory.hint">当曲目信息只识别出部分字段时，会移动到此目录，便于后续人工补全或再次处理。</span>
                                         </span>
                                     </label>
@@ -673,7 +673,7 @@
                                     <input id="cfgPreferAnimeCover" type="checkbox">
                                     <label for="cfgPreferAnimeCover" class="label-with-tip">
                                         <span data-i18n="config.cover.preferAnime">优先动画版封面</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.cover.preferAnime.hint">动画 OP/ED 单曲常有「アニメ盤（动画封面）」与「通常盘（歌手真人封面）」两个版本。开启后会在同一专辑的所有发行版中优先挑选动画封面版本，找不到时回退到默认封面。</span>
                                         </span>
                                     </label>
@@ -706,7 +706,7 @@
                                     <input id="cfgEnableLLMMatching" type="checkbox">
                                     <label for="cfgEnableLLMMatching" class="label-with-tip">
                                         <span data-i18n="config.llm.enabled">启用 LLM 匹配</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.enabled.hint">仅对部分识别流程生效。当文件进入部分识别目录后，使用 LLM 智能匹配艺术家名称（支持罗马音、别名等），匹配成功后自动移动到输出目录。</span>
                                         </span>
                                     </label>
@@ -715,7 +715,7 @@
                                     <input id="cfgLlmAllowPrivateEndpoints" type="checkbox">
                                     <label for="cfgLlmAllowPrivateEndpoints" class="label-with-tip">
                                         <span data-i18n="config.llm.allow.private">允许内网 / HTTP 端点</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.allow.private.hint">默认关闭。「拉取模型」会让服务端去请求你填的地址，允许内网地址等于把一个登录会话变成内网探测工具（SSRF）。只有要接自建 Ollama / vLLM 时才打开。</span>
                                         </span>
                                     </label>
@@ -727,14 +727,14 @@
                                 <div class="form-row span-2">
                                     <label class="label-with-tip">
                                         <span data-i18n="config.llm.providers.list">供应商列表</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.providers.list.hint">自上而下依次尝试：先按供应商顺序，同一供应商内再按模型顺序。前一个失败才会用下一个。</span>
                                         </span>
                                     </label>
                                     <div id="llmProvidersList" style="display: flex; flex-direction: column; gap: 12px;"></div>
                                     <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center; flex-wrap: wrap;">
                                         <button type="button" class="btn soft" onclick="addLlmProvider()" data-i18n="config.llm.providers.add">+ 添加供应商</button>
-                                        <button type="button" class="btn primary" onclick="saveLlmProviders()" data-i18n="config.llm.providers.save">保存供应商</button>
+                                        <button type="button" class="btn primary" id="saveLlmProvidersBtn" onclick="saveLlmProviders()" data-i18n="config.llm.providers.save">保存供应商</button>
                                         <span id="llmProvidersStatus" class="hint"></span>
                                     </div>
                                 </div>
@@ -745,7 +745,7 @@
                                 <div class="form-row">
                                     <label for="cfgLlmMaxTokens" class="label-with-tip">
                                         <span data-i18n="config.llm.max.tokens">最大输出 Token</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.max.tokens.hint">用于艺术家匹配、专辑判定这类短回答，默认 600 已够。联网搜索不用这个值，见下方单独设置。范围 1—32000。</span>
                                         </span>
                                     </label>
@@ -754,7 +754,7 @@
                                 <div class="form-row">
                                     <label for="cfgLlmTemperature" class="label-with-tip">
                                         <span data-i18n="config.llm.temperature">Temperature</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.temperature.hint">识别类任务建议保持 0，避免模型发挥。范围 0—2（Anthropic 上限为 1）。</span>
                                         </span>
                                     </label>
@@ -771,7 +771,7 @@
                                 <div class="form-row">
                                     <label for="cfgLlmWebSearchMaxTokens" class="label-with-tip">
                                         <span data-i18n="config.llm.websearch.max.tokens">联网搜索最大输出 Token</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.websearch.max.tokens.hint">联网搜索要返回最多 5 个候选、每个带完整曲目表与来源 URL，需要比普通调用大得多的预算。设得太小会导致 JSON 被截断、解析失败。范围 256—32000。</span>
                                         </span>
                                     </label>
@@ -780,7 +780,7 @@
                                 <div class="form-row">
                                     <label for="cfgLlmWebSearchTimeoutSeconds" class="label-with-tip">
                                         <span data-i18n="config.llm.websearch.timeout">联网搜索超时（秒）</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.websearch.timeout.hint">搜索本身就要几十秒，且可能执行两轮。范围 30—900。</span>
                                         </span>
                                     </label>
@@ -789,7 +789,7 @@
                                 <div class="form-row">
                                     <label for="cfgLlmWebSearchMaxConcurrency" class="label-with-tip">
                                         <span data-i18n="config.llm.websearch.max.concurrency">联网搜索并发上限</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.websearch.max.concurrency.hint">同时执行的 LLM 联网搜索任务数（1—3）。默认 1 串行最稳妥，可避免触发 LLM 或 Tavily 限流。</span>
                                         </span>
                                     </label>
@@ -802,7 +802,7 @@
                                 <div class="form-row">
                                     <label for="cfgWebSearchProvider" class="label-with-tip">
                                         <span data-i18n="config.websearch.provider">搜索实现</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.websearch.provider.hint">native 依赖模型厂商自带的搜索工具，多数第三方 OpenAI 兼容端点并不支持，且无法确认模型是否真的检索过。tavily 由外部检索器取回真实网页再让普通 chat 端点归纳，来源 URL 真实可核。</span>
                                         </span>
                                     </label>
@@ -822,7 +822,7 @@
                                 <div class="form-row">
                                     <label for="cfgTavilySearchDepth" class="label-with-tip">
                                         <span data-i18n="config.tavily.search.depth">检索深度</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.tavily.search.depth.hint">basic 更便宜但摘要短；advanced 挖得更深，适合小众 / 非英语发行。</span>
                                         </span>
                                     </label>
@@ -842,7 +842,7 @@
                                 <div class="form-row">
                                     <label for="cfgTavilyIncludeDomains" class="label-with-tip">
                                         <span data-i18n="config.tavily.include.domains">限定检索域名</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.tavily.include.domains.hint">逗号分隔。留空表示全网检索，低可信来源会明显变多，而低可信来源单独无法构成正式候选。</span>
                                         </span>
                                     </label>
@@ -856,7 +856,7 @@
                                     <input id="cfgLlmAlbumJudgeEnabled" type="checkbox">
                                     <label for="cfgLlmAlbumJudgeEnabled" class="label-with-tip">
                                         <span data-i18n="config.llm.album.judge.enabled">启用 LLM 专辑判定</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.album.judge.enabled.hint">在待确认页面启用「LLM 判定」按钮。封闭式选择题：只能从已有候选中选一个或回答「都不是」，不允许模型自由编造专辑名。</span>
                                         </span>
                                     </label>
@@ -865,7 +865,7 @@
                                     <input id="cfgLlmAlbumAutoApply" type="checkbox">
                                     <label for="cfgLlmAlbumAutoApply" class="label-with-tip">
                                         <span data-i18n="config.llm.album.auto.apply">高置信度时自动应用判定结果</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.llm.album.auto.apply.hint">关闭时判定结果仅作为建议，仍需人工确认。开启后达到下方阈值的判定会直接写入并归档，请谨慎。</span>
                                         </span>
                                     </label>
@@ -882,7 +882,7 @@
                                     <input id="cfgPartialRequireReadableTags" type="checkbox">
                                     <label for="cfgPartialRequireReadableTags" class="label-with-tip">
                                         <span data-i18n="config.partial.require.readable.tags">要求标签可读</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.partial.require.readable.tags.hint">开启后，只有标签能正常读取的文件才能进入部分识别流程，避免拿乱码标签去匹配。</span>
                                         </span>
                                     </label>
@@ -890,7 +890,7 @@
                                 <div class="form-row">
                                     <label for="cfgPartialMinTagCoverage" class="label-with-tip">
                                         <span data-i18n="config.partial.min.tag.coverage">标签最低覆盖率（0—1）</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.partial.min.tag.coverage.hint">文件夹内 album / tracknumber 标签的最低完整度。低于该比例不进入部分识别。</span>
                                         </span>
                                     </label>
@@ -907,7 +907,7 @@
                                 <div class="form-row">
                                     <label for="cfgReviewStagingDirectory" class="label-with-tip">
                                         <span data-i18n="config.review.staging.directory">暂存目录</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.review.staging.directory.hint">发生格式规范化转码时，转码后的文件存放在这里等待确认。</span>
                                         </span>
                                     </label>
@@ -920,7 +920,7 @@
                                 <div class="form-row">
                                     <label for="cfgRecoveryWorkDirectory" class="label-with-tip">
                                         <span data-i18n="config.recovery.work.directory">原子归档工作目录</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.recovery.work.directory.hint">恢复任务先把整张专辑写入该目录，全部成功后才整体提交到输出目录。留空时使用 {输出目录}/.recovery-work。建议与输出目录位于同一磁盘，否则提交需跨盘复制。</span>
                                         </span>
                                     </label>
@@ -929,7 +929,7 @@
                                 <div class="form-row">
                                     <label for="cfgRecoveryTrashDirectory" class="label-with-tip">
                                         <span data-i18n="config.recovery.trash.directory">回收站目录</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.recovery.trash.directory.hint">恢复成功后，隔离目录里的副本会移到这里而不是直接删除，便于误判时回退。</span>
                                         </span>
                                     </label>
@@ -938,7 +938,7 @@
                                 <div class="form-row">
                                     <label for="cfgRecoveryTrashRetentionDays" class="label-with-tip">
                                         <span data-i18n="config.recovery.trash.retention">回收站保留天数</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.recovery.trash.retention.hint">0 = 成功后立即删除副本（无法回退，不建议）；-1 = 永久保留；1…365 = 保留对应天数。清理在每次启动时执行。</span>
                                         </span>
                                     </label>
@@ -1036,7 +1036,7 @@
                                 <div class="form-row">
                                     <label for="cfgReleaseCountryPriority" class="label-with-tip">
                                         <span data-i18n="config.release.country.priority">发行地区优先级</span>
-                                        <span class="info-tip" aria-label="说明">!
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                             <span class="tip-text" data-i18n="config.release.country.priority.hint">按逗号分隔国家或地区代码，例如 JP,US,GB。越靠前优先级越高。</span>
                                         </span>
                                     </label>
@@ -1077,7 +1077,7 @@
                                         <input id="cfgAudioNormalizeEnabled" type="checkbox">
                                         <label for="cfgAudioNormalizeEnabled" class="label-with-tip">
                                             <span data-i18n="config.audio.normalize.enabled">启用高规格音频降级</span>
-                                            <span class="info-tip" aria-label="说明">!
+                                            <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                                 <span class="tip-text" data-i18n="config.audio.normalize.hint">将 &gt;24bit 或 &gt;48kHz 的音频降级为 24bit/48kHz 再处理</span>
                                             </span>
                                         </label>
@@ -1085,7 +1085,7 @@
                                     <div class="form-row">
                                         <label for="cfgAudioNormalizeFfmpegPath" class="label-with-tip">
                                             <span data-i18n="config.audio.normalize.ffmpeg">FFmpeg 路径</span>
-                                            <span class="info-tip" aria-label="说明">!
+                                            <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
                                                 <span class="tip-text" data-i18n="config.audio.normalize.ffmpeg.readonly.hint">出于安全考虑此项只读：该路径会被直接执行，只能在 config.properties 中修改，改后需重启</span>
                                             </span>
                                         </label>
@@ -1155,7 +1155,7 @@
                         <div style="display: flex; gap: 12px; align-items: center;">
                             <span class="config-status" id="configStatus"></span>
                             <button class="btn ghost" onclick="closeSettings()" data-i18n="web.cancel">取消</button>
-                            <button class="btn primary" onclick="saveConfig()" data-i18n="config.save">保存配置</button>
+                            <button class="btn primary" id="saveConfigBtn" onclick="saveConfig()" data-i18n="config.save">保存配置</button>
                         </div>
                     </div>
                 </div>
@@ -1174,6 +1174,8 @@
         </main>
     </div>
 
+    <div id="toast" class="toast" role="status"></div>
+
     <script>
         // 国际化消息对象
         let i18nMessages = {};
@@ -1191,6 +1193,32 @@
                 const v = args[Number(i)];
                 return v === undefined || v === null ? '' : String(v);
             });
+        }
+
+        let toastTimer = null;
+        function showToast(msg, isError = false) {
+            const el = document.getElementById('toast');
+            if (!el) return;
+            el.textContent = msg;
+            el.style.background = isError ? 'var(--danger)' : '';
+            el.style.display = 'block';
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3800);
+        }
+
+        // 高风险写操作与表单防连点锁
+        const inFlightActions = new Set();
+        async function withButtonLock(lockKey, btnId, fn) {
+            if (inFlightActions.has(lockKey)) return;
+            inFlightActions.add(lockKey);
+            const btn = btnId ? document.getElementById(btnId) : null;
+            if (btn) btn.disabled = true;
+            try {
+                return await fn();
+            } finally {
+                inFlightActions.delete(lockKey);
+                if (btn) btn.disabled = false;
+            }
         }
 
         function showLoginOverlay(show) {
@@ -1417,13 +1445,12 @@
             if (!authState.authenticated) return;
             const badge = document.getElementById('recoveryCount');
             try {
-                const response = await authFetch('/api/recovery/list');
-                if (!response.ok) throw new Error('recovery list unavailable');
+                const response = await authFetch('/api/recovery/summary');
+                if (!response.ok) throw new Error('recovery summary unavailable');
                 const data = await response.json();
-                const items = data.items || [];
                 recoveryStats = {
-                    partial: items.filter(i => i.sourceType === 'PARTIAL').length,
-                    failed: items.filter(i => i.sourceType === 'FAILED').length
+                    partial: Number(data.partial) || 0,
+                    failed: Number(data.failed) || 0
                 };
                 const total = recoveryStats.partial + recoveryStats.failed;
                 badge.textContent = total > 99 ? '99+' : String(total);
@@ -1446,7 +1473,15 @@
             updateAuthBar();
             if (authState.authenticated && window.SearchQueue) {
                 window.I18n = window.I18n || { t, tf };
-                SearchQueue.init({ getCsrf: () => authState.csrfToken });
+                SearchQueue.init({
+                    getCsrf: () => authState.csrfToken,
+                    onUnauthorized: () => {
+                        setAuthState({ authenticated: false });
+                        checkAuth();
+                    }
+                });
+            } else if (!authState.authenticated && window.SearchQueue && typeof SearchQueue.stop === 'function') {
+                SearchQueue.stop();
             }
         }
 
@@ -1536,28 +1571,32 @@
 
         // 切换监控状态
         async function toggleMonitoring() {
-            const action = monitoringPaused ? 'resume' : 'pause';
-            try {
-                const response = await authFetch('/api/control/' + action, { method: 'POST' });
-                if (!response.ok) throw new Error(t('web.operation.failed'));
-                const data = await response.json();
-                monitoringPaused = data.monitoringPaused;
-                updateControlUI();
-            } catch (err) {
-                alert(t('control.error') + ': ' + err.message);
-            }
+            return withButtonLock('toggleMonitoring', 'pauseResumeBtn', async () => {
+                const action = monitoringPaused ? 'resume' : 'pause';
+                try {
+                    const response = await authFetch('/api/control/' + action, { method: 'POST' });
+                    if (!response.ok) throw new Error(t('web.operation.failed'));
+                    const data = await response.json();
+                    monitoringPaused = data.monitoringPaused;
+                    updateControlUI();
+                } catch (err) {
+                    alert(t('control.error') + ': ' + err.message);
+                }
+            });
         }
 
         // 重启服务
         async function restartService() {
             if (!confirm(t('control.restart.confirm'))) return;
-            try {
-                const response = await authFetch('/api/control/restart', { method: 'POST' });
-                if (!response.ok) throw new Error(t('web.operation.failed'));
-                alert(t('control.restart.success'));
-            } catch (err) {
-                alert(t('control.error') + ': ' + err.message);
-            }
+            return withButtonLock('restartService', 'restartBtn', async () => {
+                try {
+                    const response = await authFetch('/api/control/restart', { method: 'POST' });
+                    if (!response.ok) throw new Error(t('web.operation.failed'));
+                    alert(t('control.restart.success'));
+                } catch (err) {
+                    alert(t('control.error') + ': ' + err.message);
+                }
+            });
         }
 
         // 加载国际化资源
@@ -1603,6 +1642,10 @@
                 el.setAttribute('title', label);
                 el.setAttribute('aria-label', label);
             });
+            document.querySelectorAll('[data-i18n-aria]').forEach(el => {
+                const key = el.getAttribute('data-i18n-aria');
+                el.setAttribute('aria-label', t(key, el.getAttribute('aria-label') || ''));
+            });
             // 供应商列表等动态渲染块需要在语言就绪后重画
             if (typeof renderLlmProviders === 'function') renderLlmProviders();
 
@@ -1627,6 +1670,9 @@
             }
             const response = await fetch(url, opts);
             if (response.status === 401) {
+                if (window.SearchQueue && typeof SearchQueue.stop === 'function') {
+                    SearchQueue.stop();
+                }
                 document.getElementById('content').style.display = 'none';
                 await checkAuth();
                 throw new Error(t('web.login.required'));
@@ -1671,84 +1717,88 @@
         }
 
         async function submitLogin() {
-            const username = document.getElementById('loginUsername').value.trim();
-            const password = document.getElementById('loginPassword').value;
-            const errorEl = document.getElementById('loginError');
-            errorEl.style.display = 'none';
+            return withButtonLock('submitLogin', 'loginSubmitBtn', async () => {
+                const username = document.getElementById('loginUsername').value.trim();
+                const password = document.getElementById('loginPassword').value;
+                const errorEl = document.getElementById('loginError');
+                errorEl.style.display = 'none';
 
-            try {
-                const response = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password })
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    let errorMessage = t('web.login.failed');
-                    if (data.error === 'admin.not.setup') {
-                        setAuthOverlayMode('setup');
-                        errorMessage = t('web.setup.required');
+                try {
+                    const response = await fetch('/api/auth/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        let errorMessage = t('web.login.failed');
+                        if (data.error === 'admin.not.setup') {
+                            setAuthOverlayMode('setup');
+                            errorMessage = t('web.setup.required');
+                        }
+                        errorEl.textContent = errorMessage;
+                        errorEl.style.display = 'block';
+                        return;
                     }
-                    errorEl.textContent = errorMessage;
+                    setAuthState(data);
+                    showLoginOverlay(false);
+                    document.getElementById('loginPassword').value = '';
+                    loadData();
+                    loadLogs();
+                    if (location.hash === '#settings') openSettings(); else loadConfig();
+                } catch (err) {
+                    errorEl.textContent = t('web.login.failed');
                     errorEl.style.display = 'block';
-                    return;
                 }
-                setAuthState(data);
-                showLoginOverlay(false);
-                document.getElementById('loginPassword').value = '';
-                loadData();
-                loadLogs();
-                if (location.hash === '#settings') openSettings(); else loadConfig();
-            } catch (err) {
-                errorEl.textContent = t('web.login.failed');
-                errorEl.style.display = 'block';
-            }
+            });
         }
 
         async function submitSetup() {
-            const username = document.getElementById('setupUsername').value.trim();
-            const password = document.getElementById('setupPassword').value;
-            const confirmPassword = document.getElementById('setupPasswordConfirm').value;
-            const errorEl = document.getElementById('setupError');
-            errorEl.style.display = 'none';
+            return withButtonLock('submitSetup', 'setupSubmitBtn', async () => {
+                const username = document.getElementById('setupUsername').value.trim();
+                const password = document.getElementById('setupPassword').value;
+                const confirmPassword = document.getElementById('setupPasswordConfirm').value;
+                const errorEl = document.getElementById('setupError');
+                errorEl.style.display = 'none';
 
-            if (password !== confirmPassword) {
-                errorEl.textContent = t('web.setup.password.mismatch');
-                errorEl.style.display = 'block';
-                return;
-            }
-
-            try {
-                const response = await fetch('/api/auth/setup', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username, password })
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    const errorMessage = data.error === 'admin.already.setup'
-                        ? t('web.setup.already')
-                        : data.error === 'password.too.short'
-                            ? t('web.setup.password.short')
-                            : t('web.setup.failed');
-                    errorEl.textContent = errorMessage;
+                if (password !== confirmPassword) {
+                    errorEl.textContent = t('web.setup.password.mismatch');
                     errorEl.style.display = 'block';
-                    if (data.error === 'admin.already.setup') {
-                        setAuthOverlayMode('login');
-                    }
                     return;
                 }
-                setAuthState(data);
-                showLoginOverlay(false);
-                document.getElementById('setupPassword').value = '';
-                document.getElementById('setupPasswordConfirm').value = '';
-                loadData();
-                loadLogs();
-                if (location.hash === '#settings') openSettings(); else loadConfig();
-            } catch (err) {
-                errorEl.textContent = t('web.setup.failed');
-                errorEl.style.display = 'block';
-            }
+
+                try {
+                    const response = await fetch('/api/auth/setup', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        const errorMessage = data.error === 'admin.already.setup'
+                            ? t('web.setup.already')
+                            : data.error === 'password.too.short'
+                                ? t('web.setup.password.short')
+                                : t('web.setup.failed');
+                        errorEl.textContent = errorMessage;
+                        errorEl.style.display = 'block';
+                        if (data.error === 'admin.already.setup') {
+                            setAuthOverlayMode('login');
+                        }
+                        return;
+                    }
+                    setAuthState(data);
+                    showLoginOverlay(false);
+                    document.getElementById('setupPassword').value = '';
+                    document.getElementById('setupPasswordConfirm').value = '';
+                    loadData();
+                    loadLogs();
+                    if (location.hash === '#settings') openSettings(); else loadConfig();
+                } catch (err) {
+                    errorEl.textContent = t('web.setup.failed');
+                    errorEl.style.display = 'block';
+                }
+            });
         }
 
         function openChangePassword() {
@@ -1767,46 +1817,48 @@
         }
 
         async function submitChangePassword() {
-            const currentPassword = document.getElementById('changeCurrentPassword').value;
-            const newPassword = document.getElementById('changeNewPassword').value;
-            const confirmPassword = document.getElementById('changeConfirmPassword').value;
-            const errorEl = document.getElementById('changeError');
-            errorEl.style.display = 'none';
+            return withButtonLock('submitChangePassword', 'changePasswordSubmitBtn', async () => {
+                const currentPassword = document.getElementById('changeCurrentPassword').value;
+                const newPassword = document.getElementById('changeNewPassword').value;
+                const confirmPassword = document.getElementById('changeConfirmPassword').value;
+                const errorEl = document.getElementById('changeError');
+                errorEl.style.display = 'none';
 
-            if (newPassword !== confirmPassword) {
-                errorEl.textContent = t('web.change.password.mismatch');
-                errorEl.style.display = 'block';
-                return;
-            }
-
-            try {
-                const response = await authFetch('/api/auth/password', {
-                    method: 'POST',
-                    body: JSON.stringify({ currentPassword, newPassword })
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    const errorMessage = data.error === 'password.too.short'
-                        ? t('web.change.password.short')
-                        : data.error === 'invalid.credentials'
-                            ? t('web.change.password.invalid')
-                            : t('web.change.password.failed');
-                    errorEl.textContent = errorMessage;
+                if (newPassword !== confirmPassword) {
+                    errorEl.textContent = t('web.change.password.mismatch');
                     errorEl.style.display = 'block';
                     return;
                 }
-                if (data.csrfToken) {
-                    authState.csrfToken = data.csrfToken;
+
+                try {
+                    const response = await authFetch('/api/auth/password', {
+                        method: 'POST',
+                        body: JSON.stringify({ currentPassword, newPassword })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        const errorMessage = data.error === 'password.too.short'
+                            ? t('web.change.password.short')
+                            : data.error === 'invalid.credentials'
+                                ? t('web.change.password.invalid')
+                                : t('web.change.password.failed');
+                        errorEl.textContent = errorMessage;
+                        errorEl.style.display = 'block';
+                        return;
+                    }
+                    if (data.csrfToken) {
+                        authState.csrfToken = data.csrfToken;
+                    }
+                    document.getElementById('changeCurrentPassword').value = '';
+                    document.getElementById('changeNewPassword').value = '';
+                    document.getElementById('changeConfirmPassword').value = '';
+                    closeChangePassword();
+                    showToast(t('web.change.password.success'));
+                } catch (err) {
+                    errorEl.textContent = t('web.change.password.failed');
+                    errorEl.style.display = 'block';
                 }
-                document.getElementById('changeCurrentPassword').value = '';
-                document.getElementById('changeNewPassword').value = '';
-                document.getElementById('changeConfirmPassword').value = '';
-                closeChangePassword();
-                updateConfigStatus(t('web.change.password.success'), false);
-            } catch (err) {
-                errorEl.textContent = t('web.change.password.failed');
-                errorEl.style.display = 'block';
-            }
+            });
         }
 
         async function logout() {
@@ -1854,7 +1906,8 @@
         // 更新最后刷新时间
         function updateLastTime() {
             const now = new Date();
-            const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            const locale = currentLanguage === 'zh_CN' ? 'zh-CN' : 'en-US';
+            const timeStr = now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             const el = document.getElementById('lastUpdate');
             // 第一次拿到数据前不显示，避免顶栏挂一个孤零零的 "--"
             el.textContent = t('web.updated.at') + ' ' + timeStr;
@@ -2280,23 +2333,25 @@
         }
 
         async function saveLlmProviders() {
-            const status = document.getElementById('llmProvidersStatus');
-            status.textContent = t('web.saving');
-            status.style.color = '#666';
-            try {
-                const response = await authFetch('/api/llm/providers', {
-                    method: 'PUT',
-                    body: JSON.stringify({ providers: llmProviders })
-                });
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || t('web.save.failed'));
-                status.textContent = tf('llm.providers.saved', data.endpointCount);
-                status.style.color = '#10b981';
-                await loadLlmProviders();
-            } catch (e) {
-                status.textContent = e.message;
-                status.style.color = '#ef4444';
-            }
+            return withButtonLock('saveLlmProviders', 'saveLlmProvidersBtn', async () => {
+                const status = document.getElementById('llmProvidersStatus');
+                status.textContent = t('web.saving');
+                status.style.color = '#666';
+                try {
+                    const response = await authFetch('/api/llm/providers', {
+                        method: 'PUT',
+                        body: JSON.stringify({ providers: llmProviders })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error || t('web.save.failed'));
+                    status.textContent = tf('llm.providers.saved', data.endpointCount);
+                    status.style.color = '#10b981';
+                    await loadLlmProviders();
+                } catch (e) {
+                    status.textContent = e.message;
+                    status.style.color = '#ef4444';
+                }
+            });
         }
 
         async function loadConfig() {
@@ -2391,111 +2446,113 @@
         }
 
         async function saveConfig() {
-            const payload = {
-                monitorDirectory: getValue('cfgMonitorDirectory'),
-                outputDirectory: getValue('cfgOutputDirectory'),
-                scanIntervalSeconds: getNumberValue('cfgScanInterval'),
-                supportedFormats: getValue('cfgSupportedFormats'),
-                autoRename: document.getElementById('cfgAutoRename').checked,
-                createBackup: document.getElementById('cfgCreateBackup').checked,
-                maxRetries: getNumberValue('cfgMaxRetries'),
-                failedDirectory: getValue('cfgFailedDirectory'),
-                partialDirectory: getValue('cfgPartialDirectory'),
-                enableDetailedLogging: document.getElementById('cfgEnableDetailedLogging').checked,
-                processedFileLogPath: getValue('cfgProcessedFileLogPath'),
-                coverArtCacheDirectory: getValue('cfgCoverCacheDirectory'),
-                musicBrainzApiUrl: getValue('cfgMusicBrainzApiUrl'),
-                coverArtApiUrl: getValue('cfgCoverArtApiUrl'),
-                preferAnimeCover: document.getElementById('cfgPreferAnimeCover').checked,
-                animeCoverKeywords: getValue('cfgAnimeCoverKeywords'),
-                animeCoverMaxCandidates: parseInt(getValue('cfgAnimeCoverMaxCandidates'), 10) || 5,
-                userAgent: getValue('cfgUserAgent'),
-                acoustIdApiKey: getValue('cfgAcoustIdApiKey'),
-                acoustIdApiUrl: getValue('cfgAcoustIdApiUrl'),
-                enableLLMMatching: document.getElementById('cfgEnableLLMMatching').checked,
-                llmAllowPrivateEndpoints: document.getElementById('cfgLlmAllowPrivateEndpoints').checked,
-                llmMaxTokens: getNumberValue('cfgLlmMaxTokens'),
-                llmTemperature: getNumberValue('cfgLlmTemperature'),
-                llmTimeoutSeconds: getNumberValue('cfgLlmTimeoutSeconds'),
-                llmMaxRetries: getNumberValue('cfgLlmMaxRetries'),
-                llmWebSearchMaxTokens: getNumberValue('cfgLlmWebSearchMaxTokens'),
-                llmWebSearchTimeoutSeconds: getNumberValue('cfgLlmWebSearchTimeoutSeconds'),
-                llmWebSearchMaxConcurrency: getNumberValue('cfgLlmWebSearchMaxConcurrency'),
-                webSearchProvider: getValue('cfgWebSearchProvider'),
-                // 未修改时回传的是掩码串，后端识别后保留原值
-                tavilyApiKey: getValue('cfgTavilyApiKey'),
-                tavilyApiUrl: getValue('cfgTavilyApiUrl'),
-                tavilySearchDepth: getValue('cfgTavilySearchDepth'),
-                tavilyMaxResults: getNumberValue('cfgTavilyMaxResults'),
-                tavilyTimeoutSeconds: getNumberValue('cfgTavilyTimeoutSeconds'),
-                tavilyIncludeDomains: getValue('cfgTavilyIncludeDomains'),
-                llmAlbumJudgeEnabled: document.getElementById('cfgLlmAlbumJudgeEnabled').checked,
-                llmAlbumAutoApply: document.getElementById('cfgLlmAlbumAutoApply').checked,
-                llmAlbumAutoApplyMinConfidence: getNumberValue('cfgLlmAlbumAutoApplyMinConfidence'),
-                partialRequireReadableTags: document.getElementById('cfgPartialRequireReadableTags').checked,
-                partialMinTagCoverage: getNumberValue('cfgPartialMinTagCoverage'),
-                reviewQueuePath: getValue('cfgReviewQueuePath'),
-                reviewStagingDirectory: getValue('cfgReviewStagingDirectory'),
-                recoveryWorkDirectory: getValue('cfgRecoveryWorkDirectory'),
-                recoveryTrashDirectory: getValue('cfgRecoveryTrashDirectory'),
-                recoveryTrashRetentionDays: getNumberValue('cfgRecoveryTrashRetentionDays'),
-                dbType: getValue('cfgDbType'),
-                dbSqlitePath: getValue('cfgDbSqlitePath'),
-                dbHost: getValue('cfgDbHost'),
-                dbPort: getNumberValue('cfgDbPort'),
-                dbDatabase: getValue('cfgDbDatabase'),
-                dbUsername: getValue('cfgDbUsername'),
-                dbPassword: getValue('cfgDbPassword'),
-                dbMaxPoolSize: getNumberValue('cfgDbMaxPoolSize'),
-                dbMinIdle: getNumberValue('cfgDbMinIdle'),
-                dbConnectionTimeout: getNumberValue('cfgDbConnectionTimeout'),
-                proxyEnabled: document.getElementById('cfgProxyEnabled').checked,
-                proxyHost: getValue('cfgProxyHost'),
-                proxyPort: getNumberValue('cfgProxyPort'),
-                proxyUsername: getValue('cfgProxyUsername'),
-                proxyPassword: getValue('cfgProxyPassword'),
-                language: getValue('cfgLanguage'),
-                exportLyricsToFile: document.getElementById('cfgExportLyricsToFile').checked,
-                collapseAlbumArtistToVariousArtists: document.getElementById('cfgCollapseAlbumArtistToVariousArtists').checked,
-                audioNormalizeEnabled: document.getElementById('cfgAudioNormalizeEnabled').checked,
-                audioNormalizeFfmpegPath: getValue('cfgAudioNormalizeFfmpegPath'),
-                cueSplitEnabled: document.getElementById('cfgCueSplitEnabled').checked,
-                cueSplitOutputDir: getValue('cfgCueSplitOutputDirectory'),
-                reviewEnabled: document.getElementById('cfgReviewEnabled').checked,
-                reviewMissingTracksAutoOnlineSearch: document.getElementById('cfgReviewMissingTracksAutoOnlineSearch').checked,
-                coverMissingRequireReview: document.getElementById('cfgCoverMissingRequireReview').checked,
-                coverMissingAutoOnlineSearch: document.getElementById('cfgCoverMissingAutoOnlineSearch').checked,
-                releaseCountryPriority: getValue('cfgReleaseCountryPriority')
-            };
+            return withButtonLock('saveConfig', 'saveConfigBtn', async () => {
+                const payload = {
+                    monitorDirectory: getValue('cfgMonitorDirectory'),
+                    outputDirectory: getValue('cfgOutputDirectory'),
+                    scanIntervalSeconds: getNumberValue('cfgScanInterval'),
+                    supportedFormats: getValue('cfgSupportedFormats'),
+                    autoRename: document.getElementById('cfgAutoRename').checked,
+                    createBackup: document.getElementById('cfgCreateBackup').checked,
+                    maxRetries: getNumberValue('cfgMaxRetries'),
+                    failedDirectory: getValue('cfgFailedDirectory'),
+                    partialDirectory: getValue('cfgPartialDirectory'),
+                    enableDetailedLogging: document.getElementById('cfgEnableDetailedLogging').checked,
+                    processedFileLogPath: getValue('cfgProcessedFileLogPath'),
+                    coverArtCacheDirectory: getValue('cfgCoverCacheDirectory'),
+                    musicBrainzApiUrl: getValue('cfgMusicBrainzApiUrl'),
+                    coverArtApiUrl: getValue('cfgCoverArtApiUrl'),
+                    preferAnimeCover: document.getElementById('cfgPreferAnimeCover').checked,
+                    animeCoverKeywords: getValue('cfgAnimeCoverKeywords'),
+                    animeCoverMaxCandidates: parseInt(getValue('cfgAnimeCoverMaxCandidates'), 10) || 5,
+                    userAgent: getValue('cfgUserAgent'),
+                    acoustIdApiKey: getValue('cfgAcoustIdApiKey'),
+                    acoustIdApiUrl: getValue('cfgAcoustIdApiUrl'),
+                    enableLLMMatching: document.getElementById('cfgEnableLLMMatching').checked,
+                    llmAllowPrivateEndpoints: document.getElementById('cfgLlmAllowPrivateEndpoints').checked,
+                    llmMaxTokens: getNumberValue('cfgLlmMaxTokens'),
+                    llmTemperature: getNumberValue('cfgLlmTemperature'),
+                    llmTimeoutSeconds: getNumberValue('cfgLlmTimeoutSeconds'),
+                    llmMaxRetries: getNumberValue('cfgLlmMaxRetries'),
+                    llmWebSearchMaxTokens: getNumberValue('cfgLlmWebSearchMaxTokens'),
+                    llmWebSearchTimeoutSeconds: getNumberValue('cfgLlmWebSearchTimeoutSeconds'),
+                    llmWebSearchMaxConcurrency: getNumberValue('cfgLlmWebSearchMaxConcurrency'),
+                    webSearchProvider: getValue('cfgWebSearchProvider'),
+                    // 未修改时回传的是掩码串，后端识别后保留原值
+                    tavilyApiKey: getValue('cfgTavilyApiKey'),
+                    tavilyApiUrl: getValue('cfgTavilyApiUrl'),
+                    tavilySearchDepth: getValue('cfgTavilySearchDepth'),
+                    tavilyMaxResults: getNumberValue('cfgTavilyMaxResults'),
+                    tavilyTimeoutSeconds: getNumberValue('cfgTavilyTimeoutSeconds'),
+                    tavilyIncludeDomains: getValue('cfgTavilyIncludeDomains'),
+                    llmAlbumJudgeEnabled: document.getElementById('cfgLlmAlbumJudgeEnabled').checked,
+                    llmAlbumAutoApply: document.getElementById('cfgLlmAlbumAutoApply').checked,
+                    llmAlbumAutoApplyMinConfidence: getNumberValue('cfgLlmAlbumAutoApplyMinConfidence'),
+                    partialRequireReadableTags: document.getElementById('cfgPartialRequireReadableTags').checked,
+                    partialMinTagCoverage: getNumberValue('cfgPartialMinTagCoverage'),
+                    reviewQueuePath: getValue('cfgReviewQueuePath'),
+                    reviewStagingDirectory: getValue('cfgReviewStagingDirectory'),
+                    recoveryWorkDirectory: getValue('cfgRecoveryWorkDirectory'),
+                    recoveryTrashDirectory: getValue('cfgRecoveryTrashDirectory'),
+                    recoveryTrashRetentionDays: getNumberValue('cfgRecoveryTrashRetentionDays'),
+                    dbType: getValue('cfgDbType'),
+                    dbSqlitePath: getValue('cfgDbSqlitePath'),
+                    dbHost: getValue('cfgDbHost'),
+                    dbPort: getNumberValue('cfgDbPort'),
+                    dbDatabase: getValue('cfgDbDatabase'),
+                    dbUsername: getValue('cfgDbUsername'),
+                    dbPassword: getValue('cfgDbPassword'),
+                    dbMaxPoolSize: getNumberValue('cfgDbMaxPoolSize'),
+                    dbMinIdle: getNumberValue('cfgDbMinIdle'),
+                    dbConnectionTimeout: getNumberValue('cfgDbConnectionTimeout'),
+                    proxyEnabled: document.getElementById('cfgProxyEnabled').checked,
+                    proxyHost: getValue('cfgProxyHost'),
+                    proxyPort: getNumberValue('cfgProxyPort'),
+                    proxyUsername: getValue('cfgProxyUsername'),
+                    proxyPassword: getValue('cfgProxyPassword'),
+                    language: getValue('cfgLanguage'),
+                    exportLyricsToFile: document.getElementById('cfgExportLyricsToFile').checked,
+                    collapseAlbumArtistToVariousArtists: document.getElementById('cfgCollapseAlbumArtistToVariousArtists').checked,
+                    audioNormalizeEnabled: document.getElementById('cfgAudioNormalizeEnabled').checked,
+                    audioNormalizeFfmpegPath: getValue('cfgAudioNormalizeFfmpegPath'),
+                    cueSplitEnabled: document.getElementById('cfgCueSplitEnabled').checked,
+                    cueSplitOutputDir: getValue('cfgCueSplitOutputDirectory'),
+                    reviewEnabled: document.getElementById('cfgReviewEnabled').checked,
+                    reviewMissingTracksAutoOnlineSearch: document.getElementById('cfgReviewMissingTracksAutoOnlineSearch').checked,
+                    coverMissingRequireReview: document.getElementById('cfgCoverMissingRequireReview').checked,
+                    coverMissingAutoOnlineSearch: document.getElementById('cfgCoverMissingAutoOnlineSearch').checked,
+                    releaseCountryPriority: getValue('cfgReleaseCountryPriority')
+                };
 
-            try {
-                const response = await authFetch('/api/config', {
-                    method: 'PUT',
-                    body: JSON.stringify(payload)
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    if (data.error === 'path.must.be.absolute') {
-                        updateConfigStatus(t('config.error.absolute'), true);
-                    } else if (data.error === 'required.field') {
-                        updateConfigStatus(t('config.error.required'), true);
-                    } else if (data.error === 'number.invalid') {
-                        updateConfigStatus(t('config.error.number'), true);
-                    } else if (data.error === 'language.invalid') {
-                        updateConfigStatus(t('config.error.language'), true);
-                    } else if (data.error === 'db.type.invalid') {
-                        updateConfigStatus(t('config.error.db.type'), true);
-                    } else if (data.error === 'supported.formats.invalid') {
-                        updateConfigStatus(t('config.error.formats'), true);
-                    } else {
-                        updateConfigStatus(t('config.save.failed'), true);
+                try {
+                    const response = await authFetch('/api/config', {
+                        method: 'PUT',
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        if (data.error === 'path.must.be.absolute') {
+                            updateConfigStatus(t('config.error.absolute'), true);
+                        } else if (data.error === 'required.field') {
+                            updateConfigStatus(t('config.error.required'), true);
+                        } else if (data.error === 'number.invalid') {
+                            updateConfigStatus(t('config.error.number'), true);
+                        } else if (data.error === 'language.invalid') {
+                            updateConfigStatus(t('config.error.language'), true);
+                        } else if (data.error === 'db.type.invalid') {
+                            updateConfigStatus(t('config.error.db.type'), true);
+                        } else if (data.error === 'supported.formats.invalid') {
+                            updateConfigStatus(t('config.error.formats'), true);
+                        } else {
+                            updateConfigStatus(t('config.save.failed'), true);
+                        }
+                        return;
                     }
-                    return;
+                    updateConfigStatus(t('config.save.success.restart'), false);
+                } catch (err) {
+                    updateConfigStatus(t('config.save.failed'), true);
                 }
-                updateConfigStatus(t('config.save.success.restart'), false);
-            } catch (err) {
-                updateConfigStatus(t('config.save.failed'), true);
-            }
+            });
         }
 
         function updateConfigStatus(message, isError) {
@@ -2787,6 +2844,10 @@
             });
         }
 
+        // 记录清空日志时的最大递增序号，确保 5 秒轮询不会让已清空的历史日志“回弹”，同时新产生的日志正常显示
+        let logClearedSeq = 0;
+        let lastLogSeq = 0;
+
         // 加载日志（安全方式）
         async function loadLogs() {
             try {
@@ -2797,8 +2858,17 @@
                 if (!response.ok) throw new Error(t('web.fetch.logs.failed'));
 
                 const data = await response.json();
-                if (data.logs && logFilter !== 'ALL') {
-                    data.logs = data.logs.filter(log => log.level === logFilter);
+                const rawLogs = Array.isArray(data.logs) ? data.logs : [];
+                for (const item of rawLogs) {
+                    if (typeof item.seq === 'number' && item.seq > lastLogSeq) {
+                        lastLogSeq = item.seq;
+                    }
+                }
+                let logs = logClearedSeq > 0
+                    ? rawLogs.filter(item => typeof item.seq === 'number' && item.seq > logClearedSeq)
+                    : rawLogs;
+                if (logFilter !== 'ALL') {
+                    logs = logs.filter(log => log.level === logFilter);
                 }
                 const logContainer = document.getElementById('logContainer');
                 const autoScroll = document.getElementById('autoScroll').checked;
@@ -2806,7 +2876,7 @@
 
                 logContainer.innerHTML = '';
 
-                if (data.logs && data.logs.length > 0) {
+                if (logs.length > 0) {
                     const fragment = document.createDocumentFragment();
 
                     const levelColors = {
@@ -2816,7 +2886,7 @@
                         'INFO': '#60a5fa'
                     };
 
-                    data.logs.forEach(log => {
+                    logs.forEach(log => {
                         const logEntry = document.createElement('div');
                         logEntry.className = 'log-line';
 
@@ -2846,9 +2916,9 @@
                         logContainer.scrollTop = logContainer.scrollHeight;
                     }
                 } else {
-                    logContainer.appendChild(buildLogEmpty(t('web.no.logs')));
+                    logContainer.appendChild(buildLogEmpty(logClearedSeq > 0 ? t('web.log.cleared') : t('web.no.logs')));
                 }
-                logContainer.classList.toggle('is-empty', !(data.logs && data.logs.length > 0));
+                logContainer.classList.toggle('is-empty', logs.length === 0);
             } catch (err) {
                 console.error('加载日志失败:', err);
             }
@@ -2876,9 +2946,10 @@
             return empty;
         }
 
-        // 清空日志（仅前端清空显示）
+        // 清空日志（前端按递增 seq 隐藏当前及之前的历史日志，5 秒轮询不再回弹）
         function clearLogs() {
             if (confirm(t('web.confirm.clear'))) {
+                logClearedSeq = Math.max(logClearedSeq, lastLogSeq);
                 const logContainer = document.getElementById('logContainer');
                 logContainer.innerHTML = '';
                 logContainer.appendChild(buildLogEmpty(t('web.log.cleared')));
@@ -2946,19 +3017,25 @@
             updateRunningTime();
         });
 
-        // 每30秒自动刷新统计数据
-        setInterval(loadData, 30000);
+        // 后台标签页自动暂停轮询，切回前台时立即补刷一次
+        setInterval(() => { if (!document.hidden && authState.authenticated) loadData(); }, 30000);
+        setInterval(() => { if (!document.hidden && authState.authenticated) loadReviewStats(); }, 30000);
+        setInterval(() => { if (!document.hidden && authState.authenticated) loadCoversStats(); }, 30000);
+        setInterval(() => { if (!document.hidden && authState.authenticated) loadRecoveryStats(); }, 30000);
+        setInterval(() => { if (!document.hidden && authState.authenticated) loadLogs(); }, 5000);
 
-        // 待确认积压数：接口很轻，30 秒一次足够
-        setInterval(loadReviewStats, 30000);
-        setInterval(loadCoversStats, 30000);
-        setInterval(loadRecoveryStats, 30000);
-
-        // 每5秒自动刷新日志
-        setInterval(loadLogs, 5000);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && authState.authenticated) {
+                loadData();
+                loadReviewStats();
+                loadCoversStats();
+                loadRecoveryStats();
+                loadLogs();
+            }
+        });
 
         // 每秒更新运行时间
-        setInterval(updateRunningTime, 1000);
+        setInterval(() => { if (!document.hidden) updateRunningTime(); }, 1000);
     </script>
 </body>
 </html>

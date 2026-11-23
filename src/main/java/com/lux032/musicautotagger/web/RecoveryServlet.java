@@ -29,6 +29,8 @@ public class RecoveryServlet extends HttpServlet {
             respond(resp, 200, Map.of("items", recoveryService.listItems(), "jobs", recoveryService.listJobs(),
                 "trashCount", recoveryService.countTrash(),
                 "onlineSearchAvailable", recoveryService.isOnlineSearchAvailable()));
+        } else if ("summary".equals(action)) {
+            respond(resp, 200, recoveryService.countItemsSummary());
         } else if ("jobs".equals(action)) {
             respond(resp, 200, Map.of("jobs", recoveryService.listJobs()));
         } else if ("trash".equals(action)) {

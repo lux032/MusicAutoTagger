@@ -7,6 +7,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 日志收集器 - 用于收集应用程序运行时的日志信息
@@ -16,6 +17,7 @@ public class LogCollector {
     
     private static final int MAX_LOG_SIZE = 200; // 最多保留200条日志
     private static final ConcurrentLinkedQueue<LogEntry> logs = new ConcurrentLinkedQueue<>();
+    private static final AtomicLong SEQ = new AtomicLong(1);
     private static final DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     
     /**
@@ -23,6 +25,7 @@ public class LogCollector {
      */
     public static void addLog(String level, String message) {
         LogEntry entry = new LogEntry(
+            SEQ.getAndIncrement(),
             LocalDateTime.now().format(formatter),
             level,
             message
@@ -68,11 +71,17 @@ public class LogCollector {
      */
     @Data
     public static class LogEntry {
+        private final long seq;
         private final String timestamp;
         private final String level;
         private final String message;
         
         public LogEntry(String timestamp, String level, String message) {
+            this(SEQ.getAndIncrement(), timestamp, level, message);
+        }
+
+        public LogEntry(long seq, String timestamp, String level, String message) {
+            this.seq = seq;
             this.timestamp = timestamp;
             this.level = level;
             this.message = message;

@@ -19,6 +19,9 @@ import java.util.Properties;
 @Data
 public class MusicConfig {
     
+    // Web 监控面板配置
+    private int webPort;
+
     // 监控目录配置
     private String monitorDirectory;
     private String outputDirectory; // 输出目录
@@ -207,6 +210,7 @@ public class MusicConfig {
     
     private MusicConfig() {
         // 默认配置
+        this.webPort = resolveDefaultWebPort();
         this.monitorDirectory = System.getProperty("user.home") + "/Downloads";
         this.outputDirectory = System.getProperty("user.home") + "/Music/Tagged";
         this.scanIntervalSeconds = 30;
@@ -357,6 +361,10 @@ public class MusicConfig {
             props.load(reader);
             
             // 加载配置项
+            if (props.containsKey("web.port")) {
+                this.webPort = parseIntInRange(
+                    props.getProperty("web.port"), this.webPort, 1, 65535, "web.port");
+            }
             if (props.containsKey("monitor.directory")) {
                 this.monitorDirectory = props.getProperty("monitor.directory");
             }
@@ -872,8 +880,17 @@ public class MusicConfig {
         return defaultValue;
     }
 
+    private static int resolveDefaultWebPort() {
+        String envPort = System.getenv("WEB_PORT");
+        if (envPort != null && !envPort.isBlank()) {
+            return parseIntInRange(envPort, 8080, 1, 65535, "WEB_PORT");
+        }
+        return 8080;
+    }
+
     public void saveToFile(Path configPath) throws IOException {
         Properties props = new Properties();
+        props.setProperty("web.port", String.valueOf(webPort));
         props.setProperty("monitor.directory", monitorDirectory);
         props.setProperty("monitor.outputDirectory", outputDirectory);
         props.setProperty("monitor.scanInterval", String.valueOf(scanIntervalSeconds));

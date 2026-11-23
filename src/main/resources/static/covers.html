@@ -284,7 +284,7 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
                     <input id="searchInput" type="text" autocomplete="off" spellcheck="false"
                            placeholder="搜索专辑名、艺术家、文件夹或曲名" data-i18n-placeholder="covers.search.placeholder">
-                    <button type="button" class="search-clear" id="searchClear" hidden aria-label="clear">
+                    <button type="button" class="search-clear" id="searchClear" hidden data-i18n-aria="aria.clear" aria-label="Clear">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
                     </button>
                 </div>
@@ -357,6 +357,8 @@
     const state = {
         csrfToken: null,
         items: [],
+        listSeq: 0,
+        itemSeq: 0,
         currentId: null,
         item: null,
         selectedSha: null,
@@ -407,17 +409,19 @@
         'item.already.resolved': 'review.error.already.resolved',
         'item.not.rejected': 'review.error.item.not.rejected',
         'folder.already.pending': 'review.error.folder.already.pending',
-        'unreject.log.remove.failed': 'review.error.unreject.log.failed',
-        'no.audio.files': 'review.error.no.audio.files',
+        'unreject.log.failed': 'review.error.unreject.log.failed',
+        'recovery.no.audio.files': 'review.error.no.audio.files',
         'files.missing': 'review.error.files.missing',
         'candidate.not.found': 'review.error.candidate.not.found',
-        'release.required': 'review.error.release.required',
-        'release.expand.failed': 'review.error.expand.failed',
+        'release.id.required': 'review.error.release.required',
+        'candidates.expand.failed': 'review.error.expand.failed',
         'online.destination.exists': 'review.error.destination.exists',
         'recovery.unavailable': 'review.error.recovery.unavailable',
         'recovery.already.running': 'sq.toast.already',
-        'local.tags.stale': 'review.local.error.stale',
-        'local.tags.write.failed': 'review.local.error.write',
+        'local.archive.stale': 'review.local.error.stale',
+        'local.archive.metadata.required': 'review.local.error.required',
+        'local.archive.tracks.invalid': 'review.local.error.tracks',
+        'local.archive.write.failed': 'review.local.error.write',
         'cover.upload.empty': 'covers.err.upload.empty',
         'cover.upload.too.large': 'covers.err.upload.too.large',
         'cover.upload.invalid': 'covers.err.upload.invalid',
@@ -436,11 +440,16 @@
 
     function humanError(code) {
         if (!code) return t('review.action.failed', 'Error');
-        if (String(code).startsWith('online.coverage.insufficient:')) {
-            const counts = String(code).slice('online.coverage.insufficient:'.length).split('/');
-            return tf('review.error.online.coverage.insufficient', counts[0] || '0', counts[1] || '0');
+        const msg = String(code);
+        const coverage = /^online\.track\.coverage\.insufficient:(\d+)\/(\d+)$/.exec(msg);
+        if (coverage) {
+            return tf('review.error.online.coverage.insufficient', coverage[1], coverage[2]);
         }
-        return ERROR_KEYS[code] ? t(ERROR_KEYS[code], code) : code;
+        const mismatch = /^recovery\.workspace\.count\.mismatch:(\d+)\/(\d+)$/.exec(msg);
+        if (mismatch) {
+            return tf('recovery.workspace.count.mismatch', mismatch[1], mismatch[2]);
+        }
+        return ERROR_KEYS[msg] ? t(ERROR_KEYS[msg], msg) : msg;
     }
 
     function captureDraftFromDom() {
@@ -463,6 +472,8 @@
         }
         const resp = await fetch(path, { credentials: 'same-origin', ...opt });
         if (resp.status === 401) {
+            clearTimeout(state.scanPollTimer);
+            if (window.SearchQueue && typeof SearchQueue.stop === 'function') SearchQueue.stop();
             location.href = 'index.html';
             throw new Error('unauthorized');
         }
@@ -816,11 +827,13 @@
     }
 
     async function loadList({ keepSelection = true } = {}) {
+        const seq = ++state.listSeq;
         const status = $('statusFilter').value;
         const q = $('searchInput').value.trim();
         const params = new URLSearchParams({ status });
         if (q) params.set('q', q);
         const data = await api('/api/covers/list?' + params.toString());
+        if (seq !== state.listSeq) return;
         state.items = data.items || [];
         const rows = visibleItems();
         let nextId = null;
@@ -837,6 +850,7 @@
         if (nextId) {
             await selectItem(nextId, false);
         } else {
+            state.itemSeq++;
             state.currentId = null;
             state.item = null;
             state.selectedSha = null;
@@ -846,6 +860,7 @@
     }
 
     async function selectItem(id, openMobileDetail = true) {
+        const seq = ++state.itemSeq;
         const switchingItem = state.currentId !== id;
         if (!switchingItem) captureDraftFromDom();
         state.currentId = id;
@@ -854,6 +869,7 @@
         if (openMobileDetail) $('desk').dataset.view = 'detail';
         try {
             const data = await api('/api/covers/item?id=' + encodeURIComponent(id));
+            if (seq !== state.itemSeq || state.currentId !== id) return;
             state.item = data.item;
             if (switchingItem) {
                 state.draftItemId = state.item.id;
@@ -871,7 +887,7 @@
             }
             renderDetail();
         } catch (e) {
-            if (e.message === 'unauthorized') return;
+            if (e.message === 'unauthorized' || seq !== state.itemSeq || state.currentId !== id) return;
             state.alert = { tone: 'err', text: humanError(e.message) };
             renderDetail();
         }
@@ -899,10 +915,12 @@
     async function uploadFile(file) {
         if (!state.item) return;
         captureDraftFromDom();
+        const targetId = state.item.id;
+        const seq = state.itemSeq;
         const label = $('uploadLabel');
         if (label) label.textContent = t('covers.upload.uploading');
         try {
-            const data = await api('/api/covers/upload?id=' + encodeURIComponent(state.item.id), {
+            const data = await api('/api/covers/upload?id=' + encodeURIComponent(targetId), {
                 method: 'POST',
                 headers: {
                     'Content-Type': file.type || 'application/octet-stream',
@@ -910,21 +928,34 @@
                 },
                 body: file
             });
-            state.item = data.item;
-            state.selectedSha = data.candidate ? data.candidate.sha256 : state.selectedSha;
-            state.alert = { tone: 'ok', text: t('covers.upload.done') };
-            renderDetail();
+            if (state.currentId === targetId && seq === state.itemSeq) {
+                state.item = data.item;
+                state.selectedSha = data.candidate ? data.candidate.sha256 : state.selectedSha;
+                state.alert = { tone: 'ok', text: t('covers.upload.done') };
+                renderDetail();
+            } else {
+                toast(t('covers.upload.done'));
+            }
             loadList({ keepSelection: true });
         } catch (e) {
             if (e.message === 'unauthorized') return;
-            state.alert = { tone: 'err', text: humanError(e.message) };
-            renderDetail();
+            if (state.currentId === targetId && seq === state.itemSeq) {
+                state.alert = { tone: 'err', text: humanError(e.message) };
+                renderDetail();
+            } else {
+                toast(humanError(e.message));
+            }
+        } finally {
+            const input = $('uploadInput');
+            if (input) input.value = '';
         }
     }
 
     async function fetchByUrl() {
         if (!state.item) return;
         captureDraftFromDom();
+        const targetId = state.item.id;
+        const seq = state.itemSeq;
         const url = $('coverUrlInput') ? $('coverUrlInput').value.trim() : '';
         if (!url) return;
         const btn = $('fetchUrlBtn');
@@ -932,20 +963,28 @@
         try {
             const data = await api('/api/covers/fetch-url', {
                 method: 'POST',
-                body: JSON.stringify({ id: state.item.id, url })
+                body: JSON.stringify({ id: targetId, url })
             });
-            state.item = data.item;
-            state.draftUrl = '';
-            const uEl = $('coverUrlInput');
-            if (uEl) uEl.value = '';
-            state.selectedSha = data.candidate ? data.candidate.sha256 : state.selectedSha;
-            state.alert = { tone: 'ok', text: t('covers.url.done') };
-            renderDetail();
+            if (state.currentId === targetId && seq === state.itemSeq) {
+                state.item = data.item;
+                state.draftUrl = '';
+                const uEl = $('coverUrlInput');
+                if (uEl) uEl.value = '';
+                state.selectedSha = data.candidate ? data.candidate.sha256 : state.selectedSha;
+                state.alert = { tone: 'ok', text: t('covers.url.done') };
+                renderDetail();
+            } else {
+                toast(t('covers.url.done'));
+            }
             loadList({ keepSelection: true });
         } catch (e) {
             if (e.message === 'unauthorized') return;
-            state.alert = { tone: 'err', text: humanError(e.message) };
-            renderDetail();
+            if (state.currentId === targetId && seq === state.itemSeq) {
+                state.alert = { tone: 'err', text: humanError(e.message) };
+                renderDetail();
+            } else {
+                toast(humanError(e.message));
+            }
         } finally {
             if (btn) btn.disabled = false;
         }
@@ -1082,7 +1121,8 @@
         const text = $('scanText');
         const cancelBtn = $('scanCancelBtn');
         const startBtn = $('scanLibraryBtn');
-        if (!s || (!s.running && !s.message)) {
+        const hasMsg = !!(s && (s.messageKey || s.message));
+        if (!s || (!s.running && !hasMsg)) {
             bar.hidden = true;
             startBtn.disabled = false;
             return;
@@ -1095,7 +1135,8 @@
         } else {
             startBtn.disabled = false;
             cancelBtn.hidden = true;
-            text.textContent = s.message || '';
+            const args = Array.isArray(s.messageArgs) ? s.messageArgs : [];
+            text.textContent = s.messageKey ? tf(s.messageKey, ...args) : (s.message || '');
         }
     }
 

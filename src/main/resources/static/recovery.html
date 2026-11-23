@@ -242,7 +242,7 @@
                 <button class="tab" id="trashTab" onclick="setTab('TRASH')"><span data-i18n="recovery.tab.trash">回收站</span><span class="count" id="trashCount">0</span></button>
             </div>
             <input id="findInput" class="find-input" type="text" autocomplete="off" spellcheck="false"
-                   placeholder="按名称筛选" data-i18n-placeholder="recovery.search.placeholder" aria-label="按名称筛选">
+                   placeholder="按名称筛选" data-i18n-placeholder="recovery.search.placeholder" data-i18n-aria="recovery.search.placeholder" aria-label="Filter by name">
             <label class="select-all-wrap" id="selectAllWrap">
                 <input type="checkbox" id="selectAllCheck">
                 <span data-i18n="recovery.select.all">全选未在队列中的项目</span>
@@ -305,7 +305,7 @@
 
 <script>
     let csrfToken = null, currentTab = 'PARTIAL', items = [], trashItems = [], trashCountValue = 0, onlineSearchAvailable = false;
-    let renderedList = [], renderedTrash = [], lastActiveJobsCount = 0, lastWaitingCount = 0;
+    let renderedList = [], renderedTrash = [], lastActiveJobsCount = 0, lastWaitingCount = 0, jobsTimer = null;
     const selectedKeys = new Set();
     const T = (k, d) => I18n.t(k, d);
     const TF = (k, ...a) => I18n.tf(k, ...a);
@@ -440,7 +440,7 @@
             const other = matchesFind(items)[0];
             if (other) setTab(other.sourceType);
         }
-        setInterval(() => {
+        jobsTimer = setInterval(() => {
             if (!document.hidden) loadJobs();
         }, 4000);
     }
@@ -449,7 +449,13 @@
         opt.headers = opt.headers || {};
         if (csrfToken) opt.headers['X-CSRF-Token'] = csrfToken;
         if (opt.body) opt.headers['Content-Type'] = 'application/json';
-        const r = await fetch(path, opt);
+        const r = await fetch(path, { credentials: 'same-origin', ...opt });
+        if (r.status === 401) {
+            if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = null; }
+            if (window.SearchQueue && typeof SearchQueue.stop === 'function') SearchQueue.stop();
+            location.href = '/index.html';
+            throw new Error('unauthorized');
+        }
         let d = {};
         try { d = await r.json(); } catch (e) { /* ignore */ }
         if (!r.ok) throw new Error(errorKeys[d.error] ? T(errorKeys[d.error]) : (d.error || ('HTTP ' + r.status)));
@@ -506,7 +512,7 @@
                     <div class="name">${esc(i.relativePath || i.id)}</div>
                     <div class="meta">
                         ${i.sourceType === 'OUTPUT' ? esc(T('recovery.source.output')) : i.sourceType ? esc(i.sourceType) : esc(T('recovery.source.unknown'))} · ${esc(TF('recovery.audio.files', i.fileCount))} ·
-                        ${esc(TF('recovery.trashed.at', i.trashedAt && i.trashedAt < 8640000000000000 ? new Date(i.trashedAt).toLocaleString() : T('recovery.unknown')))}
+                        ${esc(TF('recovery.trashed.at', i.trashedAt && i.trashedAt < 8640000000000000 ? new Date(i.trashedAt).toLocaleString(I18n.language === 'zh_CN' ? 'zh-CN' : 'en-US') : T('recovery.unknown')))}
                     </div>
                     ${i.restorable ? '' : `<div class="meta warn">${esc(T('recovery.manifest.broken'))}</div>`}
                 </div>

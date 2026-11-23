@@ -234,7 +234,9 @@ public class ApplicationLifecycleManager {
      */
     public void startWebServer() {
         try {
-            webServer = new WebServer(8080);
+            int port = config != null && config.getWebPort() >= 1 && config.getWebPort() <= 65535
+                ? config.getWebPort() : 8080;
+            webServer = new WebServer(port);
             webServer.setProcessedRecordService(processedRecordService);
             webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this,
                 reviewQueueService, reviewResolutionService, recoveryService, coverBackfillService,

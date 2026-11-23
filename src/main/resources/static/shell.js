@@ -7,17 +7,35 @@
  *   关闭但有遗留条目时仍显示，否则那些条目就没地方处置了。
  */
 (function (global) {
+    let stopped = false;
+    let pollTimer = null;
+
     function toggleNav() {
         const side = document.getElementById('appSide');
         if (side) side.classList.toggle('open');
     }
 
+    function handleUnauthorized() {
+        if (stopped) return;
+        stopped = true;
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+        if (global.SearchQueue && typeof global.SearchQueue.stop === 'function') {
+            global.SearchQueue.stop();
+        }
+        location.href = 'index.html';
+    }
+
     async function refreshReviewCount() {
+        if (stopped) return;
         const link = document.getElementById('navReview');
         const badge = document.getElementById('reviewCount');
         if (!link || !badge) return;
         try {
             const resp = await fetch('/api/review/stats', { credentials: 'same-origin' });
+            if (resp.status === 401) { handleUnauthorized(); return; }
             if (!resp.ok) throw new Error('review stats unavailable');
             const data = await resp.json();
             const pending = Number(data.pending) || 0;
@@ -32,17 +50,19 @@
         }
     }
 
-    // 「重新识别」积压：部分识别 + 识别失败；有失败项时用红色
+    // 「重新识别」积压：部分识别 + 识别失败；有失败项时用红色（走轻量 summary 接口避免全量扫描）
     async function refreshRecoveryCount() {
+        if (stopped) return;
         const badge = document.getElementById('recoveryCount');
         if (!badge) return;
         try {
-            const resp = await fetch('/api/recovery/list', { credentials: 'same-origin' });
-            if (!resp.ok) throw new Error('recovery list unavailable');
+            const resp = await fetch('/api/recovery/summary', { credentials: 'same-origin' });
+            if (resp.status === 401) { handleUnauthorized(); return; }
+            if (!resp.ok) throw new Error('recovery summary unavailable');
             const data = await resp.json();
-            const items = data.items || [];
-            const failed = items.filter(i => i.sourceType === 'FAILED').length;
-            const total = items.filter(i => i.sourceType === 'PARTIAL').length + failed;
+            const failed = Number(data.failed) || 0;
+            const partial = Number(data.partial) || 0;
+            const total = Number(data.total != null ? data.total : (partial + failed)) || 0;
             badge.textContent = total > 99 ? '99+' : String(total);
             badge.classList.toggle('show', total > 0);
             badge.classList.toggle('is-bad', failed > 0);
@@ -53,10 +73,12 @@
 
     // 「缺少封面」积压计数
     async function refreshCoversCount() {
+        if (stopped) return;
         const badge = document.getElementById('coversCount');
         if (!badge) return;
         try {
             const resp = await fetch('/api/covers/stats', { credentials: 'same-origin' });
+            if (resp.status === 401) { handleUnauthorized(); return; }
             if (!resp.ok) throw new Error('covers stats unavailable');
             const data = await resp.json();
             const pending = Number(data.pending) || 0;
@@ -68,6 +90,7 @@
     }
 
     function refreshCounts() {
+        if (stopped || document.hidden) return;
         refreshReviewCount();
         refreshCoversCount();
         refreshRecoveryCount();
@@ -75,7 +98,12 @@
 
     document.addEventListener('DOMContentLoaded', () => {
         refreshCounts();
-        setInterval(refreshCounts, 30000);
+        pollTimer = setInterval(() => {
+            if (!document.hidden && !stopped) refreshCounts();
+        }, 30000);
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && !stopped) refreshCounts();
+        });
     });
 
     global.Shell = { toggleNav, refreshReviewCount, refreshCoversCount, refreshRecoveryCount, refreshCounts };

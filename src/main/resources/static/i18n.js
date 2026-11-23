@@ -47,6 +47,9 @@
         scope.querySelectorAll('[data-i18n-title]').forEach(el => {
             el.setAttribute('title', t(el.getAttribute('data-i18n-title'), el.getAttribute('title') || ''));
         });
+        scope.querySelectorAll('[data-i18n-aria]').forEach(el => {
+            el.setAttribute('aria-label', t(el.getAttribute('data-i18n-aria'), el.getAttribute('aria-label') || ''));
+        });
         if (scope === document) {
             document.documentElement.lang = language === 'zh_CN' ? 'zh-CN' : 'en';
             const titleKey = document.documentElement.getAttribute('data-i18n-title-key');

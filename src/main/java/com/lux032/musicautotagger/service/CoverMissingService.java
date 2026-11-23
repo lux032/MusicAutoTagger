@@ -5,6 +5,7 @@ import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.util.AudioFileOrdering;
 import com.lux032.musicautotagger.util.FileSystemUtils;
+import com.lux032.musicautotagger.util.I18nUtil;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
@@ -71,8 +72,16 @@ public class CoverMissingService implements AutoCloseable {
     private volatile int skippedAcknowledged = 0;
     private volatile String currentAlbum = null;
     private volatile String scanMessage = null;
+    private volatile String scanMessageKey = null;
+    private volatile Object[] scanMessageArgs = new Object[0];
     private volatile long scanStartedAt = 0;
     private volatile long scanFinishedAt = 0;
+
+    private void setScanMessage(String key, Object... args) {
+        this.scanMessageKey = key;
+        this.scanMessageArgs = args == null || args.length == 0 ? new Object[0] : args.clone();
+        this.scanMessage = I18nUtil.getMessage(key, this.scanMessageArgs);
+    }
 
     public CoverMissingService(MusicConfig config,
                                ReviewQueueService reviewQueue,
@@ -545,7 +554,7 @@ public class CoverMissingService implements AutoCloseable {
         foundMissing = 0;
         skippedAcknowledged = 0;
         currentAlbum = null;
-        scanMessage = "正在扫描输出音乐库...";
+        setScanMessage("covers.scan.status.starting");
         scanStartedAt = System.currentTimeMillis();
         scanFinishedAt = 0;
 
@@ -554,7 +563,8 @@ public class CoverMissingService implements AutoCloseable {
                 runLibraryScan();
             } catch (Exception e) {
                 log.error("扫描音乐库缺失封面异常终止", e);
-                scanMessage = "扫描异常: " + e.getMessage();
+                setScanMessage("covers.scan.status.error",
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             } finally {
                 currentAlbum = null;
                 scanFinishedAt = System.currentTimeMillis();
@@ -577,6 +587,8 @@ public class CoverMissingService implements AutoCloseable {
         m.put("skippedAcknowledged", skippedAcknowledged);
         m.put("currentAlbum", currentAlbum);
         m.put("message", scanMessage);
+        m.put("messageKey", scanMessageKey);
+        m.put("messageArgs", scanMessageArgs == null ? new Object[0] : scanMessageArgs);
         m.put("startedAt", scanStartedAt);
         m.put("finishedAt", scanFinishedAt);
         return m;
@@ -631,7 +643,7 @@ public class CoverMissingService implements AutoCloseable {
 
         for (Map.Entry<Path, List<File>> entry : filesByAlbumDir.entrySet()) {
             if (scanCancelled.get()) {
-                scanMessage = String.format("已取消：已扫描 %d 张专辑，发现 %d 张缺少封面", scannedAlbums, foundMissing);
+                setScanMessage("covers.scan.status.cancelled", scannedAlbums, foundMissing);
                 return;
             }
             Path albumDir = entry.getKey();
@@ -649,7 +661,7 @@ public class CoverMissingService implements AutoCloseable {
                 }
             }
             if (scanCancelled.get()) {
-                scanMessage = String.format("已取消：已扫描 %d 张专辑，发现 %d 张缺少封面", scannedAlbums, foundMissing);
+                setScanMessage("covers.scan.status.cancelled", scannedAlbums, foundMissing);
                 return;
             }
             if (!anyMissingCover) {
@@ -672,7 +684,7 @@ public class CoverMissingService implements AutoCloseable {
                 details.setCoverCandidates(new ArrayList<>(localCandidates));
             }
             if (scanCancelled.get()) {
-                scanMessage = String.format("已取消：已扫描 %d 张专辑，发现 %d 张缺少封面", scannedAlbums, foundMissing);
+                setScanMessage("covers.scan.status.cancelled", scannedAlbums, foundMissing);
                 return;
             }
 
@@ -686,7 +698,7 @@ public class CoverMissingService implements AutoCloseable {
         AudioFileOrdering.sort(looseRootFiles);
         for (File loose : looseRootFiles) {
             if (scanCancelled.get()) {
-                scanMessage = String.format("已取消：已扫描 %d 张专辑，发现 %d 张缺少封面", scannedAlbums, foundMissing);
+                setScanMessage("covers.scan.status.cancelled", scannedAlbums, foundMissing);
                 return;
             }
             currentAlbum = loose.getName();
@@ -705,7 +717,7 @@ public class CoverMissingService implements AutoCloseable {
             }
             ReviewItem.MissingCover details = buildLibraryLooseMissingDetails(loose);
             if (scanCancelled.get()) {
-                scanMessage = String.format("已取消：已扫描 %d 张专辑，发现 %d 张缺少封面", scannedAlbums, foundMissing);
+                setScanMessage("covers.scan.status.cancelled", scannedAlbums, foundMissing);
                 return;
             }
             ReviewItem queued = reviewQueue.enqueueLibraryMissingCover(filePathKey, List.of(loose), tagWriter, details);
@@ -714,9 +726,11 @@ public class CoverMissingService implements AutoCloseable {
             }
         }
 
-        scanMessage = String.format("扫描完成：共检查 %d 张专辑（%d 首），发现 %d 张缺少封面%s",
-            scannedAlbums, scannedFiles, foundMissing,
-            skippedAcknowledged > 0 ? "（跳过已确认无封面/已忽略 " + skippedAcknowledged + " 张）" : "");
+        if (skippedAcknowledged > 0) {
+            setScanMessage("covers.scan.status.done.skipped", scannedAlbums, scannedFiles, foundMissing, skippedAcknowledged);
+        } else {
+            setScanMessage("covers.scan.status.done", scannedAlbums, scannedFiles, foundMissing);
+        }
         log.info(scanMessage);
         LogCollector.addLog("INFO", scanMessage);
     }

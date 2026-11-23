@@ -32,7 +32,8 @@ if [ -n "$PUID" ] || [ -n "$PGID" ]; then
       || adduser --uid "$PUID" --ingroup "$GROUP_NAME" --disabled-password --gecos "" "$APP_USER"
   fi
 
-  for target in /app /music; do
+  # 仅调整应用自身数据目录属主，绝不对 /music 或输出媒体库执行全量 chown -R
+  for target in /app/data /app/logs /app/.cover_cache /app/partial_files /app/failed_files /app/config.properties; do
     if [ -e "$target" ]; then
       chown -R "$PUID:$PGID" "$target" 2>/dev/null || true
     fi
@@ -42,11 +43,18 @@ if [ -n "$PUID" ] || [ -n "$PGID" ]; then
     umask "$UMASK"
   fi
 
-  exec su -m -s /bin/sh -c "exec $JAVA_BIN $JAVA_OPTS -jar /app/app.jar" "$APP_USER"
+  if command -v gosu >/dev/null 2>&1; then
+    # shellcheck disable=SC2086
+    exec gosu "$PUID:$PGID" "$JAVA_BIN" $JAVA_OPTS -jar /app/app.jar
+  else
+    # shellcheck disable=SC2086
+    exec setpriv --reuid="$PUID" --regid="$PGID" --init-groups -- "$JAVA_BIN" $JAVA_OPTS -jar /app/app.jar
+  fi
 fi
 
 if [ -n "$UMASK" ]; then
   umask "$UMASK"
 fi
 
-exec $JAVA_BIN $JAVA_OPTS -jar /app/app.jar
+# shellcheck disable=SC2086
+exec "$JAVA_BIN" $JAVA_OPTS -jar /app/app.jar

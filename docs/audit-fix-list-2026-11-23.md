@@ -11,7 +11,7 @@
 - [x] **前期基线 + P0（23 / 23）**：已在提交 `654e024` 全部修复并通过 `mvn test -B`（352/352）
 - [x] **任务 1（P1 核心管道：封面/歌词 + 识别/写盘）**：`C-1` ~ `C-6`、`A-1` ~ `A-5`（11 大项，2026-11-23 全部完成并通过 `mvn test -B` 363/363，含新增专项回归测试 `P1Task1CorePipelineRegressionTest`）
 - [x] **任务 2（P1 数据库、持久化、LLM 与并发配置）**：`D-1` ~ `D-6`（6 大项，2026-11-23 全部完成并通过 `mvn test -B` 370/370，含新增专项回归测试 `P1Task2DataLlmConcurrencyRegressionTest`）
-- [ ] **任务 3（P1 前端交互、i18n 与运维部署）**：`U-1` ~ `U-3`、`O-1`（4 大项）
+- [x] **任务 3（P1 前端交互、i18n 与运维部署）**：`U-1` ~ `U-3`、`O-1`（4 大项，2026-11-23 全部完成并通过 `mvn test -B` 379/379，含新增专项回归测试 `P1Task3FrontendI18nOpsRegressionTest`）
 - [ ] **任务 4（P2 中长期架构重构）**：God Classes 拆解、基础设施收敛、前端公共模块抽取（3 大方向）
 
 ---
@@ -103,14 +103,14 @@
 
 ## 任务 3：P1 前端交互、i18n 与运维部署（`U-1` ~ `U-3`、`O-1`）
 
-- [ ] **U-1：高频整页重绘与切项竞态误操作**
-  - `review.html` 改为局部更新搜索进度条；`covers.html` 增加单调递增 `reqSeq` 与 `state.currentId === id` 校验并重置 `uploadInput.value`
-- [ ] **U-2：错误码失配与 i18n 缺陷**
-  - 对齐 `covers.html` 6 个后端错误码；清理中英文重复 `config.scan.interval`；修复 `I18nUtil` 线程发布与含换行符占位符匹配；清理英文模式硬编码中文
-- [ ] **U-3：会话过期失联、轮询泄漏与高频扫盘**
-  - 统一处理 401 跳转与停止轮询；`SearchQueue` 修复首次加载误全量刷新；页面隐藏时暂停轮询并新增轻量角标统计接口替代 `/api/recovery/list` 扫盘；修复 `index.html` 改密提示位置、清空日志回弹与按钮防连点
-- [ ] **O-1：部署与打包缺陷**
-  - `docker-compose.yml` 补全 `8080:8080` 端口映射；`entrypoint.sh` 仅 `chown` 自身数据目录并用 `gosu`/`setpriv` 替代 `su -c`；支持 `web.port` 配置；移除或迁移 `src/main/java/TestAcoustIDMeta.java`；`ControlServlet` 重启前触发优雅关机
+- [x] **U-1：高频整页重绘与切项竞态误操作**
+  - `review.html` 改为 `#detailSearchLiveSlot` + `syncDetailSearchLiveCard()` 局部更新搜索进度卡片与决策栏；`covers.html` 为列表/详情/上传/拉取增加单调递增 `listSeq`/`itemSeq` 与 `state.currentId === id` 校验并在上传 `finally` 重置 `uploadInput.value`
+- [x] **U-2：错误码失配与 i18n 缺陷**
+  - 对齐 `covers.html` 全部后端错误码（`unreject.log.failed`、`recovery.no.audio.files`、`release.id.required`、`candidates.expand.failed`、`local.archive.*`、`online.track.coverage.insufficient:`、`recovery.workspace.count.mismatch:`）；清理中英文重复 `config.scan.interval`；修复 `I18nUtil` `volatile` 安全发布与含换行符 `{0}` 占位符匹配；清理 `ControlServlet`、`CoverMissingService`、`RecoveryService`、`OnlineSearchQueueService` 与前端时间 locale / `aria-label` 中的硬编码中文
+- [x] **U-3：会话过期失联、轮询泄漏与高频扫盘**
+  - 统一 `review.html`、`covers.html`、`recovery.html`、`shell.js`、`search-queue.js`、`index.html` 的 HTTP 401 跳转与停止轮询（新增 `SearchQueue.stop()`）；修复 `SearchQueue` 首次加载误触发 `newlyFinished` 全量重刷；页面隐藏时暂停轮询并新增轻量 `GET /api/recovery/summary` 接口（短 TTL + 目录 mtime 校验缓存）替代 30s 轮询 `/api/recovery/list` 扫盘；为 `index.html` 新增可见 `#toast` 展示改密成功提示、`LogCollector.LogEntry` 增加递增 `seq` 防止清空日志 5s 回弹、核心写操作与认证按钮增加 `withButtonLock` 防连点
+- [x] **O-1：部署与打包缺陷**
+  - `docker-compose.yml` 补全 `${WEB_PORT:-8080}:8080` 端口映射；`Dockerfile` 安装 `gosu`、`entrypoint.sh` 仅 `chown` 自身数据目录并用 `exec gosu`（回落 `setpriv`）替代 `su -m -c`；`MusicConfig` / `ApplicationLifecycleManager` 支持 `web.port` / `WEB_PORT` 配置（`1..65535`）；移除 `src/main/java/TestAcoustIDMeta.java`；`ControlServlet` 重启前在非守护线程先执行 `lifecycleManager.shutdown()` 再退出
 
 ---
 

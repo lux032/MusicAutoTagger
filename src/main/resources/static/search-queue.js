@@ -12,12 +12,15 @@
     const ERR_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>';
 
     let initialized = false;
+    let stopped = false;
+    let hasLoadedOnce = false;
     let pollTimer = null;
     let tickTimer = null;
     let getCsrfFn = () => null;
     let onNavigateReviewFn = null;
     let onNavigateCoverFn = null;
     let onToastFn = null;
+    let onUnauthorizedFn = null;
     let snapshot = null;
     let snapshotReceivedAt = 0;
     let drawerOpen = false;
@@ -540,9 +543,22 @@
     }
 
     // ==================== 自适应轮询与本地秒表 ====================
+    function stop() {
+        stopped = true;
+        clearTimeout(pollTimer);
+        pollTimer = null;
+        if (tickTimer) {
+            clearInterval(tickTimer);
+            tickTimer = null;
+        }
+        closeDrawer();
+        const bar = document.getElementById('sqGlobalBar');
+        if (bar) bar.hidden = true;
+    }
+
     function schedulePoll() {
         clearTimeout(pollTimer);
-        if (document.hidden) return;
+        if (stopped || document.hidden) return;
         const counts = snapshot?.counts || {};
         const otherActive = (snapshot?.recoveryOtherJobs || []).some(j => j.status === 'RUNNING' || j.status === 'QUEUED');
         const active = (counts.totalActive || 0) > 0 || otherActive;
@@ -551,13 +567,19 @@
 
     async function refresh() {
         clearTimeout(pollTimer);
+        if (stopped) return;
         try {
+            const hadSnapshot = hasLoadedOnce;
             const prevFinishedIds = new Set((snapshot?.finished || []).map(x => x.id));
             const next = await request('/api/search-queue/status');
+            if (stopped) return;
             snapshot = next;
             snapshotReceivedAt = Date.now();
+            hasLoadedOnce = true;
             renderChrome();
-            const newlyFinished = (next.finished || []).filter(x => !prevFinishedIds.has(x.id));
+            const newlyFinished = hadSnapshot
+                ? (next.finished || []).filter(x => !prevFinishedIds.has(x.id))
+                : [];
             global.dispatchEvent(new CustomEvent('mat:search-queue', {
                 detail: { snapshot: next, newlyFinished }
             }));
@@ -565,9 +587,18 @@
                 global.Shell.refreshCounts();
             }
         } catch (e) {
+            if (e && e.status === 401) {
+                stop();
+                if (typeof onUnauthorizedFn === 'function') {
+                    onUnauthorizedFn();
+                } else if (!/(^|\/)(index\.html)?$/.test(location.pathname)) {
+                    location.href = 'index.html';
+                }
+                return;
+            }
             // 静默重试
         } finally {
-            schedulePoll();
+            if (!stopped) schedulePoll();
         }
     }
 
@@ -669,18 +700,23 @@
     }
 
     function init(options = {}) {
+        stopped = false;
+        hasLoadedOnce = false;
         if (options.getCsrf) getCsrfFn = options.getCsrf;
         else if (options.csrfToken) { const tok = options.csrfToken; getCsrfFn = () => tok; }
         if (options.onNavigateReview) onNavigateReviewFn = options.onNavigateReview;
         if (options.onNavigateCover) onNavigateCoverFn = options.onNavigateCover;
         if (options.onToast) onToastFn = options.onToast;
+        if (options.onUnauthorized) onUnauthorizedFn = options.onUnauthorized;
         ensureChrome();
         if (!initialized) {
             initialized = true;
             document.addEventListener('visibilitychange', () => {
-                if (!document.hidden) refresh();
+                if (!document.hidden && !stopped) refresh();
                 else clearTimeout(pollTimer);
             });
+        }
+        if (!tickTimer) {
             tickTimer = setInterval(tickElapsed, 1000);
         }
         refresh();
@@ -688,6 +724,7 @@
 
     global.SearchQueue = {
         init,
+        stop,
         refresh,
         openDrawer,
         closeDrawer,
