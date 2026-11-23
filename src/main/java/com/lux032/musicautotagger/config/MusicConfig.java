@@ -340,13 +340,20 @@ public class MusicConfig {
      * 从配置文件加载配置
      */
     private void loadFromFile() {
+        loadFromFile(Paths.get("config.properties"));
+    }
+
+    /**
+     * 从指定路径加载配置文件（UTF-8）。
+     */
+    public void loadFromFile(Path configPath) {
         Properties props = new Properties();
         // 必须按 UTF-8 读取: Properties.load(InputStream) 规范上按 ISO-8859-1 解码，
         // 会把配置里的日文关键词(如 cover.animeEditionKeywords)读成乱码。
         // props.store 写出的是纯 ASCII + Unicode 转义序列，
         // 因此对 ASCII 配置和本程序自己写出的旧配置完全兼容（手写的 ISO-8859-1 高位字符除外）。
         try (java.io.Reader reader = new java.io.InputStreamReader(
-                new FileInputStream("config.properties"), java.nio.charset.StandardCharsets.UTF_8)) {
+                new FileInputStream(configPath.toFile()), java.nio.charset.StandardCharsets.UTF_8)) {
             props.load(reader);
             
             // 加载配置项
@@ -357,7 +364,9 @@ public class MusicConfig {
                 this.outputDirectory = props.getProperty("monitor.outputDirectory");
             }
             if (props.containsKey("monitor.scanInterval")) {
-                this.scanIntervalSeconds = Integer.parseInt(props.getProperty("monitor.scanInterval"));
+                this.scanIntervalSeconds = parseIntInRange(
+                    props.getProperty("monitor.scanInterval"), this.scanIntervalSeconds, 1, 86400,
+                    "monitor.scanInterval");
             }
             if (props.containsKey("musicbrainz.apiUrl")) {
                 this.musicBrainzApiUrl = props.getProperty("musicbrainz.apiUrl");
@@ -401,7 +410,7 @@ public class MusicConfig {
             }
             if (props.containsKey("file.maxRetries")) {
                 try {
-                    this.maxRetries = Integer.parseInt(props.getProperty("file.maxRetries"));
+                    this.maxRetries = Integer.parseInt(props.getProperty("file.maxRetries").trim());
                 } catch (NumberFormatException e) {
                     System.err.println("Invalid max retries configuration: " + props.getProperty("file.maxRetries"));
                 }
@@ -447,7 +456,7 @@ public class MusicConfig {
             }
             if (props.containsKey("proxy.port")) {
                 try {
-                    this.proxyPort = Integer.parseInt(props.getProperty("proxy.port"));
+                    this.proxyPort = Integer.parseInt(props.getProperty("proxy.port").trim());
                 } catch (NumberFormatException e) {
                     System.err.println("Invalid proxy port configuration: " + props.getProperty("proxy.port"));
                 }
@@ -474,7 +483,7 @@ public class MusicConfig {
             }
             if (props.containsKey("db.mysql.port")) {
                 try {
-                    this.dbPort = Integer.parseInt(props.getProperty("db.mysql.port"));
+                    this.dbPort = Integer.parseInt(props.getProperty("db.mysql.port").trim());
                 } catch (NumberFormatException e) {
                     System.err.println("Invalid database port configuration: " + props.getProperty("db.mysql.port"));
                 }
@@ -490,21 +499,21 @@ public class MusicConfig {
             }
             if (props.containsKey("db.mysql.pool.maxPoolSize")) {
                 try {
-                    this.dbMaxPoolSize = Integer.parseInt(props.getProperty("db.mysql.pool.maxPoolSize"));
+                    this.dbMaxPoolSize = Integer.parseInt(props.getProperty("db.mysql.pool.maxPoolSize").trim());
                 } catch (NumberFormatException e) {
                     System.err.println("Invalid max pool size configuration: " + props.getProperty("db.mysql.pool.maxPoolSize"));
                 }
             }
             if (props.containsKey("db.mysql.pool.minIdle")) {
                 try {
-                    this.dbMinIdle = Integer.parseInt(props.getProperty("db.mysql.pool.minIdle"));
+                    this.dbMinIdle = Integer.parseInt(props.getProperty("db.mysql.pool.minIdle").trim());
                 } catch (NumberFormatException e) {
                     System.err.println("Invalid min idle configuration: " + props.getProperty("db.mysql.pool.minIdle"));
                 }
             }
             if (props.containsKey("db.mysql.pool.connectionTimeout")) {
                 try {
-                    this.dbConnectionTimeout = Long.parseLong(props.getProperty("db.mysql.pool.connectionTimeout"));
+                    this.dbConnectionTimeout = Long.parseLong(props.getProperty("db.mysql.pool.connectionTimeout").trim());
                 } catch (NumberFormatException e) {
                     System.err.println("Invalid connection timeout configuration: " + props.getProperty("db.mysql.pool.connectionTimeout"));
                 }
@@ -745,12 +754,11 @@ public class MusicConfig {
                 System.out.println("HTTP proxy enabled: " + proxyHost + ":" + proxyPort);
             }
         } catch (IOException e) {
-            Path configPath = Paths.get("config.properties");
             if (!Files.exists(configPath)) {
                 System.out.println("Configuration file not found, generating default configuration");
                 try {
                     saveToFile(configPath);
-                    System.out.println("Default configuration saved to config.properties");
+                    System.out.println("Default configuration saved to " + configPath);
                 } catch (IOException ioException) {
                     System.err.println("Failed to create default configuration: " + ioException.getMessage());
                 }
@@ -864,7 +872,7 @@ public class MusicConfig {
         return defaultValue;
     }
 
-    private void saveToFile(Path configPath) throws IOException {
+    public void saveToFile(Path configPath) throws IOException {
         Properties props = new Properties();
         props.setProperty("monitor.directory", monitorDirectory);
         props.setProperty("monitor.outputDirectory", outputDirectory);
@@ -964,6 +972,7 @@ public class MusicConfig {
         props.setProperty("file.partial.minTagCoverage", String.valueOf(partialMinTagCoverage));
         props.setProperty("llm.webSearch.maxTokens", String.valueOf(llmWebSearchMaxTokens));
         props.setProperty("llm.webSearch.timeoutSeconds", String.valueOf(llmWebSearchTimeoutSeconds));
+        props.setProperty("llm.webSearch.maxConcurrency", String.valueOf(llmWebSearchMaxConcurrency));
         props.setProperty("llm.webSearch.provider", webSearchProvider == null ? "native" : webSearchProvider);
         props.setProperty("tavily.apiKey", tavilyApiKey == null ? "" : tavilyApiKey);
         props.setProperty("tavily.apiUrl", tavilyApiUrl == null ? "https://api.tavily.com/search" : tavilyApiUrl);

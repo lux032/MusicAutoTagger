@@ -15,11 +15,12 @@ import java.util.Map;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.FileInputStream;
-import java.io.FileReader;
-import java.io.FileWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -29,9 +30,11 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.ProcessedRecord;
+import com.lux032.musicautotagger.util.FileSystemUtils;
 
 /**
  * 已处理文件日志服务 - 支持 SQLite（默认）、MySQL 和 文件模式
@@ -46,15 +49,17 @@ public class ProcessedFileLogger {
     private final boolean isDbMode;
     /** 数据库模式下是否为 SQLite 方言（否则为 MySQL）。 */
     private final boolean isSqlite;
-    // 关键修复：添加文件写入锁，解决并发写入日志文件的线程安全问题
-    private final Object fileWriteLock = new Object();
-    // 两个后加列必须独立探测：任一 ALTER 失败都不能误判另一列。
+    // 文件模式读写锁：保护并发读取与原子重写，避免读取到半截文件或过期句柄
+    private final ReentrantReadWriteLock fileLock = new ReentrantReadWriteLock();
+    // 后加列独立探测：任一 ALTER 失败都不能误判另一列。
     private volatile boolean releaseGroupIdColumnAvailable = false;
     private volatile boolean targetFilePathColumnAvailable = false;
+    private volatile boolean folderPathColumnAvailable = false;
 
-    /** 外部（如 DashboardServlet）查询前先问一下这个列能不能用。 */
+    /** 外部（如 DashboardServlet / ProcessedRecordService）查询前先问一下这些列能不能用。 */
     public boolean isReleaseGroupIdColumnAvailable() { return releaseGroupIdColumnAvailable; }
     public boolean isTargetFilePathColumnAvailable() { return targetFilePathColumnAvailable; }
+    public boolean isFolderPathColumnAvailable() { return folderPathColumnAvailable; }
 
     /**
      * 构造函数
@@ -72,6 +77,7 @@ public class ProcessedFileLogger {
             log.info(I18nUtil.getMessage("logger.init.mysql").replace("MySQL", databaseService.getDisplayName()));
             ensureReleaseGroupIdColumn();
             ensureTargetFilePathColumn();
+            ensureFolderPathColumn();
             if (isSqlite) {
                 importLegacyFileLogIfEmpty();
             }
@@ -139,6 +145,180 @@ public class ProcessedFileLogger {
     }
 
     /**
+     * 为 processed_files 补充持久化的 folder_path 列与索引，并对旧记录分批回填，
+     * 使文件夹视图翻页、手风琴展开、批量操作全部走 SQL 而非全表加载到堆内存。
+     */
+    private void ensureFolderPathColumn() {
+        if (databaseService == null) return;
+        try (Connection conn = databaseService.getConnection()) {
+            boolean existed = false;
+            try (ResultSet rs = conn.getMetaData().getColumns(
+                    conn.getCatalog(), null, "processed_files", "folder_path")) {
+                existed = rs.next();
+            }
+            if (!existed) {
+                try (Statement stmt = conn.createStatement()) {
+                    stmt.executeUpdate("ALTER TABLE processed_files "
+                        + "ADD COLUMN folder_path "
+                        + (isSqlite
+                            ? "VARCHAR(1000) NULL"
+                            : "VARCHAR(768) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '所属专辑根目录路径'"));
+                    log.info("已为 processed_files 补充 folder_path 列");
+                }
+            }
+            ensureFolderPathIndex(conn);
+            folderPathColumnAvailable = true;
+            backfillNullFolderPaths(conn);
+        } catch (SQLException e) {
+            folderPathColumnAvailable = false;
+            log.warn("processed_files 缺少 folder_path 列且自动补列失败，文件夹视图将回退全量内存聚合: {}", e.getMessage());
+        }
+    }
+
+    private void ensureFolderPathIndex(Connection conn) {
+        try {
+            if (isSqlite) {
+                try (Statement stmt = conn.createStatement()) {
+                    stmt.execute("CREATE INDEX IF NOT EXISTS idx_pf_folder_path ON processed_files(folder_path)");
+                }
+                return;
+            }
+            boolean hasIndex = false;
+            try (ResultSet rs = conn.getMetaData().getIndexInfo(
+                    conn.getCatalog(), null, "processed_files", false, false)) {
+                while (rs.next()) {
+                    String col = rs.getString("COLUMN_NAME");
+                    if ("folder_path".equalsIgnoreCase(col)) {
+                        hasIndex = true;
+                        break;
+                    }
+                }
+            }
+            if (!hasIndex) {
+                try (Statement stmt = conn.createStatement()) {
+                    stmt.execute("CREATE INDEX idx_folder_path ON processed_files(folder_path)");
+                }
+            }
+        } catch (SQLException e) {
+            log.debug("创建 folder_path 索引跳过（可能已存在）: {}", e.getMessage());
+        }
+    }
+
+    private void backfillNullFolderPaths(Connection conn) {
+        String selectSql = "SELECT id, file_path FROM processed_files "
+            + "WHERE folder_path IS NULL OR folder_path = '' LIMIT 1000";
+        String updateSql = "UPDATE processed_files SET folder_path = ? WHERE id = ?";
+        try {
+            while (true) {
+                List<Object[]> batch = new ArrayList<>();
+                try (PreparedStatement query = conn.prepareStatement(selectSql);
+                     ResultSet rs = query.executeQuery()) {
+                    while (rs.next()) {
+                        long id = rs.getLong("id");
+                        String fp = rs.getString("file_path");
+                        String folder = computeFolderPath(fp, config);
+                        if (folder != null && !folder.isEmpty()) {
+                            batch.add(new Object[]{folder, id});
+                        }
+                    }
+                }
+                if (batch.isEmpty()) {
+                    return;
+                }
+                boolean autoCommit = conn.getAutoCommit();
+                conn.setAutoCommit(false);
+                try (PreparedStatement upd = conn.prepareStatement(updateSql)) {
+                    for (Object[] row : batch) {
+                        upd.setString(1, (String) row[0]);
+                        upd.setLong(2, (Long) row[1]);
+                        upd.addBatch();
+                    }
+                    upd.executeBatch();
+                    conn.commit();
+                } catch (SQLException e) {
+                    try {
+                        conn.rollback();
+                    } catch (SQLException rollbackErr) {
+                        e.addSuppressed(rollbackErr);
+                    }
+                    throw e;
+                } finally {
+                    try {
+                        conn.setAutoCommit(autoCommit);
+                    } catch (SQLException ignored) {
+                    }
+                }
+                if (batch.size() < 1000) {
+                    return;
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("回填 processed_files.folder_path 失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 计算文件所属专辑根目录路径（与 ProcessedRecordService.FolderResolver 规则一致：
+     * 规范化父目录，若为 Disc 1/CD 2 等碟片子目录则上升一级，不跨越文件系统根或配置根目录）。
+     */
+    public static String computeFolderPath(String filePath, MusicConfig config) {
+        if (filePath == null || filePath.isBlank()) {
+            return "";
+        }
+        File source = new File(filePath);
+        File parent = source.getParentFile();
+        if (parent == null) {
+            return canonicalOrNormalizedPath(source).toString();
+        }
+        Path parentPath = canonicalOrNormalizedPath(parent);
+        Path monitorRoot = resolveConfiguredRootPath(config == null ? null : config.getMonitorDirectory());
+        if (monitorRoot != null && parentPath.equals(monitorRoot)) {
+            return monitorRoot.toString();
+        }
+        Path parentNamePath = parentPath.getFileName();
+        String parentName = parentNamePath != null ? parentNamePath.toString() : parentPath.toString();
+        Path resolved = parentPath;
+        if (FileSystemUtils.isDiscFolderName(parentName)) {
+            Path grand = parentPath.getParent();
+            if (grand != null && grand.getParent() != null) {
+                boolean allowed = true;
+                if (monitorRoot != null && parentPath.startsWith(monitorRoot)) {
+                    allowed = !grand.equals(monitorRoot) && grand.startsWith(monitorRoot);
+                } else if (config != null) {
+                    for (String rootDir : new String[]{
+                        config.getOutputDirectory(), config.getFailedDirectory(), config.getPartialDirectory()
+                    }) {
+                        Path configuredRoot = resolveConfiguredRootPath(rootDir);
+                        if (configuredRoot != null && grand.equals(configuredRoot)) {
+                            allowed = false;
+                            break;
+                        }
+                    }
+                }
+                if (allowed) {
+                    resolved = grand;
+                }
+            }
+        }
+        return resolved.toString();
+    }
+
+    private static Path resolveConfiguredRootPath(String dir) {
+        if (dir == null || dir.isBlank()) {
+            return null;
+        }
+        return canonicalOrNormalizedPath(new File(dir));
+    }
+
+    private static Path canonicalOrNormalizedPath(File file) {
+        try {
+            return file.getCanonicalFile().toPath();
+        } catch (IOException e) {
+            return file.toPath().toAbsolutePath().normalize();
+        }
+    }
+
+    /**
      * 从旧版默认的文件模式升级到 SQLite 时，把 processed_files.log 中的历史记录一次性导入，
      * 避免切换默认存储后所有文件被重新识别。仅在表为空时执行，原日志文件保持不动。
      */
@@ -156,9 +336,11 @@ public class ProcessedFileLogger {
             List<String[]> rows = readLogRows();
             if (rows.isEmpty()) return;
 
+            boolean withFolder = folderPathColumnAvailable;
             String sql = "INSERT OR REPLACE INTO processed_files (file_hash, file_name, file_path, file_size, "
-                + "processed_time, recording_id, artist, title, album, release_group_id, target_file_path) "
-                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + "processed_time, recording_id, artist, title, album, release_group_id, target_file_path"
+                + (withFolder ? ", folder_path" : "") + ") "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?" + (withFolder ? ", ?" : "") + ")";
             boolean autoCommit = conn.getAutoCommit();
             conn.setAutoCommit(false);
             int imported = 0;
@@ -184,6 +366,9 @@ public class ProcessedFileLogger {
                     pstmt.setString(9, emptyToNull(parts[4]));
                     pstmt.setString(10, parts.length >= 7 ? emptyToNull(parts[6]) : null);
                     pstmt.setString(11, parts.length >= 8 ? emptyToNull(parts[7]) : null);
+                    if (withFolder) {
+                        pstmt.setString(12, computeFolderPath(parts[0], config));
+                    }
                     pstmt.addBatch();
                     imported++;
                 }
@@ -261,22 +446,27 @@ public class ProcessedFileLogger {
     }
 
     private boolean checkFileInLog(String filePath) {
-        File logFile = new File(config.getProcessedFileLogPath());
-        if (!logFile.exists()) return false;
+        fileLock.readLock().lock();
+        try {
+            Path logPath = Path.of(config.getProcessedFileLogPath());
+            if (!Files.exists(logPath)) return false;
 
-        try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                // 简单格式: filePath|recordingId|...
-                if (line.startsWith(filePath + "|")) {
-                    log.debug(I18nUtil.getMessage("logger.file.already.processed.log"), filePath);
-                    return true;
+            try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] parts = splitLogLine(line);
+                    if (parts.length > 0 && filePath.equals(parts[0])) {
+                        log.debug(I18nUtil.getMessage("logger.file.already.processed.log"), filePath);
+                        return true;
+                    }
                 }
+            } catch (IOException e) {
+                log.error(I18nUtil.getMessage("logger.read.log.failed"), e);
             }
-        } catch (IOException e) {
-            log.error(I18nUtil.getMessage("logger.read.log.failed"), e);
+            return false;
+        } finally {
+            fileLock.readLock().unlock();
         }
-        return false;
     }
 
     /**
@@ -328,11 +518,14 @@ public class ProcessedFileLogger {
                 String fileHash = calculateFileHash(file);
                 boolean withRgid = releaseGroupIdColumnAvailable;
                 boolean withTarget = targetFilePathColumnAvailable;
+                boolean withFolder = folderPathColumnAvailable;
+                String folderPath = withFolder ? computeFolderPath(filePath, config) : null;
                 List<String> columns = new ArrayList<>(Arrays.asList(
                     "file_hash", "file_name", "file_path", "file_size", "processed_time",
                     "recording_id", "artist", "title", "album"));
                 if (withRgid) columns.add("release_group_id");
                 if (withTarget) columns.add("target_file_path");
+                if (withFolder) columns.add("folder_path");
                 String values = String.join(", ", java.util.Collections.nCopies(columns.size(), "?"));
                 // MySQL: VALUES(col)；SQLite: excluded.col
                 java.util.function.UnaryOperator<String> newVal = isSqlite
@@ -347,6 +540,7 @@ public class ProcessedFileLogger {
                 if (withRgid) update.append(", release_group_id = ").append(newVal.apply("release_group_id"));
                 if (withTarget) update.append(", target_file_path = COALESCE(")
                     .append(newVal.apply("target_file_path")).append(", target_file_path)");
+                if (withFolder) update.append(", folder_path = ").append(newVal.apply("folder_path"));
                 if (isSqlite) update.append(", updated_at = CURRENT_TIMESTAMP");
                 String sql = "INSERT INTO processed_files (" + String.join(", ", columns) + ") VALUES ("
                     + values + ")"
@@ -367,7 +561,8 @@ public class ProcessedFileLogger {
                     pstmt.setString(9, album);
                     int index = 10;
                     if (withRgid) pstmt.setString(index++, releaseGroupId);
-                    if (withTarget) pstmt.setString(index, absoluteTargetPath);
+                    if (withTarget) pstmt.setString(index++, absoluteTargetPath);
+                    if (withFolder) pstmt.setString(index, folderPath);
 
                     pstmt.executeUpdate();
                 }
@@ -376,21 +571,29 @@ public class ProcessedFileLogger {
                 log.error(I18nUtil.getMessage("logger.db.record.failed"), e);
             }
         } else {
-            // 文件模式: 追加写入（使用同步锁保证线程安全）
-            synchronized (fileWriteLock) {
-                try (BufferedWriter writer = new BufferedWriter(new FileWriter(config.getProcessedFileLogPath(), true))) {
+            // 文件模式: UTF-8 编码 + 分隔符/换行符转义 + 写锁
+            fileLock.writeLock().lock();
+            try {
+                Path logPath = Path.of(config.getProcessedFileLogPath());
+                Path parent = logPath.toAbsolutePath().getParent();
+                if (parent != null) Files.createDirectories(parent);
+                try (BufferedWriter writer = Files.newBufferedWriter(
+                        logPath, StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
                     String timeStr = now.format(dateFormatter);
                     // 格式: filePath|recordingId|artist|title|album|time|releaseGroupId|targetFilePath
                     // 第 7、8 列均为后加字段，读取方按长度向后兼容。
-                    String line = String.join("|", filePath, nullToEmpty(recordingId), nullToEmpty(artist),
+                    String line = formatLogLine(filePath, nullToEmpty(recordingId), nullToEmpty(artist),
                         nullToEmpty(title), nullToEmpty(album), timeStr, nullToEmpty(releaseGroupId),
                         nullToEmpty(absoluteTargetPath));
                     writer.write(line);
                     writer.newLine();
-                } catch (IOException e) {
-                    if (strict) throw new IllegalStateException("FAILED record persistence failed", e);
-                    log.error(I18nUtil.getMessage("logger.write.log.failed"), e);
                 }
+            } catch (IOException e) {
+                if (strict) throw new IllegalStateException("FAILED record persistence failed", e);
+                log.error(I18nUtil.getMessage("logger.write.log.failed"), e);
+            } finally {
+                fileLock.writeLock().unlock();
             }
         }
 
@@ -549,81 +752,108 @@ public class ProcessedFileLogger {
             }
         }
 
-        // 文件模式：原子式重写整个日志
-        synchronized (fileWriteLock) {
-            File logFile = new File(config.getProcessedFileLogPath());
-            if (!logFile.exists()) {
+        // 文件模式：原子式重写整个日志（写锁 + UTF-8 + 字段转义）
+        fileLock.writeLock().lock();
+        try {
+            Path logPath = Path.of(config.getProcessedFileLogPath());
+            if (!Files.exists(logPath)) {
                 return 0;
             }
-            File tempFile = new File(logFile.getAbsolutePath() + ".backfill.tmp");
+            Path tempPath = logPath.resolveSibling(logPath.getFileName() + ".backfill.tmp");
             int updated = 0;
-            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
-                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    String[] parts = line.split("\\|", -1);
-                    boolean artistMatches = !filterArtist
-                        || (hasArtist ? artist.equals(parts[2]) : (parts[2] == null || parts[2].isBlank()));
-                    boolean needsFill = parts.length >= 6
-                        && album.equals(parts[4])
-                        && artistMatches
-                        && (parts.length < 7 || parts[6].isBlank())
-                        && isBackfillable(parts[1], parts[4]);
-                    if (needsFill) {
-                        String[] updatedParts = Arrays.copyOf(parts, Math.max(parts.length, 7));
-                        updatedParts[6] = releaseGroupId;
-                        writer.write(String.join("|", updatedParts));
-                        updated++;
-                    } else {
-                        writer.write(line);
-                    }
-                    writer.newLine();
-                }
-            } catch (IOException e) {
-                log.error("重写已处理日志失败", e);
-                tempFile.delete();
-                return 0;
-            }
             try {
-                java.nio.file.Files.move(tempFile.toPath(), logFile.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8);
+                     BufferedWriter writer = Files.newBufferedWriter(tempPath, StandardCharsets.UTF_8)) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String[] parts = splitLogLine(line);
+                        boolean artistMatches = parts.length >= 6 && (!filterArtist
+                            || (hasArtist ? artist.equals(parts[2]) : (parts[2] == null || parts[2].isBlank())));
+                        boolean needsFill = parts.length >= 6
+                            && album.equals(parts[4])
+                            && artistMatches
+                            && (parts.length < 7 || parts[6].isBlank())
+                            && isBackfillable(parts[1], parts[4]);
+                        if (needsFill) {
+                            String[] updatedParts = Arrays.copyOf(parts, Math.max(parts.length, 7));
+                            updatedParts[6] = releaseGroupId;
+                            writer.write(formatLogLine(updatedParts));
+                            updated++;
+                        } else {
+                            writer.write(line);
+                        }
+                        writer.newLine();
+                    }
+                }
+                moveReplaceAtomic(tempPath, logPath);
+                return updated;
             } catch (IOException e) {
-                log.error("替换已处理日志失败", e);
+                log.error("重写/替换已处理日志失败", e);
                 return 0;
+            } finally {
+                try {
+                    Files.deleteIfExists(tempPath);
+                } catch (IOException ignored) {
+                }
             }
-            return updated;
+        } finally {
+            fileLock.writeLock().unlock();
         }
+    }
+
+    private static String normalizeDirPrefix(String prefix) {
+        String abs = new File(prefix).getAbsolutePath();
+        String sep = File.separator;
+        while (abs.length() > sep.length() && abs.endsWith(sep)) {
+            abs = abs.substring(0, abs.length() - sep.length());
+        }
+        return abs;
     }
 
     /**
      * 恢复工作区原子提交后，把临时目标路径批量换成最终输出路径。
-     * 文件模式按纯前缀处理；MySQL 使用 LEFT 精确比较，避免 LIKE 中 %, _, \\ 的转义陷阱。
+     * 按完整路径或「前缀 + 路径分隔符」精确匹配，避免 /Aimer/Dawn 误伤 /Aimer/Dawn (LE)；
+     * 使用 Unicode 码点数替代 UTF-16 length()，防止含 emoji/生僻字的路径截断错位。
      */
     public void rebaseTargetPaths(String oldPrefix, String newPrefix) {
         if (oldPrefix == null || newPrefix == null) return;
-        String oldAbsolute = new File(oldPrefix).getAbsolutePath();
-        String newAbsolute = new File(newPrefix).getAbsolutePath();
+        String oldAbsolute = normalizeDirPrefix(oldPrefix);
+        String newAbsolute = normalizeDirPrefix(newPrefix);
+        String sep = File.separator;
+        String oldWithSep = oldAbsolute.endsWith(sep) ? oldAbsolute : oldAbsolute + sep;
+        String newWithSep = newAbsolute.endsWith(sep) ? newAbsolute : newAbsolute + sep;
         if (isDbMode) {
             if (!targetFilePathColumnAvailable) return;
+            int cpOldWithSep = oldWithSep.codePointCount(0, oldWithSep.length());
             String sql = isSqlite
-                ? "UPDATE processed_files SET target_file_path = ? || substr(target_file_path, ?) "
-                    + "WHERE target_file_path IS NOT NULL AND substr(target_file_path, 1, ?) = ?"
-                : "UPDATE processed_files SET target_file_path = CONCAT(?, SUBSTRING(target_file_path, ?)) "
-                    + "WHERE target_file_path IS NOT NULL AND LEFT(target_file_path, ?) = ?";
+                ? "UPDATE processed_files SET target_file_path = CASE "
+                    + "WHEN target_file_path = ? THEN ? "
+                    + "ELSE ? || substr(target_file_path, ?) END "
+                    + "WHERE target_file_path IS NOT NULL AND (target_file_path = ? OR substr(target_file_path, 1, ?) = ?)"
+                : "UPDATE processed_files SET target_file_path = CASE "
+                    + "WHEN BINARY target_file_path = BINARY ? THEN ? "
+                    + "ELSE CONCAT(?, SUBSTRING(target_file_path, ?)) END "
+                    + "WHERE target_file_path IS NOT NULL AND (BINARY target_file_path = BINARY ? OR BINARY LEFT(target_file_path, ?) = BINARY ?)";
             try (Connection conn = databaseService.getConnection();
                  PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                pstmt.setString(1, newAbsolute);
-                pstmt.setInt(2, oldAbsolute.length() + 1);
-                pstmt.setInt(3, oldAbsolute.length());
-                pstmt.setString(4, oldAbsolute);
+                pstmt.setString(1, oldAbsolute);
+                pstmt.setString(2, newAbsolute);
+                pstmt.setString(3, newWithSep);
+                pstmt.setInt(4, cpOldWithSep + 1);
+                pstmt.setString(5, oldAbsolute);
+                pstmt.setInt(6, cpOldWithSep);
+                pstmt.setString(7, oldWithSep);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
                 log.error("重定向归档目标路径失败: {} -> {}", oldAbsolute, newAbsolute, e);
             }
             return;
         }
-        rewriteTargetPaths(path -> path.startsWith(oldAbsolute)
-            ? newAbsolute + path.substring(oldAbsolute.length()) : path);
+        rewriteTargetPaths(path -> {
+            if (path.equals(oldAbsolute)) return newAbsolute;
+            if (path.startsWith(oldWithSep)) return newWithSep + path.substring(oldWithSep.length());
+            return path;
+        });
     }
 
     /** Update exactly one media path across any records that point to it. */
@@ -648,23 +878,29 @@ public class ProcessedFileLogger {
     /** 清除已不存在的临时目标路径，供恢复提交失败回滚使用。 */
     public void clearTargetPathsUnder(String prefix) {
         if (prefix == null) return;
-        String absolute = new File(prefix).getAbsolutePath();
+        String absolute = normalizeDirPrefix(prefix);
+        String sep = File.separator;
+        String withSep = absolute.endsWith(sep) ? absolute : absolute + sep;
         if (isDbMode) {
             if (!targetFilePathColumnAvailable) return;
-            String sql = "UPDATE processed_files SET target_file_path = NULL "
-                + "WHERE target_file_path IS NOT NULL AND "
-                + (isSqlite ? "substr(target_file_path, 1, ?)" : "LEFT(target_file_path, ?)") + " = ?";
+            int cpWithSep = withSep.codePointCount(0, withSep.length());
+            String sql = isSqlite
+                ? "UPDATE processed_files SET target_file_path = NULL "
+                    + "WHERE target_file_path IS NOT NULL AND (target_file_path = ? OR substr(target_file_path, 1, ?) = ?)"
+                : "UPDATE processed_files SET target_file_path = NULL "
+                    + "WHERE target_file_path IS NOT NULL AND (BINARY target_file_path = BINARY ? OR BINARY LEFT(target_file_path, ?) = BINARY ?)";
             try (Connection conn = databaseService.getConnection();
                  PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                pstmt.setInt(1, absolute.length());
-                pstmt.setString(2, absolute);
+                pstmt.setString(1, absolute);
+                pstmt.setInt(2, cpWithSep);
+                pstmt.setString(3, withSep);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
                 log.error("清除无效归档目标路径失败: {}", absolute, e);
             }
             return;
         }
-        rewriteTargetPaths(path -> path.startsWith(absolute) ? "" : path);
+        rewriteTargetPaths(path -> (path.equals(absolute) || path.startsWith(withSep)) ? "" : path);
     }
 
     private void rewriteTargetPaths(java.util.function.UnaryOperator<String> mapper) {
@@ -676,32 +912,41 @@ public class ProcessedFileLogger {
     }
 
     private void rewriteTargetPathsStrict(java.util.function.UnaryOperator<String> mapper) throws IOException {
-        synchronized (fileWriteLock) {
+        fileLock.writeLock().lock();
+        try {
             Path logPath = Path.of(config.getProcessedFileLogPath()).toAbsolutePath();
             if (!Files.exists(logPath)) return;
-            Path temp = Files.createTempFile(logPath.getParent(), ".processed-targets-", ".tmp");
+            Path parent = logPath.getParent();
+            Path temp = Files.createTempFile(parent != null ? parent : Path.of("."), ".processed-targets-", ".tmp");
             try {
                 var permissions = Files.getFileAttributeView(logPath, java.nio.file.attribute.PosixFileAttributeView.class);
                 if (permissions != null) Files.setPosixFilePermissions(temp, permissions.readAttributes().permissions());
                 boolean changed = false;
-                try (BufferedReader reader = new BufferedReader(new FileReader(logPath.toFile()));
-                     BufferedWriter writer = new BufferedWriter(new FileWriter(temp.toFile()))) {
+                try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8);
+                     BufferedWriter writer = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
                     String line;
                     while ((line = reader.readLine()) != null) {
-                        String[] parts = line.split("\\|", -1);
+                        String[] parts = splitLogLine(line);
                         if (parts.length >= 8 && !parts[7].isBlank()) {
                             String path = mapper.apply(parts[7]);
-                            changed |= !parts[7].equals(path);
-                            parts[7] = path;
+                            if (!parts[7].equals(path)) {
+                                changed = true;
+                                parts[7] = path;
+                                writer.write(formatLogLine(parts));
+                                writer.newLine();
+                                continue;
+                            }
                         }
-                        writer.write(String.join("|", parts));
+                        writer.write(line);
                         writer.newLine();
                     }
                 }
-                if (changed) Files.move(temp, logPath, StandardCopyOption.REPLACE_EXISTING);
+                if (changed) moveReplaceAtomic(temp, logPath);
             } finally {
                 Files.deleteIfExists(temp);
             }
+        } finally {
+            fileLock.writeLock().unlock();
         }
     }
 
@@ -745,33 +990,38 @@ public class ProcessedFileLogger {
     }
 
     private void backfillFileTargetPaths(Path outputRoot) {
-        synchronized (fileWriteLock) {
-            File logFile = new File(config.getProcessedFileLogPath());
-            File tempFile = new File(logFile.getAbsolutePath() + ".backfill-target.tmp");
-            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
-                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    String[] parts = line.split("\\|", -1);
-                    parts = Arrays.copyOf(parts, Math.max(parts.length, 8));
-                    for (int i = 0; i < parts.length; i++) if (parts[i] == null) parts[i] = "";
-                    if (parts[7].isBlank() && isBackfillable(parts[1], parts[4])) {
-                        String target = findArchivedAudio(outputRoot, parts[4], parts[0], parts[3]);
-                        if (target != null) parts[7] = target;
-                    }
-                    writer.write(String.join("|", parts)); writer.newLine();
-                }
-            } catch (IOException e) {
-                tempFile.delete();
-                log.warn("文件日志历史目标路径自愈回填失败: {}", e.getMessage());
-                return;
-            }
+        fileLock.writeLock().lock();
+        try {
+            Path logPath = Path.of(config.getProcessedFileLogPath());
+            if (!Files.exists(logPath)) return;
+            Path tempPath = logPath.resolveSibling(logPath.getFileName() + ".backfill-target.tmp");
             try {
-                Files.move(tempFile.toPath(), logFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8);
+                     BufferedWriter writer = Files.newBufferedWriter(tempPath, StandardCharsets.UTF_8)) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String[] parts = splitLogLine(line);
+                        parts = Arrays.copyOf(parts, Math.max(parts.length, 8));
+                        for (int i = 0; i < parts.length; i++) if (parts[i] == null) parts[i] = "";
+                        if (parts[7].isBlank() && isBackfillable(parts[1], parts[4])) {
+                            String target = findArchivedAudio(outputRoot, parts[4], parts[0], parts[3]);
+                            if (target != null) parts[7] = target;
+                        }
+                        writer.write(formatLogLine(parts));
+                        writer.newLine();
+                    }
+                }
+                moveReplaceAtomic(tempPath, logPath);
             } catch (IOException e) {
-                tempFile.delete();
-                log.warn("替换历史目标路径日志失败: {}", e.getMessage());
+                log.warn("文件日志历史目标路径自愈回填失败: {}", e.getMessage());
+            } finally {
+                try {
+                    Files.deleteIfExists(tempPath);
+                } catch (IOException ignored) {
+                }
             }
+        } finally {
+            fileLock.writeLock().unlock();
         }
     }
 
@@ -819,30 +1069,95 @@ public class ProcessedFileLogger {
 
     private static String nullToEmpty(String value) { return value == null ? "" : value; }
 
-    /** 读取文件模式日志的所有行（已拆列）。 */
-    private java.util.List<String[]> readLogRows() {
-        java.util.List<String[]> rows = new java.util.ArrayList<>();
-        File logFile = new File(config.getProcessedFileLogPath());
-        if (!logFile.exists()) {
-            return rows;
-        }
-        try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                String[] parts = line.split("\\|", -1);
-                if (parts.length >= 6) {
-                    rows.add(parts);
-                }
+    /** 对文件模式日志单列进行最小转义（仅转义 \\、|、\\r、\\n，保持普通路径与旧日志格式兼容）。 */
+    static String escapeLogField(String value) {
+        if (value == null || value.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '\\' -> sb.append("\\\\");
+                case '|' -> sb.append("\\|");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                default -> sb.append(c);
             }
-        } catch (IOException e) {
-            log.error(I18nUtil.getMessage("logger.read.log.failed"), e);
         }
-        return rows;
+        return sb.toString();
+    }
+
+    private static String formatLogLine(String... fields) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < fields.length; i++) {
+            if (i > 0) sb.append('|');
+            sb.append(escapeLogField(fields[i]));
+        }
+        return sb.toString();
+    }
+
+    /** 拆分文件模式日志行，仅在未转义的 | 处切分并还原 \\\\、\\|、\\n、\\r。 */
+    static String[] splitLogLine(String line) {
+        List<String> parts = new ArrayList<>(8);
+        StringBuilder field = new StringBuilder();
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '\\' && i + 1 < line.length()) {
+                char next = line.charAt(i + 1);
+                switch (next) {
+                    case '\\' -> { field.append('\\'); i++; }
+                    case '|' -> { field.append('|'); i++; }
+                    case 'n' -> { field.append('\n'); i++; }
+                    case 'r' -> { field.append('\r'); i++; }
+                    default -> field.append(c); // 兼容旧日志中未转义的 Windows 路径反斜杠
+                }
+            } else if (c == '|') {
+                parts.add(field.toString());
+                field.setLength(0);
+            } else {
+                field.append(c);
+            }
+        }
+        parts.add(field.toString());
+        return parts.toArray(new String[0]);
+    }
+
+    private static void moveReplaceAtomic(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /** 读取文件模式日志的所有行（已拆列，读锁 + UTF-8）。 */
+    private java.util.List<String[]> readLogRows() {
+        fileLock.readLock().lock();
+        try {
+            java.util.List<String[]> rows = new java.util.ArrayList<>();
+            Path logPath = Path.of(config.getProcessedFileLogPath());
+            if (!Files.exists(logPath)) {
+                return rows;
+            }
+            try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String[] parts = splitLogLine(line);
+                    if (parts.length >= 6) {
+                        rows.add(parts);
+                    }
+                }
+            } catch (IOException e) {
+                log.error(I18nUtil.getMessage("logger.read.log.failed"), e);
+            }
+            return rows;
+        } finally {
+            fileLock.readLock().unlock();
+        }
     }
 
     /**
      * 删除指定路径的已处理记录，供用户主动重新识别时使用。
-     * 文件模式会原子式重写日志；MySQL 模式按 file_path 删除。
+     * 文件模式会原子式重写日志；DB 模式按 file_path 删除。
      */
     public void removeProcessedRecord(File file) {
         if (file == null) {
@@ -860,30 +1175,36 @@ public class ProcessedFileLogger {
             return;
         }
 
-        synchronized (fileWriteLock) {
-            File logFile = new File(config.getProcessedFileLogPath());
-            if (!logFile.exists()) {
+        fileLock.writeLock().lock();
+        try {
+            Path logPath = Path.of(config.getProcessedFileLogPath());
+            if (!Files.exists(logPath)) {
                 return;
             }
-            File tempFile = new File(logFile.getAbsolutePath() + ".rewrite.tmp");
-            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
-                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (!line.startsWith(filePath + "|")) {
-                        writer.write(line);
-                        writer.newLine();
+            Path tempPath = logPath.resolveSibling(logPath.getFileName() + ".rewrite.tmp");
+            try {
+                try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8);
+                     BufferedWriter writer = Files.newBufferedWriter(tempPath, StandardCharsets.UTF_8)) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String[] parts = splitLogLine(line);
+                        if (parts.length == 0 || !filePath.equals(parts[0])) {
+                            writer.write(line);
+                            writer.newLine();
+                        }
                     }
                 }
+                moveReplaceAtomic(tempPath, logPath);
             } catch (IOException e) {
-                throw new RuntimeException("重写已处理日志失败", e);
+                throw new RuntimeException("重写/替换已处理日志失败", e);
+            } finally {
+                try {
+                    Files.deleteIfExists(tempPath);
+                } catch (IOException ignored) {
+                }
             }
-            try {
-                java.nio.file.Files.move(tempFile.toPath(), logFile.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException e) {
-                throw new RuntimeException("替换已处理日志失败", e);
-            }
+        } finally {
+            fileLock.writeLock().unlock();
         }
     }
 
@@ -967,7 +1288,8 @@ public class ProcessedFileLogger {
     private String selectColumns() {
         return "file_path, file_name, recording_id, artist, title, album, processed_time"
             + (releaseGroupIdColumnAvailable ? ", release_group_id" : "")
-            + (targetFilePathColumnAvailable ? ", target_file_path" : "");
+            + (targetFilePathColumnAvailable ? ", target_file_path" : "")
+            + (folderPathColumnAvailable ? ", folder_path" : "");
     }
 
     private ProcessedRecord mapRow(ResultSet rs) throws SQLException {
@@ -982,6 +1304,7 @@ public class ProcessedFileLogger {
         r.processedTime = ts == null ? null : ts.toLocalDateTime().format(dateFormatter);
         if (releaseGroupIdColumnAvailable) r.releaseGroupId = emptyToNull(rs.getString("release_group_id"));
         if (targetFilePathColumnAvailable) r.targetFilePath = emptyToNull(rs.getString("target_file_path"));
+        if (folderPathColumnAvailable) r.folderPath = emptyToNull(rs.getString("folder_path"));
         r.status = ProcessedRecord.classify(r.recordingId);
         return r;
     }
@@ -1178,8 +1501,215 @@ public class ProcessedFileLogger {
         return null;
     }
 
+    /** 按持久化 folder_path 列表批量查询处理记录（避免全表 loadAllRecords 载入堆内存）。 */
+    public List<ProcessedRecord> findRecordsByFolderPaths(Collection<String> folderPaths, int max) {
+        List<ProcessedRecord> result = new ArrayList<>();
+        if (folderPaths == null || folderPaths.isEmpty() || max <= 0) return result;
+        Set<String> wanted = dedupe(folderPaths);
+        if (wanted.isEmpty()) return result;
+        if (!isDbMode || !folderPathColumnAvailable) {
+            return null;
+        }
+        List<String> list = new ArrayList<>(wanted);
+        try (Connection conn = databaseService.getConnection()) {
+            for (int i = 0; i < list.size() && result.size() < max; i += IN_BATCH) {
+                List<String> chunk = list.subList(i, Math.min(i + IN_BATCH, list.size()));
+                int remaining = max - result.size();
+                String sql = "SELECT " + selectColumns() + " FROM processed_files WHERE folder_path IN ("
+                    + String.join(", ", java.util.Collections.nCopies(chunk.size(), "?")) + ") "
+                    + "ORDER BY file_path ASC LIMIT ?";
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    for (int j = 0; j < chunk.size(); j++) pstmt.setString(j + 1, chunk.get(j));
+                    pstmt.setInt(chunk.size() + 1, remaining);
+                    try (ResultSet rs = pstmt.executeQuery()) {
+                        while (rs.next()) {
+                            result.add(mapRow(rs));
+                        }
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("按文件夹查询处理记录失败: " + e.getMessage(), e);
+        }
+        return result;
+    }
+
+    /** SQL 文件夹分页查询结果（仅含当前页文件夹路径、总数、状态计数与匹配文件数）。 */
+    public static final class FolderSqlPage {
+        public final List<String> folderPaths = new ArrayList<>();
+        public final Map<String, Long> counts = new HashMap<>();
+        public long total;
+        public long totalFiles;
+    }
+
+    private static final String FOLDER_SUCCESS_PRED =
+        "(failed_cnt = 0 AND (file_count - failed_cnt - other_cnt) > 0 AND rejected_cnt = 0)";
+
+    private String buildFolderAggSubquery(ProcessedRecordQuery q, List<Object> params) {
+        StringBuilder sql = new StringBuilder(
+            "SELECT folder_path, "
+            + "COUNT(*) AS file_count, "
+            + "MAX(processed_time) AS latest_time, "
+            + "SUM(CASE WHEN " + FAILED_SQL + " THEN 1 ELSE 0 END) AS failed_cnt, "
+            + "SUM(CASE WHEN " + OTHER_SQL + " THEN 1 ELSE 0 END) AS other_cnt, "
+            + "SUM(CASE WHEN recording_id = 'REVIEW_REJECTED' THEN 1 ELSE 0 END) AS rejected_cnt, "
+            + "MIN(CASE WHEN " + SUCCESS_SQL
+                + " AND album IS NOT NULL AND TRIM(album) <> '' AND LOWER(TRIM(album)) <> 'unknown album' "
+                + "THEN album END) AS sort_album, "
+            + "MIN(CASE WHEN " + SUCCESS_SQL
+                + " AND artist IS NOT NULL AND TRIM(artist) <> '' AND LOWER(TRIM(artist)) <> 'unknown artist' "
+                + "THEN artist END) AS sort_artist "
+            + "FROM processed_files "
+            + "WHERE folder_path IS NOT NULL AND folder_path <> '' "
+            + "GROUP BY folder_path");
+
+        List<String> havingClauses = new ArrayList<>();
+        String album = q == null ? null : q.normalizedAlbum();
+        if (album != null) {
+            havingClauses.add("SUM(CASE WHEN album = ? THEN 1 ELSE 0 END) > 0");
+            params.add(album);
+        }
+        String keyword = q == null ? null : q.normalizedKeyword();
+        if (keyword != null) {
+            String pattern = likePattern(keyword);
+            String esc = " ESCAPE '" + LIKE_ESCAPE + "'";
+            havingClauses.add("SUM(CASE WHEN LOWER(folder_path) LIKE ?" + esc
+                + " OR LOWER(file_path) LIKE ?" + esc
+                + " OR LOWER(artist) LIKE ?" + esc
+                + " OR LOWER(title) LIKE ?" + esc
+                + " OR LOWER(album) LIKE ?" + esc
+                + " THEN 1 ELSE 0 END) > 0");
+            for (int i = 0; i < 5; i++) {
+                params.add(pattern);
+            }
+        }
+        if (!havingClauses.isEmpty()) {
+            sql.append(" HAVING ").append(String.join(" AND ", havingClauses));
+        }
+        return sql.toString();
+    }
+
+    private static String folderStatusFilterSql(ProcessedRecord.Status status) {
+        if (status == null) return "1=1";
+        switch (status) {
+            case FAILED: return "failed_cnt > 0";
+            case SUCCESS: return FOLDER_SUCCESS_PRED;
+            default: return "NOT (failed_cnt > 0) AND NOT " + FOLDER_SUCCESS_PRED;
+        }
+    }
+
+    private static String folderOrderBySql(ProcessedRecordQuery.Sort sort) {
+        ProcessedRecordQuery.Sort effective = sort == null ? ProcessedRecordQuery.Sort.TIME_DESC : sort;
+        switch (effective) {
+            case TIME_ASC:
+                return " ORDER BY CASE WHEN latest_time IS NULL THEN 1 ELSE 0 END ASC, latest_time ASC, LOWER(folder_path) ASC";
+            case ALBUM:
+                return " ORDER BY CASE WHEN sort_album IS NULL THEN 1 ELSE 0 END ASC, LOWER(sort_album) ASC, LOWER(folder_path) ASC";
+            case ARTIST:
+                return " ORDER BY CASE WHEN sort_artist IS NULL THEN 1 ELSE 0 END ASC, LOWER(sort_artist) ASC, "
+                    + "CASE WHEN sort_album IS NULL THEN 1 ELSE 0 END ASC, LOWER(sort_album) ASC, LOWER(folder_path) ASC";
+            case TITLE:
+            case PATH:
+                return " ORDER BY LOWER(folder_path) ASC";
+            default:
+                return " ORDER BY CASE WHEN latest_time IS NULL THEN 1 ELSE 0 END ASC, latest_time DESC, LOWER(folder_path) ASC";
+        }
+    }
+
+    /**
+     * 基于持久化 folder_path 列的 SQL 文件夹分页查询：不将整表载入内存。
+     */
+    public FolderSqlPage queryFolderPageSql(ProcessedRecordQuery q) {
+        if (!isDbMode || !folderPathColumnAvailable) {
+            return null;
+        }
+        FolderSqlPage page = new FolderSqlPage();
+        ProcessedRecord.Status status = q == null ? null : q.status;
+        int limit = q == null ? 50 : q.safeLimit();
+        int offset = q == null ? 0 : q.safeOffset();
+        ProcessedRecordQuery.Sort sort = q == null ? ProcessedRecordQuery.Sort.TIME_DESC : q.sort;
+
+        try (Connection conn = databaseService.getConnection()) {
+            List<Object> params = new ArrayList<>();
+            String agg = buildFolderAggSubquery(q, params);
+            String matchedPred = folderStatusFilterSql(status);
+
+            String countSql = "SELECT COUNT(*) AS all_folders, "
+                + "COALESCE(SUM(CASE WHEN failed_cnt > 0 THEN 1 ELSE 0 END), 0) AS failed_folders, "
+                + "COALESCE(SUM(CASE WHEN " + FOLDER_SUCCESS_PRED + " THEN 1 ELSE 0 END), 0) AS success_folders, "
+                + "COALESCE(SUM(CASE WHEN " + matchedPred + " THEN file_count ELSE 0 END), 0) AS matched_files "
+                + "FROM (" + agg + ") agg";
+            try (PreparedStatement pstmt = conn.prepareStatement(countSql)) {
+                bind(pstmt, params);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next()) {
+                        long all = rs.getLong("all_folders");
+                        long failed = rs.getLong("failed_folders");
+                        long success = rs.getLong("success_folders");
+                        long other = Math.max(0L, all - failed - success);
+                        page.counts.put("ALL", all);
+                        page.counts.put("SUCCESS", success);
+                        page.counts.put("FAILED", failed);
+                        page.counts.put("OTHER", other);
+                        page.totalFiles = rs.getLong("matched_files");
+                    }
+                }
+            }
+            page.total = page.counts.getOrDefault(status == null ? "ALL" : status.name(), 0L);
+            if (page.total == 0L) {
+                return page;
+            }
+
+            String pageSql = "SELECT folder_path FROM (" + agg + ") agg WHERE " + matchedPred
+                + folderOrderBySql(sort) + " LIMIT ? OFFSET ?";
+            List<Object> pageParams = new ArrayList<>(params);
+            pageParams.add(limit);
+            pageParams.add(offset);
+            try (PreparedStatement pstmt = conn.prepareStatement(pageSql)) {
+                bind(pstmt, pageParams);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) {
+                        page.folderPaths.add(rs.getString("folder_path"));
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("按文件夹分页查询处理记录失败: " + e.getMessage(), e);
+        }
+        return page;
+    }
+
+    /** 基于持久化 folder_path 列的 SQL 文件夹路径列表查询（供批量操作与导出使用）。 */
+    public List<String> findFolderPathsSql(ProcessedRecordQuery q, int maxFolders) {
+        if (!isDbMode || !folderPathColumnAvailable) {
+            return null;
+        }
+        List<String> folders = new ArrayList<>();
+        ProcessedRecord.Status status = q == null ? null : q.status;
+        ProcessedRecordQuery.Sort sort = q == null ? ProcessedRecordQuery.Sort.TIME_DESC : q.sort;
+        try (Connection conn = databaseService.getConnection()) {
+            List<Object> params = new ArrayList<>();
+            String agg = buildFolderAggSubquery(q, params);
+            String sql = "SELECT folder_path FROM (" + agg + ") agg WHERE "
+                + folderStatusFilterSql(status) + folderOrderBySql(sort) + " LIMIT ?";
+            params.add(maxFolders);
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                bind(pstmt, params);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) {
+                        folders.add(rs.getString("folder_path"));
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("按条件查询文件夹列表失败: " + e.getMessage(), e);
+        }
+        return folders;
+    }
+
     /**
      * 批量删除处理记录（按记录中保存的原始路径精确匹配）。
+     * DB 模式将全部分批 DELETE 包在同一事务中，避免中途失败留下半删脏态。
      * @return 实际被删除的记录数（文件模式下按不同路径计数）
      */
     public int removeProcessedRecords(Collection<String> paths) {
@@ -1191,13 +1721,30 @@ public class ProcessedFileLogger {
             List<String> list = new ArrayList<>(targets);
             int removed = 0;
             try (Connection conn = databaseService.getConnection()) {
-                for (int i = 0; i < list.size(); i += IN_BATCH) {
-                    List<String> chunk = list.subList(i, Math.min(i + IN_BATCH, list.size()));
-                    String sql = "DELETE FROM processed_files WHERE file_path IN ("
-                        + String.join(", ", java.util.Collections.nCopies(chunk.size(), "?")) + ")";
-                    try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                        for (int j = 0; j < chunk.size(); j++) pstmt.setString(j + 1, chunk.get(j));
-                        removed += pstmt.executeUpdate();
+                boolean autoCommit = conn.getAutoCommit();
+                conn.setAutoCommit(false);
+                try {
+                    for (int i = 0; i < list.size(); i += IN_BATCH) {
+                        List<String> chunk = list.subList(i, Math.min(i + IN_BATCH, list.size()));
+                        String sql = "DELETE FROM processed_files WHERE file_path IN ("
+                            + String.join(", ", java.util.Collections.nCopies(chunk.size(), "?")) + ")";
+                        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                            for (int j = 0; j < chunk.size(); j++) pstmt.setString(j + 1, chunk.get(j));
+                            removed += pstmt.executeUpdate();
+                        }
+                    }
+                    conn.commit();
+                } catch (SQLException e) {
+                    try {
+                        conn.rollback();
+                    } catch (SQLException rollbackErr) {
+                        e.addSuppressed(rollbackErr);
+                    }
+                    throw e;
+                } finally {
+                    try {
+                        conn.setAutoCommit(autoCommit);
+                    } catch (SQLException ignored) {
                     }
                 }
             } catch (SQLException e) {
@@ -1206,35 +1753,39 @@ public class ProcessedFileLogger {
             return removed;
         }
 
-        synchronized (fileWriteLock) {
-            File logFile = new File(config.getProcessedFileLogPath());
-            if (!logFile.exists()) return 0;
-            File tempFile = new File(logFile.getAbsolutePath() + ".remove.tmp");
+        fileLock.writeLock().lock();
+        try {
+            Path logPath = Path.of(config.getProcessedFileLogPath());
+            if (!Files.exists(logPath)) return 0;
+            Path tempPath = logPath.resolveSibling(logPath.getFileName() + ".remove.tmp");
             Set<String> removedPaths = new HashSet<>();
-            try (BufferedReader reader = new BufferedReader(new FileReader(logFile));
-                 BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    int sep = line.indexOf('|');
-                    String path = sep < 0 ? line : line.substring(0, sep);
-                    if (targets.contains(path)) {
-                        removedPaths.add(path);
-                        continue;
-                    }
-                    writer.write(line);
-                    writer.newLine();
-                }
-            } catch (IOException e) {
-                tempFile.delete();
-                throw new RuntimeException("重写已处理日志失败", e);
-            }
             try {
-                Files.move(tempFile.toPath(), logFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8);
+                     BufferedWriter writer = Files.newBufferedWriter(tempPath, StandardCharsets.UTF_8)) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String[] parts = splitLogLine(line);
+                        String path = parts.length > 0 ? parts[0] : "";
+                        if (targets.contains(path)) {
+                            removedPaths.add(path);
+                            continue;
+                        }
+                        writer.write(line);
+                        writer.newLine();
+                    }
+                }
+                moveReplaceAtomic(tempPath, logPath);
+                return removedPaths.size();
             } catch (IOException e) {
-                tempFile.delete();
-                throw new RuntimeException("替换已处理日志失败", e);
+                throw new RuntimeException("重写/替换已处理日志失败", e);
+            } finally {
+                try {
+                    Files.deleteIfExists(tempPath);
+                } catch (IOException ignored) {
+                }
             }
-            return removedPaths.size();
+        } finally {
+            fileLock.writeLock().unlock();
         }
     }
 
@@ -1372,18 +1923,22 @@ public class ProcessedFileLogger {
             }
         } else {
             stats.put("databaseType", "File");
-            // 简单统计行数
-            File logFile = new File(config.getProcessedFileLogPath());
-            if (logFile.exists()) {
-                try (BufferedReader reader = new BufferedReader(new FileReader(logFile))) {
-                    long lines = reader.lines().count();
-                    stats.put("totalProcessed", lines);
-                } catch (IOException e) {
-                    log.error("读取日志文件统计失败", e);
+            fileLock.readLock().lock();
+            try {
+                Path logPath = Path.of(config.getProcessedFileLogPath());
+                if (Files.exists(logPath)) {
+                    try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8)) {
+                        long lines = reader.lines().count();
+                        stats.put("totalProcessed", lines);
+                    } catch (IOException e) {
+                        log.error("读取日志文件统计失败", e);
+                        stats.put("totalProcessed", 0);
+                    }
+                } else {
                     stats.put("totalProcessed", 0);
                 }
-            } else {
-                stats.put("totalProcessed", 0);
+            } finally {
+                fileLock.readLock().unlock();
             }
         }
 

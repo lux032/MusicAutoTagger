@@ -136,18 +136,23 @@ public class NativeWebSearchClient implements WebSearchClient {
         body.addProperty("max_output_tokens", config.getLlmWebSearchMaxTokens());
 
         JsonObject json = send(url, key, null, body);
+        return parseOpenAiResponse(index, model, json);
+    }
+
+    SearchResponse parseOpenAiResponse(int index, String model, JsonObject json) {
         SearchResponse result = base(index, "openai", model);
-        JsonArray output = json.getAsJsonArray("output");
+        JsonArray output = array(json, "output");
         StringBuilder text = new StringBuilder();
         if (output != null) for (JsonElement blockEl : output) {
             if (!blockEl.isJsonObject()) continue;
-            JsonArray content = blockEl.getAsJsonObject().getAsJsonArray("content");
+            JsonArray content = array(blockEl.getAsJsonObject(), "content");
             if (content == null) continue;
             for (JsonElement contentEl : content) {
                 if (!contentEl.isJsonObject()) continue;
                 JsonObject c = contentEl.getAsJsonObject();
-                if (c.has("text")) text.append(c.get("text").getAsString());
-                JsonArray annotations = c.getAsJsonArray("annotations");
+                String piece = string(c, "text");
+                if (piece != null) text.append(piece);
+                JsonArray annotations = array(c, "annotations");
                 if (annotations != null) for (JsonElement annEl : annotations) {
                     if (!annEl.isJsonObject()) continue;
                     JsonObject ann = annEl.getAsJsonObject();
@@ -179,20 +184,27 @@ public class NativeWebSearchClient implements WebSearchClient {
         messages.add(message); body.add("messages", messages);
 
         JsonObject json = send(url, key, "anthropic", body);
+        return parseAnthropicResponse(index, model, json);
+    }
+
+    SearchResponse parseAnthropicResponse(int index, String model, JsonObject json) {
         SearchResponse result = base(index, "anthropic", model);
         StringBuilder text = new StringBuilder();
-        JsonArray content = json.getAsJsonArray("content");
+        JsonArray content = array(json, "content");
         if (content != null) for (JsonElement el : content) {
             if (!el.isJsonObject()) continue;
             JsonObject block = el.getAsJsonObject();
-            if (block.has("text")) text.append(block.get("text").getAsString());
-            JsonArray citations = block.getAsJsonArray("citations");
+            String piece = string(block, "text");
+            if (piece != null) text.append(piece);
+            JsonArray citations = array(block, "citations");
             if (citations != null) for (JsonElement citEl : citations) {
                 if (!citEl.isJsonObject()) continue;
                 JsonObject cit = citEl.getAsJsonObject();
                 addCitation(result, string(cit, "url"), string(cit, "title"), string(cit, "cited_text"));
             }
-            JsonArray searchResults = block.getAsJsonArray("content");
+            // Anthropic web_search_tool_result 在报错时 content 为 JsonObject（web_search_tool_result_error），
+            // 必须先判断 isJsonArray，防止直接 ClassCastException 崩溃
+            JsonArray searchResults = array(block, "content");
             if (searchResults != null) for (JsonElement srEl : searchResults) {
                 if (!srEl.isJsonObject()) continue;
                 JsonObject sr = srEl.getAsJsonObject();
@@ -235,6 +247,9 @@ public class NativeWebSearchClient implements WebSearchClient {
     private void addCitation(SearchResponse r, String url, String title, String snippet) {
         if (url == null || url.isBlank()) return;
         r.addCitation(Citation.of(url, title, snippet));
+    }
+    private JsonArray array(JsonObject o, String k) {
+        return o != null && o.has(k) && o.get(k).isJsonArray() ? o.getAsJsonArray(k) : null;
     }
     private String string(JsonObject o,String k){ return o!=null&&o.has(k)&&o.get(k).isJsonPrimitive()?o.get(k).getAsString():null; }
     private String truncate(String s){ return s==null?"":s.substring(0,Math.min(300,s.length())); }

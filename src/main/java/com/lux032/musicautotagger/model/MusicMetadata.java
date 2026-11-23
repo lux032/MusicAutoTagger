@@ -161,6 +161,15 @@ public class MusicMetadata {
         return copy;
     }
 
+    /**
+     * 深拷贝全部字段（包含封面二进制数据），避免下游原地修改共享元数据对象。
+     */
+    public MusicMetadata copy() {
+        MusicMetadata copy = copyWithoutHeavyFields();
+        copy.coverArtData = coverArtData == null ? null : coverArtData.clone();
+        return copy;
+    }
+
     public void setComposer(String composer) {
         if (!java.util.Objects.equals(this.composer, composer)) {
             this.composers = null;

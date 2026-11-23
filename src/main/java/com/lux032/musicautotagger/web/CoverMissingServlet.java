@@ -179,7 +179,7 @@ public class CoverMissingServlet extends HttpServlet {
                 }
                 case "fetch-url": {
                     CoverCandidateView view = coverMissingService.fetchCoverByUrl(id, str(body.get("url")));
-                    ReviewItem item = reviewQueue.get(id);
+                    ReviewItem item = reviewQueue.getSnapshot(id);
                     respond(resp, 200, Map.of("success", true, "candidate", view, "item", toDetail(item)));
                     return;
                 }
@@ -257,7 +257,7 @@ public class CoverMissingServlet extends HttpServlet {
             data = out.toByteArray();
         }
         CoverCandidateView view = coverMissingService.uploadCover(id, data, rawName);
-        ReviewItem item = reviewQueue.get(id);
+        ReviewItem item = reviewQueue.getSnapshot(id);
         respond(resp, 200, Map.of("success", true, "candidate", view, "item", toDetail(item)));
     }
 
@@ -295,7 +295,7 @@ public class CoverMissingServlet extends HttpServlet {
             respond(resp, 400, Map.of("error", "missing.id"));
             return;
         }
-        ReviewItem item = reviewQueue.get(id);
+        ReviewItem item = reviewQueue.getSnapshot(id);
         if (item == null || item.effectiveKind() != ReviewItem.Kind.COVER_MISSING) {
             respond(resp, 404, Map.of("error", "item.not.found"));
             return;

@@ -70,7 +70,12 @@ public class AutoArchiveRegistry {
     public void record(String failedRelativePath, Path archivedPath, List<String> audioFiles) {
         if (failedRelativePath == null || archivedPath == null) return;
         synchronized (LOCK) {
-            Map<String, Link> links = load();
+            Optional<Map<String, Link>> loaded = loadOrEmpty();
+            if (loaded.isEmpty()) {
+                log.error("自动归档链接文件读取异常，拒绝覆盖写盘以防历史记录被清空: {}", storeFile);
+                return;
+            }
+            Map<String, Link> links = loaded.get();
             links.put(failedRelativePath, new Link(archivedPath.toAbsolutePath().toString(), audioFiles,
                 System.currentTimeMillis()));
             save(links);
@@ -80,42 +85,72 @@ public class AutoArchiveRegistry {
     public Optional<Link> find(String failedRelativePath) {
         if (failedRelativePath == null) return Optional.empty();
         synchronized (LOCK) {
-            return Optional.ofNullable(load().get(failedRelativePath));
+            return loadOrEmpty().map(m -> m.get(failedRelativePath));
         }
     }
 
     public void remove(String failedRelativePath) {
         if (failedRelativePath == null) return;
         synchronized (LOCK) {
-            Map<String, Link> links = load();
+            Optional<Map<String, Link>> loaded = loadOrEmpty();
+            if (loaded.isEmpty()) {
+                log.error("自动归档链接文件读取异常，跳过删除操作以防覆盖历史记录: {}", storeFile);
+                return;
+            }
+            Map<String, Link> links = loaded.get();
             if (links.remove(failedRelativePath) != null) save(links);
         }
     }
 
-    private Map<String, Link> load() {
-        if (!Files.isRegularFile(storeFile)) return new LinkedHashMap<>();
+    /**
+     * 区分「文件不存在」（返回空 Map，可安全新建）与「读取/解析异常」（返回 empty，写操作必须拒绝覆写）。
+     */
+    private Optional<Map<String, Link>> loadOrEmpty() {
+        if (!Files.exists(storeFile)) {
+            return Optional.of(new LinkedHashMap<>());
+        }
+        if (!Files.isRegularFile(storeFile)) {
+            log.warn("自动归档链接路径不是普通文件，拒绝覆写: {}", storeFile);
+            return Optional.empty();
+        }
         try {
-            Map<String, Link> links = gson.fromJson(Files.readString(storeFile, StandardCharsets.UTF_8), MAP_TYPE);
-            return links == null ? new LinkedHashMap<>() : links;
+            String raw = Files.readString(storeFile, StandardCharsets.UTF_8);
+            if (raw.isBlank()) {
+                return Optional.of(new LinkedHashMap<>());
+            }
+            Map<String, Link> links = gson.fromJson(raw, MAP_TYPE);
+            return Optional.ofNullable(links);
         } catch (Exception e) {
-            // 链接只是去重辅助信息，损坏时退化为「没有链接」，由音频指纹去重兜底。
-            log.warn("自动归档链接文件无法解析，已忽略: {} - {}", storeFile, e.getMessage());
-            return new LinkedHashMap<>();
+            log.warn("自动归档链接文件读取或解析失败，拒绝清空覆写: {} - {}", storeFile, e.getMessage());
+            return Optional.empty();
         }
     }
 
     private void save(Map<String, Link> links) {
+        Path normalized = storeFile.toAbsolutePath().normalize();
+        Path parent = normalized.getParent();
+        Path tmp = null;
         try {
-            Files.createDirectories(storeFile.getParent());
-            Path tmp = storeFile.resolveSibling(storeFile.getFileName() + ".tmp");
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            tmp = normalized.resolveSibling(normalized.getFileName() + ".tmp");
             Files.writeString(tmp, gson.toJson(links, MAP_TYPE), StandardCharsets.UTF_8);
             try {
-                Files.move(tmp, storeFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                Files.move(tmp, normalized, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (AtomicMoveNotSupportedException e) {
-                Files.move(tmp, storeFile, StandardCopyOption.REPLACE_EXISTING);
+                Files.move(tmp, normalized, StandardCopyOption.REPLACE_EXISTING);
             }
+            tmp = null;
         } catch (IOException e) {
             log.warn("保存自动归档链接失败: {} - {}", storeFile, e.getMessage());
+        } finally {
+            if (tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 }

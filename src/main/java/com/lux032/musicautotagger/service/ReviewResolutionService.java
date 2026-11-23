@@ -27,6 +27,9 @@ import java.util.List;
 @Slf4j
 public class ReviewResolutionService {
 
+    private static final int ITEM_LOCK_STRIPES = 256;
+    private final Object[] itemLocks = new Object[ITEM_LOCK_STRIPES];
+
     private final MusicConfig config;
     private final ReviewQueueService reviewQueue;
     private final FolderAlbumCache folderAlbumCache;
@@ -44,6 +47,9 @@ public class ReviewResolutionService {
                                    MusicBrainzClient musicBrainzClient,
                                    DurationSequenceService durationSequenceService,
                                    ProcessedFileLogger processedLogger) {
+        for (int i = 0; i < ITEM_LOCK_STRIPES; i++) {
+            this.itemLocks[i] = new Object();
+        }
         this.config = config;
         this.reviewQueue = reviewQueue;
         this.folderAlbumCache = folderAlbumCache;
@@ -52,6 +58,10 @@ public class ReviewResolutionService {
         this.durationSequenceService = durationSequenceService;
         this.processedLogger = processedLogger;
         this.llmAlbumJudge = new LlmAlbumJudge(new LlmClient(config));
+    }
+
+    private Object itemLock(String id) {
+        return itemLocks[(id == null ? 0 : (id.hashCode() & 0x7fffffff)) % ITEM_LOCK_STRIPES];
     }
 
     /** 处置失败时抛出，Web 层据此返回 4xx/5xx */
@@ -83,127 +93,157 @@ public class ReviewResolutionService {
      * ——这个文件夹再也无法人工确认，只能手改队列 JSON。
      * 现在只有**全部需要展开的 RG 都成功**才置位，否则下次还能重试。
      */
-    public synchronized ReviewItem expandCandidates(String id) throws ResolutionException {
-        ReviewItem item = requireItem(id);
-        if (item.isCandidatesExpanded() && !hasPendingReleaseGroupCandidates(item)) {
-            return item;
-        }
-        if (item.isCandidatesExpanded()) {
-            // 兼容修复前已经落盘的坏状态：expanded=true，但候选仍只有 RG、没有 releaseId。
-            // 不能继续相信旧标志，否则升级后这些条目仍然永久卡死。
-            log.warn("检测到旧版遗留的错误展开状态，重置并重新展开: {}", item.getFolderName());
-            item.setCandidatesExpanded(false);
+    public ReviewItem expandCandidates(String id) throws ResolutionException {
+        ReviewItem snapshot = requireItem(id);
+        if (snapshot.isCandidatesExpanded() && !hasPendingReleaseGroupCandidates(snapshot)) {
+            return snapshot;
         }
 
-        List<Integer> folderDurations = item.getDurationSequence();
-        List<ReviewItem.CandidateSnapshot> expanded = new ArrayList<>();
-        // 任一 RG 展开失败（网络 / 5xx / 限流）就不能把条目钉死为「已展开」
-        boolean expansionFailed = false;
-
-        // 重试场景：上一轮已经成功展开过的 RG（条目里已有它的 Release 级快照）
-        // **不能再拉一次**，否则同一个 RG 的版本会被重复插入（N 个快照 × N 个版本）。
-        java.util.Set<String> alreadyExpandedGroups = new java.util.HashSet<>();
-        // 本轮已经请求过的 RG（成功或失败）都不再重复请求；同一 RG 只保留一条待重试快照
-        java.util.Set<String> attemptedGroups = new java.util.HashSet<>();
-        for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
+        // 先在锁外完成全部 MusicBrainz 网络请求，避免慢网络 I/O 阻塞其他条目和 Jetty 线程。
+        java.util.Set<String> snapshotExpandedGroups = new java.util.HashSet<>();
+        for (ReviewItem.CandidateSnapshot candidate : snapshot.getCandidates()) {
             if (candidate.getReleaseGroupId() != null && !candidate.getReleaseGroupId().isEmpty()
                 && ((candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty())
                     || candidate.isConfirmedNoRelease())) {
-                alreadyExpandedGroups.add(candidate.getReleaseGroupId());
+                snapshotExpandedGroups.add(candidate.getReleaseGroupId());
             }
         }
 
-        for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
+        java.util.Set<String> toFetch = new java.util.LinkedHashSet<>();
+        for (ReviewItem.CandidateSnapshot candidate : snapshot.getCandidates()) {
             String rgId = candidate.getReleaseGroupId();
-            if (rgId == null || rgId.isEmpty()) {
-                expanded.add(candidate);
-                continue;
-            }
-            if (candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty()) {
-                // 上一轮已成功展开得到的 Release 级快照，原样保留
-                expanded.add(candidate);
-                continue;
-            }
-            if (candidate.isConfirmedNoRelease()) {
-                // 已确认为空的标记，原样保留，不重新请求
-                expanded.add(candidate);
-                continue;
-            }
-            if (alreadyExpandedGroups.contains(rgId) || !attemptedGroups.add(rgId)) {
-                // 该 RG 已由旧快照展开过，或本轮已经请求过（包括失败），
-                // 丢弃重复的 RG 级快照，避免重复 API 调用与重复候选行。
-                continue;
-            }
+            if (rgId == null || rgId.isEmpty()) continue;
+            if (candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty()) continue;
+            if (candidate.isConfirmedNoRelease()) continue;
+            if (snapshotExpandedGroups.contains(rgId)) continue;
+            toFetch.add(rgId);
+        }
+
+        java.util.Map<String, List<MusicBrainzClient.AlbumDurationResult>> fetchedByRg = new java.util.HashMap<>();
+        java.util.Set<String> failedRgs = new java.util.HashSet<>();
+        for (String rgId : toFetch) {
             try {
                 List<MusicBrainzClient.AlbumDurationResult> releases =
                     musicBrainzClient.getReleasesForGroup(rgId);
-                if (releases.isEmpty()) {
-                    // 正常响应、非异常，说明 MusicBrainz 确认该 RG 下没有 Release——这是负结果，不是失败。
+                if (releases == null || releases.isEmpty()) {
                     log.info("候选 RG {} 已确认没有可用 Release（非错误，标记为 confirmedNoRelease，不再重试）: {}",
-                        rgId, item.getFolderName());
+                        rgId, snapshot.getFolderName());
+                    fetchedByRg.put(rgId, List.of());
+                } else {
+                    List<MusicBrainzClient.AlbumDurationResult> valid = new ArrayList<>();
+                    for (MusicBrainzClient.AlbumDurationResult release : releases) {
+                        if (release.getReleaseId() == null || release.getReleaseId().trim().isEmpty()) {
+                            log.warn("候选 RG {} 返回了缺少 releaseId 的版本，已忽略", rgId);
+                            continue;
+                        }
+                        valid.add(release);
+                    }
+                    if (valid.isEmpty()) {
+                        failedRgs.add(rgId);
+                        log.warn("候选 RG {} 没有返回任何带 releaseId 的有效版本，保留供重试", rgId);
+                    } else {
+                        fetchedByRg.put(rgId, valid);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("展开候选 {} 失败（保留 RG 级快照，下次可重试）: {}", rgId, e.getMessage());
+                failedRgs.add(rgId);
+            }
+        }
+
+        synchronized (itemLock(id)) {
+            ReviewItem item = requireItem(id);
+            if (item.isCandidatesExpanded() && !hasPendingReleaseGroupCandidates(item)) {
+                return item;
+            }
+            if (item.isCandidatesExpanded()) {
+                // 兼容修复前已经落盘的坏状态：expanded=true，但候选仍只有 RG、没有 releaseId。
+                log.warn("检测到旧版遗留的错误展开状态，重置并重新展开: {}", item.getFolderName());
+                item.setCandidatesExpanded(false);
+            }
+
+            List<Integer> folderDurations = item.getDurationSequence();
+            List<ReviewItem.CandidateSnapshot> expanded = new ArrayList<>();
+            boolean expansionFailed = false;
+
+            java.util.Set<String> alreadyExpandedGroups = new java.util.HashSet<>();
+            java.util.Set<String> attemptedGroups = new java.util.HashSet<>();
+            for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
+                if (candidate.getReleaseGroupId() != null && !candidate.getReleaseGroupId().isEmpty()
+                    && ((candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty())
+                        || candidate.isConfirmedNoRelease())) {
+                    alreadyExpandedGroups.add(candidate.getReleaseGroupId());
+                }
+            }
+
+            for (ReviewItem.CandidateSnapshot candidate : item.getCandidates()) {
+                String rgId = candidate.getReleaseGroupId();
+                if (rgId == null || rgId.isEmpty()) {
+                    expanded.add(candidate);
+                    continue;
+                }
+                if (candidate.getReleaseId() != null && !candidate.getReleaseId().isEmpty()) {
+                    expanded.add(candidate);
+                    continue;
+                }
+                if (candidate.isConfirmedNoRelease()) {
+                    expanded.add(candidate);
+                    continue;
+                }
+                if (alreadyExpandedGroups.contains(rgId) || !attemptedGroups.add(rgId)) {
+                    continue;
+                }
+                if (failedRgs.contains(rgId) || !fetchedByRg.containsKey(rgId)) {
+                    expansionFailed = true;
+                    expanded.add(candidate);
+                    continue;
+                }
+                List<MusicBrainzClient.AlbumDurationResult> releases = fetchedByRg.get(rgId);
+                if (releases.isEmpty()) {
                     candidate.setConfirmedNoRelease(true);
                     expanded.add(candidate);
                     continue;
                 }
-                int validReleaseCount = 0;
                 for (MusicBrainzClient.AlbumDurationResult release : releases) {
-                    if (release.getReleaseId() == null || release.getReleaseId().trim().isEmpty()) {
-                        log.warn("候选 RG {} 返回了缺少 releaseId 的版本，已忽略", rgId);
-                        continue;
-                    }
-                    ReviewItem.CandidateSnapshot snapshot = new ReviewItem.CandidateSnapshot();
-                    snapshot.setReleaseGroupId(rgId);
-                    snapshot.setReleaseId(release.getReleaseId());
-                    snapshot.setReleaseType(release.getReleaseType() != null
+                    ReviewItem.CandidateSnapshot s = new ReviewItem.CandidateSnapshot();
+                    s.setReleaseGroupId(rgId);
+                    s.setReleaseId(release.getReleaseId());
+                    s.setReleaseType(release.getReleaseType() != null
                         ? release.getReleaseType() : candidate.getReleaseType());
-                    snapshot.setCompilation(release.isCompilation() || candidate.isCompilation());
-                    snapshot.setTitle(release.getReleaseTitle() != null
+                    s.setCompilation(release.isCompilation() || candidate.isCompilation());
+                    s.setTitle(release.getReleaseTitle() != null
                         ? release.getReleaseTitle() : candidate.getTitle());
-                    snapshot.setArtist(item.getSynthesizedAlbumArtist());
-                    snapshot.setMediaFormat(release.getMediaFormat());
-                    snapshot.setTrackCount(release.getDurations() != null
+                    s.setArtist(item.getSynthesizedAlbumArtist());
+                    s.setMediaFormat(release.getMediaFormat());
+                    s.setTrackCount(release.getDurations() != null
                         ? release.getDurations().size() : release.getTrackCount());
-                    snapshot.setDurations(release.getDurations());
-                    snapshot.setSupportCount(candidate.getSupportCount());
-                    snapshot.setTotalSamples(candidate.getTotalSamples());
+                    s.setDurations(release.getDurations());
+                    s.setSupportCount(candidate.getSupportCount());
+                    s.setTotalSamples(candidate.getTotalSamples());
                     if (folderDurations != null && !folderDurations.isEmpty()
                         && release.getDurations() != null && !release.getDurations().isEmpty()) {
-                        snapshot.setDurationSimilarity(
+                        s.setDurationSimilarity(
                             durationSequenceService.calculateSimilarityDTW(folderDurations, release.getDurations()));
                     }
-                    expanded.add(snapshot);
-                    validReleaseCount++;
+                    expanded.add(s);
                 }
-                if (validReleaseCount == 0) {
-                    // 非空响应不等于可确认：没有 releaseId 的版本不能用于人工确认或 LLM 选择。
-                    expansionFailed = true;
-                    expanded.add(candidate);
-                    log.warn("候选 RG {} 没有返回任何带 releaseId 的有效版本，保留供重试", rgId);
-                } else {
-                    alreadyExpandedGroups.add(rgId);
-                }
-            } catch (Exception e) {
-                log.warn("展开候选 {} 失败（保留 RG 级快照，下次可重试）: {}", rgId, e.getMessage());
-                expansionFailed = true;
-                expanded.add(candidate);
+                alreadyExpandedGroups.add(rgId);
             }
-        }
 
-        // 相似度高的排前面，没有相似度的排后面
-        expanded.sort((a, b) -> Double.compare(
-            b.getDurationSimilarity() == null ? -1 : b.getDurationSimilarity(),
-            a.getDurationSimilarity() == null ? -1 : a.getDurationSimilarity()));
+            // 相似度高的排前面，没有相似度的排后面
+            expanded.sort((a, b) -> Double.compare(
+                b.getDurationSimilarity() == null ? -1 : b.getDurationSimilarity(),
+                a.getDurationSimilarity() == null ? -1 : a.getDurationSimilarity()));
 
-        item.setCandidates(expanded);
-        // 即使本次有失败，已成功展开的部分仍然写回（人工可以先用这些），
-        // 只是不置 expanded 标志，以便下次只重试剩下的 RG。
-        item.setCandidatesExpanded(!expansionFailed);
-        if (expansionFailed) {
-            log.warn("候选展开未全部成功，条目保持「未展开」以便重试: {}", item.getFolderName());
-            LogCollector.addLog("WARN", "候选版本展开未全部成功，可重试: " + item.getFolderName());
+            item.setCandidates(expanded);
+            item.setCandidatesExpanded(!expansionFailed);
+            if (expansionFailed) {
+                log.warn("候选展开未全部成功，条目保持「未展开」以便重试: {}", item.getFolderName());
+                LogCollector.addLog("WARN", "候选版本展开未全部成功，可重试: " + item.getFolderName());
+            }
+            reviewQueue.update(item);
+            return item;
         }
-        reviewQueue.update(item);
-        return item;
     }
 
     /** 是否仍有「只有 releaseGroupId、没有 releaseId」的待展开候选 */
@@ -255,85 +295,87 @@ public class ReviewResolutionService {
     /**
      * 人工从候选里选定了一个 release，按它锁定整张专辑并归档。
      */
-    public synchronized ReviewItem confirmCandidate(String id, String releaseId, String releaseGroupId)
+    public ReviewItem confirmCandidate(String id, String releaseId, String releaseGroupId)
             throws ResolutionException {
-        ReviewItem item = requirePending(id);
+        synchronized (itemLock(id)) {
+            ReviewItem item = requirePending(id);
 
-        // 审查 #2：必须选定**具体的 Release**。
-        // 刚入队的候选只有 releaseGroupId，拿它确认的话：
-        //   - 拿不到磟号 / 曲目号 / 该版本的曲目标题 / 发行日期
-        //   - trackCount 为 0、releaseId 为 null，写出来的是一个残缺的「人工确认」结果
-        // 前端也会隐藏按钮，但后端必须做硬校验，不能只依赖前端。
-        if (releaseId == null || releaseId.trim().isEmpty()) {
-            throw new ResolutionException(400, "release.id.required");
-        }
-
-        ReviewItem.CandidateSnapshot chosen = findCandidateByReleaseId(item, releaseId.trim());
-        if (chosen == null) {
-            throw new ResolutionException(400, "candidate.not.found");
-        }
-
-        // 审查 #1：先预检全部原始文件，任何一个缺失都不得开始处置。
-        // 否则 10 个文件缺 1 个时，剩下 9 个会被归档、条目被标为已完成、
-        // 暂存目录被清理，缺失的那个永远无法继续处理。
-        requireAllOriginalFiles(item);
-
-        String albumTitle = chosen.getTitle() != null ? chosen.getTitle() : item.getSynthesizedAlbumTitle();
-        String albumArtist = chosen.getArtist() != null && !chosen.getArtist().isEmpty()
-            ? chosen.getArtist() : item.getSynthesizedAlbumArtist();
-
-        FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
-            chosen.getReleaseGroupId(),
-            chosen.getReleaseId(),
-            albumTitle,
-            albumArtist,
-            chosen.getTrackCount(),
-            chosen.getDate() != null ? chosen.getDate() : "",
-            chosen.getReleaseType(),
-            chosen.isCompilation(),
-            1.0,
-            FolderAlbumCache.CacheSource.MANUAL_CONFIRMED
-        );
-
-        String folderPath = item.getFolderPath();
-        restorePendingFiles(item, chosen);
-
-        // 人工确认的结果优先级最高，且要解除 unresolved 守卫，
-        // 否则同目录后续新增的文件仍会被拦在专辑匹配之外。
-        folderAlbumCache.clearFolderUnresolved(folderPath);
-        folderAlbumCache.forceSetFolderAlbum(folderPath, albumInfo);
-
-        log.info("========================================");
-        log.info("✓ 人工确认专辑: {} - {} (Release ID: {})", albumArtist, albumTitle, chosen.getReleaseId());
-        log.info("  文件夹: {}", item.getFolderName());
-        log.info("========================================");
-        LogCollector.addLog("SUCCESS", "人工确认专辑: " + albumTitle);
-
-        AlbumBatchProcessor.BatchProcessResult result =
-            albumBatchProcessor.processPendingFilesWithAlbum(folderPath, albumInfo, false);
-
-        // 人工锁定的完整快照：重启后靠它重建 MANUAL_CONFIRMED 缓存
-        item.setResolvedReleaseId(chosen.getReleaseId());
-        item.setResolvedReleaseGroupId(chosen.getReleaseGroupId());
-        item.setResolvedAlbumTitle(albumTitle);
-        item.setResolvedAlbumArtist(albumArtist);
-        item.setResolvedReleaseDate(chosen.getDate());
-        item.setResolvedReleaseType(chosen.getReleaseType());
-        item.setResolvedCompilation(chosen.isCompilation());
-        item.setResolvedTrackCount(chosen.getTrackCount());
-
-        if (result != null && result.isQueuedForMissingCover()) {
-            ReviewItem transitioned = reviewQueue.get(item.getId());
-            if (transitioned != null && transitioned.getMissingCover() != null) {
-                transitioned.getMissingCover().setSourcePipeline("REVIEW_CONFIRM");
-                reviewQueue.update(transitioned);
-                return transitioned;
+            // 审查 #2：必须选定**具体的 Release**。
+            // 刚入队的候选只有 releaseGroupId，拿它确认的话：
+            //   - 拿不到碟号 / 曲目号 / 该版本的曲目标题 / 发行日期
+            //   - trackCount 为 0、releaseId 为 null，写出来的是一个残缺的「人工确认」结果
+            // 前端也会隐藏按钮，但后端必须做硬校验，不能只依赖前端。
+            if (releaseId == null || releaseId.trim().isEmpty()) {
+                throw new ResolutionException(400, "release.id.required");
             }
+
+            ReviewItem.CandidateSnapshot chosen = findCandidateByReleaseId(item, releaseId.trim());
+            if (chosen == null) {
+                throw new ResolutionException(400, "candidate.not.found");
+            }
+
+            // 审查 #1：先预检全部原始文件，任何一个缺失都不得开始处置。
+            // 否则 10 个文件缺 1 个时，剩下 9 个会被归档、条目被标为已完成、
+            // 暂存目录被清理，缺失的那个永远无法继续处理。
+            requireAllOriginalFiles(item);
+
+            String albumTitle = chosen.getTitle() != null ? chosen.getTitle() : item.getSynthesizedAlbumTitle();
+            String albumArtist = chosen.getArtist() != null && !chosen.getArtist().isEmpty()
+                ? chosen.getArtist() : item.getSynthesizedAlbumArtist();
+
+            FolderAlbumCache.CachedAlbumInfo albumInfo = new FolderAlbumCache.CachedAlbumInfo(
+                chosen.getReleaseGroupId(),
+                chosen.getReleaseId(),
+                albumTitle,
+                albumArtist,
+                chosen.getTrackCount(),
+                chosen.getDate() != null ? chosen.getDate() : "",
+                chosen.getReleaseType(),
+                chosen.isCompilation(),
+                1.0,
+                FolderAlbumCache.CacheSource.MANUAL_CONFIRMED
+            );
+
+            String folderPath = item.getFolderPath();
+            restorePendingFiles(item, chosen);
+
+            // 人工确认的结果优先级最高，且要解除 unresolved 守卫，
+            // 否则同目录后续新增的文件仍会被拦在专辑匹配之外。
+            folderAlbumCache.clearFolderUnresolved(folderPath);
+            folderAlbumCache.forceSetFolderAlbum(folderPath, albumInfo);
+
+            log.info("========================================");
+            log.info("✓ 人工确认专辑: {} - {} (Release ID: {})", albumArtist, albumTitle, chosen.getReleaseId());
+            log.info("  文件夹: {}", item.getFolderName());
+            log.info("========================================");
+            LogCollector.addLog("SUCCESS", "人工确认专辑: " + albumTitle);
+
+            AlbumBatchProcessor.BatchProcessResult result =
+                albumBatchProcessor.processPendingFilesWithAlbum(folderPath, albumInfo, false);
+
+            // 人工锁定的完整快照：重启后靠它重建 MANUAL_CONFIRMED 缓存
+            item.setResolvedReleaseId(chosen.getReleaseId());
+            item.setResolvedReleaseGroupId(chosen.getReleaseGroupId());
+            item.setResolvedAlbumTitle(albumTitle);
+            item.setResolvedAlbumArtist(albumArtist);
+            item.setResolvedReleaseDate(chosen.getDate());
+            item.setResolvedReleaseType(chosen.getReleaseType());
+            item.setResolvedCompilation(chosen.isCompilation());
+            item.setResolvedTrackCount(chosen.getTrackCount());
+
+            if (result != null && result.isQueuedForMissingCover()) {
+                ReviewItem transitioned = reviewQueue.get(item.getId());
+                if (transitioned != null && transitioned.getMissingCover() != null) {
+                    transitioned.getMissingCover().setSourcePipeline("REVIEW_CONFIRM");
+                    reviewQueue.update(transitioned);
+                    return transitioned;
+                }
+                return item;
+            }
+
+            finish(item, result, ReviewItem.Status.CONFIRMED, "人工确认: " + albumTitle);
             return item;
         }
-
-        finish(item, result, ReviewItem.Status.CONFIRMED, "人工确认: " + albumTitle);
-        return item;
     }
 
     // ==================== 动作 B：按「MB 未收录」归档 ====================
@@ -341,35 +383,37 @@ public class ReviewResolutionService {
     /**
      * 人工确认「MusicBrainz 里确实没有这张专辑」，按合成信息归档，标记为未验证。
      */
-    public synchronized ReviewItem archiveAsUnverified(String id) throws ResolutionException {
-        ReviewItem item = requirePending(id);
+    public ReviewItem archiveAsUnverified(String id) throws ResolutionException {
+        synchronized (itemLock(id)) {
+            ReviewItem item = requirePending(id);
 
-        requireAllOriginalFiles(item);
-        restorePendingFiles(item, null);
+            requireAllOriginalFiles(item);
+            restorePendingFiles(item, null);
 
-        String folderPath = item.getFolderPath();
-        folderAlbumCache.markFolderUnresolved(folderPath);
+            String folderPath = item.getFolderPath();
+            folderAlbumCache.markFolderUnresolved(folderPath);
 
-        log.info("人工确认「MusicBrainz 未收录」，按合成专辑信息归档: {}", item.getSynthesizedAlbumTitle());
-        LogCollector.addLog("INFO", "人工按未收录归档: " + item.getSynthesizedAlbumTitle());
+            log.info("人工确认「MusicBrainz 未收录」，按合成专辑信息归档: {}", item.getSynthesizedAlbumTitle());
+            LogCollector.addLog("INFO", "人工按未收录归档: " + item.getSynthesizedAlbumTitle());
 
-        // 关键：allowReviewQueue=false，否则会把刚取出的条目又塞回队列
-        AlbumBatchProcessor.BatchProcessResult result =
-            albumBatchProcessor.processPendingFilesAsUnresolvedAlbum(folderPath, false);
+            // 关键：allowReviewQueue=false，否则会把刚取出的条目又塞回队列
+            AlbumBatchProcessor.BatchProcessResult result =
+                albumBatchProcessor.processPendingFilesAsUnresolvedAlbum(folderPath, false);
 
-        if (result != null && result.isQueuedForMissingCover()) {
-            ReviewItem transitioned = reviewQueue.get(item.getId());
-            if (transitioned != null && transitioned.getMissingCover() != null) {
-                transitioned.getMissingCover().setSourcePipeline("REVIEW_ARCHIVE");
-                reviewQueue.update(transitioned);
-                return transitioned;
+            if (result != null && result.isQueuedForMissingCover()) {
+                ReviewItem transitioned = reviewQueue.get(item.getId());
+                if (transitioned != null && transitioned.getMissingCover() != null) {
+                    transitioned.getMissingCover().setSourcePipeline("REVIEW_ARCHIVE");
+                    reviewQueue.update(transitioned);
+                    return transitioned;
+                }
+                return item;
             }
+
+            finish(item, result, ReviewItem.Status.ARCHIVED_UNVERIFIED,
+                "人工按 MusicBrainz 未收录归档（verified=false）");
             return item;
         }
-
-        finish(item, result, ReviewItem.Status.ARCHIVED_UNVERIFIED,
-            "人工按 MusicBrainz 未收录归档（verified=false）");
-        return item;
     }
 
     /**
@@ -412,7 +456,7 @@ public class ReviewResolutionService {
      *   3. 结论默认只写回条目作为**建议**，条目仍保持 PENDING_REVIEW；
      *      只有 llm.album.autoApply 打开且置信度达标时才自动落盘。
      */
-    public synchronized ReviewItem judgeWithLlm(String id) throws ResolutionException {
+    public ReviewItem judgeWithLlm(String id) throws ResolutionException {
         if (!config.isLlmAlbumJudgeEnabled()) {
             throw new ResolutionException(501, "llm.judge.disabled");
         }
@@ -421,11 +465,11 @@ public class ReviewResolutionService {
         }
 
         requirePending(id);
-        // 封闭选择题需要 release 级候选（含官方时长序列，这是最强的判断依据）
+        // 封闭选择题需要 release 级候选（网络调用在锁外执行，不阻塞其他审核请求）
         ReviewItem item = expandCandidates(id);
-        // 展开失败时必须直接报错，不能拿一个空选项列表去问模型
         requireExpandedForJudgement(item);
 
+        // LLM 网络调用放在锁外，避免长达数十秒的推理冻结同实例其他审核操作
         LlmAlbumJudge.Judgement judgement;
         try {
             judgement = llmAlbumJudge.judge(item);
@@ -434,55 +478,54 @@ public class ReviewResolutionService {
             throw new ResolutionException(502, "llm.call.failed");
         }
 
-        ReviewItem.LlmSuggestion suggestion = new ReviewItem.LlmSuggestion();
-        suggestion.setEvaluatedAt(System.currentTimeMillis());
-        suggestion.setModel(judgement.getModel());
-        suggestion.setProvider(judgement.getProvider());
-        suggestion.setChoiceIndex(judgement.getChoiceIndex());
-        suggestion.setSuggestedReleaseId(judgement.getReleaseId());
-        suggestion.setSuggestedReleaseGroupId(judgement.getReleaseGroupId());
-        suggestion.setSuggestedTitle(judgement.getTitle());
-        suggestion.setConfidence(judgement.getConfidence());
-        suggestion.setUnreleasedCompilation(judgement.isUnreleasedCompilation());
-        suggestion.setReason(judgement.getReason());
-        item.setLlmSuggestion(suggestion);
-        reviewQueue.update(item);
+        synchronized (itemLock(id)) {
+            ReviewItem current = requirePending(id);
+            ReviewItem.LlmSuggestion suggestion = new ReviewItem.LlmSuggestion();
+            suggestion.setEvaluatedAt(System.currentTimeMillis());
+            suggestion.setModel(judgement.getModel());
+            suggestion.setProvider(judgement.getProvider());
+            suggestion.setChoiceIndex(judgement.getChoiceIndex());
+            suggestion.setSuggestedReleaseId(judgement.getReleaseId());
+            suggestion.setSuggestedReleaseGroupId(judgement.getReleaseGroupId());
+            suggestion.setSuggestedTitle(judgement.getTitle());
+            suggestion.setConfidence(judgement.getConfidence());
+            suggestion.setUnreleasedCompilation(judgement.isUnreleasedCompilation());
+            suggestion.setReason(judgement.getReason());
+            current.setLlmSuggestion(suggestion);
+            reviewQueue.update(current);
 
-        LogCollector.addLog("INFO", "LLM 专辑判定: " + item.getFolderName() + " -> "
-            + (judgement.getChoiceIndex() > 0 ? judgement.getTitle() : "候选里都不是"));
+            LogCollector.addLog("INFO", "LLM 专辑判定: " + current.getFolderName() + " -> "
+                + (judgement.getChoiceIndex() > 0 ? judgement.getTitle() : "候选里都不是"));
 
-        if (!shouldAutoApply(judgement)) {
-            return item;
-        }
-
-        // 审查修正 C1：**不能提前置 applied=true**。
-        // 批处理部分失败时，finish() 走的是「保持 PENDING_REVIEW + update()」，
-        // **不抛异常**，因此原来的 catch 根本兑不到，面板会显示「已自动落盘」但实际只写了一半。
-        // 现在一律按**处置后的最终状态**回填。
-        ReviewItem resolved;
-        try {
-            if (judgement.getChoiceIndex() > 0) {
-                log.info("LLM 置信度 {} 达标，自动按选定版本归档: {}",
-                    String.format("%.2f", judgement.getConfidence()), judgement.getTitle());
-                resolved = confirmCandidate(id, judgement.getReleaseId(), judgement.getReleaseGroupId());
-            } else {
-                log.info("LLM 判定为「MusicBrainz 未收录的精选集」且置信度达标，自动按未收录归档: {}",
-                    item.getFolderName());
-                resolved = archiveAsUnverified(id);
+            if (!shouldAutoApply(judgement)) {
+                return current;
             }
-        } catch (ResolutionException e) {
-            markApplied(item, false);
-            throw e;
-        }
 
-        boolean completed = resolved.getStatus() == ReviewItem.Status.CONFIRMED
-            || resolved.getStatus() == ReviewItem.Status.ARCHIVED_UNVERIFIED;
-        if (!completed) {
-            log.warn("LLM 自动落盘未全部成功，条目仍为 {}，applied 保持 false: {}",
-                resolved.getStatus(), resolved.getFolderName());
+            ReviewItem resolved;
+            try {
+                if (judgement.getChoiceIndex() > 0) {
+                    log.info("LLM 置信度 {} 达标，自动按选定版本归档: {}",
+                        String.format("%.2f", judgement.getConfidence()), judgement.getTitle());
+                    resolved = confirmCandidate(id, judgement.getReleaseId(), judgement.getReleaseGroupId());
+                } else {
+                    log.info("LLM 判定为「MusicBrainz 未收录的精选集」且置信度达标，自动按未收录归档: {}",
+                        current.getFolderName());
+                    resolved = archiveAsUnverified(id);
+                }
+            } catch (ResolutionException e) {
+                markApplied(current, false);
+                throw e;
+            }
+
+            boolean completed = resolved.getStatus() == ReviewItem.Status.CONFIRMED
+                || resolved.getStatus() == ReviewItem.Status.ARCHIVED_UNVERIFIED;
+            if (!completed) {
+                log.warn("LLM 自动落盘未全部成功，条目仍为 {}，applied 保持 false: {}",
+                    resolved.getStatus(), resolved.getFolderName());
+            }
+            markApplied(resolved, completed);
+            return resolved;
         }
-        markApplied(resolved, completed);
-        return resolved;
     }
 
     /**
@@ -526,35 +569,37 @@ public class ReviewResolutionService {
     /**
      * 人工放弃这个文件夹：不写标签、不归档，只记录下来避免下一轮扫描反复重试。
      */
-    public synchronized ReviewItem reject(String id, String note) throws ResolutionException {
-        ReviewItem item = requirePending(id);
+    public ReviewItem reject(String id, String note) throws ResolutionException {
+        synchronized (itemLock(id)) {
+            ReviewItem item = requirePending(id);
 
-        for (ReviewItem.FileEntry entry : item.getFiles()) {
-            File original = new File(entry.getOriginalPath());
-            try {
-                processedLogger.markFileAsProcessed(
-                    original,
-                    "REVIEW_REJECTED",
-                    entry.getMetadata() != null && entry.getMetadata().getArtist() != null
-                        ? entry.getMetadata().getArtist() : "Unknown Artist",
-                    entry.getMetadata() != null && entry.getMetadata().getTitle() != null
-                        ? entry.getMetadata().getTitle() : entry.getFileName(),
-                    item.getSynthesizedAlbumTitle() != null
-                        ? item.getSynthesizedAlbumTitle() : "Unknown Album"
-                );
-            } catch (Exception e) {
-                log.warn("记录被拒绝文件失败: {} - {}", entry.getFileName(), e.getMessage());
+            for (ReviewItem.FileEntry entry : item.getFiles()) {
+                File original = new File(entry.getOriginalPath());
+                try {
+                    processedLogger.markFileAsProcessed(
+                        original,
+                        "REVIEW_REJECTED",
+                        entry.getMetadata() != null && entry.getMetadata().getArtist() != null
+                            ? entry.getMetadata().getArtist() : "Unknown Artist",
+                        entry.getMetadata() != null && entry.getMetadata().getTitle() != null
+                            ? entry.getMetadata().getTitle() : entry.getFileName(),
+                        item.getSynthesizedAlbumTitle() != null
+                            ? item.getSynthesizedAlbumTitle() : "Unknown Album"
+                    );
+                } catch (Exception e) {
+                    log.warn("记录被拒绝文件失败: {} - {}", entry.getFileName(), e.getMessage());
+                }
             }
+
+            // 该文件夹的 unresolved 标记保留：即使用户之后又放入新文件，
+            // 也不应该悄悄归入某张旧专辑。
+            log.info("人工标记为失败/忽略: {} ({} 个文件)", item.getFolderName(), item.getFiles().size());
+            LogCollector.addLog("WARN", "人工标记待确认专辑为失败: " + item.getFolderName());
+
+            reviewQueue.markResolved(item, ReviewItem.Status.REJECTED,
+                note != null && !note.trim().isEmpty() ? note.trim() : "人工标记为失败/忽略");
+            return item;
         }
-
-        // 该文件夹的 unresolved 标记保留：即使用户之后又放入新文件，
-        // 也不应该悄悄归入某张旧专辑。
-        log.info("人工标记为失败/忽略: {} ({} 个文件)", item.getFolderName(), item.getFiles().size());
-        LogCollector.addLog("WARN", "人工标记待确认专辑为失败: " + item.getFolderName());
-
-        reviewQueue.markResolved(item, ReviewItem.Status.REJECTED,
-            note != null && !note.trim().isEmpty() ? note.trim() : "人工标记为失败/忽略");
-        return item;
     }
 
     // ==================== 撤销忽略 ====================
@@ -566,40 +611,42 @@ public class ReviewResolutionService {
      * 全部删除失败通常意味着数据库或日志不可用，此时不能把界面状态伪装成已恢复；部分失败则保留
      * 可操作性，并明确告警，用户仍可在待确认页继续人工处置。
      */
-    public synchronized ReviewItem unreject(String id) throws ResolutionException {
-        ReviewItem item = requireItem(id);
-        if (item.getStatus() != ReviewItem.Status.REJECTED) {
-            throw new ResolutionException(409, "item.not.rejected");
-        }
-        if (reviewQueue.hasOtherPendingForFolder(item.getFolderPath(), id)) {
-            throw new ResolutionException(409, "folder.already.pending");
-        }
-
-        List<ReviewItem.FileEntry> files = item.getFiles() != null ? item.getFiles() : java.util.Collections.emptyList();
-        int failures = 0;
-        for (ReviewItem.FileEntry entry : files) {
-            try {
-                processedLogger.removeProcessedRecord(new File(entry.getOriginalPath()));
-            } catch (Exception e) {
-                failures++;
-                log.warn("撤销被拒绝文件的已处理记录失败: {} - {}", entry.getFileName(), e.getMessage());
+    public ReviewItem unreject(String id) throws ResolutionException {
+        synchronized (itemLock(id)) {
+            ReviewItem item = requireItem(id);
+            if (item.getStatus() != ReviewItem.Status.REJECTED) {
+                throw new ResolutionException(409, "item.not.rejected");
             }
-        }
-        if (!files.isEmpty() && failures == files.size()) {
-            throw new ResolutionException(503, "unreject.log.failed");
-        }
-        if (failures > 0) {
-            log.warn("撤销忽略时有部分已处理记录删除失败: {} (失败 {}/{} 个)",
-                item.getFolderName(), failures, files.size());
-        }
+            if (reviewQueue.hasOtherPendingForFolder(item.getFolderPath(), id)) {
+                throw new ResolutionException(409, "folder.already.pending");
+            }
 
-        item.setStatus(ReviewItem.Status.PENDING_REVIEW);
-        item.setResolutionNote(null);
-        reviewQueue.update(item);
+            List<ReviewItem.FileEntry> files = item.getFiles() != null ? item.getFiles() : java.util.Collections.emptyList();
+            int failures = 0;
+            for (ReviewItem.FileEntry entry : files) {
+                try {
+                    processedLogger.removeProcessedRecord(new File(entry.getOriginalPath()));
+                } catch (Exception e) {
+                    failures++;
+                    log.warn("撤销被拒绝文件的已处理记录失败: {} - {}", entry.getFileName(), e.getMessage());
+                }
+            }
+            if (!files.isEmpty() && failures == files.size()) {
+                throw new ResolutionException(503, "unreject.log.failed");
+            }
+            if (failures > 0) {
+                log.warn("撤销忽略时有部分已处理记录删除失败: {} (失败 {}/{} 个)",
+                    item.getFolderName(), failures, files.size());
+            }
 
-        log.info("已撤销人工忽略，条目恢复待确认: {} ({} 个文件)", item.getFolderName(), files.size());
-        LogCollector.addLog("INFO", "已撤销忽略并恢复待确认: " + item.getFolderName());
-        return item;
+            item.setStatus(ReviewItem.Status.PENDING_REVIEW);
+            item.setResolutionNote(null);
+            reviewQueue.update(item);
+
+            log.info("已撤销人工忽略，条目恢复待确认: {} ({} 个文件)", item.getFolderName(), files.size());
+            LogCollector.addLog("INFO", "已撤销忽略并恢复待确认: " + item.getFolderName());
+            return item;
+        }
     }
 
     // ==================== 内部工具 ====================

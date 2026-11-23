@@ -84,6 +84,14 @@ public class ReviewQueueService {
         return stagingRoot.toAbsolutePath().normalize();
     }
 
+    /** 返回隔离深拷贝，避免调用方在队列锁外修改内部对象并与 save() 产生并发 ConcurrentModificationException。 */
+    private ReviewItem deepCopy(ReviewItem item) {
+        if (item == null) {
+            return null;
+        }
+        return gson.fromJson(gson.toJson(item), ReviewItem.class);
+    }
+
     // ==================== 查询 ====================
 
     /** 返回新入队优先的列表，不以更新时间排序，避免搜索或处置让旧条目跳到顶部。 */
@@ -98,7 +106,7 @@ public class ReviewQueueService {
         for (ReviewItem item : items.values()) {
             if ((statusFilter == null || statusFilter == item.getStatus())
                 && (kinds == null || kinds.contains(item.effectiveKind()))) {
-                result.add(item);
+                result.add(deepCopy(item));
             }
         }
         Collections.reverse(result);
@@ -159,6 +167,11 @@ public class ReviewQueueService {
         return id == null ? null : items.get(id);
     }
 
+    /** 返回隔离深拷贝快照，供只读 Web 渲染与跨线程检查使用，防止锁外篡改或读取并发变更态。 */
+    public synchronized ReviewItem getSnapshot(String id) {
+        return id == null ? null : deepCopy(items.get(id));
+    }
+
     /**
      * 为恢复目录创建一个不修改文件的待确认条目，供原生联网搜索写入候选。
      *
@@ -171,7 +184,7 @@ public class ReviewQueueService {
                                                          List<File> audioFiles,
                                                          TagWriterService tagWriter,
                                                          String evidenceHash) {
-        ReviewItem existing = findPendingByFolder(folderPath);
+        ReviewItem existing = findPendingByFolderInternal(folderPath);
         ReviewItem item = existing != null ? existing : new ReviewItem();
         boolean isNewItem = existing == null;
 
@@ -220,6 +233,7 @@ public class ReviewQueueService {
             }
             item.setFiles(entries);
         }
+        item.ensureThreadSafeCollections();
         saveQuietly();
         return item;
     }
@@ -258,17 +272,27 @@ public class ReviewQueueService {
         if (!mutation.test(item)) {
             return false;
         }
-        update(item);
+        item.setUpdatedAt(System.currentTimeMillis());
+        saveQuietly();
         return true;
     }
 
     /** 仅当条目仍待确认时才持久化（联网搜索返回时用）；返回是否写入 */
     public synchronized boolean updateIfPending(ReviewItem item) {
-        if (item == null || item.getStatus() != ReviewItem.Status.PENDING_REVIEW
-            || !items.containsKey(item.getId())) {
+        if (item == null || item.getId() == null) {
             return false;
         }
-        update(item);
+        ReviewItem current = items.get(item.getId());
+        if (current == null || current.getStatus() != ReviewItem.Status.PENDING_REVIEW) {
+            return false;
+        }
+        item.ensureThreadSafeCollections();
+        item.setUpdatedAt(System.currentTimeMillis());
+        if (current != item) {
+            items.put(item.getId(), deepCopy(item));
+            items.get(item.getId()).ensureThreadSafeCollections();
+        }
+        saveQuietly();
         return true;
     }
 
@@ -279,7 +303,7 @@ public class ReviewQueueService {
             if (item.getStatus() == ReviewItem.Status.PENDING_REVIEW
                 && item.effectiveKind() == ReviewItem.Kind.TRACKS_MISSING
                 && !item.isAutoOnlineSearchTriggered() && item.getOnlineSearchedAt() <= 0L) {
-                result.add(item);
+                result.add(deepCopy(item));
             }
         }
         return result;
@@ -295,7 +319,7 @@ public class ReviewQueueService {
                 && item.getMissingCover().getMode() == ReviewItem.MissingCover.Mode.STAGED_IMPORT
                 && !item.getMissingCover().isCoverAutoSearchTriggered()
                 && item.getMissingCover().getCoverSearchedAt() <= 0L) {
-                result.add(item);
+                result.add(deepCopy(item));
             }
         }
         return result;
@@ -546,6 +570,7 @@ public class ReviewQueueService {
             FolderAlbumCache.CacheSource.UNKNOWN
         );
         ReviewItem item;
+        ReviewItem snapshotForListener;
         synchronized (this) {
             item = enqueueInternal(folderPath, pendingFiles, synthesized, null, null,
                 effectiveReason, 1.0, target -> {
@@ -559,8 +584,9 @@ public class ReviewQueueService {
                     }
                     target.setMissingCover(details);
                 });
+            snapshotForListener = deepCopy(item);
         }
-        notifyMissingCoverEnqueued(item);
+        notifyMissingCoverEnqueued(snapshotForListener);
         return item;
     }
 
@@ -575,6 +601,7 @@ public class ReviewQueueService {
             return null;
         }
         ReviewItem updated;
+        ReviewItem snapshotForListener;
         synchronized (this) {
             ReviewItem item = items.get(existing.getId());
             if (item == null) {
@@ -601,13 +628,15 @@ public class ReviewQueueService {
             item.setMissingCover(details);
             item.setResolutionNote(null);
             item.setUpdatedAt(System.currentTimeMillis());
+            item.ensureThreadSafeCollections();
             saveQuietly();
             updated = item;
+            snapshotForListener = deepCopy(item);
         }
         log.warn("缺少封面，条目已转入「缺少封面」等待处理: {} ({})",
             updated.getFolderName(), details.getAlbumTitle());
         LogCollector.addLog("WARN", "缺少封面，已转入「缺少封面」等待补图: " + updated.getFolderName());
-        notifyMissingCoverEnqueued(updated);
+        notifyMissingCoverEnqueued(snapshotForListener);
         return updated;
     }
 
@@ -626,7 +655,7 @@ public class ReviewQueueService {
         if (isLibraryFolderSkippedByScan(normalizedPath)) {
             return null;
         }
-        if (findPendingByFolder(normalizedPath) != null || findPendingByFolder(folderPath) != null) {
+        if (findPendingByFolderInternal(normalizedPath) != null || findPendingByFolderInternal(folderPath) != null) {
             return null;
         }
         ReviewItem item = new ReviewItem();
@@ -661,6 +690,7 @@ public class ReviewQueueService {
             entries.add(entry);
         }
         item.setFiles(entries);
+        item.ensureThreadSafeCollections();
         items.put(item.getId(), item);
         saveQuietly();
         return item;
@@ -691,14 +721,16 @@ public class ReviewQueueService {
                                            FolderAlbumCache.MissingTracksInfo missing) {
         String reason = "锁定专辑缺曲：「" + missing.getAlbumTitle() + "」" + missing.describe();
         ReviewItem item;
+        ReviewItem snapshotForListener;
         synchronized (this) {
             item = enqueueInternal(folderPath, pendingFiles, synthesized, candidates, durationSequence,
                 reason, 0.0, target -> applyMissingTracks(target, missing));
+            snapshotForListener = deepCopy(item);
         }
         java.util.function.Consumer<ReviewItem> listener = missingTracksEnqueuedListener;
-        if (item != null && listener != null && !item.isAutoOnlineSearchTriggered()) {
+        if (snapshotForListener != null && listener != null && !snapshotForListener.isAutoOnlineSearchTriggered()) {
             try {
-                listener.accept(item);
+                listener.accept(snapshotForListener);
             } catch (Exception e) {
                 log.warn("缺曲条目入队回调失败（不影响条目本身）: {}", e.getMessage());
             }
@@ -754,7 +786,7 @@ public class ReviewQueueService {
             return null;
         }
 
-        ReviewItem existing = findPendingByFolder(folderPath);
+        ReviewItem existing = findPendingByFolderInternal(folderPath);
         ReviewItem item = existing != null ? existing : new ReviewItem();
         boolean isNewItem = existing == null;
 
@@ -871,6 +903,7 @@ public class ReviewQueueService {
             LogCollector.addLog("WARN", "专辑待人工确认: " + item.getFolderName());
         }
 
+        item.ensureThreadSafeCollections();
         return item;
     }
 
@@ -886,7 +919,7 @@ public class ReviewQueueService {
         return paths;
     }
 
-    synchronized ReviewItem findPendingByFolder(String folderPath) {
+    private ReviewItem findPendingByFolderInternal(String folderPath) {
         if (folderPath == null) return null;
         for (ReviewItem item : items.values()) {
             if (item.getStatus() == ReviewItem.Status.PENDING_REVIEW
@@ -895,6 +928,10 @@ public class ReviewQueueService {
             }
         }
         return null;
+    }
+
+    synchronized ReviewItem findPendingByFolder(String folderPath) {
+        return findPendingByFolderInternal(folderPath);
     }
 
     /**
@@ -985,12 +1022,24 @@ public class ReviewQueueService {
         if (item == null) {
             return;
         }
-        item.setStatus(status);
-        item.setResolutionNote(note);
-        item.setUpdatedAt(System.currentTimeMillis());
+        ReviewItem managed = item.getId() != null ? items.get(item.getId()) : null;
+        ReviewItem target = managed != null ? managed : item;
+        target.setStatus(status);
+        target.setResolutionNote(note);
+        target.setUpdatedAt(System.currentTimeMillis());
         if (status != ReviewItem.Status.REJECTED) {
-            cleanupStaging(item);
+            cleanupStaging(target);
         }
+        if (target != item) {
+            item.setStatus(status);
+            item.setResolutionNote(note);
+            item.setUpdatedAt(target.getUpdatedAt());
+            if (status != ReviewItem.Status.REJECTED) {
+                item.setStagingDir(null);
+                item.setReprocessDir(null);
+            }
+        }
+        target.ensureThreadSafeCollections();
         saveQuietly();
     }
 
@@ -998,7 +1047,13 @@ public class ReviewQueueService {
         if (item == null) {
             return;
         }
+        item.ensureThreadSafeCollections();
         item.setUpdatedAt(System.currentTimeMillis());
+        if (item.getId() != null && items.containsKey(item.getId()) && items.get(item.getId()) != item) {
+            ReviewItem copy = deepCopy(item);
+            copy.ensureThreadSafeCollections();
+            items.put(item.getId(), copy);
+        }
         saveQuietly();
     }
 
@@ -1233,6 +1288,7 @@ public class ReviewQueueService {
             items.clear();
             for (ReviewItem item : loaded) {
                 if (item != null && item.getId() != null) {
+                    item.ensureThreadSafeCollections();
                     items.put(item.getId(), item);
                 }
             }

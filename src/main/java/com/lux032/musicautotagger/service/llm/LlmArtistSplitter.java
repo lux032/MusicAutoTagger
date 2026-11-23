@@ -79,52 +79,53 @@ public class LlmArtistSplitter {
             return cached;
         }
 
-        SplitResult computed = invokeLlmSplit(display);
-        if (cache.size() >= MAX_CACHE_SIZE) {
-            cache.clear();
-        }
-        cache.put(display, computed);
-        return computed;
-    }
-
-    private SplitResult invokeLlmSplit(String display) {
         try {
-            String userPrompt = "Input artist credit: \"" + display + "\"\nReturn strict JSON only.";
-            LlmClient.LlmResponse response = llmClient.complete(SYSTEM_PROMPT, userPrompt, 300);
-            JsonObject json = LlmAlbumJudge.parseJsonObject(response.getText());
-            if (json == null || !json.has("artists") || !json.get("artists").isJsonArray()) {
-                log.debug("LLM 艺术家拆分未返回有效数组，保留原串: {}", display);
-                return new SplitResult(display, List.of(), false);
+            SplitResult computed = invokeLlmSplit(display);
+            if (cache.size() >= MAX_CACHE_SIZE) {
+                cache.clear();
             }
-            JsonArray arr = json.getAsJsonArray("artists");
-            List<String> parsed = new ArrayList<>(arr.size());
-            for (JsonElement el : arr) {
-                if (el != null && el.isJsonPrimitive()) {
-                    String name = el.getAsString().trim();
-                    if (!name.isEmpty()) {
-                        parsed.add(name);
-                    }
-                }
-            }
-            if (parsed.isEmpty()) {
-                return new SplitResult(display, List.of(), false);
-            }
-            if (parsed.size() == 1) {
-                if (display.equals(parsed.get(0))) {
-                    return new SplitResult(display, List.of(display), false);
-                }
-                log.debug("LLM 艺术家拆分单人校验未通过 ({} -> {}), 保留原串", display, parsed.get(0));
-                return new SplitResult(display, List.of(), false);
-            }
-            if (!ArtistCreditSupport.matchesDisplayOrder(display, parsed)) {
-                log.warn("LLM 艺术家拆分结果与原串对齐校验失败 ({} -> {}), 放弃拆分", display, parsed);
-                return new SplitResult(display, List.of(), false);
-            }
-            log.info("LLM 语义拆分多艺术家: \"{}\" -> {}", display, parsed);
-            return new SplitResult(display, List.copyOf(parsed), true);
+            cache.put(display, computed);
+            return computed;
         } catch (LlmClient.LlmException e) {
-            log.warn("LLM 艺术家拆分调用失败，保留原串 ({}): {}", display, e.getMessage());
+            // 瞬时网络/限流异常绝不写入缓存，避免永久毒化该艺术家串的后续拆分
+            log.warn("LLM 艺术家拆分调用失败（不写入缓存），保留原串 ({}): {}", display, e.getMessage());
             return new SplitResult(display, List.of(), false);
         }
+    }
+
+    private SplitResult invokeLlmSplit(String display) throws LlmClient.LlmException {
+        String userPrompt = "Input artist credit: \"" + display + "\"\nReturn strict JSON only.";
+        LlmClient.LlmResponse response = llmClient.complete(SYSTEM_PROMPT, userPrompt, 300);
+        JsonObject json = LlmAlbumJudge.parseJsonObject(response.getText());
+        if (json == null || !json.has("artists") || !json.get("artists").isJsonArray()) {
+            log.debug("LLM 艺术家拆分未返回有效数组，保留原串: {}", display);
+            return new SplitResult(display, List.of(), false);
+        }
+        JsonArray arr = json.getAsJsonArray("artists");
+        List<String> parsed = new ArrayList<>(arr.size());
+        for (JsonElement el : arr) {
+            if (el != null && el.isJsonPrimitive()) {
+                String name = el.getAsString().trim();
+                if (!name.isEmpty()) {
+                    parsed.add(name);
+                }
+            }
+        }
+        if (parsed.isEmpty()) {
+            return new SplitResult(display, List.of(), false);
+        }
+        if (parsed.size() == 1) {
+            if (display.equals(parsed.get(0))) {
+                return new SplitResult(display, List.of(display), false);
+            }
+            log.debug("LLM 艺术家拆分单人校验未通过 ({} -> {}), 保留原串", display, parsed.get(0));
+            return new SplitResult(display, List.of(), false);
+        }
+        if (!ArtistCreditSupport.matchesDisplayOrder(display, parsed)) {
+            log.warn("LLM 艺术家拆分结果与原串对齐校验失败 ({} -> {}), 放弃拆分", display, parsed);
+            return new SplitResult(display, List.of(), false);
+        }
+        log.info("LLM 语义拆分多艺术家: \"{}\" -> {}", display, parsed);
+        return new SplitResult(display, List.copyOf(parsed), true);
     }
 }

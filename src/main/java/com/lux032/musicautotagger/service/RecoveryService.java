@@ -391,6 +391,9 @@ public class RecoveryService implements AutoCloseable {
      */
     java.util.concurrent.Future<?> submitStagedReidentify(
             File stagedDir, String displayName, List<StagedReidentifyFile> files, List<String> recordsToRemove) {
+        if (executor.isShutdown()) {
+            throw new java.util.concurrent.RejectedExecutionException("Recovery executor is shutdown");
+        }
         String label = meaningful(displayName) ? displayName : stagedDir.getName();
         Path stagedCleanupRoot = (stagedDir.getParentFile() != null
             && stagedDir.getParentFile().getName().startsWith("reprocess-"))
@@ -399,6 +402,10 @@ public class RecoveryService implements AutoCloseable {
         List<File> stagedFiles = files.stream().map(StagedReidentifyFile::staged).toList();
         List<Path> oldTargetPaths = files.stream().map(StagedReidentifyFile::oldTarget)
             .filter(java.util.Objects::nonNull).toList();
+        // 同步删除旧处理记录，避免前端快速重复点击在异步线程启动前再次查出并重提同一批记录
+        if (processedLogger != null && recordsToRemove != null && !recordsToRemove.isEmpty()) {
+            processedLogger.removeProcessedRecords(recordsToRemove);
+        }
         LogCollector.addLog("INFO", "手动重新识别（普通识别）：已提交 " + label + "（" + files.size() + " 个文件）");
         return executor.submit(() -> {
             String taskId = UUID.randomUUID().toString();
@@ -406,11 +413,8 @@ public class RecoveryService implements AutoCloseable {
             boolean waitingForReview = false;
             boolean committed = false;
             try {
-                processedLogger.removeProcessedRecords(recordsToRemove);
                 Files.createDirectories(workRoot);
-                for (StagedReidentifyFile file : files) {
-                    recordReplacementAlias(file.staged().toPath(), file.oldTarget());
-                }
+                recordReplacementAliases(files, true);
                 int succeeded = 0;
                 try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(workRoot.toFile());
                      AutoCloseable suppressLlm = FailedFileHandler.suppressLlmAutoArchive()) {
@@ -476,8 +480,8 @@ public class RecoveryService implements AutoCloseable {
 
     private void recordStagedReidentifyFailure(List<StagedReidentifyFile> files, String label, String reason) {
         processedLogger.removeProcessedRecords(files.stream().map(file -> file.staged().getAbsolutePath()).toList());
+        recordReplacementAliases(files, false);
         for (StagedReidentifyFile file : files) {
-            recordReplacementAlias(file.fallback().toPath(), file.oldTarget());
             File retryFile = file.fallback().isFile() ? file.fallback()
                 : file.oldTarget() == null ? null : file.oldTarget().toFile();
             if (retryFile != null && retryFile.isFile()) {
@@ -487,8 +491,26 @@ public class RecoveryService implements AutoCloseable {
         }
     }
 
+    private void recordReplacementAliases(List<StagedReidentifyFile> files, boolean useStagedSource) {
+        if (files == null || files.isEmpty() || replacementRegistry == null) {
+            return;
+        }
+        Map<String, String> batch = new LinkedHashMap<>();
+        for (StagedReidentifyFile file : files) {
+            if (file.oldTarget() != null) {
+                File src = useStagedSource ? file.staged() : file.fallback();
+                if (src != null) {
+                    batch.put(src.toPath().toString(), file.oldTarget().toString());
+                }
+            }
+        }
+        if (!batch.isEmpty()) {
+            replacementRegistry.recordAll(batch);
+        }
+    }
+
     private void recordReplacementAlias(Path source, Path oldTarget) {
-        if (oldTarget != null) {
+        if (source != null && oldTarget != null && replacementRegistry != null) {
             replacementRegistry.record(source.toString(), oldTarget.toString());
         }
     }

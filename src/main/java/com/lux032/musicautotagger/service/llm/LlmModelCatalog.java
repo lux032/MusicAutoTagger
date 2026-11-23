@@ -39,7 +39,7 @@ import java.util.Set;
  * 「手打模型名 + 猜协议」配置方式最缺的反馈。
  */
 @Slf4j
-public class LlmModelCatalog {
+public class LlmModelCatalog implements AutoCloseable {
 
     private static final Gson GSON = new Gson();
     private static final Duration TIMEOUT = Duration.ofSeconds(15);
@@ -80,6 +80,15 @@ public class LlmModelCatalog {
             .disableRedirectHandling()
             .disableAutomaticRetries()
             .build();
+    }
+
+    @Override
+    public void close() {
+        try {
+            pinnedClient.close();
+        } catch (IOException e) {
+            log.debug("关闭 LlmModelCatalog HTTP 客户端失败: {}", e.getMessage());
+        }
     }
 
     private HttpClient proxyHttpClient() {

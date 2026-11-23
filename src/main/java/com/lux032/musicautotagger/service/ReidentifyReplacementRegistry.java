@@ -57,17 +57,50 @@ public class ReidentifyReplacementRegistry {
         if (sourcePath == null || sourcePath.isBlank() || oldTargetPath == null || oldTargetPath.isBlank()) {
             return;
         }
+        recordAll(Map.of(sourcePath, oldTargetPath));
+    }
+
+    /** 批量登记待替换映射（仅执行一次 JSON 读 + 写，避免大批量重识别引发 O(N^2) 写放大）。 */
+    public void recordAll(Map<String, String> sourceToOldTarget) {
+        if (sourceToOldTarget == null || sourceToOldTarget.isEmpty()) {
+            return;
+        }
+        Map<String, Entry> valid = new LinkedHashMap<>();
+        for (Map.Entry<String, String> item : sourceToOldTarget.entrySet()) {
+            String src = item.getKey();
+            String dst = item.getValue();
+            if (src == null || src.isBlank() || dst == null || dst.isBlank()) {
+                continue;
+            }
+            valid.put(normalizePathKey(src), new Entry(normalizePathKey(dst)));
+        }
+        if (valid.isEmpty()) {
+            return;
+        }
         synchronized (LOCK) {
-            Map<String, Entry> entries = load();
-            entries.put(normalizePathKey(sourcePath), new Entry(normalizePathKey(oldTargetPath)));
+            Optional<Map<String, Entry>> loaded = loadOrEmpty();
+            if (loaded.isEmpty()) {
+                log.error("待替换记录文件读取异常，拒绝批量覆写以防丢失已有记录: {}", storeFile);
+                return;
+            }
+            Map<String, Entry> entries = loaded.get();
+            entries.putAll(valid);
             save(entries);
         }
     }
 
     /** Transfer the identity to a copy that this operation actually created. */
     void recordAlias(Path original, Path copy) {
+        if (original == null || copy == null) {
+            return;
+        }
         synchronized (LOCK) {
-            Map<String, Entry> entries = load();
+            Optional<Map<String, Entry>> loaded = loadOrEmpty();
+            if (loaded.isEmpty()) {
+                log.error("待替换记录文件读取异常，跳过别名登记以防覆写清空: {}", storeFile);
+                return;
+            }
+            Map<String, Entry> entries = loaded.get();
             Entry match = findEntry(entries, original.toFile());
             String copyKey = normalizePathKey(copy.toString());
             if (match != null && match.oldTargetPath != null) {
@@ -82,7 +115,11 @@ public class ReidentifyReplacementRegistry {
     /** Only a known source path authorizes replacing an archive. A recording can occur on multiple releases. */
     public Optional<Path> findOldTarget(File sourceFile) {
         synchronized (LOCK) {
-            Entry match = findEntry(load(), sourceFile);
+            Optional<Map<String, Entry>> loaded = loadOrEmpty();
+            if (loaded.isEmpty()) {
+                return Optional.empty();
+            }
+            Entry match = findEntry(loaded.get(), sourceFile);
             if (match == null || match.oldTargetPath == null || match.oldTargetPath.isBlank()) {
                 return Optional.empty();
             }
@@ -93,7 +130,12 @@ public class ReidentifyReplacementRegistry {
     /** Remove every source alias for this specific archive once its replacement has committed. */
     public void remove(File sourceFile) {
         synchronized (LOCK) {
-            Map<String, Entry> entries = load();
+            Optional<Map<String, Entry>> loaded = loadOrEmpty();
+            if (loaded.isEmpty()) {
+                log.error("待替换记录文件读取异常，跳过删除操作以防覆写清空: {}", storeFile);
+                return;
+            }
+            Map<String, Entry> entries = loaded.get();
             Entry match = findEntry(entries, sourceFile);
             if (match != null && match.oldTargetPath != null
                     && entries.values().removeIf(entry -> entry != null && match.oldTargetPath.equals(entry.oldTargetPath))) {
@@ -192,33 +234,52 @@ public class ReidentifyReplacementRegistry {
         }
     }
 
-    private Map<String, Entry> load() {
+    private Optional<Map<String, Entry>> loadOrEmpty() {
+        if (!Files.exists(storeFile)) {
+            return Optional.of(new LinkedHashMap<>());
+        }
         if (!Files.isRegularFile(storeFile)) {
-            return new LinkedHashMap<>();
+            log.warn("待替换记录路径不是普通文件，拒绝覆写: {}", storeFile);
+            return Optional.empty();
         }
         try {
-            Map<String, Entry> loaded = gson.fromJson(Files.readString(storeFile, StandardCharsets.UTF_8), MAP_TYPE);
-            return loaded == null ? new LinkedHashMap<>() : loaded;
+            String raw = Files.readString(storeFile, StandardCharsets.UTF_8);
+            if (raw.isBlank()) {
+                return Optional.of(new LinkedHashMap<>());
+            }
+            Map<String, Entry> loaded = gson.fromJson(raw, MAP_TYPE);
+            return Optional.ofNullable(loaded);
         } catch (Exception e) {
-            log.warn("读取待替换记录失败，已忽略: {} - {}", storeFile, e.getMessage());
-            return new LinkedHashMap<>();
+            log.warn("读取或解析待替换记录失败，拒绝清空覆写: {} - {}", storeFile, e.getMessage());
+            return Optional.empty();
         }
     }
 
     private void save(Map<String, Entry> entries) {
+        Path normalized = storeFile.toAbsolutePath().normalize();
+        Path parent = normalized.getParent();
+        Path tmp = null;
         try {
-            if (storeFile.getParent() != null) {
-                Files.createDirectories(storeFile.getParent());
+            if (parent != null) {
+                Files.createDirectories(parent);
             }
-            Path tmp = storeFile.resolveSibling(storeFile.getFileName() + ".tmp");
+            tmp = normalized.resolveSibling(normalized.getFileName() + ".tmp");
             Files.writeString(tmp, gson.toJson(entries, MAP_TYPE), StandardCharsets.UTF_8);
             try {
-                Files.move(tmp, storeFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                Files.move(tmp, normalized, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (AtomicMoveNotSupportedException e) {
-                Files.move(tmp, storeFile, StandardCopyOption.REPLACE_EXISTING);
+                Files.move(tmp, normalized, StandardCopyOption.REPLACE_EXISTING);
             }
+            tmp = null;
         } catch (IOException e) {
             log.warn("保存待替换记录失败: {} - {}", storeFile, e.getMessage());
+        } finally {
+            if (tmp != null) {
+                try {
+                    Files.deleteIfExists(tmp);
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 }

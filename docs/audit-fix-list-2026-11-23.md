@@ -10,7 +10,7 @@
 
 - [x] **前期基线 + P0（23 / 23）**：已在提交 `654e024` 全部修复并通过 `mvn test -B`（352/352）
 - [x] **任务 1（P1 核心管道：封面/歌词 + 识别/写盘）**：`C-1` ~ `C-6`、`A-1` ~ `A-5`（11 大项，2026-11-23 全部完成并通过 `mvn test -B` 363/363，含新增专项回归测试 `P1Task1CorePipelineRegressionTest`）
-- [ ] **任务 2（P1 数据库、持久化、LLM 与并发配置）**：`D-1` ~ `D-6`（6 大项）
+- [x] **任务 2（P1 数据库、持久化、LLM 与并发配置）**：`D-1` ~ `D-6`（6 大项，2026-11-23 全部完成并通过 `mvn test -B` 370/370，含新增专项回归测试 `P1Task2DataLlmConcurrencyRegressionTest`）
 - [ ] **任务 3（P1 前端交互、i18n 与运维部署）**：`U-1` ~ `U-3`、`O-1`（4 大项）
 - [ ] **任务 4（P2 中长期架构重构）**：God Classes 拆解、基础设施收敛、前端公共模块抽取（3 大方向）
 
@@ -82,22 +82,22 @@
 
 ## 任务 2：P1 数据库、持久化、LLM 与并发配置（`D-1` ~ `D-6`）
 
-- [ ] **D-1：MySQL 建表失败与大小写路径碰撞**
-  - `schema.sql` 修复 `file_path VARCHAR(1000) UNIQUE` 超 InnoDB 3072B 上限及 `utf8mb4_unicode_ci` 路径大小写碰撞；移除硬编码 `Asia/Shanghai` 时区并校验 JDBC 参数；SQLite 建表失败时关闭 `HikariDataSource`
-- [ ] **D-2：记录库前缀误伤、Unicode 搜索失效与文件模式损坏**
-  - `ProcessedFileLogger` 前缀匹配补路径分隔符并修正 UTF-16/码点错位；SQLite 非 ASCII 大小写无关搜索；`findAlbumsMissingReleaseGroupId()` SQL 过滤哨兵 ID；批删包事务；File 模式统一 UTF-8、转义分隔符并加读写锁
-- [ ] **D-3：文件夹视图内存爆炸与重识别竞态**
-  - 为 `processed_files` 增加持久化 `folder_path` 索引列改走 SQL 分页；暂存重识别同步删记录或登记 `runningPaths` 防重；`isUnderReview()` 补查散曲自身路径；区分单层艺人目录散曲
-- [ ] **D-4：注册表偶发清空与 O(N²) 磁盘写放大**
-  - `AutoArchiveRegistry` 与 `ReidentifyReplacementRegistry` 区分文件不存在与读取异常（异常拒绝覆写）；批量 `recordAll()` 一次落盘；补空指针检查与 `.tmp` 清理
-- [ ] **D-5：LLM 解析崩溃与异常缓存**
-  - [x] ① `LlmModelCatalog` 静态 `newBuilder()` 泄漏（已在 `654e024` 改用 `LlmClient.httpClientBuilder(config)`；待补显式关闭钩子）
-  - [x] ② `LlmClient.complete()` 吞掉 `LlmException("interrupted")`（已在 `654e024` 修复）
-  - [ ] ③ `NativeWebSearchClient` 等 JSON 字段增加空安全/类型校验防 `ClassCastException`
-  - [ ] ④ `OnlineIdentificationService` 二轮搜索合并一二轮引用池
-  - [ ] ⑤ `LlmArtistSplitter` 不永久缓存瞬时 `LlmException`
-- [ ] **D-6：并发竞态、热更新脑裂与 Jetty 阻塞**
-  - `ReviewQueueService` 返回副本/读写分离防并发 `CME`，`LockedReleaseTrackResolver` 不原地破坏原元数据；`ReviewResolutionService` 拆细粒度锁并将网络 I/O 移出锁外；`OnlineSearchQueueService` 按任务类型隔离去重与并发字段可见性；`ConfigServlet` 需重启字段仅落盘不篡改活态内存、修复 `tavilyIncludeDomains` 清空回弹与 `monitor.scanInterval` 空格解析、`MusicConfig.saveToFile()` 补写 `llm.webSearch.maxConcurrency`
+- [x] **D-1：MySQL 建表失败与大小写路径碰撞**
+  - `schema.sql` 修复 `file_path VARCHAR(1000) UNIQUE` 超 InnoDB 3072B 上限及 `utf8mb4_unicode_ci` 路径大小写碰撞（改用 `VARCHAR(768) COLLATE utf8mb4_bin` 并补充 `folder_path` 索引列）；`DatabaseService` 移除硬编码 `Asia/Shanghai` 时区并校验 JDBC 连接参数防注入；SQLite/MySQL 建表或初始化失败时关闭 `HikariDataSource`
+- [x] **D-2：记录库前缀误伤、Unicode 搜索失效与文件模式损坏**
+  - `ProcessedFileLogger` 前缀匹配补路径分隔符并改用 `codePointCount` 修正 UTF-16/码点错位；SQLite 注册 Unicode `LOWER()` UDF 恢复非 ASCII 大小写无关搜索；`findAlbumsMissingReleaseGroupId()` SQL 过滤哨兵 ID；批删包事务；File 模式统一 UTF-8、转义分隔符/换行并改用 `ReentrantReadWriteLock` 读写锁
+- [x] **D-3：文件夹视图内存爆炸与重识别竞态**
+  - 为 `processed_files` 增加持久化 `folder_path` 索引列并自动分批回填，文件夹视图翻页/展开/批量操作/导出全部改走 SQL 分页，不再全表 `loadAllRecords()`；暂存重识别同步删记录并追踪在途 `runningStagedTasks` 防重复提交；`isUnderReview()` 先查散曲自身路径；区分输出库单层艺人目录散曲
+- [x] **D-4：注册表偶发清空与 O(N²) 磁盘写放大**
+  - `AutoArchiveRegistry` 与 `ReidentifyReplacementRegistry` 区分文件不存在与读取/解析异常（异常拒绝覆写）；新增批量 `recordAll()` 一次落盘并在 `ProcessedRecordService`/`RecoveryService` 接入；补父目录空指针检查与 `finally` `.tmp` 清理
+- [x] **D-5：LLM 解析崩溃与异常缓存**
+  - [x] ① `LlmModelCatalog` 改用 `LlmClient.httpClientBuilder(config)` 并实现 `AutoCloseable`，在 `LlmProviderServlet.destroy()` 显式关闭释放连接池
+  - [x] ② `LlmClient.complete()` 遇到 `interrupted` 立即上抛，不继续轮询其余端点
+  - [x] ③ `NativeWebSearchClient`、`LlmProvider`、`OnlineIdentificationService` 所有 JSON 字段增加空安全与类型校验防 `ClassCastException`
+  - [x] ④ `OnlineIdentificationService` 二轮搜索合并一二轮引用池，二轮引用一轮 HIGH 来源可通过可信度门槛
+  - [x] ⑤ `LlmArtistSplitter` 捕获瞬时 `LlmException` 不写入缓存
+- [x] **D-6：并发竞态、热更新脑裂与 Jetty 阻塞**
+  - `ReviewItem` 嵌套集合升级为线程安全实现（`CopyOnWriteArrayList`/`ConcurrentHashMap`）防并发 `CME`，`ReviewQueueService` 为列表/回调/Web 读接口提供隔离深拷贝快照（`getSnapshot`/`list`/`listByKinds`），`LockedReleaseTrackResolver` 使用 `identified.copy()` 不原地破坏原元数据；`ReviewResolutionService` 拆为 256 路条目级分段锁并将 MusicBrainz/LLM 网络 I/O 移出锁外；`OnlineSearchQueueService` 按封面/专辑类型隔离去重、升格同步更新目标字段、`listRecoveryJobViews()` 锁内拍摄不可变快照并补充 `volatile`；`ConfigServlet` 需重启字段仅落盘并记录待重启视图不篡改活态 `MusicConfig`、修复 `tavilyIncludeDomains` 清空回弹；`MusicConfig` 容错解析含空格 `monitor.scanInterval` 并在 `saveToFile()` 补写 `llm.webSearch.maxConcurrency`
 
 ---
 

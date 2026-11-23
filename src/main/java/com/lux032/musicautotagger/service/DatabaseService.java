@@ -8,11 +8,18 @@ import com.lux032.musicautotagger.util.I18nUtil;
 
 import javax.sql.DataSource;
 import java.io.File;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.ZoneId;
+import java.util.Collections;
 import java.util.Locale;
 import java.util.Properties;
+import java.util.Set;
+import java.util.WeakHashMap;
+import java.util.regex.Pattern;
 
 /**
  * 数据库服务 - 统一管理数据库连接池
@@ -23,7 +30,7 @@ import java.util.Properties;
  *  - mysql：外部 MySQL 服务，需预先执行 schema.sql 建库建表。
  */
 @Slf4j
-public class DatabaseService {
+public class DatabaseService implements AutoCloseable {
 
     public static final String TYPE_SQLITE = "sqlite";
     public static final String TYPE_MYSQL = "mysql";
@@ -32,9 +39,15 @@ public class DatabaseService {
     /** SQLite 下 DATETIME 以文本形式存储，固定格式保证字典序即时间序。 */
     static final String SQLITE_DATE_FORMAT = "yyyy-MM-dd HH:mm:ss.SSS";
 
+    private static final Pattern SAFE_DB_HOST = Pattern.compile("^[A-Za-z0-9._\\-\\[\\]:]+$");
+    private static final Pattern SAFE_DB_NAME = Pattern.compile("^[A-Za-z0-9_$-]+$");
+
     private final HikariDataSource dataSource;
     private final MusicConfig config;
     private final boolean sqlite;
+    /** 记录已注册 Unicode LOWER UDF 的底层 SQLiteConnection，避免每次借连接重复注册。 */
+    private final Set<Object> registeredSqliteConnections =
+        Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
     /**
      * 配置的 db.type 是否需要数据库服务（sqlite / mysql）。
@@ -58,12 +71,27 @@ public class DatabaseService {
     public DatabaseService(MusicConfig config) {
         this.config = config;
         this.sqlite = TYPE_SQLITE.equals(normalizeType(config.getDbType()));
-        this.dataSource = sqlite ? initSqliteDataSource() : initMysqlDataSource();
+        HikariDataSource ds = sqlite ? initSqliteDataSource() : initMysqlDataSource();
+        this.dataSource = ds;
         if (sqlite) {
-            initSqliteSchema();
+            try {
+                initSqliteSchema();
+            } catch (RuntimeException e) {
+                closeQuietly(ds);
+                throw e;
+            }
         }
 
         log.info(I18nUtil.getMessage("db.service.initialized"));
+    }
+
+    private static void closeQuietly(HikariDataSource ds) {
+        if (ds != null && !ds.isClosed()) {
+            try {
+                ds.close();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     /** 当前是否为 SQLite 方言。 */
@@ -113,13 +141,15 @@ public class DatabaseService {
 
         log.info(I18nUtil.getMessage("db.config"), jdbcUrl);
 
+        HikariDataSource ds = null;
         try {
-            HikariDataSource ds = new HikariDataSource(hikariConfig);
+            ds = new HikariDataSource(hikariConfig);
             try (Connection conn = ds.getConnection()) {
                 log.info(I18nUtil.getMessage("db.connection.test.success"));
             }
             return ds;
         } catch (SQLException | RuntimeException e) {
+            closeQuietly(ds);
             log.error(I18nUtil.getMessage("db.connection.test.failed"), e);
             log.error("请检查 SQLite 数据库文件路径是否可写: {}", dbFile);
             throw new RuntimeException("SQLite 数据库初始化失败", e);
@@ -145,6 +175,7 @@ public class DatabaseService {
                 + "album VARCHAR(500), "
                 + "release_group_id VARCHAR(100), "
                 + "target_file_path VARCHAR(1000), "
+                + "folder_path VARCHAR(1000), "
                 + "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
                 + "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
             "CREATE INDEX IF NOT EXISTS idx_pf_file_hash ON processed_files(file_hash)",
@@ -174,17 +205,35 @@ public class DatabaseService {
     }
 
     /**
+     * 校验 MySQL 连接参数并构造安全的 JDBC URL（防 JDBC 参数注入，使用系统时区替代硬编码东八区）。
+     */
+    static String buildMysqlJdbcUrl(MusicConfig config) {
+        String host = config.getDbHost() == null ? "" : config.getDbHost().trim();
+        if (host.isEmpty() || !SAFE_DB_HOST.matcher(host).matches()) {
+            throw new IllegalArgumentException("Invalid MySQL host: " + host);
+        }
+        int port = config.getDbPort();
+        if (port < 1 || port > 65535) {
+            throw new IllegalArgumentException("Invalid MySQL port: " + port);
+        }
+        String database = config.getDbDatabase() == null ? "" : config.getDbDatabase().trim();
+        if (database.isEmpty() || !SAFE_DB_NAME.matcher(database).matches()) {
+            throw new IllegalArgumentException("Invalid MySQL database name: " + database);
+        }
+        String timezone = URLEncoder.encode(ZoneId.systemDefault().getId(), StandardCharsets.UTF_8);
+        return String.format(
+            "jdbc:mysql://%s:%d/%s?useUnicode=true&characterEncoding=UTF-8&useSSL=false&serverTimezone=%s&allowPublicKeyRetrieval=true",
+            host, port, database, timezone
+        );
+    }
+
+    /**
      * 初始化 MySQL 数据源
      */
     private HikariDataSource initMysqlDataSource() {
         HikariConfig hikariConfig = new HikariConfig();
 
-        String jdbcUrl = String.format(
-            "jdbc:mysql://%s:%s/%s?useUnicode=true&characterEncoding=UTF-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true",
-            config.getDbHost(),
-            config.getDbPort(),
-            config.getDbDatabase()
-        );
+        String jdbcUrl = buildMysqlJdbcUrl(config);
 
         hikariConfig.setDriverClassName("com.mysql.cj.jdbc.Driver");
         hikariConfig.setJdbcUrl(jdbcUrl);
@@ -202,14 +251,16 @@ public class DatabaseService {
         log.info(I18nUtil.getMessage("db.pool.config"),
             config.getDbMaxPoolSize(), config.getDbMinIdle());
 
+        HikariDataSource ds = null;
         try {
-            HikariDataSource ds = new HikariDataSource(hikariConfig);
+            ds = new HikariDataSource(hikariConfig);
             // 测试连接
             try (Connection conn = ds.getConnection()) {
                 log.info(I18nUtil.getMessage("db.connection.test.success"));
             }
             return ds;
         } catch (SQLException | RuntimeException e) {
+            closeQuietly(ds);
             log.error(I18nUtil.getMessage("db.connection.test.failed"), e);
             log.error(I18nUtil.getMessage("db.check.mysql.running"));
             log.error(I18nUtil.getMessage("db.check.database.created"), config.getDbDatabase());
@@ -221,12 +272,46 @@ public class DatabaseService {
     }
 
     /**
-     * 获取数据库连接
+     * 获取数据库连接。SQLite 连接会自动注册 Unicode 大小写折叠版 LOWER() 函数，
+     * 解决 SQLite 默认 ASCII-only LOWER() 无法搜索 "Étoile"、"Кино" 等非 ASCII 文本的问题。
      * @return 数据库连接
      * @throws SQLException SQL异常
      */
     public Connection getConnection() throws SQLException {
-        return dataSource.getConnection();
+        Connection conn = dataSource.getConnection();
+        if (sqlite) {
+            ensureSqliteUnicodeLower(conn);
+        }
+        return conn;
+    }
+
+    private void ensureSqliteUnicodeLower(Connection conn) {
+        try {
+            if (!conn.isWrapperFor(org.sqlite.SQLiteConnection.class)) {
+                return;
+            }
+            org.sqlite.SQLiteConnection raw = conn.unwrap(org.sqlite.SQLiteConnection.class);
+            if (!registeredSqliteConnections.add(raw)) {
+                return;
+            }
+            org.sqlite.Function.create(raw, "LOWER", new org.sqlite.Function() {
+                @Override
+                protected void xFunc() throws SQLException {
+                    if (args() < 1 || value_type(0) == 5) { // 5 = SQLITE_NULL
+                        result();
+                        return;
+                    }
+                    String text = value_text(0);
+                    if (text == null) {
+                        result();
+                    } else {
+                        result(text.toLowerCase(Locale.ROOT));
+                    }
+                }
+            });
+        } catch (SQLException e) {
+            log.debug("注册 SQLite Unicode LOWER 函数失败（将回退默认 LOWER）: {}", e.getMessage());
+        }
     }
 
     /**

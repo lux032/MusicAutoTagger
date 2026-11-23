@@ -214,7 +214,8 @@ public class OnlineIdentificationService {
                     2, 0, 0, parsed.clues.size(), 82, null, itemId, files.size(), true);
                 WebSearchClient.SearchResponse second = client.search(SYSTEM, secondPrompt, r2Progress);
                 checkInterrupted();
-                Parsed secondParsed = parse(second);
+                // 第二轮候选经常引用第一轮已经检索到的高可信 URL，解析时必须合并一二轮引用池
+                Parsed secondParsed = parse(second, parsed.clues);
                 merge(parsed, secondParsed);
                 mergeEvidence(parsed.clues, second.getCitations());
                 emitProgress(progress, 3, "ROUND2_MATCHING", 2, 0, files.size(), parsed.clues.size(), 94, null, itemId, files.size(), true);
@@ -371,25 +372,49 @@ public class OnlineIdentificationService {
     }
 
     Parsed parse(WebSearchClient.SearchResponse response) throws LlmClient.LlmException {
+        return parse(response, List.of());
+    }
+
+    Parsed parse(WebSearchClient.SearchResponse response, List<ReviewItem.OnlineEvidence> priorEvidence) throws LlmClient.LlmException {
         JsonObject json = LlmAlbumJudge.parseJsonObject(response.getText());
         if (json == null) throw new LlmClient.LlmException("llm.web.search.response.not.json");
         Parsed result=new Parsed();
         result.needsSecondRound=bool(json,"needs_second_round");
-        result.clues.addAll(toEvidence(response.getCitations()));
-        JsonArray candidates=json.getAsJsonArray("candidates");
+        List<ReviewItem.OnlineEvidence> evidencePool = new ArrayList<>();
+        if (priorEvidence != null) {
+            for (ReviewItem.OnlineEvidence prior : priorEvidence) {
+                if (prior != null && prior.getUrl() != null && !prior.getUrl().isBlank()) {
+                    evidencePool.add(prior);
+                }
+            }
+        }
+        List<ReviewItem.OnlineEvidence> roundEvidence = toEvidence(response.getCitations());
+        result.clues.addAll(roundEvidence);
+        Set<String> seenPoolUrls = new HashSet<>();
+        for (ReviewItem.OnlineEvidence e : evidencePool) seenPoolUrls.add(e.getUrl());
+        for (ReviewItem.OnlineEvidence e : roundEvidence) {
+            if (e.getUrl() != null && seenPoolUrls.add(e.getUrl())) {
+                evidencePool.add(e);
+            }
+        }
+        JsonArray candidates=arr(json,"candidates");
         if(candidates!=null) for(JsonElement el:candidates){
             if(result.candidates.size()>=5) break;
             if(!el.isJsonObject()) continue;
-            ReviewItem.OnlineCandidate c=parseCandidate(el.getAsJsonObject(),result.clues);
+            ReviewItem.OnlineCandidate c=parseCandidate(el.getAsJsonObject(),evidencePool);
             if(c.isOfficialCandidate()) result.candidates.add(c);
         }
-        JsonArray clues=json.getAsJsonArray("clues");
+        JsonArray clues=arr(json,"clues");
         if(clues!=null) for(JsonElement el:clues){
             if(!el.isJsonObject()) continue;
             JsonObject o=el.getAsJsonObject(); ReviewItem.OnlineEvidence e=new ReviewItem.OnlineEvidence();
             e.setUrl(str(o,"url"));e.setTitle(str(o,"title"));e.setSnippet(str(o,"snippet"));e.setRetrievedAt(System.currentTimeMillis());e.setReliability("LOW");result.clues.add(e);
         }
         return result;
+    }
+
+    private static JsonArray arr(JsonObject o, String key) {
+        return o != null && o.has(key) && o.get(key).isJsonArray() ? o.getAsJsonArray(key) : null;
     }
 
     private ReviewItem.OnlineCandidate parseCandidate(JsonObject o,List<ReviewItem.OnlineEvidence> allEvidence){
@@ -399,14 +424,14 @@ public class OnlineIdentificationService {
         c.setAlbumArtists(new ArrayList<>(resolveStructuredArtists(c.getAlbumArtist(), strList(o, "album_artists"), c.getArtists(), c.getArtist())));
         c.setReleaseDate(str(o,"release_date"));c.setEdition(str(o,"edition"));c.setCountry(str(o,"country"));c.setLabel(str(o,"label"));
         c.setCatalogNumber(str(o,"catalog_number"));c.setCoverUrl(str(o,"cover_url"));c.setConfidence(normalizeConfidence(number(o,"confidence")));c.setReason(str(o,"reason"));
-        Set<String> sourceUrls=new HashSet<>();JsonArray urls=o.getAsJsonArray("source_urls");if(urls!=null)for(JsonElement u:urls)if(u.isJsonPrimitive())sourceUrls.add(u.getAsString());
+        Set<String> sourceUrls=new HashSet<>();JsonArray urls=arr(o,"source_urls");if(urls!=null)for(JsonElement u:urls)if(u.isJsonPrimitive())sourceUrls.add(u.getAsString());
         // 模型未标注 source_urls 时不得继承全部检索证据：否则只要本轮搜索出现过任意一个
         // HIGH 域名，候选就会无条件通过来源门槛，恰好在模型输出不规范时失效。
         for(ReviewItem.OnlineEvidence e:allEvidence)if(sourceUrls.contains(e.getUrl()))c.getSources().add(e);
         long high=c.getSources().stream().filter(e->"HIGH".equals(e.getReliability())).count();
         long mediumDomains=c.getSources().stream().filter(e->"MEDIUM".equals(e.getReliability())).map(ReviewItem.OnlineEvidence::getDomain).distinct().count();
         c.setOfficialCandidate(high>=1||mediumDomains>=2);
-        JsonArray tracks=o.getAsJsonArray("tracks");if(tracks!=null)for(JsonElement te:tracks){if(!te.isJsonObject())continue;JsonObject t=te.getAsJsonObject();ReviewItem.OnlineTrack track=new ReviewItem.OnlineTrack();track.setDiscNo(integer(t,"disc"));track.setTrackNo(integer(t,"track"));track.setTitle(str(t,"title"));track.setArtist(str(t,"artist"));track.setArtists(new ArrayList<>(resolveStructuredArtists(track.getArtist(), strList(t, "artists"), c.getArtists(), c.getArtist())));track.setDuration(integerNullable(t,"duration"));c.getTracks().add(track);}
+        JsonArray tracks=arr(o,"tracks");if(tracks!=null)for(JsonElement te:tracks){if(!te.isJsonObject())continue;JsonObject t=te.getAsJsonObject();ReviewItem.OnlineTrack track=new ReviewItem.OnlineTrack();track.setDiscNo(integer(t,"disc"));track.setTrackNo(integer(t,"track"));track.setTitle(str(t,"title"));track.setArtist(str(t,"artist"));track.setArtists(new ArrayList<>(resolveStructuredArtists(track.getArtist(), strList(t, "artists"), c.getArtists(), c.getArtist())));track.setDuration(integerNullable(t,"duration"));c.getTracks().add(track);}
         return c;
     }
 

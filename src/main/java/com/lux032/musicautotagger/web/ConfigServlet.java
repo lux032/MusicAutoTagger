@@ -44,6 +44,33 @@ public class ConfigServlet extends HttpServlet {
      * 否则按位置还原会把 key 配到错误的行上
      */
 
+    /**
+     * 需重启才能生效的结构性配置字段：Web 保存时只写盘并记入待重启视图，
+     * 严禁原地篡改活态 MusicConfig（否则会导致连接池/监控目录/日志后端与内存配置脑裂）。
+     */
+    private static final Set<String> RESTART_ONLY_FIELDS = Set.of(
+        "monitorDirectory",
+        "outputDirectory",
+        "scanIntervalSeconds",
+        "processedFileLogPath",
+        "coverArtCacheDirectory",
+        "dbType",
+        "dbSqlitePath",
+        "dbHost",
+        "dbPort",
+        "dbDatabase",
+        "dbUsername",
+        "dbPassword",
+        "dbMaxPoolSize",
+        "dbMinIdle",
+        "dbConnectionTimeout",
+        "proxyEnabled",
+        "proxyHost",
+        "proxyPort",
+        "proxyUsername",
+        "proxyPassword"
+    );
+
     private final MusicConfig config;
     private final Gson gson;
     private final Path configPath;
@@ -52,11 +79,17 @@ public class ConfigServlet extends HttpServlet {
     private final Set<String> allowedLanguages;
     private final Set<String> allowedDbTypes;
     private final Set<String> secretFields;
+    /** 已落盘但需重启后生效的配置值（仅在 ConfigServlet 同步方法内访问）。 */
+    private final Map<String, Object> pendingRestartValues = new LinkedHashMap<>();
 
     public ConfigServlet(MusicConfig config) {
+        this(config, Paths.get("config.properties"));
+    }
+
+    public ConfigServlet(MusicConfig config, Path configPath) {
         this.config = config;
         this.gson = new GsonBuilder().setPrettyPrinting().create();
-        this.configPath = Paths.get("config.properties");
+        this.configPath = configPath != null ? configPath : Paths.get("config.properties");
         this.propertyKeys = Map.ofEntries(
             Map.entry("monitorDirectory", "monitor.directory"),
             Map.entry("outputDirectory", "monitor.outputDirectory"),
@@ -157,9 +190,10 @@ public class ConfigServlet extends HttpServlet {
     }
 
     @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+    protected synchronized void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         Map<String, Object> payload = new HashMap<>();
         payload.put("config", currentConfig());
+        payload.put("pendingRestartFields", new ArrayList<>(pendingRestartValues.keySet()));
 
         resp.setContentType("application/json; charset=UTF-8");
         resp.setCharacterEncoding("UTF-8");
@@ -264,10 +298,12 @@ public class ConfigServlet extends HttpServlet {
             "acoustIdApiKey", config.getAcoustIdApiKey());
         enforceSecretReentryOnUrlChange(updates, "tavilyApiUrl", config.getTavilyApiUrl(),
             "tavilyApiKey", config.getTavilyApiKey());
-        enforceSecretReentryOnHostPortChange(updates, "proxyHost", config.getProxyHost(),
-            "proxyPort", config.getProxyPort(), "proxyPassword", config.getProxyPassword());
-        enforceSecretReentryOnHostPortChange(updates, "dbHost", config.getDbHost(),
-            "dbPort", config.getDbPort(), "dbPassword", config.getDbPassword());
+        enforceSecretReentryOnHostPortChange(updates, "proxyHost", effectiveString("proxyHost", config.getProxyHost()),
+            "proxyPort", effectiveInt("proxyPort", config.getProxyPort()),
+            "proxyPassword", effectiveString("proxyPassword", config.getProxyPassword()));
+        enforceSecretReentryOnHostPortChange(updates, "dbHost", effectiveString("dbHost", config.getDbHost()),
+            "dbPort", effectiveInt("dbPort", config.getDbPort()),
+            "dbPassword", effectiveString("dbPassword", config.getDbPassword()));
 
         if (updates.isEmpty()) {
             respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "no.updates"));
@@ -276,7 +312,7 @@ public class ConfigServlet extends HttpServlet {
 
         try {
             persistUpdates(propertyUpdates);
-            applyUpdates(updates);
+            applyUpdatesSeparatingRestartFields(updates);
         } catch (IOException e) {
             log.error("Failed to save config", e);
             Map<String, Object> error = new HashMap<>();
@@ -291,7 +327,8 @@ public class ConfigServlet extends HttpServlet {
         Map<String, Object> payload = new HashMap<>();
         payload.put("config", currentConfig());
         payload.put("updated", true);
-        payload.put("requiresRestart", true);
+        payload.put("requiresRestart", !pendingRestartValues.isEmpty());
+        payload.put("pendingRestartFields", new ArrayList<>(pendingRestartValues.keySet()));
         respondJson(resp, HttpServletResponse.SC_OK, payload);
     }
 
@@ -377,7 +414,82 @@ public class ConfigServlet extends HttpServlet {
         data.put("recoveryWorkDirectory", config.getRecoveryWorkDirectory());
         data.put("recoveryTrashDirectory", config.getRecoveryTrashDirectory());
         data.put("recoveryTrashRetentionDays", config.getRecoveryTrashRetentionDays());
+        // 叠加已落盘等待重启生效的值，让配置面板展示最新保存结果，同时保证运行中的活态 MusicConfig 不被篡改
+        for (Map.Entry<String, Object> pending : pendingRestartValues.entrySet()) {
+            String key = pending.getKey();
+            Object val = pending.getValue();
+            if (secretFields.contains(key)) {
+                String secretVal = val == null ? null : String.valueOf(val);
+                data.put(key, maskSecret(secretVal));
+                if ("dbPassword".equals(key)) data.put("dbPasswordSet", isSet(secretVal));
+                if ("proxyPassword".equals(key)) data.put("proxyPasswordSet", isSet(secretVal));
+            } else {
+                data.put(key, val);
+            }
+        }
         return data;
+    }
+
+    private String effectiveString(String field, String liveValue) {
+        if (pendingRestartValues.containsKey(field)) {
+            Object v = pendingRestartValues.get(field);
+            return v == null ? null : String.valueOf(v);
+        }
+        return liveValue;
+    }
+
+    private int effectiveInt(String field, int liveValue) {
+        if (pendingRestartValues.containsKey(field) && pendingRestartValues.get(field) instanceof Integer i) {
+            return i;
+        }
+        return liveValue;
+    }
+
+    private Object liveRestartOnlyValue(String field) {
+        return switch (field) {
+            case "monitorDirectory" -> config.getMonitorDirectory();
+            case "outputDirectory" -> config.getOutputDirectory();
+            case "scanIntervalSeconds" -> config.getScanIntervalSeconds();
+            case "processedFileLogPath" -> config.getProcessedFileLogPath();
+            case "coverArtCacheDirectory" -> config.getCoverArtCacheDirectory();
+            case "dbType" -> config.getDbType();
+            case "dbSqlitePath" -> config.getDbSqlitePath();
+            case "dbHost" -> config.getDbHost();
+            case "dbPort" -> config.getDbPort();
+            case "dbDatabase" -> config.getDbDatabase();
+            case "dbUsername" -> config.getDbUsername();
+            case "dbPassword" -> config.getDbPassword();
+            case "dbMaxPoolSize" -> config.getDbMaxPoolSize();
+            case "dbMinIdle" -> config.getDbMinIdle();
+            case "dbConnectionTimeout" -> config.getDbConnectionTimeout();
+            case "proxyEnabled" -> config.isProxyEnabled();
+            case "proxyHost" -> config.getProxyHost();
+            case "proxyPort" -> config.getProxyPort();
+            case "proxyUsername" -> config.getProxyUsername();
+            case "proxyPassword" -> config.getProxyPassword();
+            default -> null;
+        };
+    }
+
+    private void applyUpdatesSeparatingRestartFields(Map<String, Object> updates) {
+        Map<String, Object> hotUpdates = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : updates.entrySet()) {
+            String key = entry.getKey();
+            Object val = entry.getValue();
+            if (RESTART_ONLY_FIELDS.contains(key)) {
+                Object liveVal = liveRestartOnlyValue(key);
+                if (java.util.Objects.equals(liveVal, val)) {
+                    pendingRestartValues.remove(key);
+                } else {
+                    pendingRestartValues.put(key, val);
+                }
+            } else {
+                hotUpdates.put(key, val);
+            }
+        }
+        if (!hotUpdates.isEmpty()) {
+            applyUpdates(hotUpdates);
+        }
     }
 
     private void persistUpdates(Map<String, String> updates) throws IOException {
@@ -775,6 +887,17 @@ public class ConfigServlet extends HttpServlet {
                 .toList();
             updates.put(field, priorities);
             setPropertyUpdate(propertyUpdates, field, String.join(",", priorities));
+            return;
+        }
+
+        if ("tavilyIncludeDomains".equals(field)) {
+            // 显式清空时必须写入空字符串而非删除 key，否则重启加载时缺失 key 会回弹为默认域名列表
+            String normalized = trimmedValue == null ? "" : Arrays.stream(trimmedValue.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(java.util.stream.Collectors.joining(","));
+            updates.put(field, normalized);
+            setPropertyUpdate(propertyUpdates, field, normalized);
             return;
         }
 

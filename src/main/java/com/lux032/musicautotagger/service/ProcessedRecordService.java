@@ -48,6 +48,9 @@ public class ProcessedRecordService {
     private final FileSystemUtils fileSystemUtils;
     private final Supplier<FileMonitorService> monitorSupplier;
     private final ReidentifyReplacementRegistry replacementRegistry;
+    /** 防并发重复提交同一专辑/散曲的暂存重识别任务（按规范化分组键索引在途 Future）。 */
+    private final Map<String, java.util.concurrent.Future<?>> runningStagedTasks =
+        new java.util.concurrent.ConcurrentHashMap<>();
     private RecoveryService recoveryService;
     private ReviewQueueService reviewQueueService;
 
@@ -89,13 +92,48 @@ public class ProcessedRecordService {
         return page;
     }
 
-    /** 按文件夹（专辑根目录）聚合分页查询。 */
+    /** 按文件夹（专辑根目录）聚合分页查询。数据库模式下优先走持久化 folder_path 列的 SQL 分页，避免全表载入堆内存。 */
     public ProcessedRecordQuery.FolderPage listFolders(ProcessedRecordQuery query) {
         FolderResolver resolver = new FolderResolver();
-        FolderFilterResult filtered = filterFolderGroups(query, resolver);
         ProcessedRecordQuery.FolderPage page = new ProcessedRecordQuery.FolderPage();
         page.offset = query.safeOffset();
         page.limit = query.safeLimit();
+
+        if (logger.isFolderPathColumnAvailable()) {
+            ProcessedFileLogger.FolderSqlPage sqlPage = logger.queryFolderPageSql(query);
+            if (sqlPage != null) {
+                page.counts = sqlPage.counts;
+                page.total = sqlPage.total;
+                page.totalFiles = sqlPage.totalFiles;
+                if (!sqlPage.folderPaths.isEmpty()) {
+                    List<ProcessedRecord> pageRecords = logger.findRecordsByFolderPaths(
+                        sqlPage.folderPaths, Integer.MAX_VALUE);
+                    List<FolderGroup> built = groupByFolder(pageRecords == null ? List.of() : pageRecords, resolver);
+                    Map<String, FolderGroup> byKey = new LinkedHashMap<>();
+                    for (FolderGroup g : built) {
+                        byKey.put(normalizeFolderKey(g.summary.folderPath), g);
+                    }
+                    Set<String> emitted = new HashSet<>();
+                    for (String fp : sqlPage.folderPaths) {
+                        String key = normalizeFolderKey(fp);
+                        FolderGroup g = byKey.get(key);
+                        if (g != null && emitted.add(key)) {
+                            enrichFolder(g);
+                            page.items.add(g.summary);
+                        }
+                    }
+                    for (Map.Entry<String, FolderGroup> entry : byKey.entrySet()) {
+                        if (emitted.add(entry.getKey())) {
+                            enrichFolder(entry.getValue());
+                            page.items.add(entry.getValue().summary);
+                        }
+                    }
+                }
+                return page;
+            }
+        }
+
+        FolderFilterResult filtered = filterFolderGroups(query, resolver);
         page.counts = filtered.counts;
         page.total = filtered.matched.size();
         long totalFiles = 0;
@@ -120,15 +158,27 @@ public class ProcessedRecordService {
             return List.of();
         }
         FolderResolver resolver = new FolderResolver();
-        String targetKey = normalizeFolderKey(canonicalOrNormalized(new File(folderPath)).toString());
+        String canonical = canonicalOrNormalized(new File(folderPath)).toString();
+        String targetKey = normalizeFolderKey(canonical);
+        List<ProcessedRecord> candidates;
+        if (logger.isFolderPathColumnAvailable()) {
+            Set<String> lookupKeys = new LinkedHashSet<>();
+            lookupKeys.add(canonical);
+            lookupKeys.add(folderPath.trim());
+            candidates = logger.findRecordsByFolderPaths(lookupKeys, Integer.MAX_VALUE);
+        } else {
+            candidates = logger.loadAllRecords();
+        }
         List<ProcessedRecord> matched = new ArrayList<>();
-        for (ProcessedRecord r : logger.loadAllRecords()) {
-            FolderInfo info = resolver.resolve(r.filePath);
-            if (targetKey.equals(normalizeFolderKey(info.folderPath))) {
-                r.folderPath = info.folderPath;
-                r.discName = info.discName;
-                enrich(r, resolver.monitorRoot);
-                matched.add(r);
+        if (candidates != null) {
+            for (ProcessedRecord r : candidates) {
+                FolderInfo info = resolver.resolve(r.filePath);
+                if (targetKey.equals(normalizeFolderKey(info.folderPath))) {
+                    r.folderPath = info.folderPath;
+                    r.discName = info.discName;
+                    enrich(r, resolver.monitorRoot);
+                    matched.add(r);
+                }
             }
         }
         matched.sort(Comparator.comparing((ProcessedRecord r) -> r.filePath == null ? "" : r.filePath,
@@ -145,6 +195,35 @@ public class ProcessedRecordService {
     public List<ProcessedRecord> export(ProcessedRecordQuery query, int limit) {
         FolderResolver resolver = new FolderResolver();
         if (query != null && query.isFolderView()) {
+            if (logger.isFolderPathColumnAvailable()) {
+                List<String> matchedFolders = logger.findFolderPathsSql(query, limit);
+                if (matchedFolders != null) {
+                    if (matchedFolders.isEmpty()) return List.of();
+                    List<ProcessedRecord> fetched = logger.findRecordsByFolderPaths(matchedFolders, limit);
+                    Map<String, List<ProcessedRecord>> byFolder = new LinkedHashMap<>();
+                    for (String fp : matchedFolders) {
+                        byFolder.put(normalizeFolderKey(fp), new ArrayList<>());
+                    }
+                    if (fetched != null) {
+                        for (ProcessedRecord r : fetched) {
+                            FolderInfo info = resolver.resolve(r.filePath);
+                            r.folderPath = info.folderPath;
+                            r.discName = info.discName;
+                            byFolder.computeIfAbsent(normalizeFolderKey(info.folderPath), k -> new ArrayList<>()).add(r);
+                        }
+                    }
+                    List<ProcessedRecord> result = new ArrayList<>();
+                    for (List<ProcessedRecord> children : byFolder.values()) {
+                        children.sort(Comparator.comparing((ProcessedRecord r) -> r.filePath == null ? "" : r.filePath,
+                            String.CASE_INSENSITIVE_ORDER));
+                        for (ProcessedRecord r : children) {
+                            result.add(r);
+                            if (result.size() >= limit) return result;
+                        }
+                    }
+                    return result;
+                }
+            }
             FolderFilterResult filtered = filterFolderGroups(query, resolver);
             List<ProcessedRecord> result = new ArrayList<>();
             for (FolderGroup g : filtered.matched) {
@@ -182,12 +261,22 @@ public class ProcessedRecordService {
         if (folders != null && !folders.isEmpty()) {
             FolderResolver resolver = new FolderResolver();
             Set<String> wantedKeys = new LinkedHashSet<>();
+            Set<String> sqlLookupPaths = new LinkedHashSet<>();
             for (String f : folders) {
                 if (f != null && !f.isBlank()) {
-                    wantedKeys.add(normalizeFolderKey(canonicalOrNormalized(new File(f)).toString()));
+                    String canonical = canonicalOrNormalized(new File(f)).toString();
+                    wantedKeys.add(normalizeFolderKey(canonical));
+                    sqlLookupPaths.add(canonical);
+                    sqlLookupPaths.add(f.trim());
                 }
             }
             if (wantedKeys.isEmpty()) return List.of();
+            if (logger.isFolderPathColumnAvailable()) {
+                List<ProcessedRecord> direct = logger.findRecordsByFolderPaths(sqlLookupPaths, MAX_BATCH);
+                if (direct != null) {
+                    return direct;
+                }
+            }
             List<ProcessedRecord> matched = new ArrayList<>();
             for (ProcessedRecord r : logger.loadAllRecords()) {
                 FolderInfo info = resolver.resolve(r.filePath);
@@ -200,6 +289,16 @@ public class ProcessedRecordService {
         }
         if (filter != null) {
             if (filter.isFolderView()) {
+                if (logger.isFolderPathColumnAvailable()) {
+                    List<String> folderPaths = logger.findFolderPathsSql(filter, MAX_BATCH);
+                    if (folderPaths != null) {
+                        if (folderPaths.isEmpty()) return List.of();
+                        List<ProcessedRecord> direct = logger.findRecordsByFolderPaths(folderPaths, MAX_BATCH);
+                        if (direct != null) {
+                            return direct;
+                        }
+                    }
+                }
                 FolderFilterResult filtered = filterFolderGroups(filter, new FolderResolver());
                 List<ProcessedRecord> matched = new ArrayList<>();
                 for (FolderGroup g : filtered.matched) {
@@ -361,20 +460,38 @@ public class ProcessedRecordService {
         if (records.isEmpty() || recoveryService == null) {
             return 0;
         }
+        runningStagedTasks.entrySet().removeIf(e -> e.getValue() == null || e.getValue().isDone());
         FolderResolver resolver = new FolderResolver();
         record StagedCandidate(ProcessedRecord record, File usable, FolderInfo folderInfo) {}
         Map<String, List<StagedCandidate>> groups = new LinkedHashMap<>();
         for (ProcessedRecord r : records) {
             File usable = Boolean.TRUE.equals(r.sourceExists) ? new File(r.filePath) : new File(r.targetFilePath);
             FolderInfo info = resolver.resolve(usable.getAbsolutePath());
-            String key = (info.looseRoot || resolver.isConfiguredRoot(info.folderPath))
+            // 监控根散曲、配置根目录散曲，以及输出库内单层艺人目录（outputRoot/<Artist>/track.flac）均视为独立单曲，
+            // 防止同艺人不同散曲在暂存重识别时被误合为同一张专辑。
+            boolean singleTrack = info.looseRoot
+                || resolver.isConfiguredRoot(info.folderPath)
+                || resolver.isSingleLevelOutputArtistDir(info.folderPath);
+            String key = singleTrack
                 ? normalizeFolderKey(usable.getAbsolutePath())
                 : normalizeFolderKey(info.folderPath);
             groups.computeIfAbsent(key, k -> new ArrayList<>()).add(new StagedCandidate(r, usable, info));
         }
 
         int submittedCount = 0;
-        for (List<StagedCandidate> group : groups.values()) {
+        for (Map.Entry<String, List<StagedCandidate>> entry : groups.entrySet()) {
+            String groupKey = entry.getKey();
+            List<StagedCandidate> group = entry.getValue();
+
+            java.util.concurrent.CompletableFuture<Void> placeholder = new java.util.concurrent.CompletableFuture<>();
+            java.util.concurrent.Future<?> existing = runningStagedTasks.putIfAbsent(groupKey, placeholder);
+            if (existing != null) {
+                if (!existing.isDone() || !runningStagedTasks.replace(groupKey, existing, placeholder)) {
+                    LogCollector.addLog("WARN", "重新识别任务正在进行中，已跳过重复提交: " + groupKey);
+                    continue;
+                }
+            }
+
             String displayName = null;
             for (StagedCandidate item : group) {
                 ProcessedRecord r = item.record();
@@ -424,6 +541,7 @@ public class ProcessedRecordService {
                 Comparator<File> fileOrder = AudioFileOrdering.comparator();
                 stagedFiles.sort((a, b) -> fileOrder.compare(a.staged(), b.staged()));
             } catch (IOException e) {
+                runningStagedTasks.remove(groupKey, placeholder);
                 log.error("准备重新识别暂存副本失败: {}", e.getMessage(), e);
                 LogCollector.addLog("ERROR", "准备重新识别副本失败: " + e.getMessage());
                 deleteQuietly(taskRoot);
@@ -431,11 +549,22 @@ public class ProcessedRecordService {
             }
 
             try {
-                recoveryService.submitStagedReidentify(albumStagingDir.toFile(), displayName, stagedFiles, paths(groupRecords));
+                java.util.concurrent.Future<?> submitted = recoveryService.submitStagedReidentify(
+                    albumStagingDir.toFile(), displayName, stagedFiles, paths(groupRecords));
+                if (submitted == null || submitted.isDone()) {
+                    runningStagedTasks.remove(groupKey, placeholder);
+                } else {
+                    runningStagedTasks.replace(groupKey, placeholder, submitted);
+                }
             } catch (java.util.concurrent.RejectedExecutionException e) {
+                runningStagedTasks.remove(groupKey, placeholder);
                 deleteQuietly(taskRoot);
                 LogCollector.addLog("ERROR", "恢复服务已停止，未能提交重新识别: " + displayName);
                 continue;
+            } catch (RuntimeException e) {
+                runningStagedTasks.remove(groupKey, placeholder);
+                deleteQuietly(taskRoot);
+                throw e;
             }
             submittedCount += group.size();
         }
@@ -444,7 +573,20 @@ public class ProcessedRecordService {
 
     private boolean isUnderReview(File file) {
         if (reviewQueueService == null || file == null) return false;
-        File root = fileSystemUtils != null ? fileSystemUtils.getAlbumRootDirectory(file) : file.getParentFile();
+        // 散曲在待确认/缺封面队列中以自身文件路径作为 folderPath，必须先查文件自身路径
+        if (reviewQueueService.isFolderUnderReview(file.getAbsolutePath())) {
+            return true;
+        }
+        if (fileSystemUtils != null && fileSystemUtils.isLooseFileInMonitorRoot(file)) {
+            return false;
+        }
+        Path monitorRoot = monitorRoot();
+        File parent = file.getParentFile();
+        if (fileSystemUtils == null && monitorRoot != null && parent != null
+                && canonicalOrNormalized(parent).equals(monitorRoot)) {
+            return false;
+        }
+        File root = fileSystemUtils != null ? fileSystemUtils.getAlbumRootDirectory(file) : parent;
         return root != null && reviewQueueService.isFolderUnderReview(root.getAbsolutePath());
     }
 
@@ -495,7 +637,8 @@ public class ProcessedRecordService {
     }
 
     private void recordReplacements(List<ProcessedRecord> records) {
-        if (replacementRegistry == null || records == null) return;
+        if (replacementRegistry == null || records == null || records.isEmpty()) return;
+        Map<String, String> batch = new LinkedHashMap<>();
         for (ProcessedRecord r : records) {
             if (r == null || r.filePath == null || r.targetFilePath == null || r.targetFilePath.isBlank()) {
                 continue;
@@ -503,7 +646,10 @@ public class ProcessedRecordService {
             if (r.status != ProcessedRecord.Status.SUCCESS) {
                 continue;
             }
-            replacementRegistry.record(r.filePath, r.targetFilePath);
+            batch.put(r.filePath, r.targetFilePath);
+        }
+        if (!batch.isEmpty()) {
+            replacementRegistry.recordAll(batch);
         }
     }
 
@@ -743,12 +889,15 @@ public class ProcessedRecordService {
      */
     private final class FolderResolver {
         final Path monitorRoot;
+        final Path outputRoot;
         private final List<Path> configuredRoots;
         private final Set<String> configuredRootKeys;
         private final Map<String, FolderInfo> byParent = new HashMap<>();
 
         FolderResolver() {
             this.monitorRoot = monitorRoot();
+            String outDir = config == null ? null : config.getOutputDirectory();
+            this.outputRoot = (outDir == null || outDir.isBlank()) ? null : canonicalOrNormalized(new File(outDir));
             List<Path> roots = new ArrayList<>(3);
             Set<String> rootKeys = new HashSet<>(4);
             if (config != null) {
@@ -770,6 +919,16 @@ public class ProcessedRecordService {
 
         boolean isConfiguredRoot(String folderPath) {
             return folderPath != null && configuredRootKeys.contains(normalizeFolderKey(folderPath));
+        }
+
+        /** 判断目录是否为输出库下的单层艺人目录（outputRoot/<Artist>），其直接子文件属于无专辑散曲。 */
+        boolean isSingleLevelOutputArtistDir(String folderPath) {
+            if (outputRoot == null || folderPath == null || folderPath.isBlank()) {
+                return false;
+            }
+            Path folder = canonicalOrNormalized(new File(folderPath));
+            Path parent = folder.getParent();
+            return parent != null && parent.equals(outputRoot);
         }
 
         FolderInfo resolve(String filePath) {

@@ -121,10 +121,10 @@ public interface LlmProvider {
 
         @Override
         public String extractText(JsonObject response) {
-            JsonArray content = response.getAsJsonArray("content");
-            if (content == null) {
+            if (response == null || !response.has("content") || !response.get("content").isJsonArray()) {
                 return null;
             }
+            JsonArray content = response.getAsJsonArray("content");
             StringBuilder sb = new StringBuilder();
             for (JsonElement element : content) {
                 if (!element.isJsonObject()) {
@@ -184,8 +184,11 @@ public interface LlmProvider {
 
         @Override
         public String extractText(JsonObject response) {
+            if (response == null || !response.has("choices") || !response.get("choices").isJsonArray()) {
+                return null;
+            }
             JsonArray choices = response.getAsJsonArray("choices");
-            if (choices == null || choices.size() == 0 || !choices.get(0).isJsonObject()) {
+            if (choices.size() == 0 || !choices.get(0).isJsonObject()) {
                 return null;
             }
             JsonObject first = choices.get(0).getAsJsonObject();

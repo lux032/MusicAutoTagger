@@ -45,6 +45,12 @@ public class LlmProviderServlet extends HttpServlet {
     }
 
     @Override
+    public void destroy() {
+        catalog.close();
+        super.destroy();
+    }
+
+    @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         List<Map<String, Object>> masked = new ArrayList<>();
         for (LlmProviderConfig provider : safeProviders()) {

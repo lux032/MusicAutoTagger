@@ -386,18 +386,28 @@ public class OnlineSearchQueueService implements AutoCloseable {
                 return new EnqueueResult(null, false, false);
             }
 
-            // 去重：按 reviewItemId 或规范化文件夹路径查是否已在队列或运行中
-            SearchTask existing = findActiveLocked(canonicalPath, reviewItemId);
+            // 按任务类别（封面搜索 vs 专辑识别）隔离去重，防止跨类型互相覆盖或错误升格
+            SearchTask existing = findActiveLocked(origin, canonicalPath, reviewItemId);
             if (existing != null) {
                 if (existing.status == Status.QUEUED) {
                     existing.analyzeCover = existing.analyzeCover || analyzeCover;
                     if (customQuery != null && !customQuery.isBlank()) {
                         existing.customQuery = customQuery.trim();
                     }
-                    // 若已有的是排队中的后台自动任务，而用户现在手动点了搜索 → 直接升格为手动高优先级！
+                    // 若已有的是排队中的后台自动任务，而用户现在手动点了搜索 → 升格为手动高优先级并同步目标字段
                     if (existing.priority > priority) {
                         existing.priority = priority;
                         existing.origin = origin;
+                        if (sourceType != null) existing.sourceType = sourceType;
+                        if (relativePath != null) existing.relativePath = relativePath;
+                        if (rawPath != null) existing.rawFolderPath = rawPath;
+                        if (folderName != null && !folderName.isBlank()) existing.folderName = folderName;
+                        if (reviewItemId != null) existing.reviewItemId = reviewItemId;
+                        if (fileCount > 0) existing.fileCount = fileCount;
+                        existing.engine = isCoverOrigin(origin)
+                            ? (coverSearchService != null && coverSearchService.isAiSearchAvailable()
+                                ? coverSearchService.activeProviderName() : "itunes")
+                            : (onlineIdentificationService != null ? onlineIdentificationService.activeProviderName() : "native");
                         existing.orderSeq = orderGenerator.getAndIncrement();
                         existing.updatedAt = System.currentTimeMillis();
                         sortQueuedLocked();
@@ -926,65 +936,70 @@ public class OnlineSearchQueueService implements AutoCloseable {
         return snapshot;
     }
 
+    private record RecoveryJobSnapshot(
+        String id, String sourceType, String relativePath, String folderPath,
+        boolean analyzeCover, String reviewItemId, Integer queuePosition,
+        String stageCode, int percent, long createdAt, long updatedAt,
+        Status status, String errorMessage, boolean round1Saved, int candidateCount) { }
+
     /**
      * 兼容 {@code RecoveryService.listJobs()}：返回来源为「重新识别」页的联网搜索任务视图，
      * 并在任务完成后随对应 ReviewItem 状态动态映射为 WAITING_REVIEW / SUCCEEDED / FAILED。
+     * 所有可变字段在锁内一次性拍摄不可变快照，杜绝锁外并发读取非同步字段。
      */
     public List<Map<String, Object>> listRecoveryJobViews() {
-        List<SearchTask> snapshot = new ArrayList<>();
-        Map<String, Integer> positions = new LinkedHashMap<>();
+        List<RecoveryJobSnapshot> snapshots = new ArrayList<>();
         synchronized (lock) {
             for (SearchTask t : running) {
-                if (t.origin == Origin.RECOVERY_MANUAL) snapshot.add(t);
+                if (t.origin == Origin.RECOVERY_MANUAL) snapshots.add(snapshotForRecovery(t, null));
             }
             for (int i = 0; i < queued.size(); i++) {
                 SearchTask t = queued.get(i);
                 if (t.origin == Origin.RECOVERY_MANUAL) {
-                    snapshot.add(t);
-                    positions.put(t.id, i + 1);
+                    snapshots.add(snapshotForRecovery(t, i + 1));
                 }
             }
             for (SearchTask t : finished) {
-                if (t.origin == Origin.RECOVERY_MANUAL) snapshot.add(t);
+                if (t.origin == Origin.RECOVERY_MANUAL) snapshots.add(snapshotForRecovery(t, null));
             }
         }
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (SearchTask t : snapshot) {
+        List<Map<String, Object>> out = new ArrayList<>(snapshots.size());
+        for (RecoveryJobSnapshot t : snapshots) {
             Map<String, Object> view = new LinkedHashMap<>();
-            view.put("id", t.id);
-            view.put("sourceType", t.sourceType);
-            view.put("relativePath", t.relativePath);
-            view.put("path", t.folderPath);
+            view.put("id", t.id());
+            view.put("sourceType", t.sourceType());
+            view.put("relativePath", t.relativePath());
+            view.put("path", t.folderPath());
             view.put("useLlm", true);
             view.put("mode", RecoveryService.RecoveryMode.ONLINE_SEARCH.name());
-            view.put("analyzeCover", t.analyzeCover);
-            view.put("reviewItemId", t.reviewItemId);
-            view.put("queuePosition", positions.get(t.id));
-            view.put("stageCode", t.stageCode);
-            view.put("percent", t.percent);
-            view.put("createdAt", t.createdAt);
-            view.put("updatedAt", t.updatedAt);
+            view.put("analyzeCover", t.analyzeCover());
+            view.put("reviewItemId", t.reviewItemId());
+            view.put("queuePosition", t.queuePosition());
+            view.put("stageCode", t.stageCode());
+            view.put("percent", t.percent());
+            view.put("createdAt", t.createdAt());
+            view.put("updatedAt", t.updatedAt());
 
             String status;
             String message;
-            if (t.status == Status.QUEUED) {
+            if (t.status() == Status.QUEUED) {
                 status = "QUEUED";
-                message = "排队中（第 " + positions.getOrDefault(t.id, 1) + " 位）";
-            } else if (t.status == Status.RUNNING) {
+                message = "排队中（第 " + (t.queuePosition() != null ? t.queuePosition() : 1) + " 位）";
+            } else if (t.status() == Status.RUNNING) {
                 status = RecoveryService.JobStatus.RUNNING.name();
                 message = "联网搜索进行中";
-            } else if (t.status == Status.FAILED) {
+            } else if (t.status() == Status.FAILED) {
                 status = RecoveryService.JobStatus.FAILED.name();
-                message = t.errorMessage;
-            } else if (t.status == Status.CANCELLED) {
+                message = t.errorMessage();
+            } else if (t.status() == Status.CANCELLED) {
                 status = RecoveryService.JobStatus.FAILED.name();
-                message = t.round1Saved ? "已中止（保留了第 1 轮结果）" : "已手动中止";
+                message = t.round1Saved() ? "已中止（保留了第 1 轮结果）" : "已手动中止";
             } else {
                 // SUCCEEDED -> 与旧 RecoveryService.listJobs 语义保持 100% 一致
                 status = RecoveryService.JobStatus.WAITING_REVIEW.name();
                 message = "联网搜索完成，候选已进入待确认页面";
-                if (t.reviewItemId != null && reviewQueue != null) {
-                    ReviewItem item = reviewQueue.get(t.reviewItemId);
+                if (t.reviewItemId() != null && reviewQueue != null) {
+                    ReviewItem item = reviewQueue.get(t.reviewItemId());
                     if (item != null) {
                         view.put("reviewKind", item.effectiveKind().name());
                         boolean isCoverMissing = item.effectiveKind() == ReviewItem.Kind.COVER_MISSING;
@@ -1006,11 +1021,19 @@ public class OnlineSearchQueueService implements AutoCloseable {
             }
             view.put("status", status);
             view.put("message", message);
-            view.put("successCount", t.candidateCount);
+            view.put("successCount", t.candidateCount());
             view.put("failedCount", 0);
             out.add(view);
         }
         return out;
+    }
+
+    private static RecoveryJobSnapshot snapshotForRecovery(SearchTask t, Integer queuePosition) {
+        return new RecoveryJobSnapshot(
+            t.id, t.sourceType, t.relativePath, t.folderPath,
+            t.analyzeCover, t.reviewItemId, queuePosition,
+            t.stageCode, t.percent, t.createdAt, t.updatedAt,
+            t.status, t.errorMessage, t.round1Saved, t.candidateCount);
     }
 
     @Override
@@ -1030,17 +1053,24 @@ public class OnlineSearchQueueService implements AutoCloseable {
 
     // ==================== 内部工具 ====================
 
-    private SearchTask findActiveLocked(String canonicalPath, String reviewItemId) {
+    private static boolean isCoverOrigin(Origin origin) {
+        return origin == Origin.MISSING_COVER_AUTO || origin == Origin.MISSING_COVER_MANUAL;
+    }
+
+    private SearchTask findActiveLocked(Origin origin, String canonicalPath, String reviewItemId) {
         for (SearchTask t : running) {
-            if (sameTarget(t, canonicalPath, reviewItemId)) return t;
+            if (sameTarget(t, origin, canonicalPath, reviewItemId)) return t;
         }
         for (SearchTask t : queued) {
-            if (sameTarget(t, canonicalPath, reviewItemId)) return t;
+            if (sameTarget(t, origin, canonicalPath, reviewItemId)) return t;
         }
         return null;
     }
 
-    private boolean sameTarget(SearchTask t, String canonicalPath, String reviewItemId) {
+    private boolean sameTarget(SearchTask t, Origin origin, String canonicalPath, String reviewItemId) {
+        if (isCoverOrigin(t.origin) != isCoverOrigin(origin)) {
+            return false;
+        }
         if (reviewItemId != null && reviewItemId.equals(t.reviewItemId)) {
             return true;
         }
@@ -1110,44 +1140,44 @@ public class OnlineSearchQueueService implements AutoCloseable {
 
     private static class SearchTask {
         private String id;
-        private Origin origin;
-        private int priority;
-        private long orderSeq;
-        private String sourceType;
-        private String relativePath;
-        private String folderPath;
-        private String rawFolderPath;
-        private String folderName;
-        private String reviewItemId;
-        private int fileCount;
-        private boolean analyzeCover;
-        private String customQuery;
-        private String engine;
+        private volatile Origin origin;
+        private volatile int priority;
+        private volatile long orderSeq;
+        private volatile String sourceType;
+        private volatile String relativePath;
+        private volatile String folderPath;
+        private volatile String rawFolderPath;
+        private volatile String folderName;
+        private volatile String reviewItemId;
+        private volatile int fileCount;
+        private volatile boolean analyzeCover;
+        private volatile String customQuery;
+        private volatile String engine;
 
-        private Status status;
-        private int stepIndex;
-        private String stageCode;
-        private int round;
-        private int stageCurrent;
-        private int stageTotal;
-        private int citationsCount;
-        private int percent;
-        private String stageDetail;
-        private boolean round1Saved;
+        private volatile Status status;
+        private volatile int stepIndex;
+        private volatile String stageCode;
+        private volatile int round;
+        private volatile int stageCurrent;
+        private volatile int stageTotal;
+        private volatile int citationsCount;
+        private volatile int percent;
+        private volatile String stageDetail;
+        private volatile boolean round1Saved;
 
-        private int candidateCount;
-        private int clueCount;
-        private double bestCoverage;
-        private String errorMessage;
+        private volatile int candidateCount;
+        private volatile int clueCount;
+        private volatile double bestCoverage;
+        private volatile String errorMessage;
 
-        private long createdAt;
-        private long startedAt;
-        private long updatedAt;
-        private long finishedAt;
+        private volatile long createdAt;
+        private volatile long startedAt;
+        private volatile long updatedAt;
+        private volatile long finishedAt;
 
         private volatile boolean cancelRequested;
         private final java.util.concurrent.atomic.AtomicBoolean started = new java.util.concurrent.atomic.AtomicBoolean(false);
-        private Future<?> future;
+        private volatile Future<?> future;
 
         Map<String, Object> toView(Integer queuePosition) {
             long now = System.currentTimeMillis();

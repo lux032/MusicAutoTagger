@@ -337,7 +337,7 @@ public class ReviewServlet extends HttpServlet {
             respond(resp, 400, Map.of("error", "missing.id"));
             return;
         }
-        ReviewItem item = reviewQueue.get(id);
+        ReviewItem item = reviewQueue.getSnapshot(id);
         if (item == null || item.effectiveKind() == ReviewItem.Kind.COVER_MISSING) {
             respond(resp, 404, Map.of("error", "item.not.found"));
             return;

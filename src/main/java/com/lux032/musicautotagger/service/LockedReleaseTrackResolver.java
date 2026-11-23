@@ -56,7 +56,7 @@ public class LockedReleaseTrackResolver {
                               String albumTitle, String albumArtist,
                               String releaseType, boolean compilation,
                               java.util.Set<String> claimedPositions) {
-        MusicMetadata base = identified != null ? identified : new MusicMetadata();
+        MusicMetadata base = identified != null ? identified.copy() : new MusicMetadata();
         if (musicBrainzClient == null || releaseId == null || releaseId.isEmpty()) {
             return new Resolution(base, MusicBrainzClient.TrackMatchType.UNAVAILABLE);
         }

@@ -5,6 +5,9 @@ import lombok.Data;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 「待人工确认」队列条目（阶段六 #18）
@@ -79,7 +82,7 @@ public class ReviewItem {
      */
     private String reasonCode;
     /** 判定时的具体数字（覆盖率、对不上的曲目数等），与 reasonCode 配套 */
-    private java.util.Map<String, Object> reasonFacts = new java.util.LinkedHashMap<>();
+    private Map<String, Object> reasonFacts = new ConcurrentHashMap<>();
 
     /** 条目类型；null 视为 ALBUM_UNRESOLVED（兼容旧队列文件） */
     private Kind kind;
@@ -106,16 +109,16 @@ public class ReviewItem {
     private String synthesizedAlbumArtist;
 
     /** 文件夹的时长序列（用于与候选 release 逐条 diff） */
-    private List<Integer> durationSequence = new ArrayList<>();
+    private List<Integer> durationSequence = new CopyOnWriteArrayList<>();
 
     /** 候选专辑快照 */
-    private List<CandidateSnapshot> candidates = new ArrayList<>();
+    private List<CandidateSnapshot> candidates = new CopyOnWriteArrayList<>();
 
     /** 是否已经从 MusicBrainz 展开过候选的 release 明细 */
     private boolean candidatesExpanded;
 
     /** 待确认的文件清单 */
-    private List<FileEntry> files = new ArrayList<>();
+    private List<FileEntry> files = new CopyOnWriteArrayList<>();
 
     /** 转码暂存目录（长期挂起时不能占用临时目录，需挪到暂存区） */
     private String stagingDir;
@@ -135,15 +138,99 @@ public class ReviewItem {
     /** 提交阶段；为 COMMITTED 说明输出已落地，仅剩回收站收尾 */
     private RecoveryCommitState recoveryCommitState;
     /** 已提交到输出目录的顶层路径，供启动收尾核对 */
-    private List<String> committedOutputPaths = new ArrayList<>();
+    private List<String> committedOutputPaths = new CopyOnWriteArrayList<>();
     /** 本地证据摘要；文件发生变化时旧联网候选会过期 */
     private String evidenceHash;
     private boolean onlineEvidenceStale;
     private long onlineSearchedAt;
     private String onlineSearchProvider;
     private String onlineSearchModel;
-    private List<OnlineCandidate> onlineCandidates = new ArrayList<>();
-    private List<OnlineEvidence> onlineClues = new ArrayList<>();
+    private List<OnlineCandidate> onlineCandidates = new CopyOnWriteArrayList<>();
+    private List<OnlineEvidence> onlineClues = new CopyOnWriteArrayList<>();
+
+    private static <T> List<T> copyOnWrite(List<T> input) {
+        if (input == null) return new CopyOnWriteArrayList<>();
+        if (input instanceof CopyOnWriteArrayList<T>) return input;
+        return new CopyOnWriteArrayList<>(input);
+    }
+
+    private static <K, V> Map<K, V> concurrentMap(Map<K, V> input) {
+        if (input instanceof ConcurrentHashMap<K, V>) return input;
+        ConcurrentHashMap<K, V> map = new ConcurrentHashMap<>();
+        if (input != null) {
+            for (Map.Entry<K, V> e : input.entrySet()) {
+                if (e.getKey() != null && e.getValue() != null) {
+                    map.put(e.getKey(), e.getValue());
+                }
+            }
+        }
+        return map;
+    }
+
+    public void setReasonFacts(Map<String, Object> reasonFacts) {
+        this.reasonFacts = concurrentMap(reasonFacts);
+    }
+
+    public void setDurationSequence(List<Integer> durationSequence) {
+        this.durationSequence = copyOnWrite(durationSequence);
+    }
+
+    public void setCandidates(List<CandidateSnapshot> candidates) {
+        this.candidates = copyOnWrite(candidates);
+    }
+
+    public void setFiles(List<FileEntry> files) {
+        this.files = copyOnWrite(files);
+    }
+
+    public void setCommittedOutputPaths(List<String> committedOutputPaths) {
+        this.committedOutputPaths = copyOnWrite(committedOutputPaths);
+    }
+
+    public void setOnlineCandidates(List<OnlineCandidate> onlineCandidates) {
+        this.onlineCandidates = copyOnWrite(onlineCandidates);
+    }
+
+    public void setOnlineClues(List<OnlineEvidence> onlineClues) {
+        this.onlineClues = copyOnWrite(onlineClues);
+    }
+
+    /**
+     * 确保所有嵌套集合均为线程安全实现（Gson 反序列化会绕过 setter 写入普通 ArrayList/LinkedHashMap），
+     * 杜绝并发修改条目集合与队列 save() 序列化之间抛出 ConcurrentModificationException。
+     */
+    public void ensureThreadSafeCollections() {
+        this.reasonFacts = concurrentMap(this.reasonFacts);
+        this.durationSequence = copyOnWrite(this.durationSequence);
+        this.candidates = copyOnWrite(this.candidates);
+        this.files = copyOnWrite(this.files);
+        this.committedOutputPaths = copyOnWrite(this.committedOutputPaths);
+        this.onlineCandidates = copyOnWrite(this.onlineCandidates);
+        this.onlineClues = copyOnWrite(this.onlineClues);
+        for (CandidateSnapshot c : this.candidates) {
+            if (c != null) c.durations = copyOnWrite(c.durations);
+        }
+        for (OnlineCandidate oc : this.onlineCandidates) {
+            if (oc != null) {
+                oc.artists = copyOnWrite(oc.artists);
+                oc.albumArtists = copyOnWrite(oc.albumArtists);
+                oc.tracks = copyOnWrite(oc.tracks);
+                oc.sources = copyOnWrite(oc.sources);
+                oc.coverCandidates = copyOnWrite(oc.coverCandidates);
+                oc.manualTrackOverrides = copyOnWrite(oc.manualTrackOverrides);
+            }
+        }
+        if (this.missingTracks != null) {
+            this.missingTracks.unmatchedFiles = concurrentMap(this.missingTracks.unmatchedFiles);
+        }
+        if (this.missingCover != null) {
+            this.missingCover.albumArtists = copyOnWrite(this.missingCover.albumArtists);
+            this.missingCover.localTrackArtists = concurrentMap(this.missingCover.localTrackArtists);
+            this.missingCover.localTrackArtistFallbacks = copyOnWrite(this.missingCover.localTrackArtistFallbacks);
+            this.missingCover.coverCandidates = copyOnWrite(this.missingCover.coverCandidates);
+            this.missingCover.archivedOutputDirs = copyOnWrite(this.missingCover.archivedOutputDirs);
+        }
+    }
 
     /**
      * LLM 封闭式判定结果（阶段七 #22）
@@ -183,7 +270,11 @@ public class ReviewItem {
         /** LOCK_CHECK（锁定前时长覆盖检查）/ TRACK_CHECK（逐首检测） */
         private String detectedBy;
         /** 逐首检测确定不在版本中的文件：文件名 → 指纹曲名 */
-        private java.util.Map<String, String> unmatchedFiles = new java.util.LinkedHashMap<>();
+        private Map<String, String> unmatchedFiles = new ConcurrentHashMap<>();
+
+        public void setUnmatchedFiles(Map<String, String> unmatchedFiles) {
+            this.unmatchedFiles = concurrentMap(unmatchedFiles);
+        }
     }
 
     /**
@@ -203,7 +294,7 @@ public class ReviewItem {
         private String sourcePipeline;
         private String albumTitle;
         private String albumArtist;
-        private List<String> albumArtists = new ArrayList<>();
+        private List<String> albumArtists = new CopyOnWriteArrayList<>();
         private String releaseGroupId;
         private String releaseId;
         private String releaseDate;
@@ -220,8 +311,8 @@ public class ReviewItem {
         /** 来自「按本地标签入库」流程时的元数据快照 */
         private boolean localArchiveDirect;
         private String localArchiveRevision;
-        private java.util.Map<String, List<String>> localTrackArtists = new java.util.LinkedHashMap<>();
-        private List<String> localTrackArtistFallbacks = new ArrayList<>();
+        private Map<String, List<String>> localTrackArtists = new ConcurrentHashMap<>();
+        private List<String> localTrackArtistFallbacks = new CopyOnWriteArrayList<>();
         /** 联网候选 ID（若来自联网候选确认） */
         private String onlineCandidateId;
         /** 用户补充的自定义搜索关键词 */
@@ -231,14 +322,34 @@ public class ReviewItem {
         private String coverSearchStatus;
         private String coverSearchNote;
         /** 封面候选列表（字节保存在 CoverCandidateCache 磁盘目录） */
-        private List<CoverCandidateView> coverCandidates = new ArrayList<>();
+        private List<CoverCandidateView> coverCandidates = new CopyOnWriteArrayList<>();
         private String selectedCoverSha256;
         /** 用户显式确认「保持无封面」入库或保留 */
         private boolean confirmedNoCover;
         /** STAGED_IMPORT 确认无封面入库后实际落盘的专辑输出目录/散曲路径，供后续库扫描跳过 */
-        private List<String> archivedOutputDirs = new ArrayList<>();
+        private List<String> archivedOutputDirs = new CopyOnWriteArrayList<>();
         /** 是否已自动触发过后台搜封面 */
         private boolean coverAutoSearchTriggered;
+
+        public void setAlbumArtists(List<String> albumArtists) {
+            this.albumArtists = copyOnWrite(albumArtists);
+        }
+
+        public void setLocalTrackArtists(Map<String, List<String>> localTrackArtists) {
+            this.localTrackArtists = concurrentMap(localTrackArtists);
+        }
+
+        public void setLocalTrackArtistFallbacks(List<String> localTrackArtistFallbacks) {
+            this.localTrackArtistFallbacks = copyOnWrite(localTrackArtistFallbacks);
+        }
+
+        public void setCoverCandidates(List<CoverCandidateView> coverCandidates) {
+            this.coverCandidates = copyOnWrite(coverCandidates);
+        }
+
+        public void setArchivedOutputDirs(List<String> archivedOutputDirs) {
+            this.archivedOutputDirs = copyOnWrite(archivedOutputDirs);
+        }
     }
 
     /**
@@ -333,14 +444,30 @@ public class ReviewItem {
         private double trackCoverage;
         private boolean officialCandidate;
         private String reason;
-        private List<OnlineTrack> tracks = new ArrayList<>();
-        private List<OnlineEvidence> sources = new ArrayList<>();
+        private List<OnlineTrack> tracks = new CopyOnWriteArrayList<>();
+        private List<OnlineEvidence> sources = new CopyOnWriteArrayList<>();
         /** Lightweight cover metadata only; image bytes are stored in the candidate cache. */
-        private List<CoverCandidateView> coverCandidates = new ArrayList<>();
+        private List<CoverCandidateView> coverCandidates = new CopyOnWriteArrayList<>();
         /** null means the user explicitly chose not to embed a cover. */
         private String selectedCoverSha256;
         /** 首期只开放专辑级编辑，逐曲覆盖字段为后续预留 */
-        private List<OnlineTrack> manualTrackOverrides = new ArrayList<>();
+        private List<OnlineTrack> manualTrackOverrides = new CopyOnWriteArrayList<>();
+
+        public void setTracks(List<OnlineTrack> tracks) {
+            this.tracks = copyOnWrite(tracks);
+        }
+
+        public void setSources(List<OnlineEvidence> sources) {
+            this.sources = copyOnWrite(sources);
+        }
+
+        public void setCoverCandidates(List<CoverCandidateView> coverCandidates) {
+            this.coverCandidates = copyOnWrite(coverCandidates);
+        }
+
+        public void setManualTrackOverrides(List<OnlineTrack> manualTrackOverrides) {
+            this.manualTrackOverrides = copyOnWrite(manualTrackOverrides);
+        }
     }
 
     /**
@@ -360,10 +487,14 @@ public class ReviewItem {
         /** 有多少个样本的候选里包含这张专辑 */
         private int supportCount;
         private int totalSamples;
-        private List<Integer> durations = new ArrayList<>();
+        private List<Integer> durations = new CopyOnWriteArrayList<>();
         /** 该 RG 已被查证确认没有可用 Release（正常结果，非展开失败） */
         private boolean confirmedNoRelease;
         /** 与文件夹时长序列的相似度（展开后计算） */
         private Double durationSimilarity;
+
+        public void setDurations(List<Integer> durations) {
+            this.durations = copyOnWrite(durations);
+        }
     }
 }

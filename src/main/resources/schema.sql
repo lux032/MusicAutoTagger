@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS processed_files (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '自增主键',
     file_hash VARCHAR(64) NOT NULL COMMENT '文件哈希值（MD5，用于检测内容重复）',
     file_name VARCHAR(500) NOT NULL COMMENT '文件名',
-    file_path VARCHAR(1000) NOT NULL UNIQUE COMMENT '文件完整路径（唯一键，确保同一路径只处理一次）',
+    file_path VARCHAR(768) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL UNIQUE COMMENT '文件完整路径（二进制排序规则区分大小写，768 字符满足 InnoDB 3072B 索引上限）',
     file_size BIGINT NOT NULL COMMENT '文件大小（字节）',
     processed_time DATETIME NOT NULL COMMENT '处理时间',
     recording_id VARCHAR(100) COMMENT 'MusicBrainz录音ID',
@@ -22,12 +22,14 @@ CREATE TABLE IF NOT EXISTS processed_files (
     title VARCHAR(500) COMMENT '曲目标题',
     album VARCHAR(500) COMMENT '专辑名称',
     release_group_id VARCHAR(100) COMMENT 'MusicBrainz Release Group ID（封面缓存的 key，仪表板缩略图用）',
-    target_file_path VARCHAR(1000) NULL COMMENT '归档目标文件绝对路径（仪表板内嵌封面兜底用）',
+    target_file_path VARCHAR(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '归档目标文件绝对路径（仪表板内嵌封面兜底用）',
+    folder_path VARCHAR(768) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '专辑根目录路径（文件夹视图 SQL 分页索引）',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
     INDEX idx_file_hash (file_hash),
     INDEX idx_processed_time (processed_time),
     INDEX idx_recording_id (recording_id),
+    INDEX idx_folder_path (folder_path),
     INDEX idx_artist (artist(255)),
     INDEX idx_title (title(255)),
     INDEX idx_album (album(255))
@@ -35,7 +37,9 @@ CREATE TABLE IF NOT EXISTS processed_files (
 
 -- 老库补列（程序启动时也会自动尝试执行一次，这里只是手动补执行的备份方案）
 -- ALTER TABLE processed_files ADD COLUMN release_group_id VARCHAR(100) NULL COMMENT 'MusicBrainz Release Group ID';
--- ALTER TABLE processed_files ADD COLUMN target_file_path VARCHAR(1000) NULL COMMENT '归档目标文件绝对路径';
+-- ALTER TABLE processed_files ADD COLUMN target_file_path VARCHAR(1000) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '归档目标文件绝对路径';
+-- ALTER TABLE processed_files ADD COLUMN folder_path VARCHAR(768) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL COMMENT '专辑根目录路径';
+-- CREATE INDEX idx_folder_path ON processed_files (folder_path);
 
 -- 创建视图：最近24小时处理的文件
 CREATE OR REPLACE VIEW recent_processed_files AS
