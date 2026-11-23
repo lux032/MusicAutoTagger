@@ -123,6 +123,8 @@ public class ApplicationLifecycleManager {
         
         log.info(I18nUtil.getMessage("app.init.filesystem.utils"));
         fileSystemUtils = new FileSystemUtils(config);
+        folderAlbumCache.setFileSystemUtils(fileSystemUtils);
+        coverArtService.setFileSystemUtils(fileSystemUtils);
         
         log.info(I18nUtil.getMessage("app.init.album.batch.processor"));
         albumBatchProcessor = new AlbumBatchProcessor(config, folderAlbumCache, tagWriter, processedLogger, coverArtService);
@@ -155,6 +157,7 @@ public class ApplicationLifecycleManager {
         
         log.info(I18nUtil.getMessage("app.init.failed.file.handler"));
         failedFileHandler = new FailedFileHandler(config, tagWriter, coverArtService, processedLogger, fileSystemUtils);
+        albumBatchProcessor.setFailedFileHandler(failedFileHandler);
         
         log.info(I18nUtil.getMessage("app.init.audio.file.processor"));
         audioFileProcessorService = new AudioFileProcessorService(

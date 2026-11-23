@@ -5,12 +5,18 @@ import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.util.I18nUtil;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 封面图片缓存服务
@@ -100,32 +106,35 @@ public class CoverArtCache {
                 File cacheFile = cacheFilePath.toFile();
                 if (cacheFile.exists()) {
                     log.info(I18nUtil.getMessage("cache.using.cached.cover.file"), coverArtUrl);
+                    touchQuietly(cacheFilePath);
                     return Files.readAllBytes(cacheFilePath);
                 }
                 return null;
             }
 
             String sql = "SELECT cache_file_path FROM cover_art_cache WHERE url_hash = ?";
-            
-            try (Connection conn = databaseService.getConnection();
-                 PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                
-                pstmt.setString(1, urlHash);
-                
-                try (ResultSet rs = pstmt.executeQuery()) {
-                    if (rs.next()) {
-                        String cacheFilePath = rs.getString("cache_file_path");
-                        File cacheFile = new File(cacheFilePath);
-                        
-                        if (cacheFile.exists()) {
-                            log.info(I18nUtil.getMessage("cache.using.cached.cover.db"), coverArtUrl);
-                            return Files.readAllBytes(cacheFile.toPath());
-                        } else {
-                            log.warn(I18nUtil.getMessage("cache.file.not.exist"), cacheFilePath);
-                            // 删除无效的缓存记录
-                            deleteCacheRecord(urlHash);
+            String staleHashToDelete = null;
+            try (Connection conn = databaseService.getConnection()) {
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    pstmt.setString(1, urlHash);
+                    try (ResultSet rs = pstmt.executeQuery()) {
+                        if (rs.next()) {
+                            String cacheFilePath = rs.getString("cache_file_path");
+                            File cacheFile = new File(cacheFilePath);
+                            if (cacheFile.exists()) {
+                                log.info(I18nUtil.getMessage("cache.using.cached.cover.db"), coverArtUrl);
+                                touchQuietly(cacheFile.toPath());
+                                return Files.readAllBytes(cacheFile.toPath());
+                            } else {
+                                log.warn(I18nUtil.getMessage("cache.file.not.exist"), cacheFilePath);
+                                staleHashToDelete = urlHash;
+                            }
                         }
                     }
+                }
+                // 先关闭 ResultSet/PreparedStatement 再在同一连接上删除，彻底避免 SQLite/HikariCP 嵌套取连接死锁
+                if (staleHashToDelete != null) {
+                    deleteCacheRecordOnConnection(conn, staleHashToDelete);
                 }
             }
         } catch (Exception e) {
@@ -149,12 +158,13 @@ public class CoverArtCache {
         try {
             String urlHash = calculateHash(coverArtUrl);
             
-            // 生成缓存文件路径: cacheDir/urlHash.jpg
+            // 生成缓存文件路径: cacheDir/urlHash.jpg（先写临时文件再原子重命名，避免并发读取半截文件）
             String cacheFileName = urlHash + ".jpg";
-            Path cacheFilePath = Paths.get(cacheDirectory, cacheFileName);
-            
-            // 保存文件
-            Files.write(cacheFilePath, coverData);
+            Path cacheDirPath = Paths.get(cacheDirectory);
+            Files.createDirectories(cacheDirPath);
+            Path cacheFilePath = cacheDirPath.resolve(cacheFileName);
+            writeAtomically(cacheFilePath, coverData);
+            touchQuietly(cacheFilePath);
             log.info(I18nUtil.getMessage("cache.cover.cached.to.file"), cacheFilePath);
             
             // 如果没有数据库服务，到此结束
@@ -198,24 +208,39 @@ public class CoverArtCache {
         }
     }
     
-    /**
-     * 删除缓存记录
-     */
-    private void deleteCacheRecord(String urlHash) {
-        // 如果没有数据库服务，跳过数据库操作
-        if (databaseService == null) {
+    private void deleteCacheRecordOnConnection(Connection conn, String urlHash) {
+        if (conn == null || urlHash == null) {
             return;
         }
-        
-        try {
-            String sql = "DELETE FROM cover_art_cache WHERE url_hash = ?";
-            try (Connection conn = databaseService.getConnection();
-                 PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                pstmt.setString(1, urlHash);
-                pstmt.executeUpdate();
-            }
+        String sql = "DELETE FROM cover_art_cache WHERE url_hash = ?";
+        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, urlHash);
+            pstmt.executeUpdate();
         } catch (SQLException e) {
             log.error(I18nUtil.getMessage("cache.delete.record.failed"), e);
+        }
+    }
+
+    private static void writeAtomically(Path target, byte[] data) throws IOException {
+        Path parent = target.toAbsolutePath().getParent();
+        Files.createDirectories(parent);
+        Path tmp = Files.createTempFile(parent, ".cover-cache-", ".tmp");
+        try {
+            Files.write(tmp, data);
+            try {
+                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
+    }
+
+    private static void touchQuietly(Path path) {
+        try {
+            Files.setLastModifiedTime(path, FileTime.fromMillis(System.currentTimeMillis()));
+        } catch (Exception ignored) {
         }
     }
     
@@ -251,33 +276,35 @@ public class CoverArtCache {
         String sql = "SELECT url_hash, cache_file_path FROM cover_art_cache " +
                     "WHERE cached_time < ?";
         
-        try (Connection conn = databaseService.getConnection();
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            
-            pstmt.setTimestamp(1, new Timestamp(System.currentTimeMillis() - daysToKeep * 24L * 3600_000L));
-            
-            try (ResultSet rs = pstmt.executeQuery()) {
-                int deletedCount = 0;
-                while (rs.next()) {
-                    String urlHash = rs.getString("url_hash");
-                    String cacheFilePath = rs.getString("cache_file_path");
-                    
-                    // 删除文件
-                    File cacheFile = new File(cacheFilePath);
-                    if (cacheFile.exists()) {
-                        cacheFile.delete();
+        try (Connection conn = databaseService.getConnection()) {
+            List<String[]> expired = new ArrayList<>();
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setTimestamp(1, new Timestamp(System.currentTimeMillis() - daysToKeep * 24L * 3600_000L));
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) {
+                        expired.add(new String[]{rs.getString("url_hash"), rs.getString("cache_file_path")});
                     }
-                    
-                    // 删除数据库记录
-                    deleteCacheRecord(urlHash);
-                    deletedCount++;
-                }
-                
-                if (deletedCount > 0) {
-                    log.info(I18nUtil.getMessage("cache.cleanup.old"), deletedCount);
                 }
             }
-            
+            // 先释放 ResultSet，再在同一连接上批量删除，避免连接池嵌套申请引发死锁
+            if (!expired.isEmpty()) {
+                for (String[] row : expired) {
+                    if (row[1] != null) {
+                        File cacheFile = new File(row[1]);
+                        if (cacheFile.exists()) {
+                            cacheFile.delete();
+                        }
+                    }
+                }
+                try (PreparedStatement del = conn.prepareStatement("DELETE FROM cover_art_cache WHERE url_hash = ?")) {
+                    for (String[] row : expired) {
+                        del.setString(1, row[0]);
+                        del.addBatch();
+                    }
+                    del.executeBatch();
+                }
+                log.info(I18nUtil.getMessage("cache.cleanup.old"), expired.size());
+            }
         } catch (SQLException e) {
             log.error(I18nUtil.getMessage("cache.cleanup.failed"), e);
         }

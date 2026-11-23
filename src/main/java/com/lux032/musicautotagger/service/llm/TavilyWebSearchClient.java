@@ -143,7 +143,7 @@ public class TavilyWebSearchClient implements WebSearchClient {
         notifyProgress(progress, "SUMMARIZING", totalQueries, totalQueries, result.getCitations().size(), null);
 
         // 归纳阶段走普通 chat completions，不需要端点支持任何工具协议
-        StringBuilder evidence = new StringBuilder(renderEvidence(result.getCitations()));
+        StringBuilder evidence = new StringBuilder(renderEvidence(result.getCitations(), includeImages));
         if (includeImages && !result.getImages().isEmpty()) {
             evidence.append("\n\nRETRIEVED IMAGE URLS:\n");
             for (String img : result.getImages()) {
@@ -349,7 +349,7 @@ public class TavilyWebSearchClient implements WebSearchClient {
      * 而上层的来源门槛正是按 URL 匹配证据的，编造的 URL 会让候选无法通过校验（或更糟，
      * 在早期实现里反而被放行）。
      */
-    private String renderEvidence(List<Citation> citations) {
+    String renderEvidence(List<Citation> citations, boolean includeImages) {
         StringBuilder sb = new StringBuilder();
         sb.append("WEB SEARCH RESULTS (retrieved via Tavily, these are the ONLY sources you may cite):\n");
         int i = 1;
@@ -359,9 +359,14 @@ public class TavilyWebSearchClient implements WebSearchClient {
               .append("    reliability: ").append(c.getReliability()).append('\n')
               .append("    excerpt: ").append(nz(c.getSnippet()).replace("\n", " ")).append('\n');
         }
-        sb.append("\nEvery source_urls entry MUST be copied verbatim from the url fields above. ")
-          .append("Do not invent URLs, MusicBrainz IDs or facts that the excerpts do not support. ")
-          .append("If the excerpts are insufficient, return an empty candidates array and set needs_second_round=true.");
+        if (includeImages) {
+            sb.append("\nOnly include direct image URLs that appear verbatim in the retrieved results or RETRIEVED IMAGE URLS below. ")
+              .append("Do not invent URLs. Follow the JSON schema specified in the system prompt.");
+        } else {
+            sb.append("\nEvery source_urls entry MUST be copied verbatim from the url fields above. ")
+              .append("Do not invent URLs, MusicBrainz IDs or facts that the excerpts do not support. ")
+              .append("If the excerpts are insufficient, return an empty candidates array and set needs_second_round=true.");
+        }
         return sb.toString();
     }
 

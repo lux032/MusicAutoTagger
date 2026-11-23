@@ -34,6 +34,7 @@ public class QuickScanService {
     private final MusicBrainzClient musicBrainzClient;
     private final DurationSequenceService durationSequenceService;
     private final AudioFingerprintService fingerprintService;
+    private final com.lux032.musicautotagger.util.FileSystemUtils fileSystemUtils;
     
     // 文件夹时长序列缓存: 文件夹路径 -> 时长序列
     private final Map<String, List<Integer>> folderDurationCache = new java.util.concurrent.ConcurrentHashMap<>();
@@ -55,6 +56,7 @@ public class QuickScanService {
         this.musicBrainzClient = musicBrainzClient;
         this.durationSequenceService = durationSequenceService;
         this.fingerprintService = fingerprintService;
+        this.fileSystemUtils = new com.lux032.musicautotagger.util.FileSystemUtils(config);
     }
     
     /**
@@ -196,11 +198,13 @@ public class QuickScanService {
             log.debug("读取标签失败: {}", e.getMessage());
         }
         
-        // 如果标签中没有完整信息,尝试从文件夹名解析
+        // 如果标签中没有完整信息,尝试从文件夹名解析（多碟子目录优先使用专辑根目录名，避免把 "Disc 1" 当专辑名）
         if ((artist == null || artist.trim().isEmpty()) || 
             (album == null || album.trim().isEmpty())) {
             
-            String folderName = audioFile.getParentFile().getName();
+            File parentDir = audioFile.getParentFile();
+            File albumRootDir = getAlbumRootDirectory(parentDir);
+            String folderName = (albumRootDir != null ? albumRootDir : parentDir).getName();
             Matcher matcher = FOLDER_PATTERN.matcher(folderName);
             
             if (matcher.matches()) {
@@ -367,11 +371,7 @@ public class QuickScanService {
      * 判断文件是否为支持的音频格式
      */
     private boolean isAudioFile(File file) {
-        String lowerName = file.getName().toLowerCase();
-        return lowerName.endsWith(".mp3") ||
-               lowerName.endsWith(".flac") ||
-               lowerName.endsWith(".m4a") ||
-               lowerName.endsWith(".wav");
+        return fileSystemUtils.isMusicFile(file);
     }
     
     /**

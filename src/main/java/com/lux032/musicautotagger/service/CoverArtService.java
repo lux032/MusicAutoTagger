@@ -9,8 +9,9 @@ import org.jaudiotagger.tag.images.Artwork;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 封面艺术服务
@@ -18,17 +19,22 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 public class CoverArtService {
+
+    private static final int MAX_FOLDER_COVER_CACHE_ENTRIES = 64;
+    private static final long MAX_FOLDER_COVER_CACHE_BYTES = 32L * 1024 * 1024;
     
     private final CoverArtCache coverArtCache;
     private final MusicBrainzClient musicBrainzClient;
     private volatile String ffmpegPath;
+    private volatile com.lux032.musicautotagger.util.FileSystemUtils fileSystemUtils;
     
-    // 文件夹级别的封面缓存: 文件夹路径 -> 封面数据
+    // 文件夹级别的封面缓存: 文件夹路径 -> 封面数据（有界 LRU + 总字节预算，防止大库 OOM）
     /**
      * 文件夹级封面缓存。条目记录封面所属的 Release Group，
      * 锁定专辑后只复用同一专辑的封面，避免同目录早先被错归的文件把别的专辑封面传染给后续文件。
      */
-    private final Map<String, FolderCover> folderCoverCache = new ConcurrentHashMap<>();
+    private final LinkedHashMap<String, FolderCover> folderCoverCache = new LinkedHashMap<>(64, 0.75f, true);
+    private long folderCoverCacheBytes = 0L;
 
     private static final class FolderCover {
         final byte[] data;
@@ -43,13 +49,44 @@ public class CoverArtService {
 
     private void putFolderCover(String folderPath, byte[] data, String releaseGroupId) {
         if (folderPath == null || data == null || data.length == 0) return;
-        folderCoverCache.put(folderPath, new FolderCover(data,
-            releaseGroupId == null || releaseGroupId.isEmpty() ? null : releaseGroupId));
+        FolderCover entry = new FolderCover(data,
+            releaseGroupId == null || releaseGroupId.isEmpty() ? null : releaseGroupId);
+        synchronized (folderCoverCache) {
+            FolderCover previous = folderCoverCache.put(folderPath, entry);
+            if (previous != null && previous.data != null) {
+                folderCoverCacheBytes -= previous.data.length;
+            }
+            folderCoverCacheBytes += data.length;
+            Iterator<Map.Entry<String, FolderCover>> it = folderCoverCache.entrySet().iterator();
+            while (it.hasNext()
+                && (folderCoverCache.size() > MAX_FOLDER_COVER_CACHE_ENTRIES
+                    || folderCoverCacheBytes > MAX_FOLDER_COVER_CACHE_BYTES)) {
+                Map.Entry<String, FolderCover> eldest = it.next();
+                if (folderPath.equals(eldest.getKey()) && folderCoverCache.size() == 1) {
+                    break;
+                }
+                it.remove();
+                if (eldest.getValue() != null && eldest.getValue().data != null) {
+                    folderCoverCacheBytes -= eldest.getValue().data.length;
+                }
+            }
+        }
+    }
+
+    private FolderCover getFolderCoverEntry(String folderPath) {
+        if (folderPath == null) return null;
+        synchronized (folderCoverCache) {
+            return folderCoverCache.get(folderPath);
+        }
     }
     
     public CoverArtService(CoverArtCache coverArtCache, MusicBrainzClient musicBrainzClient) {
         this.coverArtCache = coverArtCache;
         this.musicBrainzClient = musicBrainzClient;
+    }
+
+    public void setFileSystemUtils(com.lux032.musicautotagger.util.FileSystemUtils fileSystemUtils) {
+        this.fileSystemUtils = fileSystemUtils;
     }
 
     public void setFfmpegPath(String ffmpegPath) {
@@ -82,7 +119,7 @@ public class CoverArtService {
 
         // 策略0: 检查文件夹级别缓存（散落文件跳过此策略）
         if (!isLooseFile) {
-            FolderCover cached = folderCoverCache.get(folderPath);
+            FolderCover cached = getFolderCoverEntry(folderPath);
             if (cached != null && cached.data != null && cached.data.length > 0) {
                 // 已锁定专辑时，只复用属于同一 Release Group 的文件夹封面
                 if (lockedReleaseGroupId == null || lockedReleaseGroupId.equals(cached.releaseGroupId)) {
@@ -536,14 +573,15 @@ public class CoverArtService {
     }
     
     /**
-     * 判断文件是否为音频文件
+     * 判断文件是否为音频文件（优先复用 FileSystemUtils 支持的全部格式配置，含 .ogg 且大小写无关）
      */
     private boolean isAudioFile(File file) {
-        String lowerName = file.getName().toLowerCase();
-        return lowerName.endsWith(".mp3") ||
-               lowerName.endsWith(".flac") ||
-               lowerName.endsWith(".m4a") ||
-               lowerName.endsWith(".wav");
+        if (file == null) return false;
+        com.lux032.musicautotagger.util.FileSystemUtils fsu = this.fileSystemUtils;
+        if (fsu != null) {
+            return fsu.isMusicFile(file);
+        }
+        return com.lux032.musicautotagger.util.FileSystemUtils.isDefaultAudioFile(file);
     }
     
     /**
@@ -568,15 +606,27 @@ public class CoverArtService {
      * 清除文件夹级别的封面缓存
      */
     public void clearFolderCache(String folderPath) {
-        folderCoverCache.remove(folderPath);
+        if (folderPath == null) return;
+        synchronized (folderCoverCache) {
+            FolderCover removed = folderCoverCache.remove(folderPath);
+            if (removed != null && removed.data != null) {
+                folderCoverCacheBytes = Math.max(0L, folderCoverCacheBytes - removed.data.length);
+            }
+        }
     }
     
     /**
      * 获取文件夹缓存的封面
      */
     public byte[] getFolderCachedCover(String folderPath) {
-        FolderCover cached = folderCoverCache.get(folderPath);
+        FolderCover cached = getFolderCoverEntry(folderPath);
         return cached != null ? cached.data : null;
+    }
+
+    int getFolderCoverCacheSize() {
+        synchronized (folderCoverCache) {
+            return folderCoverCache.size();
+        }
     }
 }
 

@@ -1194,16 +1194,31 @@ public class MusicBrainzClient {
     }
     
     /**
+     * 转义 Lucene 短语查询中的反斜杠、引号与换行符，防止包含引号或语法字符的曲名/专辑名破坏查询。
+     */
+    static String escapeLucenePhrase(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .trim();
+    }
+
+    /**
      * 通过标题和艺术家搜索
      */
     public List<MusicMetadata> searchByTitleAndArtist(String title, String artist) throws IOException, InterruptedException {
         rateLimit();
         
-        String encodedTitle = URLEncoder.encode(title, StandardCharsets.UTF_8.toString());
-        String encodedArtist = URLEncoder.encode(artist, StandardCharsets.UTF_8.toString());
+        String query = "recording:\"" + escapeLucenePhrase(title) + "\" AND artist:\"" + escapeLucenePhrase(artist) + "\"";
+        String encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8);
         
-        String url = String.format("%s/recording?query=recording:%s%%20AND%%20artist:%s&fmt=json&limit=5",
-            config.getMusicBrainzApiUrl(), encodedTitle, encodedArtist);
+        String url = String.format("%s/recording?query=%s&fmt=json&limit=5",
+            config.getMusicBrainzApiUrl(), encodedQuery);
         
         try {
             String response = executeRequest(url);
@@ -1223,16 +1238,16 @@ public class MusicBrainzClient {
     public List<MusicMetadata> searchAlbum(String albumName, String artistName) throws IOException, InterruptedException {
         rateLimit();
         
-        // 构建搜索查询 - 先构建完整查询，再进行URL编码
+        // 构建搜索查询 - 先做 Lucene 短语转义并构建完整查询，再进行 URL 编码
         StringBuilder query = new StringBuilder();
-        query.append("release:\"").append(albumName).append("\"");
+        query.append("release:\"").append(escapeLucenePhrase(albumName)).append("\"");
         
         if (artistName != null && !artistName.trim().isEmpty()) {
-            query.append(" AND artist:\"").append(artistName).append("\"");
+            query.append(" AND artist:\"").append(escapeLucenePhrase(artistName)).append("\"");
         }
         
         // 对整个查询字符串进行URL编码
-        String encodedQuery = URLEncoder.encode(query.toString(), StandardCharsets.UTF_8.toString());
+        String encodedQuery = URLEncoder.encode(query.toString(), StandardCharsets.UTF_8);
         
         String url = String.format("%s/release?query=%s&fmt=json&limit=10",
             config.getMusicBrainzApiUrl(), encodedQuery);
@@ -1252,7 +1267,7 @@ public class MusicBrainzClient {
         String url;
         String countKey;
         if (releaseGroupId.isEmpty()) {
-            String quotedAlbum = album.replace("\\", "\\\\").replace("\"", "\\\"");
+            String quotedAlbum = escapeLucenePhrase(album);
             String query = URLEncoder.encode("release:\"" + quotedAlbum + "\"", StandardCharsets.UTF_8);
             url = String.format("%s/release?query=%s&fmt=json&limit=25", config.getMusicBrainzApiUrl(), query);
             countKey = "count";
@@ -1902,7 +1917,7 @@ public class MusicBrainzClient {
         return bundle;
     }
 
-    private static String resolveCreditedArtistText(JsonNode credits) {
+    static String resolveCreditedArtistText(JsonNode credits) {
         StringBuilder value = new StringBuilder();
         if (credits != null && credits.isArray()) {
             for (int i = 0; i < credits.size(); i++) {
@@ -1910,7 +1925,11 @@ public class MusicBrainzClient {
                 String name = credit.path("name").asText("");
                 if (name.isEmpty()) name = credit.path("artist").path("name").asText("");
                 value.append(name);
-                if (i < credits.size() - 1) value.append(credit.path("joinphrase").asText(", "));
+                if (i < credits.size() - 1) {
+                    value.append(credit.path("joinphrase").isTextual() ? credit.path("joinphrase").asText() : ", ");
+                } else if (credit.path("joinphrase").isTextual()) {
+                    value.append(credit.path("joinphrase").asText(""));
+                }
             }
         }
         return value.toString();

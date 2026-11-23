@@ -269,6 +269,7 @@ public class AudioFileProcessorService {
                     lockedAlbumArtist = quickMetadata.getAlbumArtist() != null ?
                         quickMetadata.getAlbumArtist() : quickMetadata.getArtist();
                     lockedReleaseGroupId = quickMetadata.getReleaseGroupId();
+                    lockedReleaseId = quickMetadata.getReleaseId();
                     lockedReleaseDate = quickMetadata.getReleaseDate();
                     
                     // 立即将专辑信息写入文件夹缓存。
@@ -865,9 +866,17 @@ public class AudioFileProcessorService {
                 // pending 队列在第一个文件时恒为 1，会把所需样本数压到 1，
                 // 导致第一首文件立即以单样本进入普通分析，绕过快速通道的严格门槛。
                 int remainingUnprocessed = getRemainingUnprocessedCount(folderPath, albumRootDir);
+                String sampleKey;
+                try {
+                    sampleKey = albumRootDir.toPath().toAbsolutePath().normalize()
+                        .relativize(originalAudioFile.toPath().toAbsolutePath().normalize())
+                        .toString().replace('\\', '/');
+                } catch (IllegalArgumentException e) {
+                    sampleKey = originalAudioFile.getAbsolutePath();
+                }
                 FolderAlbumCache.CachedAlbumInfo determinedAlbum = albumBatchProcessor.tryDetermineAlbum(
                     folderPath,
-                    audioFile.getName(),
+                    sampleKey,
                     musicFilesInFolder,
                     albumInfo,
                     remainingUnprocessed,

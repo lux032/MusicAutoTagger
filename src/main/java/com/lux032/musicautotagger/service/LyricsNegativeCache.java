@@ -41,7 +41,11 @@ final class LyricsNegativeCache {
         Path tmp = Files.createTempFile(file.toAbsolutePath().getParent(), ".lyrics-cache-", ".tmp");
         try {
             mapper.writeValue(tmp.toFile(), entries);
-            Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            try {
+                Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
         } finally { Files.deleteIfExists(tmp); }
     }
     private void prune() {

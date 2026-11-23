@@ -126,7 +126,7 @@ public class CoverSearchService {
             List<File> audioFiles = resolveAudioFiles(item);
             File albumRoot = resolveAlbumRoot(item, audioFiles);
             collected.addAll(coverCandidateService.collectLocalCandidates(audioFiles, albumRoot));
-            if (meaningful(mc.getReleaseGroupId())) {
+            if (CoverCandidateService.isValidUuid(mc.getReleaseGroupId())) {
                 coverCandidateService.fetchMusicBrainzCoverByRgid(mc.getReleaseGroupId()).ifPresent(collected::add);
             }
             checkInterrupted();
@@ -140,6 +140,7 @@ public class CoverSearchService {
                 itunesCount = itunesHits.size();
                 collected.addAll(itunesHits);
             } catch (Exception e) {
+                rethrowIfInterrupted(e);
                 log.debug("iTunes cover search error for {}: {}", albumTitle, e.getMessage());
             }
             checkInterrupted();
@@ -185,12 +186,14 @@ public class CoverSearchService {
                     Thread.currentThread().interrupt();
                     throw ie;
                 } catch (Exception e) {
+                    rethrowIfInterrupted(e);
                     log.warn("AI 搜封面失败 [{}]: {}", albumTitle, e.getMessage());
                     aiNote = "AI 搜索未完成: " + e.getMessage();
                 }
             } else {
                 aiNote = "未配置 AI 联网搜索，仅执行了 iTunes 与本地检索";
             }
+            checkInterrupted();
 
             List<CoverCandidateView> deduped = CoverCandidateService.deduplicateCandidates(collected);
             long now = System.currentTimeMillis();
@@ -236,6 +239,11 @@ public class CoverSearchService {
             Thread.currentThread().interrupt();
             throw ie;
         } catch (Exception e) {
+            if (isInterruptedError(e)) {
+                revertSearchingStatus(itemId);
+                Thread.currentThread().interrupt();
+                throw new InterruptedException("cancelled");
+            }
             reviewQueue.updatePending(itemId, target -> {
                 ReviewItem.MissingCover liveMc = target.getMissingCover();
                 if (liveMc == null) return false;
@@ -245,6 +253,39 @@ public class CoverSearchService {
             });
             throw e;
         }
+    }
+
+    private void revertSearchingStatus(String itemId) {
+        reviewQueue.updatePending(itemId, target -> {
+            ReviewItem.MissingCover liveMc = target.getMissingCover();
+            if (liveMc == null || !"SEARCHING".equals(liveMc.getCoverSearchStatus())) return false;
+            liveMc.setCoverSearchStatus(liveMc.getCoverSearchedAt() > 0 ? "DONE" : "IDLE");
+            return true;
+        });
+    }
+
+    private static void rethrowIfInterrupted(Throwable e) throws InterruptedException {
+        if (isInterruptedError(e)) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedException("cancelled");
+        }
+    }
+
+    private static boolean isInterruptedError(Throwable e) {
+        if (Thread.currentThread().isInterrupted()) {
+            return true;
+        }
+        Throwable cur = e;
+        while (cur != null) {
+            if (cur instanceof InterruptedException || cur instanceof java.io.InterruptedIOException) {
+                return true;
+            }
+            if (cur instanceof LlmClient.LlmException && "interrupted".equals(cur.getMessage())) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
     }
 
     private record CandidateHint(String source, String note) {}
@@ -344,11 +385,15 @@ public class CoverSearchService {
         return files;
     }
 
-    private File resolveAlbumRoot(ReviewItem item, List<File> audioFiles) {
+    File resolveAlbumRoot(ReviewItem item, List<File> audioFiles) {
+        // 监控目录根部或输出根目录下的散落单曲没有专属专辑目录，严禁越界扫描父目录（如 monitorDirectory）里的无关图片
+        if (item.getMissingCover() != null && item.getMissingCover().isLooseFile()) {
+            return null;
+        }
         if (meaningful(item.getFolderPath())) {
             File f = new File(item.getFolderPath());
             if (f.isDirectory()) return f;
-            if (f.isFile() && f.getParentFile() != null) return f.getParentFile();
+            if (f.isFile()) return null;
         }
         if (!audioFiles.isEmpty()) {
             return audioFiles.get(0).getParentFile();

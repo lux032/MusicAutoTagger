@@ -136,7 +136,7 @@ public class CoverBackfillService {
                 if (releaseGroupId == null) {
                     log.debug("未匹配到专辑: {}", group.album);
                 } else {
-                    int updated = processedLogger.applyReleaseGroupId(group.album, releaseGroupId);
+                    int updated = processedLogger.applyReleaseGroupId(group.album, group.artist, releaseGroupId);
                     if (updated > 0) {
                         matchedAlbums++;
                         updatedFiles += updated;
@@ -174,8 +174,11 @@ public class CoverBackfillService {
             return null;
         }
 
-        String wanted = normalize(group.album);
+        String wantedAlbum = normalize(group.album);
+        String wantedArtist = normalize(group.artist);
+        boolean requireArtist = !wantedArtist.isEmpty();
         MusicMetadata best = null;
+        java.util.Set<String> distinctCandidateArtists = new java.util.HashSet<>();
         for (MusicMetadata candidate : results) {
             if (candidate.getReleaseGroupId() == null || candidate.getReleaseGroupId().isBlank()) {
                 continue;
@@ -183,12 +186,30 @@ public class CoverBackfillService {
             if (candidate.getScore() < MIN_SCORE) {
                 continue;
             }
-            if (!normalize(candidate.getAlbum()).equals(wanted)) {
+            if (!normalize(candidate.getAlbum()).equals(wantedAlbum)) {
                 continue;
+            }
+            String candAlbumArtist = normalize(candidate.getAlbumArtist());
+            String candTrackArtist = normalize(candidate.getArtist());
+            if (requireArtist) {
+                boolean artistMatches = (!candAlbumArtist.isEmpty() && candAlbumArtist.equals(wantedArtist))
+                    || (!candTrackArtist.isEmpty() && candTrackArtist.equals(wantedArtist));
+                if (!artistMatches) {
+                    continue;
+                }
+            } else {
+                String effArtist = !candAlbumArtist.isEmpty() ? candAlbumArtist : candTrackArtist;
+                if (!effArtist.isEmpty()) {
+                    distinctCandidateArtists.add(effArtist);
+                }
             }
             if (best == null || candidate.getScore() > best.getScore()) {
                 best = candidate;
             }
+        }
+        if (!requireArtist && distinctCandidateArtists.size() > 1) {
+            log.debug("同名专辑存在多个不同艺术家候选且本地记录缺少艺术家，跳过回填避免误污染: {}", group.album);
+            return null;
         }
         return best == null ? null : best.getReleaseGroupId();
     }

@@ -425,7 +425,9 @@ public class DurationSequenceService {
         AlbumMatchResult bestMatch = null;
         AlbumDurationInfo bestCandidate = null;
         double bestCombinedScore = Double.NEGATIVE_INFINITY;
-        List<ScoredCandidate> scores = new ArrayList<>();
+        double highestOverallDuration = Double.NEGATIVE_INFINITY;
+        double highestOverallCombined = Double.NEGATIVE_INFINITY;
+        List<ScoredCandidate> eligibleScores = new ArrayList<>();
 
         log.info("开始时长序列匹配（含文件夹名称匹配和媒体格式匹配）");
         log.info("文件夹名称: {}", folderName);
@@ -484,7 +486,24 @@ public class DurationSequenceService {
                 String.format("%.2f", nameSimilarity),
                 String.format("%.2f", combinedScore));
 
-            scores.add(new ScoredCandidate(candidate, combinedScore));
+            if (durationSimilarity > highestOverallDuration) {
+                highestOverallDuration = durationSimilarity;
+            }
+            if (combinedScore > highestOverallCombined) {
+                highestOverallCombined = combinedScore;
+            }
+
+            // 先过滤满足原始 DTW 硬门槛的候选，再按综合分排序与计算异专辑 margin，
+            // 避免「低 DTW + 高名称/格式加分」的不合格候选遮蔽真正高 DTW 的正确候选。
+            if (durationSimilarity < MIN_DURATION_SIMILARITY) {
+                log.debug("候选专辑 {} 原始时长相似度 {} 低于硬门槛 {}，不参与最佳候选竞选",
+                    candidate.getAlbumTitle(),
+                    String.format("%.2f", durationSimilarity),
+                    String.format("%.2f", MIN_DURATION_SIMILARITY));
+                continue;
+            }
+
+            eligibleScores.add(new ScoredCandidate(candidate, combinedScore));
 
             if (combinedScore > bestCombinedScore) {
                 bestCombinedScore = combinedScore;
@@ -494,9 +513,9 @@ public class DurationSequenceService {
             }
         }
 
-        // margin 只在**不同 Release Group** 之间计算：同一张专辑的多个发行版本得分必然接近，
+        // margin 只在**不同 Release Group** 的达标候选之间计算：同一张专辑的多个发行版本得分必然接近，
         // 不应被当成「到底是哪张专辑」的歧义。
-        double rivalScore = bestRivalScore(scores, bestCandidate);
+        double rivalScore = bestRivalScore(eligibleScores, bestCandidate);
         double margin = Double.isInfinite(rivalScore) ? Double.POSITIVE_INFINITY
             : bestCombinedScore - rivalScore;
         // 名称/格式只负责排序；是否可自动决定只看原始 DTW 与异专辑 margin。
@@ -511,8 +530,10 @@ public class DurationSequenceService {
             return bestMatch;
         } else {
             log.warn("未找到可信的匹配专辑 (最佳综合分: {}, 原始DTW: {}, 异专辑margin: {}, DTW硬门槛: {}, 最小margin: {})",
-                String.format("%.2f", bestCombinedScore),
-                bestMatch != null ? String.format("%.2f", bestMatch.getDurationSimilarity()) : "N/A",
+                Double.isFinite(bestCombinedScore) ? String.format("%.2f", bestCombinedScore)
+                    : (Double.isFinite(highestOverallCombined) ? String.format("%.2f", highestOverallCombined) : "N/A"),
+                bestMatch != null ? String.format("%.2f", bestMatch.getDurationSimilarity())
+                    : (Double.isFinite(highestOverallDuration) ? String.format("%.2f", highestOverallDuration) : "N/A"),
                 Double.isInfinite(margin) ? "N/A" : String.format("%.2f", margin),
                 String.format("%.2f", MIN_DURATION_SIMILARITY), String.format("%.2f", MIN_BEST_MATCH_MARGIN));
             return null;
@@ -598,8 +619,12 @@ public class DurationSequenceService {
             return MediaFormat.UNKNOWN;
         }
         
-        String lower = format.toLowerCase();
+        String lower = format.toLowerCase(java.util.Locale.ROOT);
         
+        // SACD 包含 "cd" 子串，必须在 CD 之前判定
+        if (lower.contains("sacd") || lower.contains("dsd")) {
+            return MediaFormat.SACD;
+        }
         if (lower.contains("cd")) {
             return MediaFormat.CD;
         }
@@ -608,9 +633,6 @@ public class DurationSequenceService {
         }
         if (lower.contains("vinyl") || lower.contains("lp") || lower.contains("12\"")) {
             return MediaFormat.VINYL;
-        }
-        if (lower.contains("sacd") || lower.contains("dsd")) {
-            return MediaFormat.SACD;
         }
         if (lower.contains("cassette") || lower.contains("tape")) {
             return MediaFormat.CASSETTE;

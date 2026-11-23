@@ -235,6 +235,8 @@ public class ReviewItem {
         private String selectedCoverSha256;
         /** 用户显式确认「保持无封面」入库或保留 */
         private boolean confirmedNoCover;
+        /** STAGED_IMPORT 确认无封面入库后实际落盘的专辑输出目录/散曲路径，供后续库扫描跳过 */
+        private List<String> archivedOutputDirs = new ArrayList<>();
         /** 是否已自动触发过后台搜封面 */
         private boolean coverAutoSearchTriggered;
     }

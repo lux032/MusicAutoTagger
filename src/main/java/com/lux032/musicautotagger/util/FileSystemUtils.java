@@ -414,14 +414,46 @@ public class FileSystemUtils {
         return count;
     }
     
+    private static final Set<String> DEFAULT_AUDIO_EXTENSIONS = Set.of(
+        "mp3", "flac", "m4a", "ogg", "wav", "mp4"
+    );
+
+    /**
+     * 未持有 {@link MusicConfig} 时的兜底音频扩展名判断（大小写无关，使用 Locale.ROOT）。
+     */
+    public static boolean isDefaultAudioFile(File file) {
+        if (file == null) {
+            return false;
+        }
+        String name = file.getName();
+        int dot = name.lastIndexOf('.');
+        if (dot <= 0 || dot == name.length() - 1) {
+            return false;
+        }
+        return DEFAULT_AUDIO_EXTENSIONS.contains(name.substring(dot + 1).toLowerCase(Locale.ROOT));
+    }
+
     /**
      * 判断是否为音乐文件
      */
     public boolean isMusicFile(File file) {
-        String fileName = file.getName().toLowerCase();
-        String[] supportedFormats = config.getSupportedFormats();
+        if (file == null) {
+            return false;
+        }
+        String[] supportedFormats = config != null ? config.getSupportedFormats() : null;
+        if (supportedFormats == null || supportedFormats.length == 0) {
+            return isDefaultAudioFile(file);
+        }
+        String fileName = file.getName().toLowerCase(Locale.ROOT);
         for (String format : supportedFormats) {
-            if (fileName.endsWith("." + format.toLowerCase())) {
+            if (format == null) {
+                continue;
+            }
+            String normalized = format.trim().toLowerCase(Locale.ROOT);
+            while (normalized.startsWith(".")) {
+                normalized = normalized.substring(1);
+            }
+            if (!normalized.isEmpty() && fileName.endsWith("." + normalized)) {
                 return true;
             }
         }
@@ -543,18 +575,25 @@ public class FileSystemUtils {
      * 获取相对于监控目录的相对路径
      */
     public String getRelativePath(File file) throws IOException {
-        String monitorDirPath = new File(config.getMonitorDirectory()).getCanonicalPath();
-        String filePath = file.getCanonicalPath();
-        
-        if (filePath.startsWith(monitorDirPath)) {
-            String relativePath = filePath.substring(monitorDirPath.length());
-            // 去掉开头的分隔符
-            if (relativePath.startsWith(File.separator)) {
-                relativePath = relativePath.substring(1);
-            }
-            return relativePath;
+        if (file == null) {
+            return "";
         }
-        
+        String monitorDir = config != null ? config.getMonitorDirectory() : null;
+        if (monitorDir == null || monitorDir.isBlank()) {
+            return file.getName();
+        }
+        String monitorDirPath = new File(monitorDir).getCanonicalPath();
+        String filePath = file.getCanonicalPath();
+
+        if (filePath.equals(monitorDirPath)) {
+            return "";
+        }
+        String prefix = monitorDirPath.endsWith(File.separator)
+            ? monitorDirPath : monitorDirPath + File.separator;
+        if (filePath.startsWith(prefix)) {
+            return filePath.substring(prefix.length());
+        }
+
         // 如果无法获取相对路径，返回文件名
         return file.getName();
     }

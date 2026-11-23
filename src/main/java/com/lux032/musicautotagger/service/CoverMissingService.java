@@ -39,6 +39,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 public class CoverMissingService implements AutoCloseable {
 
+    private static final int LOCK_STRIPES = 256;
+
     private final MusicConfig config;
     private final ReviewQueueService reviewQueue;
     private final FolderAlbumCache folderAlbumCache;
@@ -48,10 +50,11 @@ public class CoverMissingService implements AutoCloseable {
     private final ProcessedFileLogger processedLogger;
     private RecoveryService recoveryService;
     private CoverSearchService coverSearchService;
-    private final Map<String, Object> itemLocks = new ConcurrentHashMap<>();
+    private final Object[] itemLockStripes = new Object[LOCK_STRIPES];
 
     private Object itemLock(String id) {
-        return itemLocks.computeIfAbsent(id == null ? "" : id, k -> new Object());
+        int index = Math.floorMod((id == null ? "" : id).hashCode(), LOCK_STRIPES);
+        return itemLockStripes[index];
     }
 
     // 手动音乐库缺封面扫描器（严格仅由用户手动触发）
@@ -85,6 +88,9 @@ public class CoverMissingService implements AutoCloseable {
         this.tagWriter = tagWriter;
         this.coverCandidateService = coverCandidateService;
         this.processedLogger = processedLogger;
+        for (int i = 0; i < LOCK_STRIPES; i++) {
+            this.itemLockStripes[i] = new Object();
+        }
     }
 
     public void setRecoveryService(RecoveryService recoveryService) {
@@ -271,11 +277,13 @@ public class CoverMissingService implements AutoCloseable {
 
         int written = 0;
         List<String> failed = new ArrayList<>();
-        for (File file : existingFiles) {
-            if (tagWriter.embedCoverAtomically(file, coverBytes)) {
-                written++;
-            } else {
-                failed.add(file.getName());
+        try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            for (File file : existingFiles) {
+                if (tagWriter.embedCoverAtomically(file, coverBytes)) {
+                    written++;
+                } else {
+                    failed.add(file.getName());
+                }
             }
         }
         if (!failed.isEmpty() || written == 0) {
@@ -303,10 +311,17 @@ public class CoverMissingService implements AutoCloseable {
             if (recoveryService == null) {
                 throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
             }
-            mc.setSelectedCoverSha256(selectedSha);
-            mc.setConfirmedNoCover(confirmedNoCover);
-            reviewQueue.update(item);
-            ReviewItem committed = recoveryService.commitDeferredLocalMissingCover(item, coverBytes, duplicatePolicy);
+            // 提交成功后再持久化 confirmedNoCover / selectedCoverSha256，避免 409 重复阻断等异常提前污染队列状态
+            ReviewItem committed = recoveryService.commitDeferredLocalMissingCover(
+                item, confirmedNoCover ? null : coverBytes, confirmedNoCover, duplicatePolicy);
+            ReviewItem.MissingCover committedMc = committed.getMissingCover();
+            if (committedMc != null) {
+                committedMc.setSelectedCoverSha256(selectedSha);
+                committedMc.setConfirmedNoCover(confirmedNoCover);
+                if (confirmedNoCover) {
+                    recordArchivedOutputDirs(committedMc, committed.getCommittedOutputPaths(), false);
+                }
+            }
             committed.setResolutionNote(confirmedNoCover
                 ? "人工确认保持无封面入库（本地标签）" : "已补全封面并入库（本地标签）");
             reviewQueue.update(committed);
@@ -317,10 +332,16 @@ public class CoverMissingService implements AutoCloseable {
             if (recoveryService == null) {
                 throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
             }
-            mc.setSelectedCoverSha256(selectedSha);
-            mc.setConfirmedNoCover(confirmedNoCover);
-            reviewQueue.update(item);
-            ReviewItem committed = recoveryService.commitDeferredOnlineMissingCover(item, coverBytes, duplicatePolicy);
+            ReviewItem committed = recoveryService.commitDeferredOnlineMissingCover(
+                item, confirmedNoCover ? null : coverBytes, confirmedNoCover, duplicatePolicy);
+            ReviewItem.MissingCover committedMc = committed.getMissingCover();
+            if (committedMc != null) {
+                committedMc.setSelectedCoverSha256(selectedSha);
+                committedMc.setConfirmedNoCover(confirmedNoCover);
+                if (confirmedNoCover) {
+                    recordArchivedOutputDirs(committedMc, committed.getCommittedOutputPaths(), false);
+                }
+            }
             committed.setResolutionNote(confirmedNoCover
                 ? "人工确认保持无封面入库（联网候选）" : "已补全封面并入库（联网候选）");
             reviewQueue.update(committed);
@@ -334,17 +355,21 @@ public class CoverMissingService implements AutoCloseable {
             File original = new File(entry.getOriginalPath());
             File processing = resolveProcessingFile(entry, original);
             MusicMetadata md = entry.getMetadata() != null ? entry.getMetadata() : new MusicMetadata();
-            if (coverBytes != null && coverBytes.length > 0 && meaningful(mc.getReleaseGroupId())) {
-                coverCandidateService.cacheCoverForReleaseGroup(mc.getReleaseGroupId(), coverBytes);
+            byte[] effectiveCover = confirmedNoCover ? null : coverBytes;
+            if (effectiveCover != null && effectiveCover.length > 0 && meaningful(mc.getReleaseGroupId())) {
+                coverCandidateService.cacheCoverForReleaseGroup(mc.getReleaseGroupId(), effectiveCover);
             }
-            boolean ok = albumBatchProcessor.processAndWriteFile(processing, original, md, coverBytes, false);
-            if (!ok) {
+            File targetOut = albumBatchProcessor.processAndWriteFileReturningTarget(processing, original, md, effectiveCover, false);
+            if (targetOut == null) {
                 item.setResolutionNote("单曲写入失败，请检查权限或磁盘后重试");
                 reviewQueue.update(item);
                 throw new ReviewResolutionService.ResolutionException(500, "cover.apply.write.failed");
             }
             mc.setSelectedCoverSha256(selectedSha);
             mc.setConfirmedNoCover(confirmedNoCover);
+            if (confirmedNoCover) {
+                recordArchivedOutputDirs(mc, List.of(targetOut.getAbsolutePath()), true);
+            }
             finalizeTemporarySourceRecords(item);
             retireRecoveryAndCleanupStaging(item);
             reviewQueue.markResolved(item, ReviewItem.Status.CONFIRMED,
@@ -386,9 +411,13 @@ public class CoverMissingService implements AutoCloseable {
             folderAlbumCache.forceSetFolderAlbum(folderPath, albumInfo);
         }
 
+        AlbumBatchProcessor.CoverPolicy coverPolicy = confirmedNoCover
+            ? AlbumBatchProcessor.CoverPolicy.NONE
+            : AlbumBatchProcessor.CoverPolicy.EXPLICIT;
         AlbumBatchProcessor.BatchProcessResult result =
             albumBatchProcessor.processPendingFilesWithAlbum(
-                folderPath, albumInfo, mc.isUnresolvedAlbum(), coverBytes, false);
+                folderPath, albumInfo, mc.isUnresolvedAlbum(),
+                confirmedNoCover ? null : coverBytes, coverPolicy, false, true);
 
         if (result == null || !result.isFullySuccessful()) {
             String failedList = result == null ? "未知" : String.join(", ", result.getFailedFiles());
@@ -397,11 +426,14 @@ public class CoverMissingService implements AutoCloseable {
             throw new ReviewResolutionService.ResolutionException(500, "cover.apply.write.failed");
         }
 
-        if (coverBytes != null && coverBytes.length > 0 && meaningful(mc.getReleaseGroupId())) {
+        if (!confirmedNoCover && coverBytes != null && coverBytes.length > 0 && meaningful(mc.getReleaseGroupId())) {
             coverCandidateService.cacheCoverForReleaseGroup(mc.getReleaseGroupId(), coverBytes);
         }
         mc.setSelectedCoverSha256(selectedSha);
         mc.setConfirmedNoCover(confirmedNoCover);
+        if (confirmedNoCover) {
+            recordArchivedOutputDirs(mc, result.getWrittenTargetPaths(), false);
+        }
         finalizeTemporarySourceRecords(item);
         retireRecoveryAndCleanupStaging(item);
         String note = confirmedNoCover
@@ -410,6 +442,42 @@ public class CoverMissingService implements AutoCloseable {
         reviewQueue.markResolved(item, ReviewItem.Status.CONFIRMED, note);
         LogCollector.addLog("SUCCESS", note);
         return item;
+    }
+
+    private void recordArchivedOutputDirs(ReviewItem.MissingCover mc, List<String> paths, boolean looseFile) {
+        if (mc == null || paths == null || paths.isEmpty()) {
+            return;
+        }
+        Path outputRoot = (config != null && meaningful(config.getOutputDirectory()))
+            ? Path.of(config.getOutputDirectory()).toAbsolutePath().normalize() : null;
+        java.util.LinkedHashSet<String> dirs = new java.util.LinkedHashSet<>();
+        if (mc.getArchivedOutputDirs() != null) {
+            dirs.addAll(mc.getArchivedOutputDirs());
+        }
+        for (String raw : paths) {
+            if (!meaningful(raw)) continue;
+            Path p = Path.of(raw).toAbsolutePath().normalize();
+            if (Files.isDirectory(p)) {
+                dirs.add(p.toString());
+            } else {
+                Path parent = p.getParent();
+                if (looseFile && (outputRoot != null && outputRoot.equals(parent))) {
+                    dirs.add(p.toString());
+                } else if (parent != null) {
+                    if (parent.getFileName() != null
+                        && FileSystemUtils.isDiscFolderName(parent.getFileName().toString())
+                        && parent.getParent() != null
+                        && (outputRoot == null || !parent.getParent().equals(outputRoot))) {
+                        dirs.add(parent.getParent().toString());
+                    } else if (outputRoot != null && outputRoot.equals(parent)) {
+                        dirs.add(p.toString());
+                    } else {
+                        dirs.add(parent.toString());
+                    }
+                }
+            }
+        }
+        mc.setArchivedOutputDirs(new ArrayList<>(dirs));
     }
 
     /**
@@ -523,6 +591,7 @@ public class CoverMissingService implements AutoCloseable {
         paths.validateRoot();
 
         Map<Path, List<File>> filesByAlbumDir = new LinkedHashMap<>();
+        List<File> looseRootFiles = new ArrayList<>();
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
@@ -536,14 +605,19 @@ public class CoverMissingService implements AutoCloseable {
                 if (attrs.isRegularFile() && !paths.excluded(file, attrs) && isSupportedAudio(file)) {
                     Path parent = file.getParent();
                     if (parent != null) {
-                        Path albumDir = parent;
-                        if (parent.getFileName() != null
-                            && FileSystemUtils.isDiscFolderName(parent.getFileName().toString())
-                            && parent.getParent() != null
-                            && !parent.getParent().equals(root)) {
-                            albumDir = parent.getParent();
+                        if (parent.equals(root)) {
+                            // outputRoot 根目录下无艺人散曲绝不合并为一个专辑，各自独立建项
+                            looseRootFiles.add(file.toFile());
+                        } else {
+                            Path albumDir = parent;
+                            if (parent.getFileName() != null
+                                && FileSystemUtils.isDiscFolderName(parent.getFileName().toString())
+                                && parent.getParent() != null
+                                && !parent.getParent().equals(root)) {
+                                albumDir = parent.getParent();
+                            }
+                            filesByAlbumDir.computeIfAbsent(albumDir, k -> new ArrayList<>()).add(file.toFile());
                         }
-                        filesByAlbumDir.computeIfAbsent(albumDir, k -> new ArrayList<>()).add(file.toFile());
                     }
                 }
                 return FileVisitResult.CONTINUE;
@@ -574,12 +648,16 @@ public class CoverMissingService implements AutoCloseable {
                     anyMissingCover = true;
                 }
             }
+            if (scanCancelled.get()) {
+                scanMessage = String.format("已取消：已扫描 %d 张专辑，发现 %d 张缺少封面", scannedAlbums, foundMissing);
+                return;
+            }
             if (!anyMissingCover) {
                 continue;
             }
 
             String folderPath = albumDir.toAbsolutePath().normalize().toString();
-            if (reviewQueue.isLibraryFolderConfirmedNoCover(folderPath)) {
+            if (reviewQueue.isLibraryFolderSkippedByScan(folderPath)) {
                 skippedAcknowledged++;
                 continue;
             }
@@ -593,6 +671,10 @@ public class CoverMissingService implements AutoCloseable {
             if (!localCandidates.isEmpty()) {
                 details.setCoverCandidates(new ArrayList<>(localCandidates));
             }
+            if (scanCancelled.get()) {
+                scanMessage = String.format("已取消：已扫描 %d 张专辑，发现 %d 张缺少封面", scannedAlbums, foundMissing);
+                return;
+            }
 
             ReviewItem queued = reviewQueue.enqueueLibraryMissingCover(folderPath, albumFiles, tagWriter, details);
             if (queued != null) {
@@ -600,11 +682,66 @@ public class CoverMissingService implements AutoCloseable {
             }
         }
 
+        // 处理 outputRoot 根目录下的散曲（每首独立建项，不互相合并封面）
+        AudioFileOrdering.sort(looseRootFiles);
+        for (File loose : looseRootFiles) {
+            if (scanCancelled.get()) {
+                scanMessage = String.format("已取消：已扫描 %d 张专辑，发现 %d 张缺少封面", scannedAlbums, foundMissing);
+                return;
+            }
+            currentAlbum = loose.getName();
+            scannedAlbums++;
+            scannedFiles++;
+            if (tagWriter.hasEmbeddedCover(loose)) {
+                continue;
+            }
+            String filePathKey = loose.toPath().toAbsolutePath().normalize().toString();
+            if (reviewQueue.isLibraryFolderSkippedByScan(filePathKey)) {
+                skippedAcknowledged++;
+                continue;
+            }
+            if (reviewQueue.isFolderUnderReview(filePathKey)) {
+                continue;
+            }
+            ReviewItem.MissingCover details = buildLibraryLooseMissingDetails(loose);
+            if (scanCancelled.get()) {
+                scanMessage = String.format("已取消：已扫描 %d 张专辑，发现 %d 张缺少封面", scannedAlbums, foundMissing);
+                return;
+            }
+            ReviewItem queued = reviewQueue.enqueueLibraryMissingCover(filePathKey, List.of(loose), tagWriter, details);
+            if (queued != null) {
+                foundMissing++;
+            }
+        }
+
         scanMessage = String.format("扫描完成：共检查 %d 张专辑（%d 首），发现 %d 张缺少封面%s",
             scannedAlbums, scannedFiles, foundMissing,
-            skippedAcknowledged > 0 ? "（跳过已确认无封面 " + skippedAcknowledged + " 张）" : "");
+            skippedAcknowledged > 0 ? "（跳过已确认无封面/已忽略 " + skippedAcknowledged + " 张）" : "");
         log.info(scanMessage);
         LogCollector.addLog("INFO", scanMessage);
+    }
+
+    private ReviewItem.MissingCover buildLibraryLooseMissingDetails(File looseFile) {
+        ReviewItem.MissingCover details = new ReviewItem.MissingCover();
+        details.setMode(ReviewItem.MissingCover.Mode.LIBRARY_EXISTING);
+        details.setSourcePipeline("LIBRARY_SCAN");
+        details.setLooseFile(true);
+        MusicMetadata md = tagWriter.readTags(looseFile);
+        String fallbackTitle = looseFile.getName();
+        int dot = fallbackTitle.lastIndexOf('.');
+        if (dot > 0) fallbackTitle = fallbackTitle.substring(0, dot);
+        String albumTitle = (md != null && meaningful(md.getAlbum())) ? md.getAlbum()
+            : ((md != null && meaningful(md.getTitle())) ? md.getTitle() : fallbackTitle);
+        String albumArtist = (md != null && meaningful(md.getAlbumArtist())) ? md.getAlbumArtist()
+            : ((md != null && meaningful(md.getArtist())) ? md.getArtist() : "");
+        details.setAlbumTitle(albumTitle);
+        details.setAlbumArtist(albumArtist);
+        if (md != null) {
+            if (meaningful(md.getReleaseGroupId())) details.setReleaseGroupId(md.getReleaseGroupId());
+            if (meaningful(md.getReleaseId())) details.setReleaseId(md.getReleaseId());
+            if (meaningful(md.getReleaseDate())) details.setReleaseDate(md.getReleaseDate());
+        }
+        return details;
     }
 
     private ReviewItem.MissingCover buildLibraryMissingDetails(Path outputRoot, Path albumDir, List<File> albumFiles) {
@@ -680,9 +817,9 @@ public class CoverMissingService implements AutoCloseable {
 
     private static boolean isSupportedAudio(Path path) {
         String lower = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        // JAudioTagger 3.0.1 不支持 .opus，绝不能纳入缺封面库扫描，否则必误报且补图 500
         return lower.endsWith(".mp3") || lower.endsWith(".flac") || lower.endsWith(".m4a")
-            || lower.endsWith(".mp4") || lower.endsWith(".ogg") || lower.endsWith(".opus")
-            || lower.endsWith(".wav");
+            || lower.endsWith(".mp4") || lower.endsWith(".ogg") || lower.endsWith(".wav");
     }
 
     private static String displayAlbum(ReviewItem item, ReviewItem.MissingCover mc) {

@@ -300,7 +300,7 @@ public class RecoveryService implements AutoCloseable {
             RecoveryJob trashJob = new RecoveryJob();
             trashJob.id = item.getId();
             trashJob.sourceType = SourceType.valueOf(item.getRecoverySourceType());
-            trashJob.relativePath = source.getName();
+            trashJob.relativePath = recoverySourceRelativePath(trashJob.sourceType, source);
             moveToTrash(source, trashJob);
         }
         boolean local = item.getVerificationSource() == ReviewItem.VerificationSource.LOCAL_TAGS;
@@ -668,7 +668,7 @@ public class RecoveryService implements AutoCloseable {
             }
             Set<String> inherit = trackArtistFallbacks == null ? Set.of() : new LinkedHashSet<>(trackArtistFallbacks);
             return archiveLocalTags(item, source, revision, album, artist, artists, trackArtists, inherit,
-                duplicatePolicy, null, true);
+                duplicatePolicy, null, false, true);
         } finally {
             runningPaths.remove(runningKey);
         }
@@ -676,6 +676,12 @@ public class RecoveryService implements AutoCloseable {
 
     /** 「缺少封面」页补图或确认无封面后，继续完成之前暂缓的「按本地标签入库」。 */
     public synchronized ReviewItem commitDeferredLocalMissingCover(ReviewItem item, byte[] coverBytes,
+                                                                   DuplicatePolicy duplicatePolicy) throws IOException {
+        return commitDeferredLocalMissingCover(item, coverBytes, coverBytes == null || coverBytes.length == 0, duplicatePolicy);
+    }
+
+    public synchronized ReviewItem commitDeferredLocalMissingCover(ReviewItem item, byte[] coverBytes,
+                                                                   boolean confirmNoCover,
                                                                    DuplicatePolicy duplicatePolicy) throws IOException {
         if (item == null || item.getMissingCover() == null) throw new IOException("item.not.found");
         ReviewItem.MissingCover mc = item.getMissingCover();
@@ -696,7 +702,8 @@ public class RecoveryService implements AutoCloseable {
                 ? Set.of() : new LinkedHashSet<>(mc.getLocalTrackArtistFallbacks());
             return archiveLocalTags(item, source, expectedRevision, mc.getAlbumTitle(), mc.getAlbumArtist(),
                 mc.getAlbumArtists(), trackArtists, inherit,
-                duplicatePolicy == null ? DuplicatePolicy.ASK : duplicatePolicy, coverBytes, false);
+                duplicatePolicy == null ? DuplicatePolicy.ASK : duplicatePolicy,
+                confirmNoCover ? null : coverBytes, confirmNoCover, false);
         } finally {
             runningPaths.remove(runningKey);
         }
@@ -705,7 +712,8 @@ public class RecoveryService implements AutoCloseable {
     private ReviewItem archiveLocalTags(ReviewItem item, File source, String revision, String album, String artist,
                                         List<String> artists, Map<String, List<String>> trackArtists,
                                         Set<String> inherit, DuplicatePolicy duplicatePolicy,
-                                        byte[] explicitCoverArt, boolean allowMissingCoverIntercept) throws IOException {
+                                        byte[] explicitCoverArt, boolean confirmNoCover,
+                                        boolean allowMissingCoverIntercept) throws IOException {
         List<String> albumNames = ArtistCreditSupport.cleanNames(artists);
         if (!meaningful(album) || !meaningful(artist) || albumNames.isEmpty()) {
             throw new IOException("local.archive.metadata.required");
@@ -728,7 +736,10 @@ public class RecoveryService implements AutoCloseable {
         }
 
         byte[] coverToEmbed = null;
-        if (explicitCoverArt != null && explicitCoverArt.length > 0) {
+        if (confirmNoCover) {
+            // 用户显式确认「保持无封面」：跳过全部目录兜底与自动查图
+            coverToEmbed = null;
+        } else if (explicitCoverArt != null && explicitCoverArt.length > 0) {
             coverToEmbed = compressCoverBytes(explicitCoverArt);
         } else {
             boolean allHaveEmbedded = true;
@@ -784,7 +795,7 @@ public class RecoveryService implements AutoCloseable {
                 throw new IOException("local.archive.stale");
             }
             var originalFiles = snapshot.files().values().stream().map(Path::toFile).toList();
-            String linkKey = SourceType.FAILED.name().equals(item.getRecoverySourceType()) ? source.getName() : null;
+            String linkKey = failedLinkKey(item, source);
             List<String> searchDirs = new ArrayList<>(albumNames.stream().map(FileNameSanitizer::sanitize).toList());
             searchDirs.add(FileNameSanitizer.sanitize(AlbumArtistPolicy.VARIOUS_ARTISTS));
             try (var libraryWrite = LibraryWriteGuard.acquire()) {
@@ -946,13 +957,19 @@ public class RecoveryService implements AutoCloseable {
     /** 「缺少封面」页补图或确认无封面后，继续完成之前暂缓的「联网候选确认入库」。 */
     public synchronized ReviewItem commitDeferredOnlineMissingCover(ReviewItem item, byte[] coverBytes,
                                                                     DuplicatePolicy duplicatePolicy) throws IOException {
+        return commitDeferredOnlineMissingCover(item, coverBytes, coverBytes == null || coverBytes.length == 0, duplicatePolicy);
+    }
+
+    public synchronized ReviewItem commitDeferredOnlineMissingCover(ReviewItem item, byte[] coverBytes,
+                                                                    boolean confirmNoCover,
+                                                                    DuplicatePolicy duplicatePolicy) throws IOException {
         if (item == null || item.getMissingCover() == null) throw new IOException("item.not.found");
         ReviewItem.MissingCover mc = item.getMissingCover();
         return confirmOnlineCandidateInternal(item.getId(), mc.getOnlineCandidateId(),
             mc.getAlbumTitle(), mc.getAlbumArtist(), mc.getReleaseDate(), null,
-            mc.getArchiveDirectoryName(), null, coverBytes,
+            mc.getArchiveDirectoryName(), null, confirmNoCover ? null : coverBytes,
             duplicatePolicy == null ? DuplicatePolicy.ASK : duplicatePolicy,
-            mc.getAlbumArtists(), coverBytes == null || coverBytes.length == 0, false);
+            mc.getAlbumArtists(), confirmNoCover, false);
     }
 
     private ReviewItem confirmOnlineCandidateInternal(String itemId, String candidateId,
@@ -1171,7 +1188,7 @@ public class RecoveryService implements AutoCloseable {
                 outputByOriginalPath.replaceAll((original, relative) -> relative.startsWith(oldRelative)
                     ? newRelative.resolve(oldRelative.relativize(relative)) : relative);
             }
-            String linkKey = SourceType.FAILED.name().equals(item.getRecoverySourceType()) ? source.getName() : null;
+            String linkKey = failedLinkKey(item, source);
             List<String> extraArtists = new ArrayList<>();
             if (finalAlbumArtists != null) {
                 for (String a : finalAlbumArtists) {
@@ -1453,6 +1470,9 @@ public class RecoveryService implements AutoCloseable {
             }
             if (failedRelativePath != null) {
                 autoArchiveRegistry.remove(failedRelativePath);
+                if (failedRelativePath.contains("/")) {
+                    autoArchiveRegistry.remove(Path.of(failedRelativePath).getFileName().toString());
+                }
             }
             for (RetiredOutput r : retired) {
                 log.info("已用本次恢复结果替换旧归档（可在回收站还原）: {}", r.original());
@@ -1464,13 +1484,39 @@ public class RecoveryService implements AutoCloseable {
         }
     }
 
+    private String failedLinkKey(ReviewItem item, File source) {
+        if (item == null || !SourceType.FAILED.name().equals(item.getRecoverySourceType()) || source == null) {
+            return null;
+        }
+        return recoverySourceRelativePath(SourceType.FAILED, source);
+    }
+
+    private String recoverySourceRelativePath(SourceType type, File source) {
+        if (source == null) {
+            return "";
+        }
+        String configuredRoot = type == SourceType.PARTIAL ? config.getPartialDirectory() : config.getFailedDirectory();
+        if (configuredRoot != null && !configuredRoot.isBlank()) {
+            Path rootPath = Path.of(configuredRoot.trim()).toAbsolutePath().normalize();
+            Path sourcePath = source.toPath().toAbsolutePath().normalize();
+            if (sourcePath.startsWith(rootPath) && !sourcePath.equals(rootPath)) {
+                return rootPath.relativize(sourcePath).toString().replace('\\', '/');
+            }
+        }
+        return source.getName();
+    }
+
     /**
      * 只有自动归档仍是当时的样子才允许无条件替换：位于输出目录内，
      * 且没有出现登记清单之外的音频（用户或其他流程往里添了曲目就不再替换，交给重复检测询问用户）。
      */
     private java.util.Optional<Path> validAutoArchive(String failedRelativePath, Path outputRoot) {
         if (failedRelativePath == null) return java.util.Optional.empty();
-        AutoArchiveRegistry.Link link = autoArchiveRegistry.find(failedRelativePath).orElse(null);
+        AutoArchiveRegistry.Link link = autoArchiveRegistry.find(failedRelativePath)
+            .or(() -> failedRelativePath.contains("/")
+                ? autoArchiveRegistry.find(Path.of(failedRelativePath).getFileName().toString())
+                : java.util.Optional.empty())
+            .orElse(null);
         if (link == null || link.getArchivedPath() == null) return java.util.Optional.empty();
         Path archived = Path.of(link.getArchivedPath()).toAbsolutePath().normalize();
         if (!archived.startsWith(outputRoot) || archived.equals(outputRoot) || !Files.exists(archived)) {
@@ -2045,7 +2091,12 @@ public class RecoveryService implements AutoCloseable {
             return;
         }
         File root = new File(configuredRoot.trim());
-        File[] children = root.listFiles();
+        Path rootPath = root.toPath().toAbsolutePath().normalize();
+        collectRootEntries(result, type, rootPath, root);
+    }
+
+    private void collectRootEntries(List<Map<String, Object>> result, SourceType type, Path rootPath, File dir) {
+        File[] children = dir.listFiles();
         if (children == null) {
             return;
         }
@@ -2053,17 +2104,28 @@ public class RecoveryService implements AutoCloseable {
             if (child.getName().startsWith(".recovery-")) {
                 continue;
             }
+            if (Files.isSymbolicLink(child.toPath())) {
+                continue;
+            }
             if (!child.isDirectory() && !fileSystemUtils.isMusicFile(child)) {
+                continue;
+            }
+            // 若是中间分组目录（例如保留相对路径后的 failed/ArtistA/，自身没有直接音频且没有碟片子目录），
+            // 继续下钻列出其中的各张独立专辑，避免将同艺人的多张失败专辑合并成一条。
+            if (child.isDirectory() && isGroupingOnlyDirectory(child)) {
+                collectRootEntries(result, type, rootPath, child);
                 continue;
             }
             List<File> audioFiles = collectAudioFiles(child);
             if (audioFiles.isEmpty()) {
                 continue;
             }
+            String relativePath = rootPath.relativize(child.toPath().toAbsolutePath().normalize())
+                .toString().replace('\\', '/');
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("sourceType", type.name());
-            item.put("relativePath", child.getName());
-            item.put("name", child.getName());
+            item.put("relativePath", relativePath);
+            item.put("name", relativePath);
             item.put("path", child.getAbsolutePath());
             item.put("directory", child.isDirectory());
             item.put("fileCount", audioFiles.size());
@@ -2071,13 +2133,37 @@ public class RecoveryService implements AutoCloseable {
             item.put("running", isRunning(child));
             if (type == SourceType.FAILED) {
                 // 已被 LLM 自动归档过的复核副本：告诉用户音乐库里已经有一份，恢复成功后会替换它
-                autoArchiveRegistry.find(child.getName())
+                autoArchiveRegistry.find(relativePath)
+                    .or(() -> autoArchiveRegistry.find(child.getName()))
                     .map(AutoArchiveRegistry.Link::getArchivedPath)
                     .filter(p -> new File(p).exists())
                     .ifPresent(p -> item.put("autoArchivedPath", displayOutputPath(Path.of(p))));
             }
             result.add(item);
         }
+    }
+
+    private boolean isGroupingOnlyDirectory(File dir) {
+        File[] entries = dir.listFiles();
+        if (entries == null || entries.length == 0) {
+            return false;
+        }
+        boolean hasSubDir = false;
+        for (File entry : entries) {
+            if (Files.isSymbolicLink(entry.toPath())) {
+                continue;
+            }
+            if (entry.isFile() && fileSystemUtils.isMusicFile(entry)) {
+                return false;
+            }
+            if (entry.isDirectory()) {
+                if (FileSystemUtils.isDiscFolderName(entry.getName())) {
+                    return false;
+                }
+                hasSubDir = true;
+            }
+        }
+        return hasSubDir;
     }
 
     private boolean isRunning(File file) {

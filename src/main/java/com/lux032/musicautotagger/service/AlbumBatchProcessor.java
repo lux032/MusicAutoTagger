@@ -35,8 +35,17 @@ public class AlbumBatchProcessor {
     private final ReidentifyReplacementRegistry replacementRegistry;
     /** 用于按锁定 Release 获取唯一权威的专辑级标签。 */
     private MusicBrainzClient musicBrainzClient;
+    /** 封面应用策略：AUTO 自动查找、EXPLICIT 仅用显式传入封面、NONE 明确保持无封面（跳过全部查图） */
+    public enum CoverPolicy {
+        AUTO,
+        EXPLICIT,
+        NONE
+    }
+
     /** 人工确认队列（阶段六，可选） */
     private ReviewQueueService reviewQueueService;
+    /** 失败处置服务（可选；当置信度模型判定 Decision.REJECT 时路由至失败处置而非直接入库） */
+    private FailedFileHandler failedFileHandler;
     
     public AlbumBatchProcessor(MusicConfig config, FolderAlbumCache folderAlbumCache,
                                TagWriterService tagWriter, ProcessedFileLogger processedLogger,
@@ -72,6 +81,20 @@ public class AlbumBatchProcessor {
         this.musicBrainzClient = musicBrainzClient;
     }
 
+    public void setFailedFileHandler(FailedFileHandler failedFileHandler) {
+        this.failedFileHandler = failedFileHandler;
+    }
+
+    /**
+     * 处理并写入单个文件并返回实际输出路径（失败时返回 null）。
+     */
+    public File processAndWriteFileReturningTarget(File audioFile, File originalFile, MusicMetadata metadata,
+                                                   byte[] coverArtData, boolean isQuickScanMode) {
+        TagWriterService.TagProcessResult res =
+            processAndWriteFileInternal(audioFile, originalFile, metadata, coverArtData, isQuickScanMode);
+        return res.isSuccess() ? res.getTargetFile() : null;
+    }
+
     /**
      * 处理并写入单个文件
      * @param audioFile 音频文件
@@ -82,6 +105,10 @@ public class AlbumBatchProcessor {
      * @return true 表示标签写入与归档成功；false 表示失败（已记录到数据库）
      */
     public boolean processAndWriteFile(File audioFile, File originalFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
+        return processAndWriteFileInternal(audioFile, originalFile, metadata, coverArtData, isQuickScanMode).isSuccess();
+    }
+
+    private TagWriterService.TagProcessResult processAndWriteFileInternal(File audioFile, File originalFile, MusicMetadata metadata, byte[] coverArtData, boolean isQuickScanMode) {
         File displayFile = originalFile != null ? originalFile : audioFile;
         try (var libraryWrite = LibraryWriteGuard.acquire()) {
             log.info("正在写入文件标签: {}", displayFile.getName());
@@ -136,7 +163,7 @@ public class AlbumBatchProcessor {
                         }
                     }
                 }
-                return true;
+                return writeResult;
             } else {
                 log.error("? 文件处理失败: {}", displayFile.getName());
                 LogCollector.addLog("ERROR", I18nUtil.getMessage("main.process.error", displayFile.getName()));
@@ -149,7 +176,7 @@ public class AlbumBatchProcessor {
                     metadata.getAlbum() != null ? metadata.getAlbum() : "Unknown Album"
                 );
                 log.info("已将写入失败文件记录到数据库: {}", displayFile.getName());
-                return false;
+                return writeResult;
             }
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.write.exception"), displayFile.getName(), e);
@@ -166,7 +193,7 @@ public class AlbumBatchProcessor {
             } catch (Exception recordError) {
                 log.error("记录异常文件到数据库失败: {} - {}", displayFile.getName(), recordError.getMessage());
             }
-            return false;
+            return TagWriterService.TagProcessResult.failed();
         }
     }
 
@@ -192,19 +219,25 @@ public class AlbumBatchProcessor {
         private final boolean queuedForMissingCover;
         private final boolean deferringForMissingCover;
         private final String queuedReviewItemId;
+        private final List<String> writtenTargetPaths;
 
         public BatchProcessResult(int successCount, List<String> failedFiles) {
-            this(successCount, failedFiles, false, false, null);
+            this(successCount, failedFiles, false, false, null, List.of());
+        }
+
+        public BatchProcessResult(int successCount, List<String> failedFiles, List<String> writtenTargetPaths) {
+            this(successCount, failedFiles, false, false, null, writtenTargetPaths);
         }
 
         private BatchProcessResult(int successCount, List<String> failedFiles,
                                    boolean queuedForMissingCover, boolean deferringForMissingCover,
-                                   String queuedReviewItemId) {
+                                   String queuedReviewItemId, List<String> writtenTargetPaths) {
             this.successCount = successCount;
             this.failedFiles = failedFiles == null ? new ArrayList<>() : failedFiles;
             this.queuedForMissingCover = queuedForMissingCover;
             this.deferringForMissingCover = deferringForMissingCover;
             this.queuedReviewItemId = queuedReviewItemId;
+            this.writtenTargetPaths = writtenTargetPaths == null ? new ArrayList<>() : new ArrayList<>(writtenTargetPaths);
         }
 
         public int getSuccessCount() {
@@ -217,6 +250,10 @@ public class AlbumBatchProcessor {
 
         public int getFailedCount() {
             return failedFiles.size();
+        }
+
+        public List<String> getWrittenTargetPaths() {
+            return writtenTargetPaths;
         }
 
         public boolean isFullySuccessful() {
@@ -240,11 +277,11 @@ public class AlbumBatchProcessor {
         }
 
         public static BatchProcessResult queuedForMissingCover(String reviewItemId) {
-            return new BatchProcessResult(0, new ArrayList<>(), true, false, reviewItemId);
+            return new BatchProcessResult(0, new ArrayList<>(), true, false, reviewItemId, List.of());
         }
 
         public static BatchProcessResult deferringForMissingCover() {
-            return new BatchProcessResult(0, new ArrayList<>(), false, true, null);
+            return new BatchProcessResult(0, new ArrayList<>(), false, true, null, List.of());
         }
     }
 
@@ -252,7 +289,7 @@ public class AlbumBatchProcessor {
      * 批量处理文件夹内的待处理文件，统一应用确定的专辑信息
      */
     public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo) {
-        return processPendingFilesWithAlbum(folderPath, albumInfo, false, null, true, true);
+        return processPendingFilesWithAlbum(folderPath, albumInfo, false, null, CoverPolicy.AUTO, true, true);
     }
 
     /**
@@ -263,7 +300,7 @@ public class AlbumBatchProcessor {
      */
     public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo,
                                                            boolean unresolvedAlbum) {
-        return processPendingFilesWithAlbum(folderPath, albumInfo, unresolvedAlbum, null, true, true);
+        return processPendingFilesWithAlbum(folderPath, albumInfo, unresolvedAlbum, null, CoverPolicy.AUTO, true, true);
     }
 
     /**
@@ -276,8 +313,10 @@ public class AlbumBatchProcessor {
     public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo,
                                                            boolean unresolvedAlbum, byte[] explicitCoverArt,
                                                            boolean allowMissingCoverIntercept) {
+        CoverPolicy policy = (explicitCoverArt != null && explicitCoverArt.length > 0)
+            ? CoverPolicy.EXPLICIT : CoverPolicy.AUTO;
         return processPendingFilesWithAlbum(folderPath, albumInfo, unresolvedAlbum,
-            explicitCoverArt, allowMissingCoverIntercept, true);
+            explicitCoverArt, policy, allowMissingCoverIntercept, true);
     }
 
     /**
@@ -291,6 +330,22 @@ public class AlbumBatchProcessor {
                                                            boolean unresolvedAlbum, byte[] explicitCoverArt,
                                                            boolean allowMissingCoverIntercept,
                                                            boolean allFilesCollected) {
+        CoverPolicy policy = (explicitCoverArt != null && explicitCoverArt.length > 0)
+            ? CoverPolicy.EXPLICIT : CoverPolicy.AUTO;
+        return processPendingFilesWithAlbum(folderPath, albumInfo, unresolvedAlbum,
+            explicitCoverArt, policy, allowMissingCoverIntercept, allFilesCollected);
+    }
+
+    /**
+     * 批量处理文件夹内的待处理文件（带显式 {@link CoverPolicy} 策略，确认保持无封面时跳过全部自动查图）。
+     */
+    public BatchProcessResult processPendingFilesWithAlbum(String folderPath, FolderAlbumCache.CachedAlbumInfo albumInfo,
+                                                           boolean unresolvedAlbum, byte[] explicitCoverArt,
+                                                           CoverPolicy coverPolicy,
+                                                           boolean allowMissingCoverIntercept,
+                                                           boolean allFilesCollected) {
+        CoverPolicy effectivePolicy = coverPolicy != null ? coverPolicy
+            : ((explicitCoverArt != null && explicitCoverArt.length > 0) ? CoverPolicy.EXPLICIT : CoverPolicy.AUTO);
         List<FolderAlbumCache.PendingFile> pendingFiles = folderAlbumCache.getPendingFiles(folderPath);
         
         if (pendingFiles == null || pendingFiles.isEmpty()) {
@@ -298,46 +353,53 @@ public class AlbumBatchProcessor {
             return BatchProcessResult.empty();
         }
         
-        log.info("开始批量处理 {} 个待处理文件", pendingFiles.size());
+        log.info("开始批量处理 {} 个待处理文件 (封面策略: {})", pendingFiles.size(), effectivePolicy);
         
-        // 获取专辑封面：优先使用人工补全的封面，其次 CAA / 本地目录 / 音频内嵌
+        // 获取专辑封面：NONE 显式跳过全部查图与兜底；EXPLICIT 仅使用外部传入封面；AUTO 走 CAA / 本地目录 / 内嵌降级
         byte[] correctCoverArt = null;
-        if (explicitCoverArt != null && explicitCoverArt.length > 0) {
-            correctCoverArt = coverArtService.compressCover(explicitCoverArt);
-            if (correctCoverArt != null && correctCoverArt.length > 0
-                && albumInfo.getReleaseGroupId() != null && !albumInfo.getReleaseGroupId().isEmpty()) {
-                coverArtService.cacheCoverForReleaseGroup(albumInfo.getReleaseGroupId(), correctCoverArt);
-            }
-        } else if (albumInfo.getReleaseGroupId() != null && !albumInfo.getReleaseGroupId().isEmpty()) {
-            try {
-                log.info("尝试获取锁定专辑的封面 (Release Group ID: {})", albumInfo.getReleaseGroupId());
-                correctCoverArt = coverArtService.getCoverArtByReleaseGroupId(
-                    albumInfo.getReleaseGroupId(), folderPath);
-                
-                if (correctCoverArt != null && correctCoverArt.length > 0) {
-                    log.info("✓ 成功获取锁定专辑的封面，将替换所有文件的封面");
-                } else {
-                    log.warn("未能获取锁定专辑的封面，尝试检查本地与文件原有封面");
+        if (effectivePolicy == CoverPolicy.NONE) {
+            log.info("已确认保持无封面，跳过全部封面查询与本地兜底");
+        } else if (effectivePolicy == CoverPolicy.EXPLICIT) {
+            if (explicitCoverArt != null && explicitCoverArt.length > 0) {
+                correctCoverArt = coverArtService.compressCover(explicitCoverArt);
+                if (correctCoverArt != null && correctCoverArt.length > 0
+                    && albumInfo.getReleaseGroupId() != null && !albumInfo.getReleaseGroupId().isEmpty()) {
+                    coverArtService.cacheCoverForReleaseGroup(albumInfo.getReleaseGroupId(), correctCoverArt);
                 }
-            } catch (Exception e) {
-                log.warn("获取锁定专辑封面失败，尝试检查本地与文件原有封面: {}", e.getMessage());
             }
         } else {
-            correctCoverArt = coverArtService.findFallbackCoverForFolder(folderPath);
-        }
-
-        if (correctCoverArt == null || correctCoverArt.length == 0) {
-            for (FolderAlbumCache.PendingFile pending : pendingFiles) {
-                if (pending.getCoverArtData() != null && pending.getCoverArtData().length > 0) {
-                    correctCoverArt = coverArtService.compressCover(pending.getCoverArtData());
+            if (albumInfo.getReleaseGroupId() != null && !albumInfo.getReleaseGroupId().isEmpty()) {
+                try {
+                    log.info("尝试获取锁定专辑的封面 (Release Group ID: {})", albumInfo.getReleaseGroupId());
+                    correctCoverArt = coverArtService.getCoverArtByReleaseGroupId(
+                        albumInfo.getReleaseGroupId(), folderPath);
+                    
                     if (correctCoverArt != null && correctCoverArt.length > 0) {
-                        break;
+                        log.info("✓ 成功获取锁定专辑的封面，将替换所有文件的封面");
+                    } else {
+                        log.warn("未能获取锁定专辑的封面，尝试检查本地与文件原有封面");
+                    }
+                } catch (Exception e) {
+                    log.warn("获取锁定专辑封面失败，尝试检查本地与文件原有封面: {}", e.getMessage());
+                }
+            } else {
+                correctCoverArt = coverArtService.findFallbackCoverForFolder(folderPath);
+            }
+
+            if (correctCoverArt == null || correctCoverArt.length == 0) {
+                for (FolderAlbumCache.PendingFile pending : pendingFiles) {
+                    if (pending.getCoverArtData() != null && pending.getCoverArtData().length > 0) {
+                        correctCoverArt = coverArtService.compressCover(pending.getCoverArtData());
+                        if (correctCoverArt != null && correctCoverArt.length > 0) {
+                            break;
+                        }
                     }
                 }
             }
         }
 
-        if ((correctCoverArt == null || correctCoverArt.length == 0)
+        if (effectivePolicy != CoverPolicy.NONE
+            && (correctCoverArt == null || correctCoverArt.length == 0)
             && allowMissingCoverIntercept
             && reviewQueueService != null
             && config != null
@@ -426,15 +488,17 @@ public class AlbumBatchProcessor {
         // 写入失败也要计入失败（processAndWriteFile 内部会吃掉异常），
         // 否则人工确认链路会把「写失败」当成成功。
         List<String> failedFileNames = new ArrayList<>();
+        List<String> writtenTargetPaths = new ArrayList<>();
 
         try (AutoCloseable ignoredBatchGuard = tagWriter.batchNoIntraClobberScope()) {
         for (FolderAlbumCache.PendingFile pending : pendingFiles) {
             try {
                 File audioFile = pending.getProcessingFile() != null ? pending.getProcessingFile() : pending.getAudioFile();
                 MusicMetadata metadata = (MusicMetadata) pending.getMetadata();
-                // 关键修复：如果成功获取了正确的封面，使用正确的封面；否则使用原有封面
-                byte[] coverArtData = (correctCoverArt != null && correctCoverArt.length > 0) ?
-                    correctCoverArt : pending.getCoverArtData();
+                // 关键修复：CoverPolicy.NONE 时绝不嵌入任何封面；其余情况优先使用统一封面
+                byte[] coverArtData = effectivePolicy == CoverPolicy.NONE
+                    ? null
+                    : ((correctCoverArt != null && correctCoverArt.length > 0) ? correctCoverArt : pending.getCoverArtData());
                 
                 log.info("批量处理文件 [{}/{}]: {}",
                     successCount + failCount + 1, pendingFiles.size(), audioFile.getName());
@@ -471,9 +535,10 @@ public class AlbumBatchProcessor {
                 }
                 
                 // 写入文件（metadata已包含作词、作曲、风格等信息）
-                boolean written = processAndWriteFile(audioFile, pending.getAudioFile(), metadata, coverArtData, false);
-                if (written) {
+                File targetOut = processAndWriteFileReturningTarget(audioFile, pending.getAudioFile(), metadata, coverArtData, false);
+                if (targetOut != null) {
                     successCount++;
+                    writtenTargetPaths.add(targetOut.getAbsolutePath());
                 } else {
                     failCount++;
                     failedFiles.add(pending.getAudioFile());
@@ -522,7 +587,7 @@ public class AlbumBatchProcessor {
         // 清除待处理列表
         folderAlbumCache.clearPendingFiles(folderPath);
 
-        return new BatchProcessResult(successCount, failedFileNames);
+        return new BatchProcessResult(successCount, failedFileNames, writtenTargetPaths);
     }
     
     /**
@@ -598,8 +663,10 @@ public class AlbumBatchProcessor {
             double unified = com.lux032.musicautotagger.util.ConfidenceModel
                 .unresolvedAlbumConfidence(filesWithTrackMetadata, pendingFiles.size());
 
-            if (com.lux032.musicautotagger.util.ConfidenceModel.decide(unified)
-                    == com.lux032.musicautotagger.util.ConfidenceModel.Decision.PENDING_REVIEW) {
+            com.lux032.musicautotagger.util.ConfidenceModel.Decision decision =
+                com.lux032.musicautotagger.util.ConfidenceModel.decide(unified);
+
+            if (decision == com.lux032.musicautotagger.util.ConfidenceModel.Decision.PENDING_REVIEW) {
                 // 关键（审查 #3）：入队必须**确认落盘成功**才能清空内存 pending。
                 // 否则会出现：JSON 里没有这个条目 + 内存队列也清了 = 任务直接丢失。
                 ReviewItem queued = reviewQueueService.enqueue(
@@ -624,10 +691,32 @@ public class AlbumBatchProcessor {
 
                 log.error("待确认队列落盘失败，为避免任务丢失，改为按「专辑未确定」直接归档（pending 保留）");
                 LogCollector.addLog("ERROR", "待确认队列落盘失败，已回退为直接归档");
+            } else if (decision == com.lux032.musicautotagger.util.ConfidenceModel.Decision.REJECT) {
+                // Decision.REJECT（几乎无有效元数据）：绝不直接落盘污染输出库，转交失败处置管线
+                log.warn("曲目级元数据覆盖率过低（统一置信度 {}，决策 REJECT），拒绝直接归档，转交失败处置: {}",
+                    String.format("%.2f", unified), new File(folderPath).getName());
+                LogCollector.addLog("WARN", "元数据覆盖率过低，已转交失败处置而非直接归档: " + new File(folderPath).getName());
+                folderAlbumCache.markFailureHandoff(folderPath);
+                File albumRootDir = new File(folderPath);
+                if (failedFileHandler != null) {
+                    failedFileHandler.handleAlbumFileFailed(pendingFiles.get(0).getAudioFile(), albumRootDir);
+                } else if (processedLogger != null) {
+                    for (FolderAlbumCache.PendingFile pf : pendingFiles) {
+                        try {
+                            processedLogger.markFileAsProcessed(
+                                pf.getAudioFile(),
+                                "FAILED",
+                                "元数据覆盖率过低 (REJECT)",
+                                pf.getAudioFile().getName(),
+                                synthesized.getAlbumTitle() != null ? synthesized.getAlbumTitle() : "Unknown Album"
+                            );
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+                discardPendingFiles(folderPath);
+                return BatchProcessResult.empty();
             }
-
-            log.warn("待确认队列已启用，但曲目级元数据覆盖率过低（统一置信度 {}），不入队，改为直接归档",
-                String.format("%.2f", unified));
         }
 
         log.warn("========================================");
@@ -1115,8 +1204,9 @@ public class AlbumBatchProcessor {
             if (lockedInfo != null && pendingCount > 0) {
                 log.info("专辑在收集中途锁定，先写出已积压的 {} 个待处理文件: {}",
                     pendingCount, lockedInfo.getAlbumTitle());
+                // 绝不把单曲可能带有的旧封面当作 explicitCoverArt 传入，避免跳过 CAA 并污染全专辑封面缓存
                 BatchProcessResult batchResult = processPendingFilesWithAlbum(
-                    folderPath, lockedInfo, false, coverArtData, true, false);
+                    folderPath, lockedInfo, false, null, CoverPolicy.AUTO, true, false);
                 if (batchResult != null
                     && (batchResult.isDeferringForMissingCover() || batchResult.isQueuedForMissingCover())) {
                     return -1;

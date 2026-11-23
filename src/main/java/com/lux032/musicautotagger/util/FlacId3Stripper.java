@@ -286,7 +286,7 @@ public final class FlacId3Stripper {
         Path dir = target.getParent();
         Path tmp = null;
         try {
-            tmp = Files.createTempFile(dir, "." + target.getFileName().toString(), ".id3strip.tmp");
+            tmp = Files.createTempFile(dir, ".id3strip-", ".tmp");
             long expected = audioEnd - audioOffset;
             try (FileChannel in = FileChannel.open(target, StandardOpenOption.READ);
                  FileChannel out = FileChannel.open(tmp, StandardOpenOption.WRITE,

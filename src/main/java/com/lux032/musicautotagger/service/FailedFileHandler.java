@@ -253,6 +253,7 @@ public class FailedFileHandler {
             
             if (folderCover == null || folderCover.length == 0) {
                 folderCover = findCoverInAudioParents(audioFiles);
+                hasFolderCover = (folderCover != null && folderCover.length > 0);
             }
             
             // 检查是否有任何文件有内嵌封面
@@ -723,16 +724,38 @@ public class FailedFileHandler {
         }
     }
 
-    private void deleteDirectory(File dir) {
-        if (dir.isDirectory()) {
-            File[] files = dir.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    deleteDirectory(file);
-                }
-            }
+    void deleteDirectory(File dir) {
+        if (dir == null) {
+            return;
         }
-        dir.delete();
+        Path root = dir.toPath();
+        if (!Files.exists(root, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        try {
+            if (Files.isSymbolicLink(root)) {
+                Files.deleteIfExists(root);
+                return;
+            }
+            // Files.walkFileTree 默认不跟随符号链接：符号链接仅删除自身，绝不越界删除目标目录
+            Files.walkFileTree(root, new java.nio.file.SimpleFileVisitor<Path>() {
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs)
+                        throws IOException {
+                    Files.deleteIfExists(file);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public java.nio.file.FileVisitResult postVisitDirectory(Path directory, IOException exc)
+                        throws IOException {
+                    Files.deleteIfExists(directory);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+        } catch (IOException e) {
+            log.warn("删除目录失败: {} - {}", dir.getAbsolutePath(), e.getMessage());
+        }
     }
 
     /** 汇总专辑中的逐曲艺术家（必要时做 LLM 语义拆分），并按配置生成专辑艺术家。 */
@@ -871,13 +894,26 @@ public class FailedFileHandler {
     }
 
     private boolean isAudioFile(File file) {
-        String name = file.getName().toLowerCase();
-        return name.endsWith(".mp3") || name.endsWith(".flac") ||
-               name.endsWith(".m4a") || name.endsWith(".wav");
+        if (fileSystemUtils != null) {
+            return fileSystemUtils.isMusicFile(file);
+        }
+        return FileSystemUtils.isDefaultAudioFile(file);
+    }
+
+    private String resolveFailedRelativePath(File source) throws IOException {
+        String rel = fileSystemUtils != null ? fileSystemUtils.getRelativePath(source) : source.getName();
+        if (rel == null || rel.isBlank()) {
+            return source.getName();
+        }
+        Path normalized = Path.of(rel).normalize();
+        if (normalized.isAbsolute() || normalized.startsWith("..")) {
+            return source.getName();
+        }
+        return normalized.toString();
     }
 
     /**
-     * 复制失败的单个文件到失败目录
+     * 复制失败的单个文件到失败目录（在监控目录内时保留相对路径，避免不同子目录同名文件碰撞）
      */
     public void copyFailedFileToFailedDirectory(File audioFile) throws IOException {
         if (audioFile == null || !audioFile.exists()) {
@@ -885,8 +921,8 @@ public class FailedFileHandler {
             return;
         }
         
-        String fileName = audioFile.getName();
-        File targetFile = new File(config.getFailedDirectory(), fileName);
+        String relativePath = resolveFailedRelativePath(audioFile);
+        File targetFile = new File(config.getFailedDirectory(), relativePath);
         
         // 检查是否已经复制过该文件
         if (targetFile.exists()) {
@@ -900,11 +936,15 @@ public class FailedFileHandler {
         log.info("目标位置: {}", targetFile.getAbsolutePath());
         
         try {
+            Path parent = targetFile.toPath().toAbsolutePath().getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
             Files.copy(audioFile.toPath(), targetFile.toPath());
             replacementRegistry.recordAlias(audioFile.toPath(), targetFile.toPath());
             log.info("文件复制完成: {}", targetFile.getAbsolutePath());
         } catch (IOException e) {
-            log.error("复制文件失败: {} - {}", fileName, e.getMessage());
+            log.error("复制文件失败: {} - {}", relativePath, e.getMessage());
             throw e;
         }
         
@@ -913,7 +953,8 @@ public class FailedFileHandler {
     
     /**
      * 复制失败的专辑根目录到失败目录
-     * 保留文件夹结构（包括所有子文件夹如 Disc 1, Disc 2），方便用户手动处理
+     * 在监控目录内时保留相对路径（如 ArtistA/Greatest Hits），避免不同艺人同名专辑碰撞丢弃；
+     * 监控目录外的暂存路径沿用目录名以保持兼容。
      */
     public void copyFailedFolderToFailedDirectory(File albumRootFolder) throws IOException {
         if (albumRootFolder == null || !albumRootFolder.exists()) {
@@ -921,9 +962,8 @@ public class FailedFileHandler {
             return;
         }
         
-        // 构建目标路径：失败目录/专辑根文件夹名
-        String folderName = albumRootFolder.getName();
-        File targetFolder = new File(config.getFailedDirectory(), folderName);
+        String relativePath = resolveFailedRelativePath(albumRootFolder);
+        File targetFolder = new File(config.getFailedDirectory(), relativePath);
         
         // 检查是否已经复制过该文件夹
         if (targetFolder.exists()) {
@@ -1015,7 +1055,7 @@ public class FailedFileHandler {
             try {
                 copyFailedFileToFailedDirectory(audioFile);
                 if (archived[0] != null) {
-                    recordAutoArchiveLink(audioFile.getName(), archived[0]);
+                    recordAutoArchiveLink(resolveFailedRelativePath(audioFile).replace('\\', '/'), archived[0]);
                 }
             } catch (Exception e) {
                 log.error("复制失败文件到失败目录时出错: {}", e.getMessage());
@@ -1048,7 +1088,7 @@ public class FailedFileHandler {
             try {
                 copyFailedFolderToFailedDirectory(albumRootDir);
                 if (archived[0] != null) {
-                    recordAutoArchiveLink(albumRootDir.getName(), archived[0]);
+                    recordAutoArchiveLink(resolveFailedRelativePath(albumRootDir).replace('\\', '/'), archived[0]);
                 }
             } catch (Exception e) {
                 log.error("复制失败文件夹到失败目录时出错: {}", e.getMessage());

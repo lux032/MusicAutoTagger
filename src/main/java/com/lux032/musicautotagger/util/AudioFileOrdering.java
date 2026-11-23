@@ -20,6 +20,8 @@ import java.util.regex.Pattern;
 public final class AudioFileOrdering {
     private static final Pattern LEADING_NUMBER = Pattern.compile("^\\s*(\\d+)");
     private static final Pattern ANY_NUMBER = Pattern.compile("(\\d+)");
+    private static final Pattern DISC_FOLDER_NUMBER = Pattern.compile(
+        "(?i)^\\s*(?:disc|disk|cd)[\\s._\\-#]*(\\d{1,3})");
 
     private AudioFileOrdering() {
     }
@@ -69,7 +71,7 @@ public final class AudioFileOrdering {
 
         String parentName = file.getParentFile() != null ? file.getParentFile().getName() : "";
         if (disc == null) {
-            disc = findNumber(parentName);
+            disc = extractDiscNumberFromFolderName(parentName);
         }
         if (track == null) {
             track = leadingNumber(file.getName());
@@ -111,8 +113,11 @@ public final class AudioFileOrdering {
         }
     }
 
-    private static Integer findNumber(String value) {
-        Matcher matcher = ANY_NUMBER.matcher(value);
+    static Integer extractDiscNumberFromFolderName(String parentName) {
+        if (!FileSystemUtils.isDiscFolderName(parentName)) {
+            return null;
+        }
+        Matcher matcher = DISC_FOLDER_NUMBER.matcher(parentName);
         if (!matcher.find()) {
             return null;
         }

@@ -1,14 +1,20 @@
 package com.lux032.musicautotagger.service;
 
+import com.lux032.musicautotagger.config.MusicConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.input.BoundedInputStream;
 import org.apache.hc.client5.http.DnsResolver;
+import org.apache.hc.client5.http.auth.AuthScope;
+import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.auth.BasicCredentialsProvider;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
+import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.util.Timeout;
 
 import javax.imageio.ImageIO;
@@ -35,11 +41,19 @@ import java.util.concurrent.atomic.AtomicReference;
 public class UntrustedImageFetcher implements AutoCloseable {
     private static final long MAX_BYTES = 8L * 1024 * 1024;
     private static final long MAX_PIXELS = 50_000_000L;
+    private final MusicConfig config;
     private final ThreadLocal<Map<String, InetAddress[]>> requestPins = new ThreadLocal<>();
     private final ThreadPoolExecutor executor;
     private final CloseableHttpClient client;
+    private volatile CloseableHttpClient proxyClient;
+    private volatile String activeProxySignature;
 
     public UntrustedImageFetcher() {
+        this(null);
+    }
+
+    public UntrustedImageFetcher(MusicConfig config) {
+        this.config = config;
         DnsResolver resolver = new DnsResolver() {
             @Override public InetAddress[] resolve(String host) throws UnknownHostException {
                 Map<String, InetAddress[]> pins = requestPins.get();
@@ -61,6 +75,51 @@ public class UntrustedImageFetcher implements AutoCloseable {
                 t.setDaemon(true);
                 return t;
             }, new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    private boolean isProxyConfigured() {
+        return config != null && config.isProxyEnabled()
+            && config.getProxyHost() != null && !config.getProxyHost().isBlank()
+            && config.getProxyPort() > 0;
+    }
+
+    private CloseableHttpClient proxyClient() {
+        String host = config.getProxyHost().trim();
+        int port = config.getProxyPort();
+        String user = config.getProxyUsername() == null ? "" : config.getProxyUsername();
+        String pass = config.getProxyPassword() == null ? "" : config.getProxyPassword();
+        String sig = host + ":" + port + ":" + user + ":" + pass.hashCode();
+        CloseableHttpClient existing = this.proxyClient;
+        if (existing != null && sig.equals(this.activeProxySignature)) {
+            return existing;
+        }
+        synchronized (this) {
+            existing = this.proxyClient;
+            if (existing != null && sig.equals(this.activeProxySignature)) {
+                return existing;
+            }
+            CloseableHttpClient old = existing;
+            RequestConfig requestConfig = RequestConfig.custom()
+                .setConnectionRequestTimeout(Timeout.ofSeconds(5))
+                .setConnectTimeout(Timeout.ofSeconds(8)).setResponseTimeout(Timeout.ofSeconds(12)).build();
+            HttpClientBuilder builder = HttpClients.custom()
+                .setProxy(new HttpHost(host, port))
+                .setDefaultRequestConfig(requestConfig)
+                .disableRedirectHandling()
+                .disableAutomaticRetries();
+            if (!user.isEmpty() && !pass.isEmpty()) {
+                BasicCredentialsProvider creds = new BasicCredentialsProvider();
+                creds.setCredentials(new AuthScope(host, port), new UsernamePasswordCredentials(user, pass.toCharArray()));
+                builder.setDefaultCredentialsProvider(creds);
+            }
+            CloseableHttpClient created = builder.build();
+            this.proxyClient = created;
+            this.activeProxySignature = sig;
+            if (old != null) {
+                try { old.close(); } catch (Exception ignored) {}
+            }
+            return created;
+        }
     }
 
     public Optional<Result> fetch(String url) {
@@ -91,13 +150,24 @@ public class UntrustedImageFetcher implements AutoCloseable {
 
     private Optional<Result> fetchInternal(String url, AtomicReference<HttpGet> activeRequest) {
         try {
-            var target = com.lux032.musicautotagger.util.OutboundUrlValidator.validateAndResolve(
-                url, false, true, true);
-            requestPins.set(Map.of(target.normalizedHost(), target.addresses()));
-            HttpGet request = new HttpGet(target.uri());
+            boolean useProxy = isProxyConfigured();
+            URI targetUri;
+            CloseableHttpClient httpClient;
+            if (useProxy) {
+                var target = validateForProxy(url);
+                targetUri = target;
+                httpClient = proxyClient();
+            } else {
+                var target = com.lux032.musicautotagger.util.OutboundUrlValidator.validateAndResolve(
+                    url, false, true, true);
+                requestPins.set(Map.of(target.normalizedHost(), target.addresses()));
+                targetUri = target.uri();
+                httpClient = client;
+            }
+            HttpGet request = new HttpGet(targetUri);
             activeRequest.set(request);
 
-            try (CloseableHttpResponse response = client.execute(request)) {
+            try (CloseableHttpResponse response = httpClient.execute(request)) {
                 int status = response.getCode();
                 if (status < 200 || status >= 300 || response.getEntity() == null) return Optional.empty();
                 long declared = response.getEntity().getContentLength();
@@ -194,9 +264,36 @@ public class UntrustedImageFetcher implements AutoCloseable {
         return com.lux032.musicautotagger.util.OutboundUrlValidator.isPublic(address);
     }
 
+    private static URI validateForProxy(String url) throws com.lux032.musicautotagger.util.OutboundUrlValidator.ValidationException {
+        try {
+            return com.lux032.musicautotagger.util.OutboundUrlValidator.validateAndResolve(
+                url, false, true, true).uri();
+        } catch (com.lux032.musicautotagger.util.OutboundUrlValidator.ValidationException e) {
+            // 在纯代理环境下（本地无法直连外网 DNS），仅当失败原因是外网域名本地无法解析时，
+            // 在确认不是本地/内网主机名与字面量 IP 后允许交给代理远端解析。
+            if (!"url.unresolvable".equals(e.getCode())) {
+                throw e;
+            }
+            URI uri = URI.create(url.trim());
+            String host = com.lux032.musicautotagger.util.OutboundUrlValidator.stripIpv6Brackets(uri.getHost())
+                .toLowerCase(Locale.ROOT);
+            if ("localhost".equals(host) || host.endsWith(".localhost")
+                || host.endsWith(".local") || host.endsWith(".internal")
+                || host.endsWith(".lan") || !host.contains(".")
+                || host.indexOf(':') >= 0 || host.matches("^[0-9.]+$")) {
+                throw e;
+            }
+            return uri;
+        }
+    }
+
     @Override public void close() throws Exception {
         executor.shutdownNow();
         client.close();
+        CloseableHttpClient pc = this.proxyClient;
+        if (pc != null) {
+            pc.close();
+        }
     }
     public record Result(byte[] data, String mime, int width, int height, long bytes) {}
 }

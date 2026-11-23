@@ -66,13 +66,28 @@ public class CueSplitService {
             return SplitResult.notApplicable();
         }
 
-        File[] cueFiles = listCueFiles(albumRootDir);
+        // 多碟专辑场景（如 Album/CD1/disc1.cue + disc1.flac）优先检查音频所在碟片子目录，
+        // 找不到单 CUE + 单大文件组合时再回退到专辑根目录。
+        File parentDir = audioFile.getParentFile();
+        File cueDir = albumRootDir;
+        boolean isDiscSubdir = false;
+        if (parentDir != null && parentDir.isDirectory() && !parentDir.equals(albumRootDir)
+                && FileSystemUtils.isDiscFolderName(parentDir.getName())) {
+            File[] discCues = listCueFiles(parentDir);
+            File[] discAudios = listAudioFiles(parentDir);
+            if (discCues.length == 1 && discAudios.length == 1) {
+                cueDir = parentDir;
+                isDiscSubdir = true;
+            }
+        }
+
+        File[] cueFiles = listCueFiles(cueDir);
         if (cueFiles.length != 1) {
             return SplitResult.notApplicable();
         }
         File cueFile = cueFiles[0];
 
-        File[] audioFiles = listAudioFiles(albumRootDir);
+        File[] audioFiles = listAudioFiles(cueDir);
         if (audioFiles.length != 1) {
             return SplitResult.notApplicable();
         }
@@ -98,10 +113,10 @@ public class CueSplitService {
             return SplitResult.notApplicable();
         }
 
-        String lockKey = getCanonicalPath(albumRootDir);
+        String lockKey = getCanonicalPath(cueDir);
         Object lock = SPLIT_LOCKS.computeIfAbsent(lockKey, k -> new Object());
         synchronized (lock) {
-            File outputDir = prepareOutputDir(outputRoot, albumRootDir, cueFile);
+            File outputDir = prepareOutputDir(outputRoot, albumRootDir, cueDir, cueFile);
             if (outputDir == null) {
                 return SplitResult.notApplicable();
             }
@@ -112,8 +127,9 @@ public class CueSplitService {
                 if (!existingSplitFiles.isEmpty() && matchesDoneMarker(doneMarker, cueFile, bigAudioFile)) {
                     return SplitResult.existing(existingSplitFiles, cueInfo, outputDir);
                 }
-                outputDir = new File(outputRoot,
+                File tsBase = new File(outputRoot,
                     scopedOutputDirName(albumRootDir, bigAudioFile) + "__" + System.currentTimeMillis());
+                outputDir = isDiscSubdir ? new File(tsBase, cueDir.getName()) : tsBase;
                 doneMarker = new File(outputDir, DONE_MARKER);
             }
 
@@ -131,7 +147,13 @@ public class CueSplitService {
                 if (splitFiles.isEmpty()) {
                     return SplitResult.notApplicable();
                 }
-                copyCoverArt(albumRootDir, outputDir);
+                boolean copiedCover = copyCoverArt(cueDir, outputDir);
+                if (!copiedCover && isDiscSubdir) {
+                    copyCoverArt(albumRootDir, outputDir);
+                }
+                if (isDiscSubdir && outputDir.getParentFile() != null) {
+                    copyCoverArt(albumRootDir, outputDir.getParentFile());
+                }
                 writeDoneMarker(doneMarker, cueFile, bigAudioFile);
                 return SplitResult.performed(splitFiles, cueInfo, outputDir);
             } catch (InterruptedException e) {
@@ -165,10 +187,12 @@ public class CueSplitService {
         return sorted;
     }
 
-    private File prepareOutputDir(String outputRoot, File albumRootDir, File cueFile) {
+    private File prepareOutputDir(String outputRoot, File albumRootDir, File cueDir, File cueFile) {
         File baseDir = new File(outputRoot);
+        boolean isDiscSubdir = !cueDir.equals(albumRootDir);
         String scopedName = scopedOutputDirName(albumRootDir, cueFile);
-        File outputDir = new File(baseDir, scopedName);
+        File albumOutputDir = new File(baseDir, scopedName);
+        File outputDir = isDiscSubdir ? new File(albumOutputDir, cueDir.getName()) : albumOutputDir;
         if (!outputDir.exists()) {
             return outputDir;
         }
@@ -179,14 +203,16 @@ public class CueSplitService {
         }
 
         String suffix = Integer.toHexString(
-            Math.abs((getCanonicalPath(albumRootDir) + "|" + cueFile.lastModified()).hashCode()));
-        File fallbackDir = new File(baseDir, scopedName + "__" + suffix);
+            Math.abs((getCanonicalPath(cueDir) + "|" + cueFile.lastModified()).hashCode()));
+        File fallbackAlbumDir = new File(baseDir, scopedName + "__" + suffix);
+        File fallbackDir = isDiscSubdir ? new File(fallbackAlbumDir, cueDir.getName()) : fallbackAlbumDir;
         if (!fallbackDir.exists()) {
             return fallbackDir;
         }
 
         String timestamp = String.valueOf(System.currentTimeMillis());
-        return new File(baseDir, scopedName + "__" + timestamp);
+        File tsAlbumDir = new File(baseDir, scopedName + "__" + timestamp);
+        return isDiscSubdir ? new File(tsAlbumDir, cueDir.getName()) : tsAlbumDir;
     }
 
     /** 输出目录附带源目录规范路径短哈希，杜绝不同艺人同名文件夹（如 Greatest Hits / CD1）互相串轨。 */
@@ -210,10 +236,13 @@ public class CueSplitService {
         }
     }
 
-    private void copyCoverArt(File albumRootDir, File outputDir) {
-        File[] files = albumRootDir.listFiles(File::isFile);
+    private boolean copyCoverArt(File sourceDir, File outputDir) {
+        if (sourceDir == null || outputDir == null) {
+            return false;
+        }
+        File[] files = sourceDir.listFiles(File::isFile);
         if (files == null || files.length == 0) {
-            return;
+            return false;
         }
 
         Map<String, File> candidates = new HashMap<>();
@@ -243,11 +272,13 @@ public class CueSplitService {
             try {
                 Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 log.info("Copied cover art to split directory: {}", target.getName());
+                return true;
             } catch (IOException e) {
                 log.warn("Failed to copy cover art: {}", e.getMessage());
             }
             break;
         }
+        return false;
     }
 
     private void writeDoneMarker(File doneMarker, File cueFile, File audioFile) {

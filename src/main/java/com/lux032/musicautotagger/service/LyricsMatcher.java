@@ -9,7 +9,7 @@ import java.util.regex.*;
 public final class LyricsMatcher {
     private LyricsMatcher() {}
     private static final List<String> VERSIONS = List.of("instrumental", "inst", "karaoke", "off vocal", "offvocal", "live", "demo", "remix", "acoustic", "extended", "radio edit", "tv size", "tv ver", "movie ver", "short ver", "long ver", "full ver", "album mix", "album ver", "album version", "single mix", "single ver", "original mix", "edit", "anime size", "remaster", "remastered", "伴奏", "純音楽", "纯音乐");
-    private static final Pattern TIMESTAMP = Pattern.compile("\\[(\\d+):([0-5]\\d)(?:[.:](\\d{1,3}))?]");
+    private static final Pattern TIMESTAMP = Pattern.compile("\\[(\\d{1,4}):([0-5]\\d)(?:[.:](\\d{1,3}))?]");
 
     public static String normalize(String value) {
         if (value == null) return "";
@@ -48,22 +48,33 @@ public final class LyricsMatcher {
     }
     public static boolean validSynced(String lyrics, double duration) {
         if (lyrics == null || lyrics.isBlank()) return false;
-        double previous = -1;
+        double previousLineFirst = -1;
         boolean found = false;
         for (String line : lyrics.split("\\R")) {
-            if (line.isBlank() || line.matches("\\[(ar|al|ti|by|offset):.*]")) continue;
+            if (line.isBlank() || line.matches("\\[(ar|al|ti|by|offset|length|re|ve):.*]")) continue;
             Matcher m = TIMESTAMP.matcher(line);
             if (!m.lookingAt()) return false;
             int end = 0;
+            double firstInLine = -1;
+            double previousInLine = -1;
             while (m.find(end)) {
                 if (m.start() != end) break;
-                double seconds = Long.parseLong(m.group(1)) * 60.0 + Integer.parseInt(m.group(2));
-                if (m.group(3) != null) seconds += Double.parseDouble("0." + m.group(3));
-                if (seconds < previous || seconds > duration + 2) return false;
-                previous = seconds;
+                double seconds;
+                try {
+                    seconds = Long.parseLong(m.group(1)) * 60.0 + Integer.parseInt(m.group(2));
+                    if (m.group(3) != null) seconds += Double.parseDouble("0." + m.group(3));
+                } catch (NumberFormatException e) {
+                    return false;
+                }
+                if (!Double.isFinite(seconds) || seconds < 0 || seconds > duration + 2) return false;
+                if (previousInLine >= 0 && seconds < previousInLine) return false;
+                if (firstInLine < 0) firstInLine = seconds;
+                previousInLine = seconds;
                 found = true;
                 end = m.end();
             }
+            if (firstInLine < 0 || firstInLine < previousLineFirst) return false;
+            previousLineFirst = firstInLine;
         }
         return found;
     }

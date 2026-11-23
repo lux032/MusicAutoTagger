@@ -62,9 +62,30 @@ final class LyricsOnlyWriter {
                 copy.commit();
                 AudioFile verified = AudioFileIO.read(temp.toFile());
                 if (!lyrics.equals(TagWriterService.readEmbeddedLyrics(verified.getTag())) || !before.equals(snapshot(verified, temp))) return false;
-                Files.setPosixFilePermissions(temp, permissions.permissions());
                 PosixFileAttributeView view = Files.getFileAttributeView(temp, PosixFileAttributeView.class);
-                view.setOwner(permissions.owner()); view.setGroup(permissions.group());
+                if (view != null) {
+                    try {
+                        Files.setPosixFilePermissions(temp, permissions.permissions());
+                    } catch (IOException | UnsupportedOperationException | SecurityException e) {
+                        log.debug("无法恢复歌词临时文件权限: {} ({})", temp, e.getMessage());
+                    }
+                    try {
+                        PosixFileAttributes tempAttrs = view.readAttributes();
+                        if (permissions.owner() != null && !Objects.equals(tempAttrs.owner(), permissions.owner())) {
+                            view.setOwner(permissions.owner());
+                        }
+                    } catch (IOException | UnsupportedOperationException | SecurityException e) {
+                        log.debug("无法恢复歌词临时文件属主（非 root/NAS 挂载下忽略）: {} ({})", file, e.getMessage());
+                    }
+                    try {
+                        PosixFileAttributes tempAttrs = view.readAttributes();
+                        if (permissions.group() != null && !Objects.equals(tempAttrs.group(), permissions.group())) {
+                            view.setGroup(permissions.group());
+                        }
+                    } catch (IOException | UnsupportedOperationException | SecurityException e) {
+                        log.debug("无法恢复歌词临时文件属组（非 root/NAS 挂载下忽略）: {} ({})", file, e.getMessage());
+                    }
+                }
                 Files.setLastModifiedTime(temp, expected.mtime());
                 try (FileChannel channel = FileChannel.open(temp, StandardOpenOption.WRITE)) { channel.force(true); }
                 // Application mutations share the guard. External writers must be stopped by the operator.
@@ -98,7 +119,11 @@ final class LyricsOnlyWriter {
                 if (!Set.of("LYRICS", "UNSYNCEDLYRICS", "UNSYNCED LYRICS", "USLT", "SYLT", "ULT", "SLT", "©LYR").contains(id))
                     fields.add(field.getId() + ":" + Base64.getEncoder().encodeToString(field.getRawContent()));
             }
-            for (var art : tag.getArtworkList()) artwork.add(art.getMimeType() + ":" + art.getDescription() + ":" + art.getPictureType() + ":" + Base64.getEncoder().encodeToString(art.getBinaryData()));
+            for (var art : tag.getArtworkList()) {
+                byte[] binary = art.getBinaryData();
+                artwork.add(art.getMimeType() + ":" + art.getDescription() + ":" + art.getPictureType()
+                    + ":" + art.getImageUrl() + ":" + (binary == null ? "" : Base64.getEncoder().encodeToString(binary)));
+            }
         }
         Collections.sort(fields);
         return new Snapshot(fields, artwork, hash(path, start, end - start), h.getPreciseTrackLength(), h.getEncodingType(), h.getSampleRate(), h.getChannels());

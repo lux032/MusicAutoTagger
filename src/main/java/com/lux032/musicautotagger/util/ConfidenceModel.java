@@ -121,6 +121,12 @@ public final class ConfidenceModel {
     }
 
     private static double map(double value, double inLow, double inHigh, double outLow, double outHigh) {
+        if (Double.isNaN(value) || value <= 0.0) {
+            return 0.0;
+        }
+        if (value < inLow) {
+            return inLow <= 0.0 ? 0.0 : clamp(value / inLow, 0.0, 1.0) * outLow;
+        }
         if (inHigh <= inLow) {
             return outHigh;
         }

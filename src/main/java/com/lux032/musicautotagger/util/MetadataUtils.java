@@ -6,6 +6,8 @@ import com.lux032.musicautotagger.service.AudioFingerprintService;
 
 import java.text.Normalizer;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * 元数据工具类
@@ -13,6 +15,36 @@ import java.util.List;
  */
 @Slf4j
 public class MetadataUtils {
+
+    private static final String[] VERSION_INDICATORS = {
+        "instrumental", "inst", "karaoke", "off vocal", "offvocal",
+        "live", "acoustic", "remix", "extended", "radio edit",
+        "tv size", "tv ver", "movie ver", "full ver",
+        "album mix", "album ver", "album version", "single mix", "single ver",
+        "original mix", "remaster", "remastered", "bonus track",
+        "short ver", "long ver", "edit", "demo"
+    };
+
+    private static final Pattern[] VERSION_INDICATOR_PATTERNS = compileAsciiIndicatorPatterns(VERSION_INDICATORS);
+
+    private static final Pattern[] VERSION_QUALIFIER_ASCII_PATTERNS = compileAsciiIndicatorPatterns(new String[] {
+        "instrumental", "off vocal", "off-vocal", "offvocal", "karaoke",
+        "inst",
+        "anime size", "tv size", "tv ver", "short ver", "movie ver",
+        "remix", "acoustic", "live", "demo", "radio edit", "extended"
+    });
+
+    private static final String[] VERSION_QUALIFIER_CJK_INDICATORS = {
+        "伴奏", "純音楽", "纯音乐"
+    };
+
+    private static Pattern[] compileAsciiIndicatorPatterns(String[] indicators) {
+        Pattern[] patterns = new Pattern[indicators.length];
+        for (int i = 0; i < indicators.length; i++) {
+            patterns[i] = Pattern.compile("(?<![a-z0-9])" + Pattern.quote(indicators[i]) + "(?![a-z0-9])");
+        }
+        return patterns;
+    }
     
     /**
      * 检查是否有完整的标签
@@ -130,26 +162,16 @@ public class MetadataUtils {
         
         // 从文件名中提取核心标题（去掉编号前缀和扩展名）
         String fileNameCore = extractTitleFromFileName(fileName);
-        String fileNameCoreLower = fileNameCore.toLowerCase();
-        String fileNameLower = fileName.toLowerCase();
+        String fileNameCoreLower = fileNameCore.toLowerCase(Locale.ROOT);
+        String fileNameNormalized = Normalizer.normalize(fileName, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
         
         log.info("文件名匹配分析 - 原始文件名: '{}', 提取的标题: '{}'", fileName, fileNameCore);
         
-        // 定义版本标识符列表（包含常见的混音/版本标识）
-        String[] versionIndicators = {
-            "instrumental", "inst", "karaoke", "off vocal", "offvocal",
-            "live", "acoustic", "remix", "extended", "radio edit",
-            "tv size", "tv ver", "movie ver", "full ver",
-            "album mix", "album ver", "album version", "single mix", "single ver",
-            "original mix", "remaster", "remastered", "bonus track",
-            "short ver", "long ver", "edit", "demo"
-        };
-        
-        // 检查文件名中包含哪些版本标识符
+        // 检查文件名中包含哪些版本标识符（按词边界匹配，避免 Alive/Demon/Instead/Credit 等误命中）
         List<String> fileNameIndicators = new java.util.ArrayList<>();
-        for (String indicator : versionIndicators) {
-            if (fileNameLower.contains(indicator)) {
-                fileNameIndicators.add(indicator);
+        for (int i = 0; i < VERSION_INDICATORS.length; i++) {
+            if (VERSION_INDICATOR_PATTERNS[i].matcher(fileNameNormalized).find()) {
+                fileNameIndicators.add(VERSION_INDICATORS[i]);
             }
         }
         
@@ -159,7 +181,8 @@ public class MetadataUtils {
         
         for (AudioFingerprintService.RecordingInfo recording : recordings) {
             String title = recording.getTitle();
-            String titleLower = title.toLowerCase();
+            String titleLower = title.toLowerCase(Locale.ROOT);
+            String titleNormalized = Normalizer.normalize(title, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
             int score = 0;
             
             // ===== 关键修复：文件名与曲目标题的直接匹配（高权重）=====
@@ -185,9 +208,9 @@ public class MetadataUtils {
             // ===== 版本标识符匹配 =====
             // 检查录音标题中包含哪些版本标识符
             List<String> titleIndicators = new java.util.ArrayList<>();
-            for (String indicator : versionIndicators) {
-                if (titleLower.contains(indicator)) {
-                    titleIndicators.add(indicator);
+            for (int i = 0; i < VERSION_INDICATORS.length; i++) {
+                if (VERSION_INDICATOR_PATTERNS[i].matcher(titleNormalized).find()) {
+                    titleIndicators.add(VERSION_INDICATORS[i]);
                 }
             }
             
@@ -489,15 +512,14 @@ public class MetadataUtils {
         if (value == null || value.trim().isEmpty()) {
             return false;
         }
-        String normalized = Normalizer.normalize(value, Normalizer.Form.NFKC).toLowerCase();
-        String[] indicators = {
-            "instrumental", "off vocal", "off-vocal", "offvocal", "karaoke",
-            "伴奏", "純音楽", "纯音乐", "inst.", " inst ",
-            "anime size", "tv size", "tv ver", "short ver", "movie ver",
-            "remix", "acoustic", "live", "demo", "radio edit", "extended"
-        };
-        for (String indicator : indicators) {
+        String normalized = Normalizer.normalize(value, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT);
+        for (String indicator : VERSION_QUALIFIER_CJK_INDICATORS) {
             if (normalized.contains(indicator)) {
+                return true;
+            }
+        }
+        for (Pattern pattern : VERSION_QUALIFIER_ASCII_PATTERNS) {
+            if (pattern.matcher(normalized).find()) {
                 return true;
             }
         }

@@ -18,8 +18,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -29,6 +32,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /** Collects cover choices on demand and keeps their bytes outside review JSON. */
 @Slf4j
@@ -36,11 +40,13 @@ public class CoverCandidateService implements AutoCloseable {
     private static final int MIN_SCORE = 80;
     private static final long TTL_MILLIS = 7L * 86_400_000L;
     private static final int MAX_ITUNES_CANDIDATES = 5;
+    private static final Pattern UUID_PATTERN = Pattern.compile(
+        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
     private final MusicConfig config;
     private final MusicBrainzClient musicBrainzClient;
     private final CoverArtService coverArtService;
     private final CoverArtCache coverArtCache;
-    private final UntrustedImageFetcher fetcher = new UntrustedImageFetcher();
+    private final UntrustedImageFetcher fetcher;
     private volatile HttpClient httpClient;
     private final Path cacheDirectory;
 
@@ -50,6 +56,7 @@ public class CoverCandidateService implements AutoCloseable {
         this.musicBrainzClient = musicBrainzClient;
         this.coverArtService = coverArtService;
         this.coverArtCache = coverArtCache;
+        this.fetcher = new UntrustedImageFetcher(config);
         this.cacheDirectory = CoverCandidateCache.directory(config);
         cleanupExpired();
     }
@@ -170,7 +177,7 @@ public class CoverCandidateService implements AutoCloseable {
      * 按已知 Release Group ID 重查 Cover Art Archive（应对当时网络失败或社区后续补图）。
      */
     public Optional<CoverCandidateView> fetchMusicBrainzCoverByRgid(String releaseGroupId) {
-        if (!meaningful(releaseGroupId) || musicBrainzClient == null) {
+        if (!isValidUuid(releaseGroupId) || musicBrainzClient == null) {
             return Optional.empty();
         }
         try {
@@ -405,7 +412,11 @@ public class CoverCandidateService implements AutoCloseable {
             String sha = sha256(jpeg);
             Files.createDirectories(cacheDirectory);
             Path destination = cacheDirectory.resolve(sha + ".jpg");
-            if (!Files.isRegularFile(destination)) Files.write(destination, jpeg);
+            if (Files.isRegularFile(destination)) {
+                touchQuietly(destination);
+            } else {
+                writeAtomically(destination, jpeg);
+            }
             CoverCandidateView view = new CoverCandidateView();
             view.setSha256(sha); view.setOrigin(origin); view.setOriginLabel(label); view.setSourceUrl(url);
             view.setSourceFileName(fileName); view.setNote(note);
@@ -416,6 +427,31 @@ public class CoverCandidateService implements AutoCloseable {
         } catch (Exception e) {
             log.debug("Unable to cache cover candidate: {}", e.getMessage());
             return false;
+        }
+    }
+
+    public static boolean isValidUuid(String value) {
+        return value != null && UUID_PATTERN.matcher(value.trim()).matches();
+    }
+
+    private static void writeAtomically(Path destination, byte[] bytes) throws Exception {
+        Path tmp = Files.createTempFile(destination.getParent(), ".cand-", ".tmp");
+        try {
+            Files.write(tmp, bytes);
+            try {
+                Files.move(tmp, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tmp, destination, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
+    }
+
+    private static void touchQuietly(Path path) {
+        try {
+            Files.setLastModifiedTime(path, FileTime.fromMillis(System.currentTimeMillis()));
+        } catch (Exception ignored) {
         }
     }
 
@@ -432,8 +468,9 @@ public class CoverCandidateService implements AutoCloseable {
         try {
             Path file = cacheDirectory.resolve(sha.toLowerCase(Locale.ROOT) + ".jpg");
             if (!Files.isRegularFile(file)) return Optional.empty();
+            touchQuietly(file);
             byte[] bytes = Files.readAllBytes(file);
-            // 兜底确保旧缓存候选在写入前也符合 ImageCompressor 压缩规则
+            // 兜底确保旧缓存候选在写入前也符合 ImageCompressor 压缩规则（已合规 JPEG 零重编码直通）
             byte[] compressed = ImageCompressor.compressImage(bytes, ffmpegPath());
             if (compressed == null || compressed.length == 0) return Optional.empty();
             return Optional.of(new ResolvedCover(compressed, selected.getOrigin(), selected.getReleaseGroupId()));

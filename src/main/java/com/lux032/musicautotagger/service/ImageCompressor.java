@@ -109,11 +109,24 @@ public class ImageCompressor {
                 log.warn("Cover dimensions rejected: {}x{}", width, height);
                 return new DecodeOutcome(null, false);
             }
-            int subsample = Math.max(1, (int) Math.ceil((double) Math.max(width, height) / MAX_DIMENSION));
+            int subsample = Math.max(1, Math.max(width, height) / MAX_DIMENSION);
             ImageReadParam param = reader.getDefaultReadParam();
             param.setSourceSubsampling(subsample, subsample, 0, 0);
             BufferedImage decoded = reader.read(0, param);
             if (decoded == null) return new DecodeOutcome(null, true);
+            // Already-compliant RGB/grayscale JPEG within size and dimension budgets:
+            // return a copy without lossy re-encoding to eliminate multi-generation quality loss.
+            String formatName = reader.getFormatName();
+            boolean isJpeg = formatName != null
+                && ("jpeg".equalsIgnoreCase(formatName) || "jpg".equalsIgnoreCase(formatName));
+            if (isJpeg && subsample == 1 && width <= MAX_DIMENSION && height <= MAX_DIMENSION
+                && data.length <= MAX_SIZE_BYTES
+                && decoded.getColorModel() != null && !decoded.getColorModel().hasAlpha()
+                && (decoded.getColorModel().getColorSpace().getType() == java.awt.color.ColorSpace.TYPE_RGB
+                    || decoded.getColorModel().getColorSpace().getType() == java.awt.color.ColorSpace.TYPE_GRAY)) {
+                log.debug("Cover already compliant JPEG ({}x{}, {} bytes), skipping re-encode", width, height, data.length);
+                return new DecodeOutcome(data.clone(), false);
+            }
             // Always validate/decode even small inputs; a highly compressed raster may be enormous.
             BufferedImage rgb = scaleImage(decoded, MAX_DIMENSION);
             for (int dimension = MAX_DIMENSION; dimension >= 100; dimension -= 100) {
@@ -183,7 +196,8 @@ public class ImageCompressor {
         try {
             graphics.setColor(Color.WHITE);
             graphics.fillRect(0, 0, width, height);
-            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            graphics.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            graphics.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
             graphics.drawImage(image, 0, 0, width, height, null);
         } finally { graphics.dispose(); }
         return rgb;

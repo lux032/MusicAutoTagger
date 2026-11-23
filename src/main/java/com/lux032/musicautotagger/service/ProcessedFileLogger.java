@@ -432,8 +432,8 @@ public class ProcessedFileLogger {
     }
 
     /**
-     * 找出所有还没有 release_group_id 的历史记录，按专辑名分组。
-     * 按专辑而不是按文件分组，是为了把 MusicBrainz 请求数从「文件数」降到「专辑数」。
+     * 找出所有还没有 release_group_id 的历史记录，按 (album, artist) 分组，
+     * 避免不同艺人的同名专辑（如 "Greatest Hits"）混为一组互相污染。
      */
     public java.util.List<AlbumGroup> findAlbumsMissingReleaseGroupId() {
         java.util.List<AlbumGroup> groups = new java.util.ArrayList<>();
@@ -442,22 +442,30 @@ public class ProcessedFileLogger {
             if (databaseService == null || !releaseGroupIdColumnAvailable) {
                 return groups;
             }
-            String sql = "SELECT album, MIN(artist) AS one_artist, COUNT(*) AS file_count, "
-                + "COUNT(DISTINCT artist) AS artist_count, MIN(recording_id) AS one_recording "
+            String placeholders = NON_MB_RECORDING_IDS.stream()
+                .map(x -> "?").collect(java.util.stream.Collectors.joining(", "));
+            String sql = "SELECT album, COALESCE(artist, '') AS group_artist, COUNT(*) AS file_count "
                 + "FROM processed_files "
                 + "WHERE (release_group_id IS NULL OR release_group_id = '') "
                 + "AND album IS NOT NULL AND album <> '' "
-                + "GROUP BY album";
+                + "AND (recording_id IS NULL OR recording_id NOT IN (" + placeholders + ")) "
+                + "GROUP BY album, COALESCE(artist, '')";
             try (Connection conn = databaseService.getConnection();
-                 PreparedStatement pstmt = conn.prepareStatement(sql);
-                 ResultSet rs = pstmt.executeQuery()) {
-                while (rs.next()) {
-                    String album = rs.getString("album");
-                    if (!isBackfillable(rs.getString("one_recording"), album)) {
-                        continue;
+                 PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                int idx = 1;
+                for (String sentinel : NON_MB_RECORDING_IDS) {
+                    pstmt.setString(idx++, sentinel);
+                }
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) {
+                        String album = rs.getString("album");
+                        if (!isBackfillable(null, album)) {
+                            continue;
+                        }
+                        String rawArtist = rs.getString("group_artist");
+                        String artist = (rawArtist == null || rawArtist.isBlank()) ? null : rawArtist;
+                        groups.add(new AlbumGroup(album, artist, rs.getInt("file_count")));
                     }
-                    String artist = rs.getInt("artist_count") == 1 ? rs.getString("one_artist") : null;
-                    groups.add(new AlbumGroup(album, artist, rs.getInt("file_count")));
                 }
             } catch (SQLException e) {
                 log.error("查询待回填专辑失败", e);
@@ -465,9 +473,9 @@ public class ProcessedFileLogger {
             return groups;
         }
 
-        // 文件模式：扫一遍日志自己分组
+        // 文件模式：扫一遍日志按 (album, artist) 分组
         java.util.Map<String, int[]> counts = new java.util.LinkedHashMap<>();
-        java.util.Map<String, java.util.Set<String>> artists = new java.util.HashMap<>();
+        java.util.Map<String, String[]> keys = new java.util.HashMap<>();
         for (String[] parts : readLogRows()) {
             if (parts.length >= 7 && !parts[6].isBlank()) {
                 continue; // 已有 rgid
@@ -476,26 +484,39 @@ public class ProcessedFileLogger {
             if (!isBackfillable(parts[1], album)) {
                 continue;
             }
-            counts.computeIfAbsent(album, k -> new int[1])[0]++;
-            artists.computeIfAbsent(album, k -> new java.util.HashSet<>()).add(parts[2]);
+            String artist = parts[2] == null || parts[2].isBlank() ? "" : parts[2];
+            String groupKey = album + "\u0000" + artist;
+            counts.computeIfAbsent(groupKey, k -> new int[1])[0]++;
+            keys.putIfAbsent(groupKey, new String[]{album, artist.isEmpty() ? null : artist});
         }
         for (java.util.Map.Entry<String, int[]> entry : counts.entrySet()) {
-            java.util.Set<String> albumArtists = artists.get(entry.getKey());
-            String artist = albumArtists != null && albumArtists.size() == 1
-                ? albumArtists.iterator().next() : null;
-            groups.add(new AlbumGroup(entry.getKey(), artist, entry.getValue()[0]));
+            String[] pair = keys.get(entry.getKey());
+            groups.add(new AlbumGroup(pair[0], pair[1], entry.getValue()[0]));
         }
         return groups;
     }
 
     /**
-     * 把某张专辑下所有缺失 release_group_id 的记录补上。
+     * 把某张专辑下所有缺失 release_group_id 的记录补上（不限定艺术家，供旧调用兼容）。
      * @return 实际更新的行数
      */
     public int applyReleaseGroupId(String album, String releaseGroupId) {
+        return applyReleaseGroupIdInternal(album, null, false, releaseGroupId);
+    }
+
+    /**
+     * 把指定 (album, artist) 下所有缺失 release_group_id 的记录补上，避免污染其他艺人的同名专辑。
+     * @return 实际更新的行数
+     */
+    public int applyReleaseGroupId(String album, String artist, String releaseGroupId) {
+        return applyReleaseGroupIdInternal(album, artist, true, releaseGroupId);
+    }
+
+    private int applyReleaseGroupIdInternal(String album, String artist, boolean filterArtist, String releaseGroupId) {
         if (album == null || album.isBlank() || releaseGroupId == null || releaseGroupId.isBlank()) {
             return 0;
         }
+        boolean hasArtist = artist != null && !artist.isBlank();
 
         if (isDbMode) {
             if (databaseService == null || !releaseGroupIdColumnAvailable) {
@@ -504,20 +525,26 @@ public class ProcessedFileLogger {
             // 占位值 recording_id 的行本来就没认出专辑，不给它们贴 ID（与文件模式保持一致）
             String placeholders = NON_MB_RECORDING_IDS.stream()
                 .map(x -> "?").collect(java.util.stream.Collectors.joining(", "));
+            String artistClause = !filterArtist ? ""
+                : (hasArtist ? "AND artist = ? " : "AND (artist IS NULL OR artist = '') ");
             String sql = "UPDATE processed_files SET release_group_id = ? "
-                + "WHERE album = ? AND (release_group_id IS NULL OR release_group_id = '') "
+                + "WHERE album = ? " + artistClause
+                + "AND (release_group_id IS NULL OR release_group_id = '') "
                 + "AND (recording_id IS NULL OR recording_id NOT IN (" + placeholders + "))";
             try (Connection conn = databaseService.getConnection();
                  PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                pstmt.setString(1, releaseGroupId);
-                pstmt.setString(2, album);
-                int index = 3;
+                int index = 1;
+                pstmt.setString(index++, releaseGroupId);
+                pstmt.setString(index++, album);
+                if (filterArtist && hasArtist) {
+                    pstmt.setString(index++, artist);
+                }
                 for (String sentinel : NON_MB_RECORDING_IDS) {
                     pstmt.setString(index++, sentinel);
                 }
                 return pstmt.executeUpdate();
             } catch (SQLException e) {
-                log.error("回填 release_group_id 失败 (album={})", album, e);
+                log.error("回填 release_group_id 失败 (album={}, artist={})", album, artist, e);
                 return 0;
             }
         }
@@ -535,8 +562,11 @@ public class ProcessedFileLogger {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     String[] parts = line.split("\\|", -1);
+                    boolean artistMatches = !filterArtist
+                        || (hasArtist ? artist.equals(parts[2]) : (parts[2] == null || parts[2].isBlank()));
                     boolean needsFill = parts.length >= 6
                         && album.equals(parts[4])
+                        && artistMatches
                         && (parts.length < 7 || parts[6].isBlank())
                         && isBackfillable(parts[1], parts[4]);
                     if (needsFill) {

@@ -94,6 +94,11 @@ public class FolderAlbumCache {
     private final DurationSequenceService durationSequenceService;
     private final MusicBrainzClient musicBrainzClient;
     private final AudioFingerprintService audioFingerprintService;
+    private volatile com.lux032.musicautotagger.util.FileSystemUtils fileSystemUtils;
+
+    public void setFileSystemUtils(com.lux032.musicautotagger.util.FileSystemUtils fileSystemUtils) {
+        this.fileSystemUtils = fileSystemUtils;
+    }
     
     // 配置参数
     private static final int SAMPLE_SIZE = 3; // 收集前3首歌作为样本（降低以适应小型专辑）
@@ -1474,11 +1479,11 @@ public class FolderAlbumCache {
      * 判断文件是否为音频文件
      */
     private boolean isAudioFile(File file) {
-        String lowerName = file.getName().toLowerCase();
-        return lowerName.endsWith(".mp3") ||
-               lowerName.endsWith(".flac") ||
-               lowerName.endsWith(".m4a") ||
-               lowerName.endsWith(".wav");
+        com.lux032.musicautotagger.util.FileSystemUtils fs = this.fileSystemUtils;
+        if (fs != null) {
+            return fs.isMusicFile(file);
+        }
+        return com.lux032.musicautotagger.util.FileSystemUtils.isDefaultAudioFile(file);
     }
     
     /**

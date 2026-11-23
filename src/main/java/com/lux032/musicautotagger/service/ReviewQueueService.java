@@ -371,19 +371,57 @@ public class ReviewQueueService {
         return count;
     }
 
-    /** 库内已归档专辑是否曾被用户明确确认「保持无封面」（手动扫描音乐库时跳过） */
+    /** 库内已归档专辑是否曾被用户明确确认「保持无封面」（手动扫描音乐库时跳过，同时覆盖 STAGED_IMPORT 确认无封面后的归档目录） */
     public synchronized boolean isLibraryFolderConfirmedNoCover(String folderPath) {
         if (folderPath == null) return false;
+        String normalized = normalizeFolderKey(folderPath);
         for (ReviewItem item : items.values()) {
             if (item.effectiveKind() == ReviewItem.Kind.COVER_MISSING
                 && item.getStatus() == ReviewItem.Status.CONFIRMED
-                && folderPath.equals(item.getFolderPath())
                 && item.getMissingCover() != null
                 && item.getMissingCover().isConfirmedNoCover()) {
+                if (normalized.equals(normalizeFolderKey(item.getFolderPath()))) {
+                    return true;
+                }
+                List<String> archivedDirs = item.getMissingCover().getArchivedOutputDirs();
+                if (archivedDirs != null) {
+                    for (String dir : archivedDirs) {
+                        if (dir != null && normalized.equals(normalizeFolderKey(dir))) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 库内扫描是否应跳过该目录/单曲：已确认保持无封面，或已被用户在库扫描列表标记为 REJECTED 忽略 */
+    public synchronized boolean isLibraryFolderSkippedByScan(String folderPath) {
+        if (folderPath == null) return false;
+        if (isLibraryFolderConfirmedNoCover(folderPath)) {
+            return true;
+        }
+        String normalized = normalizeFolderKey(folderPath);
+        for (ReviewItem item : items.values()) {
+            if (item.effectiveKind() == ReviewItem.Kind.COVER_MISSING
+                && item.getStatus() == ReviewItem.Status.REJECTED
+                && item.getMissingCover() != null
+                && item.getMissingCover().getMode() == ReviewItem.MissingCover.Mode.LIBRARY_EXISTING
+                && normalized.equals(normalizeFolderKey(item.getFolderPath()))) {
                 return true;
             }
         }
         return false;
+    }
+
+    private static String normalizeFolderKey(String path) {
+        if (path == null) return "";
+        try {
+            return Paths.get(path).toAbsolutePath().normalize().toString();
+        } catch (Exception e) {
+            return path;
+        }
     }
 
     /**
@@ -583,17 +621,21 @@ public class ReviewQueueService {
         if (folderPath == null || audioFiles == null || audioFiles.isEmpty() || details == null) {
             return null;
         }
-        ReviewItem existing = findPendingByFolder(folderPath);
-        if (existing != null) {
-            return existing;
+        String normalizedPath = normalizeFolderKey(folderPath);
+        // 锁内二次检查确认状态、已忽略状态与待确认状态，消除扫描与并发处置间的 TOCTOU 竞态
+        if (isLibraryFolderSkippedByScan(normalizedPath)) {
+            return null;
+        }
+        if (findPendingByFolder(normalizedPath) != null || findPendingByFolder(folderPath) != null) {
+            return null;
         }
         ReviewItem item = new ReviewItem();
         item.setId(UUID.randomUUID().toString());
         long now = System.currentTimeMillis();
         item.setCreatedAt(now);
         item.setUpdatedAt(now);
-        item.setFolderPath(folderPath);
-        item.setFolderName(new File(folderPath).getName());
+        item.setFolderPath(normalizedPath);
+        item.setFolderName(new File(normalizedPath).getName());
         item.setStatus(ReviewItem.Status.PENDING_REVIEW);
         item.setKind(ReviewItem.Kind.COVER_MISSING);
         applyDiagnosis(item, ReviewDiagnosis.of(ReviewDiagnosis.COVER_MISSING));

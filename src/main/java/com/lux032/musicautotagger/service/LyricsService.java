@@ -31,6 +31,11 @@ public class LyricsService implements AutoCloseable {
     private final CloseableHttpClient client;
     private final ObjectMapper mapper = new ObjectMapper();
     private final Set<HttpGet> active = ConcurrentHashMap.newKeySet();
+    private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "lyrics-deadline");
+        t.setDaemon(true);
+        return t;
+    });
     private volatile boolean closed;
     private volatile long cooldownUntil;
     private int consecutiveFailures;
@@ -71,15 +76,18 @@ public class LyricsService implements AutoCloseable {
         if (closed || Thread.currentThread().isInterrupted()) return Result.of(Status.CANCELLED);
         if (System.currentTimeMillis() < cooldownUntil) return Result.of(Status.DEFERRED);
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BUDGET_MS);
-        ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "lyrics-deadline"); t.setDaemon(true); return t;
-        });
         Set<HttpGet> requests = ConcurrentHashMap.newKeySet();
-        timer.schedule(() -> requests.forEach(HttpGet::cancel), BUDGET_MS, TimeUnit.MILLISECONDS);
         Thread owner = Thread.currentThread();
-        timer.scheduleAtFixedRate(() -> {
-            if (owner.isInterrupted()) requests.forEach(HttpGet::cancel);
-        }, 50, 50, TimeUnit.MILLISECONDS);
+        ScheduledFuture<?> budgetTask;
+        ScheduledFuture<?> interruptTask;
+        try {
+            budgetTask = timer.schedule(() -> requests.forEach(HttpGet::cancel), BUDGET_MS, TimeUnit.MILLISECONDS);
+            interruptTask = timer.scheduleAtFixedRate(() -> {
+                if (owner.isInterrupted()) requests.forEach(HttpGet::cancel);
+            }, 50, 50, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            return Result.of(Status.CANCELLED);
+        }
         int[] count = {0};
         try {
             String query = "?track_name=" + encode(title) + "&artist_name=" + encode(artist);
@@ -103,7 +111,10 @@ public class LyricsService implements AutoCloseable {
             if (reply.node == null) return Result.of(reply.status);
             if (!reply.node.isArray() || reply.node.size() >= 20) return Result.of(Status.UNSAFE);
             return selectSearch(reply.node, title, artist, duration);
-        } finally { timer.shutdownNow(); }
+        } finally {
+            budgetTask.cancel(false);
+            interruptTask.cancel(false);
+        }
     }
     private Result selectSearch(JsonNode array, String title, String artist, double duration) {
         Map<Long, JsonNode> originals = new HashMap<>();
@@ -166,13 +177,20 @@ public class LyricsService implements AutoCloseable {
             active.add(get); requests.add(get);
             try (CloseableHttpResponse response = client.execute(get)) {
                 int code = response.getCode();
-                if (code == 200) { healthy(); return new Reply(Status.FOUND, mapper.readTree(EntityUtils.toString(response.getEntity()))); }
+                if (code == 200) {
+                    JsonNode parsed = mapper.readTree(EntityUtils.toString(response.getEntity()));
+                    healthy();
+                    return new Reply(Status.FOUND, parsed);
+                }
                 if (code == 404) { healthy(); return new Reply(Status.NOT_FOUND, null); }
                 if (code != 429 && code < 500) return new Reply(Status.DEFERRED, null);
                 failed();
                 if (response.getFirstHeader("Retry-After") != null) {
                     long delay = retryAfter(response.getFirstHeader("Retry-After").getValue());
-                    if (delay > 0) { cooldownUntil = System.currentTimeMillis() + Math.min(delay, 3600000); return new Reply(Status.DEFERRED, null); }
+                    if (delay > 0) {
+                        extendCooldown(System.currentTimeMillis() + Math.min(delay, 3600000));
+                        return new Reply(Status.DEFERRED, null);
+                    }
                 }
             } catch (Exception e) {
                 if (closed || Thread.currentThread().isInterrupted()) return new Reply(Status.CANCELLED, null);
@@ -186,7 +204,17 @@ public class LyricsService implements AutoCloseable {
         return new Reply(Status.DEFERRED, null);
     }
     private synchronized void healthy() { consecutiveFailures = 0; }
-    private synchronized void failed() { if (++consecutiveFailures >= 3) cooldownUntil = System.currentTimeMillis() + 30000; }
+    private synchronized void failed() {
+        if (++consecutiveFailures >= 3) {
+            consecutiveFailures = 0;
+            extendCooldown(System.currentTimeMillis() + 30000);
+        }
+    }
+    private synchronized void extendCooldown(long targetUntil) {
+        if (targetUntil > cooldownUntil) {
+            cooldownUntil = targetUntil;
+        }
+    }
     static long retryAfter(String value) {
         try { return Math.max(0, Math.multiplyExact(Long.parseLong(value.trim()), 1000)); }
         catch (RuntimeException e) {
@@ -195,5 +223,5 @@ public class LyricsService implements AutoCloseable {
         }
     }
     private static String encode(String value) { return URLEncoder.encode(value, StandardCharsets.UTF_8); }
-    public void close() throws IOException { closed = true; active.forEach(HttpGet::cancel); client.close(); }
+    public void close() throws IOException { closed = true; active.forEach(HttpGet::cancel); timer.shutdownNow(); client.close(); }
 }

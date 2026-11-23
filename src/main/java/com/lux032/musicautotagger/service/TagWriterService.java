@@ -144,6 +144,7 @@ public class TagWriterService {
             this.targetFile = targetFile;
         }
 
+        public static TagProcessResult failed() { return new TagProcessResult(false, null); }
         public boolean isSuccess() { return success; }
         public File getTargetFile() { return targetFile; }
     }
@@ -204,7 +205,11 @@ public class TagWriterService {
                 staged = Files.createTempFile(targetFile.getParentFile().toPath(), ".tag-write-", extension);
                 Files.copy(sourceFile.toPath(), staged, StandardCopyOption.REPLACE_EXISTING);
                 File stagedFile = staged.toFile();
-                FlacId3Stripper.stripId3FromFlac(stagedFile);
+                FlacId3Stripper.Result stripResult = FlacId3Stripper.stripId3FromFlac(stagedFile);
+                if (isStripAborted(stripResult)) {
+                    log.warn("FLAC ID3 剥离失败或存在不安全标签 ({})，中止写入: {}", stripResult, sourceFile.getName());
+                    return TagProcessResult.failed();
+                }
 
                 log.info("开始更新标签: {}", targetFile.getName());
                 AudioFile audioFileObj = AudioFileIO.read(stagedFile);
@@ -575,56 +580,53 @@ public class TagWriterService {
         }
     }
 
+    private static final java.util.regex.Pattern AUDIO_EXT_SUFFIX =
+        java.util.regex.Pattern.compile("(?i)\\.(mp3|flac|m4a|ogg|wav|mp4|aac|opus|ape|tta|alac|wma|aiff|aif|dsf|dff|wv)$");
+    private static final java.util.regex.Pattern DISC_TRACK_PREFIX =
+        java.util.regex.Pattern.compile("^(\\d+\\.\\d+)\\s+.+$");
+    private static final java.util.regex.Pattern TRACK_DOT_PREFIX =
+        java.util.regex.Pattern.compile("^(\\d+)\\.\\s*(.+)$");
+
+    private static boolean isStripAborted(FlacId3Stripper.Result result) {
+        return result == FlacId3Stripper.Result.FAILED || result == FlacId3Stripper.Result.SKIPPED_UNSAFE;
+    }
+
     /**
      * 从文件名中提取曲目编号前缀（备选方案）
      * 支持多种格式:
      * - "01. Title.flac" -> "01. "
+     * - "01.Title.flac" -> "01. "
      * - "2.01 Title.flac" -> "2.01 " (碟号.曲目号)
      * - "39. Title.flac" -> "39. "
+     * - "01.flac" / "01." -> "" (不会误截取扩展名或越界)
      */
-    private String extractTrackPrefix(String fileName) {
-        // 先尝试匹配 "碟号.曲目号 " 格式 (如 "2.01 Title")
-        if (fileName.matches("^\\d+\\.\\d+\\s+.*")) {
-            // 找到第二个空格前的部分
-            int spaceIndex = fileName.indexOf(' ');
-            if (spaceIndex > 0) {
-                return fileName.substring(0, spaceIndex + 1);
-            }
+    static String extractTrackPrefix(String fileName) {
+        if (fileName == null || fileName.isEmpty()) {
+            return "";
         }
-
-        // 匹配格式: 数字 + 点 + 空格 (可能有多个空格)
-        if (fileName.matches("^\\d+\\.\\s+.*")) {
-            // 有空格的情况
-            int dotIndex = fileName.indexOf('.');
-            if (dotIndex > 0) {
-                // 找到点后第一个非空格字符的位置
-                int spaceEnd = dotIndex + 1;
-                while (spaceEnd < fileName.length() && fileName.charAt(spaceEnd) == ' ') {
-                    spaceEnd++;
+        String stem = AUDIO_EXT_SUFFIX.matcher(fileName).replaceFirst("");
+        if (stem.isEmpty()) {
+            return "";
+        }
+        java.util.regex.Matcher discTrackMatcher = DISC_TRACK_PREFIX.matcher(stem);
+        if (discTrackMatcher.matches()) {
+            return discTrackMatcher.group(1) + " ";
+        }
+        java.util.regex.Matcher trackDotMatcher = TRACK_DOT_PREFIX.matcher(stem);
+        if (trackDotMatcher.matches()) {
+            String rest = trackDotMatcher.group(2);
+            if (!rest.isEmpty() && Character.isDigit(rest.charAt(0))) {
+                int numEnd = 0;
+                while (numEnd < rest.length() && Character.isDigit(rest.charAt(numEnd))) {
+                    numEnd++;
                 }
-                return fileName.substring(0, spaceEnd);
+                if (numEnd < rest.length() && !rest.substring(numEnd).isBlank()) {
+                    return trackDotMatcher.group(1) + "." + rest.substring(0, numEnd) + " ";
+                }
+                return "";
             }
-        } else if (fileName.matches("^\\d+\\..*")) {
-            // 纯数字+点的情况，但后面紧跟着非数字字符
-            // 避免把 "2.01" 错误解析
-            int dotIndex = fileName.indexOf('.');
-            if (dotIndex > 0) {
-                // 检查点后是否是数字（表示这是碟号.曲目号格式）
-                if (dotIndex + 1 < fileName.length() && Character.isDigit(fileName.charAt(dotIndex + 1))) {
-                    // 这是碟号.曲目号格式，需要找到曲目号结束的位置
-                    int numEnd = dotIndex + 1;
-                    while (numEnd < fileName.length() && Character.isDigit(fileName.charAt(numEnd))) {
-                        numEnd++;
-                    }
-                    // 跳过后续空格
-                    while (numEnd < fileName.length() && fileName.charAt(numEnd) == ' ') {
-                        numEnd++;
-                    }
-                    return fileName.substring(0, numEnd);
-                } else {
-                    // 单纯的曲目号格式
-                    return fileName.substring(0, dotIndex + 2); // "XX. "
-                }
+            if (!rest.isBlank()) {
+                return trackDotMatcher.group(1) + ". ";
             }
         }
 
@@ -1239,16 +1241,34 @@ public class TagWriterService {
 
             var originalPosix = Files.getFileAttributeView(file, PosixFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
             if (originalPosix != null) {
-                var attributes = originalPosix.readAttributes();
-                var stagedPosix = Files.getFileAttributeView(staged, PosixFileAttributeView.class);
-                var stagedAttributes = stagedPosix.readAttributes();
-                if (!attributes.owner().equals(stagedAttributes.owner())) stagedPosix.setOwner(attributes.owner());
-                if (!attributes.group().equals(stagedAttributes.group())) stagedPosix.setGroup(attributes.group());
-                stagedPosix.setPermissions(attributes.permissions());
+                try {
+                    var attributes = originalPosix.readAttributes();
+                    var stagedPosix = Files.getFileAttributeView(staged, PosixFileAttributeView.class);
+                    if (stagedPosix != null) {
+                        var stagedAttributes = stagedPosix.readAttributes();
+                        try {
+                            if (!attributes.owner().equals(stagedAttributes.owner())) stagedPosix.setOwner(attributes.owner());
+                            if (!attributes.group().equals(stagedAttributes.group())) stagedPosix.setGroup(attributes.group());
+                        } catch (IOException | UnsupportedOperationException | SecurityException e) {
+                            log.debug("无法保留刷新后的文件属主/属组: {}", target);
+                        }
+                        try {
+                            stagedPosix.setPermissions(attributes.permissions());
+                        } catch (IOException | UnsupportedOperationException | SecurityException e) {
+                            log.debug("无法保留刷新后的文件权限: {}", target);
+                        }
+                    }
+                } catch (IOException | UnsupportedOperationException | SecurityException e) {
+                    log.debug("无法读取原文件 POSIX 属性: {}", file);
+                }
             }
             if (!sameAlbumArtistRefreshFile(root, file, expected)) throw new IOException("File changed during refresh");
             if (file.equals(target)) {
-                Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                try {
+                    Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING);
+                }
             } else {
                 Files.move(staged, target);
             }
@@ -1345,12 +1365,22 @@ public class TagWriterService {
         }
     }
 
-    /** Writes only the approved album fields and optional track artist list on an archive copy. */
+    /** Writes only the approved album fields and optional track artist list atomically on an archive copy. */
     void writeLocalArchiveTags(Path file, String album, String albumArtist, List<String> albumArtists,
                                List<String> trackArtists, boolean inheritAlbumArtists) throws IOException {
         if (FlacId3Stripper.hasUnsafeId3(file.toFile())) throw new IOException("local.archive.write.failed");
+        String name = file.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        String extension = dot >= 0 ? name.substring(dot) : "";
+        Path staged = null;
         try {
-            AudioFile audio = AudioFileIO.read(file.toFile());
+            staged = Files.createTempFile(file.getParent(), ".local-tags-", extension);
+            Files.copy(file, staged, StandardCopyOption.REPLACE_EXISTING);
+            FlacId3Stripper.Result stripResult = FlacId3Stripper.stripId3FromFlac(staged.toFile());
+            if (isStripAborted(stripResult)) {
+                throw new IOException("local.archive.write.failed");
+            }
+            AudioFile audio = AudioFileIO.read(staged.toFile());
             Tag tag = audio.getTagOrCreateAndSetDefault();
             String trackArtist = tag.getFirst(FieldKey.ARTIST);
             if (inheritAlbumArtists) {
@@ -1378,7 +1408,7 @@ public class TagWriterService {
             }
             audio.commit();
 
-            Tag written = AudioFileIO.read(file.toFile()).getTag();
+            Tag written = AudioFileIO.read(staged.toFile()).getTag();
             if (written == null || !album.equals(written.getFirst(FieldKey.ALBUM))
                     || !albumArtist.equals(written.getFirst(FieldKey.ALBUM_ARTIST))
                     || !albumArtists.equals(readArtistNames(written, FieldKey.ALBUM_ARTISTS))
@@ -1386,22 +1416,51 @@ public class TagWriterService {
                     || (trackArtists != null && !trackArtists.equals(readArtistNames(written, FieldKey.ARTISTS)))) {
                 throw new IOException("Approved tags could not be verified");
             }
+            ensureWritablePermissions(staged, false);
+            try {
+                Files.move(staged, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(staged, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+            staged = null;
         } catch (Exception e) {
             if ("local.archive.stale".equals(e.getMessage()) && e instanceof IOException stale) throw stale;
             log.warn("本地入库标签写入失败: {}", file, e);
             throw new IOException("local.archive.write.failed", e);
+        } finally {
+            if (staged != null) {
+                try {
+                    Files.deleteIfExists(staged);
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 
     /**
-     * 更新已存在文件的标签（不复制文件）
+     * 更新已存在文件的标签（通过同目录临时文件 + 原子替换，防止中途异常损坏原文件）
      */
     public boolean updateTagsOnExistingFile(File targetFile, MusicMetadata metadata, byte[] coverArtData) {
         try (var libraryWrite = LibraryWriteGuard.acquire()) {
+            if (targetFile == null || !targetFile.isFile()) {
+                return false;
+            }
+            Path targetPath = targetFile.toPath();
+            String name = targetFile.getName();
+            int dot = name.lastIndexOf('.');
+            String extension = dot >= 0 ? name.substring(dot) : "";
+            Path staged = null;
             try {
                 if (FlacId3Stripper.hasUnsafeId3(targetFile)) return false;
-                FlacId3Stripper.stripId3FromFlac(targetFile);
-                AudioFile audioFileObj = AudioFileIO.read(targetFile);
+                staged = Files.createTempFile(targetPath.getParent(), ".tag-update-", extension);
+                Files.copy(targetPath, staged, StandardCopyOption.REPLACE_EXISTING);
+                File stagedFile = staged.toFile();
+                FlacId3Stripper.Result stripResult = FlacId3Stripper.stripId3FromFlac(stagedFile);
+                if (isStripAborted(stripResult)) {
+                    log.warn("FLAC ID3 剥离未通过 ({})，中止更新标签: {}", stripResult, targetFile.getName());
+                    return false;
+                }
+                AudioFile audioFileObj = AudioFileIO.read(stagedFile);
                 Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
 
                 updateTextTags(tag, metadata);
@@ -1411,10 +1470,24 @@ public class TagWriterService {
                 }
 
                 audioFileObj.commit();
+                ensureWritablePermissions(staged, false);
+                try {
+                    Files.move(staged, targetPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                    Files.move(staged, targetPath, StandardCopyOption.REPLACE_EXISTING);
+                }
+                staged = null;
                 return true;
             } catch (Exception e) {
                 log.error("更新标签失败: {}", targetFile.getName(), e);
                 return false;
+            } finally {
+                if (staged != null) {
+                    try {
+                        Files.deleteIfExists(staged);
+                    } catch (IOException ignored) {
+                    }
+                }
             }
 
         }
@@ -1557,7 +1630,7 @@ public class TagWriterService {
                 if (enabled != null && enabled.equalsIgnoreCase("false")) {
                     return;
                 }
-                configuredMode = isDirectory ? "rwxrwxrwx" : "rw-rw-rw-";
+                configuredMode = isDirectory ? "rwxr-xr-x" : "rw-r--r--";
             }
             Set<PosixFilePermission> permissions = parsePermissions(configuredMode.trim());
             Files.setPosixFilePermissions(path, permissions);
@@ -1819,37 +1892,17 @@ public class TagWriterService {
     }
 
     /**
-     * 将文件夹中的封面图片内嵌到音频文件
+     * 将文件夹中的封面图片内嵌到音频文件（统一走原子写入流程，避免中途失败损坏原文件）
      * @param audioFile 音频文件
      * @param folderCoverData 文件夹封面数据
      * @return true表示成功
      */
     public boolean embedFolderCover(File audioFile, byte[] folderCoverData) {
-        try (var libraryWrite = LibraryWriteGuard.acquire()) {
-            if (folderCoverData == null || folderCoverData.length == 0) {
-                return false;
-            }
-
-            try {
-                log.info("内嵌文件夹封面到: {}", audioFile.getName());
-                if (FlacId3Stripper.hasUnsafeId3(audioFile)) return false;
-                FlacId3Stripper.stripId3FromFlac(audioFile);
-                AudioFile audioFileObj = AudioFileIO.read(audioFile);
-                Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
-
-                applyArtwork(tag, folderCoverData);
-
-                // 保存更改
-                audioFileObj.commit();
-                log.info("封面内嵌成功: {}", audioFile.getName());
-                return true;
-
-            } catch (Exception e) {
-                log.error("内嵌封面失败: {}", audioFile.getName(), e);
-                return false;
-            }
-
+        if (folderCoverData == null || folderCoverData.length == 0) {
+            return false;
         }
+        log.info("内嵌文件夹封面到: {}", audioFile != null ? audioFile.getName() : "null");
+        return embedCoverAtomically(audioFile, folderCoverData);
     }
 
     /**
@@ -1873,7 +1926,11 @@ public class TagWriterService {
                 staged = Files.createTempFile(sourcePath.getParent(), ".cover-write-", extension);
                 Files.copy(sourcePath, staged, StandardCopyOption.REPLACE_EXISTING);
                 File stagedFile = staged.toFile();
-                FlacId3Stripper.stripId3FromFlac(stagedFile);
+                FlacId3Stripper.Result stripResult = FlacId3Stripper.stripId3FromFlac(stagedFile);
+                if (isStripAborted(stripResult)) {
+                    log.warn("FLAC ID3 剥离未通过 ({})，中止封面写入: {}", stripResult, audioFile.getName());
+                    return false;
+                }
                 AudioFile audioFileObj = AudioFileIO.read(stagedFile);
                 Tag tag = audioFileObj.getTagOrCreateAndSetDefault();
                 applyArtwork(tag, coverArtData);
@@ -1884,6 +1941,7 @@ public class TagWriterService {
                 } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                     Files.move(staged, sourcePath, StandardCopyOption.REPLACE_EXISTING);
                 }
+                staged = null;
                 log.info("原子补写封面成功: {}", audioFile.getName());
                 return true;
             } catch (Exception e) {

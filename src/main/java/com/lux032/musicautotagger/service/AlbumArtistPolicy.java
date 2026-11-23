@@ -35,7 +35,13 @@ public final class AlbumArtistPolicy {
             return null;
         }
         if (artistCredits.size() == 1) {
-            return fallbackUnknown(creditName(artistCredits.get(0)));
+            JsonNode credit = artistCredits.get(0);
+            String name = creditName(credit);
+            if (name == null) {
+                return fallbackUnknown(null);
+            }
+            String trailing = credit.path("joinphrase").isTextual() ? credit.path("joinphrase").asText("") : "";
+            return fallbackUnknown(name + trailing);
         }
         if (shouldCollapse()) {
             return VARIOUS_ARTISTS;
@@ -45,7 +51,11 @@ public final class AlbumArtistPolicy {
             JsonNode credit = artistCredits.get(i);
             String name = creditName(credit);
             if (name != null) joined.append(name);
-            if (i < artistCredits.size() - 1) joined.append(credit.path("joinphrase").asText(", "));
+            if (i < artistCredits.size() - 1) {
+                joined.append(credit.path("joinphrase").isTextual() ? credit.path("joinphrase").asText() : ", ");
+            } else if (credit.path("joinphrase").isTextual()) {
+                joined.append(credit.path("joinphrase").asText(""));
+            }
         }
         return fallbackUnknown(joined.toString());
     }
