@@ -1096,6 +1096,17 @@ public class MusicBrainzClient {
         if (url == null || url.isEmpty()) {
             return null;
         }
+        try {
+            java.net.URI parsed = java.net.URI.create(url.trim());
+            String scheme = parsed.getScheme() == null ? "" : parsed.getScheme().toLowerCase(Locale.ROOT);
+            if ((!"http".equals(scheme) && !"https".equals(scheme)) || parsed.getHost() == null) {
+                log.warn("拒绝非法封面下载地址: {}", url);
+                return null;
+            }
+        } catch (Exception e) {
+            log.warn("拒绝非法封面下载地址: {}", url);
+            return null;
+        }
 
         int retryCount = 0;
         
@@ -1108,7 +1119,19 @@ public class MusicBrainzClient {
                     int statusCode = response.getCode();
 
                     if (statusCode == 200) {
-                        return EntityUtils.toByteArray(response.getEntity());
+                        var entity = response.getEntity();
+                        if (entity == null) {
+                            return null;
+                        }
+                        if (entity.getContentLength() > ImageCompressor.MAX_INPUT_BYTES) {
+                            log.warn("封面图片体积超过上限，拒绝下载: {} ({} bytes)", url, entity.getContentLength());
+                            EntityUtils.consumeQuietly(entity);
+                            return null;
+                        }
+                        try (java.io.InputStream in = entity.getContent()) {
+                            return com.lux032.musicautotagger.util.OutboundUrlValidator.readBoundedBytes(
+                                in, ImageCompressor.MAX_INPUT_BYTES);
+                        }
                     }
 
                     if (statusCode == 404) {
@@ -2115,7 +2138,7 @@ public class MusicBrainzClient {
             String country = bestRelease.path("country").asText("Unknown");
             log.info("最终选择: {} - {} ({}首曲目，类型: {}，地区: {})",
                 bestRelease.path("title").asText(),
-                bestRelease.path("artist-credit").get(0).path("artist").path("name").asText("Unknown"),
+                bestRelease.path("artist-credit").path(0).path("artist").path("name").asText("Unknown"),
                 finalTrackCount,
                 releaseType,
                 country);
@@ -2436,6 +2459,8 @@ public class MusicBrainzClient {
      * @param recordingId    指纹识别出的录音 ID（未知时为 null）
      * @param recordingTitle 指纹识别出的曲名（用于曲名匹配）
      */
+    private static final ThreadLocal<java.util.Set<String>> ACTIVE_CLAIMED_POSITIONS = new ThreadLocal<>();
+
     public TrackMatch matchTrackInRelease(String releaseId, String releaseGroupId,
                                           String recordingId, String recordingTitle,
                                           int fileDurationSeconds,
@@ -2456,7 +2481,26 @@ public class MusicBrainzClient {
             return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
         }
         return matchTrackInReleaseNode(release, releaseId, releaseGroupId, recordingId, recordingTitle,
-            fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist);
+            fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist, ACTIVE_CLAIMED_POSITIONS.get());
+    }
+
+    public TrackMatch matchTrackInRelease(String releaseId, String releaseGroupId,
+                                          String recordingId, String recordingTitle,
+                                          int fileDurationSeconds,
+                                          String lockedAlbumTitle, String lockedAlbumArtist,
+                                          java.util.Set<String> claimedPositions) {
+        java.util.Set<String> previous = ACTIVE_CLAIMED_POSITIONS.get();
+        ACTIVE_CLAIMED_POSITIONS.set(claimedPositions);
+        try {
+            return matchTrackInRelease(releaseId, releaseGroupId, recordingId, recordingTitle,
+                fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist);
+        } finally {
+            if (previous == null) {
+                ACTIVE_CLAIMED_POSITIONS.remove();
+            } else {
+                ACTIVE_CLAIMED_POSITIONS.set(previous);
+            }
+        }
     }
 
     /** 与 {@link #matchTrackInRelease} 相同，但直接使用已取得的 Release JSON（便于单元测试） */
@@ -2464,6 +2508,15 @@ public class MusicBrainzClient {
                                        String recordingId, String recordingTitle,
                                        int fileDurationSeconds,
                                        String lockedAlbumTitle, String lockedAlbumArtist) {
+        return matchTrackInReleaseNode(release, releaseId, releaseGroupId, recordingId, recordingTitle,
+            fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist, ACTIVE_CLAIMED_POSITIONS.get());
+    }
+
+    TrackMatch matchTrackInReleaseNode(JsonNode release, String releaseId, String releaseGroupId,
+                                       String recordingId, String recordingTitle,
+                                       int fileDurationSeconds,
+                                       String lockedAlbumTitle, String lockedAlbumArtist,
+                                       java.util.Set<String> claimedPositions) {
         boolean identityKnown = recordingId != null && !recordingId.isBlank();
         String wantedTitle = normalizeTitleForMatch(recordingTitle);
 
@@ -2477,6 +2530,7 @@ public class MusicBrainzClient {
             if (isVideoFormat(medium.path("format").asText("").toLowerCase())) continue;
             JsonNode tracks = medium.path("tracks");
             if (!tracks.isArray()) continue;
+            String discKey = String.valueOf(medium.path("position").asInt(1));
             for (JsonNode track : tracks) {
                 JsonNode recording = track.path("recording");
                 if (recording.path("video").asBoolean(false)) continue;
@@ -2487,18 +2541,22 @@ public class MusicBrainzClient {
                     break;
                 }
 
+                String trackPos = track.path("position").asText("");
+                String slotKey = discKey + ":" + trackPos;
+                boolean slotClaimed = claimedPositions != null && !trackPos.isEmpty() && claimedPositions.contains(slotKey);
+
                 int trackDurationMs = effectiveTrackLengthMs(track);
                 int diff = trackDurationMs > 0 && fileDurationSeconds > 0
                     ? Math.abs((trackDurationMs + 500) / 1000 - fileDurationSeconds) : Integer.MAX_VALUE;
 
-                if (!wantedTitle.isEmpty() && diff <= TITLE_MATCH_DURATION_TOLERANCE_SECONDS && diff < titleDiff
+                if (!slotClaimed && !wantedTitle.isEmpty() && diff <= TITLE_MATCH_DURATION_TOLERANCE_SECONDS && diff < titleDiff
                     && (wantedTitle.equals(normalizeTitleForMatch(track.path("title").asText("")))
                         || wantedTitle.equals(normalizeTitleForMatch(recording.path("title").asText(""))))) {
                     titleTrack = track;
                     titleMedium = medium;
                     titleDiff = diff;
                 }
-                if (diff <= DURATION_ONLY_TOLERANCE_SECONDS && diff < durationDiffBest) {
+                if (!slotClaimed && diff <= DURATION_ONLY_TOLERANCE_SECONDS && diff < durationDiffBest) {
                     durationTrack = track;
                     durationMedium = medium;
                     durationDiffBest = diff;

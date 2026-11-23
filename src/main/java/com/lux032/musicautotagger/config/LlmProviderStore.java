@@ -58,21 +58,29 @@ public class LlmProviderStore {
         }
     }
 
-    public static void save(String path, List<LlmProviderConfig> providers) throws IOException {
-        Path file = Paths.get(path);
+    public static synchronized void save(String path, List<LlmProviderConfig> providers) throws IOException {
+        Path file = Paths.get(path).toAbsolutePath().normalize();
         Path parent = file.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        // 先写临时文件再原子替换：直接覆写时进程被杀会留下半截 JSON，
-        // 下次启动解析失败等于所有 LLM 配置丢失
-        Path temp = file.resolveSibling(file.getFileName() + ".tmp");
-        Files.writeString(temp, GSON.toJson(providers == null ? new ArrayList<>() : providers),
-            StandardCharsets.UTF_8);
+        // 先写唯一临时文件再原子替换：避免并发写踩踏，异常时在 finally 清理临时文件
+        Path temp = Files.createTempFile(parent != null ? parent : Path.of("."), ".llm-providers-", ".tmp");
         try {
-            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception atomicUnsupported) {
-            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+            com.lux032.musicautotagger.util.OutboundUrlValidator.setOwnerOnlyPermissions(temp);
+            Files.writeString(temp, GSON.toJson(providers == null ? new ArrayList<>() : providers),
+                StandardCharsets.UTF_8);
+            try {
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (Exception atomicUnsupported) {
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+            com.lux032.musicautotagger.util.OutboundUrlValidator.setOwnerOnlyPermissions(file);
+        } finally {
+            try {
+                Files.deleteIfExists(temp);
+            } catch (IOException ignored) {
+            }
         }
     }
 

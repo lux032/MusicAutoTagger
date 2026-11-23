@@ -5,9 +5,19 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.util.OutboundUrlValidator;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.hc.client5.http.DnsResolver;
+import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.core5.util.Timeout;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
@@ -19,6 +29,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -32,11 +43,57 @@ public class LlmModelCatalog {
 
     private static final Gson GSON = new Gson();
     private static final Duration TIMEOUT = Duration.ofSeconds(15);
+    private static final long MAX_MODELS_RESPONSE_BYTES = 2L * 1024 * 1024;
 
     private final MusicConfig config;
+    private final ThreadLocal<Map<String, InetAddress[]>> requestPins = new ThreadLocal<>();
+    private final CloseableHttpClient pinnedClient;
+    private volatile HttpClient proxyClient;
 
     public LlmModelCatalog(MusicConfig config) {
         this.config = config;
+        DnsResolver resolver = new DnsResolver() {
+            @Override
+            public InetAddress[] resolve(String host) throws UnknownHostException {
+                Map<String, InetAddress[]> pins = requestPins.get();
+                InetAddress[] addresses = pins == null ? null : pins.get(host.toLowerCase(Locale.ROOT));
+                if (addresses == null) {
+                    throw new UnknownHostException("Host not prevalidated");
+                }
+                return addresses.clone();
+            }
+
+            @Override
+            public String resolveCanonicalHostname(String host) {
+                return host;
+            }
+        };
+        var manager = PoolingHttpClientConnectionManagerBuilder.create().setDnsResolver(resolver).build();
+        RequestConfig requestConfig = RequestConfig.custom()
+            .setConnectionRequestTimeout(Timeout.ofSeconds(5))
+            .setConnectTimeout(Timeout.ofSeconds(10))
+            .setResponseTimeout(Timeout.ofSeconds(15))
+            .build();
+        this.pinnedClient = HttpClients.custom()
+            .setConnectionManager(manager)
+            .setDefaultRequestConfig(requestConfig)
+            .disableRedirectHandling()
+            .disableAutomaticRetries()
+            .build();
+    }
+
+    private HttpClient proxyHttpClient() {
+        HttpClient client = this.proxyClient;
+        if (client == null) {
+            synchronized (this) {
+                client = this.proxyClient;
+                if (client == null) {
+                    client = LlmClient.httpClientBuilder(config).build();
+                    this.proxyClient = client;
+                }
+            }
+        }
+        return client;
     }
 
     public static class CatalogException extends Exception {
@@ -74,9 +131,9 @@ public class LlmModelCatalog {
         boolean anthropic = "anthropic".equalsIgnoreCase(format);
         List<String> attempts = new ArrayList<>();
         for (String modelsUrl : candidateModelsUrls(apiUrl)) {
-            assertOutboundAllowed(modelsUrl);
+            OutboundUrlValidator.ValidatedTarget target = assertOutboundAllowed(modelsUrl);
             try {
-                List<String> models = request(modelsUrl, apiKey, anthropic);
+                List<String> models = request(target, modelsUrl, apiKey, anthropic);
                 return new Result(models, modelsUrl, toApiUrl(modelsUrl, anthropic));
             } catch (CatalogException e) {
                 attempts.add(e.getMessage());
@@ -86,35 +143,66 @@ public class LlmModelCatalog {
         throw new CatalogException(String.join(" | ", attempts));
     }
 
-    private List<String> request(String modelsUrl, String apiKey, boolean anthropic) throws CatalogException {
-        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(modelsUrl))
-            .timeout(TIMEOUT)
-            .GET();
-        if (anthropic) {
-            builder.header("x-api-key", apiKey).header("anthropic-version", "2023-06-01");
+    private List<String> request(OutboundUrlValidator.ValidatedTarget target,
+                                 String modelsUrl, String apiKey, boolean anthropic) throws CatalogException {
+        int statusCode;
+        String responseBody;
+        boolean usePinned = !config.isLlmAllowPrivateEndpoints()
+            && !(config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isBlank());
+        if (usePinned) {
+            requestPins.set(Map.of(target.normalizedHost(), target.addresses()));
+            try {
+                HttpGet httpGet = new HttpGet(target.uri());
+                if (anthropic) {
+                    httpGet.setHeader("x-api-key", apiKey);
+                    httpGet.setHeader("anthropic-version", "2023-06-01");
+                } else {
+                    httpGet.setHeader("Authorization", "Bearer " + apiKey);
+                }
+                try (CloseableHttpResponse response = pinnedClient.execute(httpGet)) {
+                    statusCode = response.getCode();
+                    if (response.getEntity() != null) {
+                        try (InputStream in = response.getEntity().getContent()) {
+                            responseBody = OutboundUrlValidator.readBoundedString(in, MAX_MODELS_RESPONSE_BYTES);
+                        }
+                    } else {
+                        responseBody = "";
+                    }
+                }
+            } catch (IOException e) {
+                throw new CatalogException("llm.models.network @ " + modelsUrl + ": " + e.getMessage());
+            } finally {
+                requestPins.remove();
+            }
         } else {
-            builder.header("Authorization", "Bearer " + apiKey);
+            HttpRequest.Builder builder = HttpRequest.newBuilder(target.uri())
+                .timeout(TIMEOUT)
+                .GET();
+            if (anthropic) {
+                builder.header("x-api-key", apiKey).header("anthropic-version", "2023-06-01");
+            } else {
+                builder.header("Authorization", "Bearer " + apiKey);
+            }
+            try {
+                HttpResponse<InputStream> response = proxyHttpClient().send(
+                    builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+                statusCode = response.statusCode();
+                try (InputStream in = response.body()) {
+                    responseBody = OutboundUrlValidator.readBoundedString(in, MAX_MODELS_RESPONSE_BYTES);
+                }
+            } catch (IOException e) {
+                throw new CatalogException("llm.models.network @ " + modelsUrl + ": " + e.getMessage());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new CatalogException("llm.models.interrupted");
+            }
         }
 
-        HttpResponse<String> response;
-        try {
-            // 不跟随跳转：跳转是绕过上面出站白名单检查的经典手法
-            HttpClient http = LlmClient.buildHttpClient(config).newBuilder()
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
-            response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-        } catch (IOException e) {
-            throw new CatalogException("llm.models.network @ " + modelsUrl + ": " + e.getMessage());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new CatalogException("llm.models.interrupted");
+        if (statusCode != 200) {
+            throw new CatalogException("llm.models.http." + statusCode
+                + " @ " + modelsUrl + ": " + truncate(responseBody));
         }
-
-        if (response.statusCode() != 200) {
-            throw new CatalogException("llm.models.http." + response.statusCode()
-                + " @ " + modelsUrl + ": " + truncate(response.body()));
-        }
-        List<String> models = parse(response.body());
+        List<String> models = parse(responseBody);
         if (models.isEmpty()) {
             throw new CatalogException("llm.models.empty @ " + modelsUrl);
         }
@@ -245,38 +333,12 @@ public class LlmModelCatalog {
      * （169.254.169.254）等。默认只放行公网 https 地址；自建 Ollama / vLLM 这类
      * 内网端点需要显式打开 llm.allowPrivateEndpoints 自行承担风险。
      */
-    private void assertOutboundAllowed(String url) throws CatalogException {
-        URI uri;
+    private OutboundUrlValidator.ValidatedTarget assertOutboundAllowed(String url) throws CatalogException {
         try {
-            uri = URI.create(url);
-        } catch (Exception e) {
-            throw new CatalogException("llm.models.url.invalid");
-        }
-        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
-        String host = uri.getHost();
-        if (host == null || host.isBlank()) {
-            throw new CatalogException("llm.models.url.invalid");
-        }
-        if (config.isLlmAllowPrivateEndpoints()) {
-            if (!"http".equals(scheme) && !"https".equals(scheme)) {
-                throw new CatalogException("llm.models.url.scheme.invalid");
-            }
-            return;
-        }
-        if (!"https".equals(scheme)) {
-            throw new CatalogException("llm.models.url.https.required");
-        }
-        try {
-            for (InetAddress address : InetAddress.getAllByName(host)) {
-                if (address.isLoopbackAddress() || address.isAnyLocalAddress()
-                    || address.isLinkLocalAddress() || address.isSiteLocalAddress()
-                    || address.isMulticastAddress()) {
-                    throw new CatalogException("llm.models.url.private.blocked: " + host
-                        + " -> " + address.getHostAddress());
-                }
-            }
-        } catch (UnknownHostException e) {
-            throw new CatalogException("llm.models.url.unresolvable: " + host);
+            return OutboundUrlValidator.validateAndResolve(
+                url, config.isLlmAllowPrivateEndpoints(), false, false);
+        } catch (OutboundUrlValidator.ValidationException e) {
+            throw new CatalogException(e.getMessage());
         }
     }
 

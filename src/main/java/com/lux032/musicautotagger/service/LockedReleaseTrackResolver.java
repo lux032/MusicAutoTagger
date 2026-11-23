@@ -47,13 +47,23 @@ public class LockedReleaseTrackResolver {
                               String releaseId, String releaseGroupId,
                               String albumTitle, String albumArtist,
                               String releaseType, boolean compilation) {
+        return resolve(identified, duration, releaseId, releaseGroupId,
+            albumTitle, albumArtist, releaseType, compilation, null);
+    }
+
+    public Resolution resolve(MusicMetadata identified, Integer duration,
+                              String releaseId, String releaseGroupId,
+                              String albumTitle, String albumArtist,
+                              String releaseType, boolean compilation,
+                              java.util.Set<String> claimedPositions) {
         MusicMetadata base = identified != null ? identified : new MusicMetadata();
         if (musicBrainzClient == null || releaseId == null || releaseId.isEmpty()) {
             return new Resolution(base, MusicBrainzClient.TrackMatchType.UNAVAILABLE);
         }
         int seconds = duration != null && duration > 0 ? duration : 0;
         MusicBrainzClient.TrackMatch match = musicBrainzClient.matchTrackInRelease(
-            releaseId, releaseGroupId, base.getRecordingId(), base.getTitle(), seconds, albumTitle, albumArtist);
+            releaseId, releaseGroupId, base.getRecordingId(), base.getTitle(), seconds,
+            albumTitle, albumArtist, claimedPositions);
 
         if (match.isFound()) {
             MusicMetadata fromRelease = match.getMetadata();

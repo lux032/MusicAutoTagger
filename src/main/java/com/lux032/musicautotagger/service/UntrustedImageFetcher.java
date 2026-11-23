@@ -91,14 +91,10 @@ public class UntrustedImageFetcher implements AutoCloseable {
 
     private Optional<Result> fetchInternal(String url, AtomicReference<HttpGet> activeRequest) {
         try {
-            URI uri = URI.create(url);
-            if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))
-                || uri.getHost() == null || uri.getUserInfo() != null) return Optional.empty();
-            String host = uri.getHost().toLowerCase(Locale.ROOT);
-            InetAddress[] addresses = InetAddress.getAllByName(host);
-            for (InetAddress address : addresses) if (!isPublic(address)) return Optional.empty();
-            requestPins.set(Map.of(host, addresses));
-            HttpGet request = new HttpGet(uri);
+            var target = com.lux032.musicautotagger.util.OutboundUrlValidator.validateAndResolve(
+                url, false, true, true);
+            requestPins.set(Map.of(target.normalizedHost(), target.addresses()));
+            HttpGet request = new HttpGet(target.uri());
             activeRequest.set(request);
 
             try (CloseableHttpResponse response = client.execute(request)) {
@@ -129,12 +125,18 @@ public class UntrustedImageFetcher implements AutoCloseable {
     }
 
     public static Optional<Result> inspect(byte[] data) {
-        if (data == null || data.length == 0) return Optional.empty();
-        // Java 17 ImageIO has no built-in WebP reader. Validate its RIFF/WEBP magic here;
-        // CoverCandidateService immediately converts it with ffmpeg before caching or display.
+        if (data == null || data.length == 0 || data.length > ImageCompressor.MAX_INPUT_BYTES) return Optional.empty();
+        // Java 17 ImageIO has no built-in WebP reader. Parse VP8/VP8L/VP8X header dimensions strictly
+        // before handing WebP bytes to hardened ImageCompressor ffmpeg fallback.
         if (data.length >= 12 && data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F'
             && data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P') {
-            return Optional.of(new Result(data, "image/webp", 0, 0, data.length));
+            int[] dims = parseWebpDimensions(data);
+            if (dims == null || dims[0] <= 0 || dims[1] <= 0
+                || Math.max(dims[0], dims[1]) > ImageCompressor.MAX_SOURCE_DIMENSION
+                || (long) dims[0] * dims[1] > MAX_PIXELS) {
+                return Optional.empty();
+            }
+            return Optional.of(new Result(data, "image/webp", dims[0], dims[1], data.length));
         }
         try (ImageInputStream input = ImageIO.createImageInputStream(new ByteArrayInputStream(data))) {
             Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
@@ -143,7 +145,11 @@ public class UntrustedImageFetcher implements AutoCloseable {
             try {
                 reader.setInput(input, true, true);
                 int width = reader.getWidth(0), height = reader.getHeight(0);
-                if (width <= 0 || height <= 0 || width * (long) height > MAX_PIXELS) return Optional.empty();
+                if (width <= 0 || height <= 0
+                    || Math.max(width, height) > ImageCompressor.MAX_SOURCE_DIMENSION
+                    || width * (long) height > MAX_PIXELS) {
+                    return Optional.empty();
+                }
                 String format = reader.getFormatName().toLowerCase(Locale.ROOT);
                 String mime = "jpg".equals(format) || "jpeg".equals(format) ? "image/jpeg" : "image/" + format;
                 return Optional.of(new Result(data, mime, width, height, data.length));
@@ -151,29 +157,41 @@ public class UntrustedImageFetcher implements AutoCloseable {
         } catch (Exception e) { return Optional.empty(); }
     }
 
+    /** 按 RFC 9649 解析 WebP 容器头部（VP8X / VP8L / VP8 ）真实宽高，拦截畸形数据与超高像素炸弹。 */
+    static int[] parseWebpDimensions(byte[] data) {
+        if (data == null || data.length < 25) return null;
+        if (data[0] != 'R' || data[1] != 'I' || data[2] != 'F' || data[3] != 'F'
+            || data[8] != 'W' || data[9] != 'E' || data[10] != 'B' || data[11] != 'P') {
+            return null;
+        }
+        if (data[12] == 'V' && data[13] == 'P' && data[14] == '8' && data[15] == 'X') {
+            if (data.length < 30) return null;
+            int w = 1 + ((data[24] & 0xff) | ((data[25] & 0xff) << 8) | ((data[26] & 0xff) << 16));
+            int h = 1 + ((data[27] & 0xff) | ((data[28] & 0xff) << 8) | ((data[29] & 0xff) << 16));
+            return new int[]{w, h};
+        }
+        if (data[12] == 'V' && data[13] == 'P' && data[14] == '8' && data[15] == 'L') {
+            if ((data[20] & 0xff) != 0x2f) return null;
+            int bits = (data[21] & 0xff) | ((data[22] & 0xff) << 8)
+                | ((data[23] & 0xff) << 16) | ((data[24] & 0xff) << 24);
+            int w = (bits & 0x3fff) + 1;
+            int h = ((bits >>> 14) & 0x3fff) + 1;
+            return new int[]{w, h};
+        }
+        if (data[12] == 'V' && data[13] == 'P' && data[14] == '8' && data[15] == ' ') {
+            if (data.length < 30) return null;
+            if ((data[23] & 0xff) != 0x9d || (data[24] & 0xff) != 0x01 || (data[25] & 0xff) != 0x2a) {
+                return null;
+            }
+            int w = ((data[26] & 0xff) | ((data[27] & 0xff) << 8)) & 0x3fff;
+            int h = ((data[28] & 0xff) | ((data[29] & 0xff) << 8)) & 0x3fff;
+            return new int[]{w, h};
+        }
+        return null;
+    }
+
     static boolean isPublic(InetAddress address) {
-        if (address.isLoopbackAddress() || address.isAnyLocalAddress() || address.isLinkLocalAddress()
-            || address.isSiteLocalAddress() || address.isMulticastAddress()) return false;
-        byte[] b = address.getAddress();
-        if (b.length == 4) {
-            int first = b[0] & 0xff, second = b[1] & 0xff, third = b[2] & 0xff;
-            return first != 0
-                && !(first == 100 && (second & 0xc0) == 64)
-                && !(first == 169 && second == 254)
-                && !(first == 192 && second == 0 && third == 0)
-                && !(first == 198 && (second & 0xfe) == 18)
-                && !(first == 192 && second == 88 && third == 99);
-        }
-        if (b.length != 16 || (b[0] & 0xfe) == 0xfc) return false;
-        boolean nat64 = (b[0] & 0xff) == 0x00 && (b[1] & 0xff) == 0x64
-            && (b[2] & 0xff) == 0xff && (b[3] & 0xff) == 0x9b;
-        if (nat64) {
-            for (int i = 4; i < 12; i++) if (b[i] != 0) { nat64 = false; break; }
-            if (nat64) return false;
-        }
-        boolean ipv4Compatible = true;
-        for (int i = 0; i < 12; i++) if (b[i] != 0) { ipv4Compatible = false; break; }
-        return !ipv4Compatible;
+        return com.lux032.musicautotagger.util.OutboundUrlValidator.isPublic(address);
     }
 
     @Override public void close() throws Exception {

@@ -161,6 +161,7 @@ public class AudioFormatNormalizer {
             ffmpegPath = "ffmpeg";
         }
         command.add(ffmpegPath);
+        command.add("-nostdin");
         command.add("-y");
         command.add("-i");
         command.add(sourceFile.getAbsolutePath());

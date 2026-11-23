@@ -42,24 +42,33 @@ public class AdminCredentialsStore {
         }
     }
 
-    public void save(AdminCredentials creds) throws IOException {
+    public synchronized void save(AdminCredentials creds) throws IOException {
         if (creds == null) {
             throw new IllegalArgumentException("Credentials required");
         }
-        Path parent = path.getParent();
+        Path normalized = path.toAbsolutePath().normalize();
+        Path parent = normalized.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
         }
 
-        Path tempPath = path.resolveSibling(path.getFileName() + ".tmp");
-        try (Writer writer = Files.newBufferedWriter(tempPath)) {
-            gson.toJson(creds, writer);
-        }
-
+        Path tempPath = Files.createTempFile(parent != null ? parent : Path.of("."), ".admin-", ".tmp");
         try {
-            Files.move(tempPath, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tempPath, path, StandardCopyOption.REPLACE_EXISTING);
+            OutboundUrlValidator.setOwnerOnlyPermissions(tempPath);
+            try (Writer writer = Files.newBufferedWriter(tempPath, java.nio.charset.StandardCharsets.UTF_8)) {
+                gson.toJson(creds, writer);
+            }
+            try {
+                Files.move(tempPath, normalized, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(tempPath, normalized, StandardCopyOption.REPLACE_EXISTING);
+            }
+            OutboundUrlValidator.setOwnerOnlyPermissions(normalized);
+        } finally {
+            try {
+                Files.deleteIfExists(tempPath);
+            } catch (IOException ignored) {
+            }
         }
     }
 

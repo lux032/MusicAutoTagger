@@ -196,15 +196,6 @@ public class ApplicationLifecycleManager {
         reviewQueueService.setMissingTracksEnqueuedListener(this::scheduleMissingTracksOnlineSearch);
         // 「缺少封面」新入库拦截条目入队后自动排入统一搜索队列找封面（库内扫描不自动触发）。
         reviewQueueService.setMissingCoverEnqueuedListener(this::scheduleMissingCoverSearch);
-        // 上次关机前已入队、但自动搜索尚未真正执行的缺曲/缺封面条目：启动时补跑
-        for (com.lux032.musicautotagger.model.ReviewItem pendingItem
-                : reviewQueueService.pendingMissingTracksWithoutAutoSearch()) {
-            scheduleMissingTracksOnlineSearch(pendingItem);
-        }
-        for (com.lux032.musicautotagger.model.ReviewItem pendingCover
-                : reviewQueueService.pendingMissingCoverWithoutAutoSearch()) {
-            scheduleMissingCoverSearch(pendingCover);
-        }
         
         // Level 4: 初始化文件监控服务
         log.info(I18nUtil.getMessage("app.init.file.monitor"));
@@ -221,6 +212,16 @@ public class ApplicationLifecycleManager {
             coverArtService, fileSystemUtils, () -> fileMonitor);
         processedRecordService.setRecoveryService(recoveryService);
         processedRecordService.setReviewQueueService(reviewQueueService);
+
+        // 所有核心服务初始化完毕后再补跑上次关机前未执行的自动搜索任务，避免初始化失败时后台线程已提前启动
+        for (com.lux032.musicautotagger.model.ReviewItem pendingItem
+                : reviewQueueService.pendingMissingTracksWithoutAutoSearch()) {
+            scheduleMissingTracksOnlineSearch(pendingItem);
+        }
+        for (com.lux032.musicautotagger.model.ReviewItem pendingCover
+                : reviewQueueService.pendingMissingCoverWithoutAutoSearch()) {
+            scheduleMissingCoverSearch(pendingCover);
+        }
         
         log.info(I18nUtil.getMessage("app.all.services.ready"));
     }
@@ -322,82 +323,112 @@ public class ApplicationLifecycleManager {
         }
         log.info(I18nUtil.getMessage("app.shutting.down"));
 
-        try {
-            // 按依赖关系逆序关闭服务
-            if (coverMissingService != null) {
-                coverMissingService.close();
-            }
-            if (recoveryService != null) {
-                recoveryService.close();
-            }
-            
-            // 关闭 Web 服务器
+        // 1. 停止外部入口（Web API 与文件监控）
+        closeQuietly("Web 服务器", () -> {
             if (webServer != null && webServer.isRunning()) {
-                try {
-                    webServer.stop();
-                } catch (Exception e) {
-                    log.warn(I18nUtil.getMessage("app.shutdown.web.server.error"), e);
-                }
+                webServer.stop();
             }
-            
-            if (albumArtistRefreshService != null) albumArtistRefreshService.close();
-            if (lyricsBackfillService != null) lyricsBackfillService.close();
-            if (lyricsService != null) {
-                try { lyricsService.close(); }
-                catch (IOException e) { log.warn("关闭歌词服务失败", e); }
-            }
+        });
+        closeQuietly("文件监控服务", () -> {
             if (fileMonitor != null) {
                 fileMonitor.stop();
             }
+        });
 
-            // 在关闭前处理所有待处理文件，避免文件丢失
+        // 2. 在关闭后台服务与 HTTP/数据库之前刷完所有待处理文件，避免文件丢失
+        closeQuietly("专辑批处理刷盘", () -> {
             if (albumBatchProcessor != null) {
                 albumBatchProcessor.processAllPendingFilesBeforeShutdown();
             }
+        });
 
+        // 3. 停止各后台任务执行器（含之前遗漏的 coverBackfillService）
+        closeQuietly("封面回填服务", () -> {
+            if (coverBackfillService != null) {
+                coverBackfillService.shutdown();
+            }
+        });
+        closeQuietly("缺封面服务", () -> {
+            if (coverMissingService != null) {
+                coverMissingService.close();
+            }
+        });
+        closeQuietly("恢复与在线搜索服务", () -> {
+            if (recoveryService != null) {
+                recoveryService.close();
+            }
+        });
+        closeQuietly("专辑艺人刷新服务", () -> {
+            if (albumArtistRefreshService != null) {
+                albumArtistRefreshService.close();
+            }
+        });
+        closeQuietly("歌词回填服务", () -> {
+            if (lyricsBackfillService != null) {
+                lyricsBackfillService.close();
+            }
+        });
+
+        // 4. 关闭外部 HTTP 客户端与候选抓取器
+        closeQuietly("歌词服务", () -> {
+            if (lyricsService != null) {
+                lyricsService.close();
+            }
+        });
+        closeQuietly("指纹服务", () -> {
             if (fingerprintService != null) {
                 fingerprintService.close();
             }
-
+        });
+        closeQuietly("封面候选服务", () -> {
             if (coverCandidateService != null) {
-                try {
-                    coverCandidateService.close();
-                } catch (Exception e) {
-                    log.warn("关闭封面候选服务失败", e);
-                }
+                coverCandidateService.close();
             }
-
+        });
+        closeQuietly("MusicBrainz 客户端", () -> {
             if (musicBrainzClient != null) {
-                try {
-                    musicBrainzClient.close();
-                } catch (IOException e) {
-                    log.warn(I18nUtil.getMessage("app.shutdown.musicbrainz.error"), e);
-                }
+                musicBrainzClient.close();
             }
+        });
 
+        // 5. 关闭缓存、日志与数据库连接池（最后关闭）
+        closeQuietly("封面缓存", () -> {
             if (coverArtCache != null) {
                 CoverArtCache.CacheStatistics stats = coverArtCache.getStatistics();
                 log.info(I18nUtil.getMessage("app.cover.cache.statistics"), stats);
                 coverArtCache.close();
             }
-
+        });
+        closeQuietly("文件夹专辑缓存统计", () -> {
             if (folderAlbumCache != null) {
                 FolderAlbumCache.CacheStatistics stats = folderAlbumCache.getStatistics();
                 log.info(I18nUtil.getMessage("app.folder.album.cache.statistics"), stats);
             }
-
+        });
+        closeQuietly("处理记录日志", () -> {
             if (processedLogger != null) {
                 processedLogger.close();
             }
-
-            // 最后关闭数据库连接池
+        });
+        closeQuietly("数据库连接池", () -> {
             if (databaseService != null) {
                 databaseService.close();
             }
+        });
 
-            log.info(I18nUtil.getMessage("app.shutdown.complete"));
+        log.info(I18nUtil.getMessage("app.shutdown.complete"));
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    private void closeQuietly(String name, ThrowingRunnable action) {
+        try {
+            action.run();
         } catch (Exception e) {
-            log.error(I18nUtil.getMessage("app.shutdown.error"), e);
+            log.warn("关闭 {} 失败: {}", name, e.getMessage(), e);
         }
     }
 }

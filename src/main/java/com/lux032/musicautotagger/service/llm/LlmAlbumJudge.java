@@ -320,7 +320,8 @@ public class LlmAlbumJudge {
             return defaultValue;
         }
         try {
-            return element.getAsDouble();
+            double v = element.getAsDouble();
+            return Double.isFinite(v) ? v : defaultValue;
         } catch (Exception e) {
             return defaultValue;
         }
@@ -347,7 +348,7 @@ public class LlmAlbumJudge {
     }
 
     private static double clamp(double value) {
-        if (value < 0) {
+        if (!Double.isFinite(value) || value < 0) {
             return 0;
         }
         return Math.min(value, 1.0);

@@ -111,6 +111,7 @@ public class AudioFileProcessorService {
 
         File originalAudioFile = audioFile;
         AudioFormatNormalizer.NormalizationResult normalizationResult = null;
+        FolderNormalizationPlan normalizationPlan = null;
         File processingAudioFile = audioFile;
         boolean deferNormalizationCleanup = false;
 
@@ -197,7 +198,6 @@ public class AudioFileProcessorService {
                 && fileSystemUtils.isLooseFileInMonitorRoot(originalAudioFile);
 
             // 0.4 规格检查与规范化（文件夹级别）
-            FolderNormalizationPlan normalizationPlan = null;
             if (config.isAudioNormalizeEnabled()) {
                 normalizationPlan = getOrPrepareNormalizationPlan(originalAudioFile, albumRootDir, isLooseFileInMonitorRoot);
                 normalizationResult = normalizationPlan.getResult(originalAudioFile);
@@ -453,6 +453,7 @@ public class AudioFileProcessorService {
                             failedFileHandler.handleAlbumFileFailed(originalAudioFile, albumRootDir);
                             folderUnprocessedCounts.remove(folderPath);
                             fileSystemUtils.invalidateInspection(folderPath);
+                            cleanupFolderNormalizationPlan(folderPath);
                             // 标记终态前已加入的待处理文件（极窄的并发窗口）一并丢弃，失败管线已接管整个文件夹
                             albumBatchProcessor.discardPendingFiles(folderPath);
                         }
@@ -899,6 +900,7 @@ public class AudioFileProcessorService {
                 if (batchWritten) {
                     folderUnprocessedCounts.remove(folderPath);
                     fileSystemUtils.invalidateInspection(folderPath);
+                    cleanupFolderNormalizationPlan(folderPath);
                 } else {
                     log.info("专辑收集中，待处理文件已加入队列: {}", originalAudioFile.getName());
 
@@ -941,6 +943,9 @@ public class AudioFileProcessorService {
         } finally {
             if (!deferNormalizationCleanup && normalizationResult != null && normalizationResult.isConverted()) {
                 audioFormatNormalizer.cleanup(normalizationResult);
+                if (normalizationPlan != null) {
+                    normalizationPlan.invalidateFile(originalAudioFile);
+                }
             }
             log.info("========================================");
         }
@@ -982,6 +987,7 @@ public class AudioFileProcessorService {
             albumBatchProcessor.processPendingFilesAsUnresolvedAlbum(folderPath);
             folderUnprocessedCounts.remove(folderPath);
             fileSystemUtils.invalidateInspection(folderPath);
+            cleanupFolderNormalizationPlan(folderPath);
         }
     }
 
@@ -1060,11 +1066,24 @@ public class AudioFileProcessorService {
         return candidates;
     }
 
-    private FolderNormalizationPlan getOrPrepareNormalizationPlan(File originalAudioFile, File albumRootDir, boolean isLooseFileInMonitorRoot) {
-        String folderPath = isLooseFileInMonitorRoot ?
-            originalAudioFile.getParentFile().getAbsolutePath() :
-            albumRootDir.getAbsolutePath();
+    private void cleanupFolderNormalizationPlan(String folderPath) {
+        if (folderPath == null) return;
+        FolderNormalizationPlan removed = folderNormalizationPlans.remove(folderPath);
+        if (removed != null) {
+            removed.cleanupAll(audioFormatNormalizer);
+        }
+    }
 
+    private FolderNormalizationPlan getOrPrepareNormalizationPlan(File originalAudioFile, File albumRootDir, boolean isLooseFileInMonitorRoot) {
+        // 散落在监控根目录的孤立单曲绝不共享 monitorDirectory 计划，防止无关散曲永久堆积与互相干扰
+        if (isLooseFileInMonitorRoot) {
+            Map<String, AudioFormatNormalizer.NormalizationResult> singleResult = new HashMap<>();
+            AudioFormatNormalizer.NormalizationResult normalized = audioFormatNormalizer.normalizeIfNeeded(originalAudioFile);
+            singleResult.put(originalAudioFile.getAbsolutePath(), normalized);
+            return new FolderNormalizationPlan(singleResult, new ArrayList<>(List.of(originalAudioFile)));
+        }
+
+        String folderPath = albumRootDir.getAbsolutePath();
         FolderNormalizationPlan existing = folderNormalizationPlans.get(folderPath);
         if (existing != null) {
             existing.ensureFilePrepared(originalAudioFile, audioFormatNormalizer);
@@ -1072,11 +1091,7 @@ public class AudioFileProcessorService {
         }
 
         List<File> audioFiles = new ArrayList<>();
-        if (isLooseFileInMonitorRoot) {
-            audioFiles.add(originalAudioFile);
-        } else {
-            fileSystemUtils.collectAudioFilesForMarking(albumRootDir, audioFiles);
-        }
+        fileSystemUtils.collectAudioFilesForMarking(albumRootDir, audioFiles);
         AudioFileOrdering.sort(audioFiles);
 
         Map<String, AudioFormatNormalizer.NormalizationResult> results = new HashMap<>();
@@ -1088,7 +1103,12 @@ public class AudioFileProcessorService {
         }
 
         FolderNormalizationPlan plan = new FolderNormalizationPlan(results, orderedOriginalFiles);
-        folderNormalizationPlans.put(folderPath, plan);
+        FolderNormalizationPlan raced = folderNormalizationPlans.putIfAbsent(folderPath, plan);
+        if (raced != null) {
+            plan.cleanupAll(audioFormatNormalizer);
+            raced.ensureFilePrepared(originalAudioFile, audioFormatNormalizer);
+            return raced;
+        }
         plan.ensureFilePrepared(originalAudioFile, audioFormatNormalizer);
         return plan;
     }
@@ -1106,28 +1126,44 @@ public class AudioFileProcessorService {
             this.orderedOriginalFiles = orderedOriginalFiles;
         }
 
-        private AudioFormatNormalizer.NormalizationResult getResult(File originalFile) {
+        private synchronized AudioFormatNormalizer.NormalizationResult getResult(File originalFile) {
             AudioFormatNormalizer.NormalizationResult result = results.get(originalFile.getAbsolutePath());
-            if (result == null) {
+            if (result == null || (result.isConverted() && !result.getProcessingFile().exists())) {
                 return AudioFormatNormalizer.NormalizationResult.noop(originalFile);
             }
             return result;
         }
 
-        private void ensureFilePrepared(File originalFile, AudioFormatNormalizer normalizer) {
+        private synchronized void invalidateFile(File originalFile) {
+            if (originalFile == null) return;
+            results.remove(originalFile.getAbsolutePath());
+        }
+
+        private synchronized void cleanupAll(AudioFormatNormalizer normalizer) {
+            for (AudioFormatNormalizer.NormalizationResult r : results.values()) {
+                if (r != null && r.isConverted()) {
+                    normalizer.cleanup(r);
+                }
+            }
+            results.clear();
+        }
+
+        private synchronized void ensureFilePrepared(File originalFile, AudioFormatNormalizer normalizer) {
             String key = originalFile.getAbsolutePath();
-            if (results.containsKey(key)) {
+            AudioFormatNormalizer.NormalizationResult existing = results.get(key);
+            if (existing != null && (!existing.isConverted() || existing.getProcessingFile().exists())) {
                 return;
             }
             AudioFormatNormalizer.NormalizationResult result = normalizer.normalizeIfNeeded(originalFile);
             results.put(key, result);
-            orderedOriginalFiles.add(originalFile);
-            // 不在此处排序：本方法会被逐文件调用，每次都排序会退化为 O(n²) 级的标签读取。
-            orderDirty = true;
+            if (orderedOriginalFiles.stream().noneMatch(f -> key.equals(f.getAbsolutePath()))) {
+                orderedOriginalFiles.add(originalFile);
+                orderDirty = true;
+            }
             durationSequence = null;
         }
 
-        private List<Integer> getOrComputeDurationSequence(AudioFingerprintService fingerprintService) {
+        private synchronized List<Integer> getOrComputeDurationSequence(AudioFingerprintService fingerprintService) {
             if (durationSequence != null && !durationSequence.isEmpty()) {
                 return durationSequence;
             }
@@ -1138,7 +1174,9 @@ public class AudioFileProcessorService {
             List<File> processingFiles = new ArrayList<>(orderedOriginalFiles.size());
             for (File originalFile : orderedOriginalFiles) {
                 AudioFormatNormalizer.NormalizationResult result = results.get(originalFile.getAbsolutePath());
-                processingFiles.add(result != null ? result.getProcessingFile() : originalFile);
+                File candidate = (result != null && result.getProcessingFile().exists())
+                    ? result.getProcessingFile() : originalFile;
+                processingFiles.add(candidate);
             }
             durationSequence = fingerprintService.extractDurationSequence(processingFiles);
             return durationSequence;

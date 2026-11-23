@@ -422,7 +422,7 @@ public class CoverMissingService implements AutoCloseable {
         if (processedLogger == null || item == null || item.getFiles() == null) {
             return;
         }
-        Path reprocessRoot = ReviewQueueService.findReprocessRoot(item);
+        Path reprocessRoot = reviewQueue.findReprocessRoot(item);
         boolean temporarySource = reprocessRoot != null
             || (meaningful(item.getRecoverySourceType()) && meaningful(item.getRecoverySourcePath()));
         if (!temporarySource) {
@@ -454,7 +454,7 @@ public class CoverMissingService implements AutoCloseable {
             }
         }
         // 来自「处理记录 -> 重新识别」的 reprocess-* 暂存目录，确认完成后清理
-        Path reprocessRoot = ReviewQueueService.findReprocessRoot(item);
+        Path reprocessRoot = reviewQueue.findReprocessRoot(item);
         if (reprocessRoot != null) {
             deleteRecursivelyQuietly(reprocessRoot);
         }

@@ -23,10 +23,11 @@ public class FileMonitorService {
     private final MusicConfig config;
     private final WatchService watchService;
     private final ExecutorService watcherExecutorService;  // 用于长期运行的监控线程
-    private final ExecutorService fileCheckExecutorService;  // 用于短期的文件检查任务
+    private final ScheduledExecutorService fileCheckExecutorService;  // 有界定时池：用于非阻塞文件稳定性轮询与增量补扫
     private final BlockingQueue<File> fileQueue;
     private final BlockingQueue<FailedFile> failedFileQueue;  // 失败文件重试队列
     private final Map<String, Long> processedFiles;
+    private final Set<String> activeQueuedPaths = ConcurrentHashMap.newKeySet(); // 队列与稳定检测中的去重集合
     private final Set<String> supportedExtensions;
     private final ProcessedFileLogger processedLogger;
     private final Map<WatchKey, Path> watchKeys;
@@ -39,9 +40,11 @@ public class FileMonitorService {
     private volatile boolean closed;
     private volatile boolean running;
     private volatile boolean paused;  // 暂停状态标志
+    private volatile long lastDebounceCleanupAt = System.currentTimeMillis();
     // 每个文件处理间隔。MusicBrainz 客户端自带请求级限流，AcoustID / 歌词每首仅一次请求，
     // 这里只需留一点余量，不必再用 5 秒
     private static final long PROCESS_INTERVAL = 2000;
+    private static final int MAX_STABILITY_CHECKS = 60;
     private final int maxFileRetries; // 单个文件最大重试次数（从配置读取）
     
     public FileMonitorService(MusicConfig config, ProcessedFileLogger processedLogger) throws IOException {
@@ -50,11 +53,22 @@ public class FileMonitorService {
         this.watchService = FileSystems.getDefault().newWatchService();
         // 分离长期运行的守护线程和短期任务线程
         this.watcherExecutorService = Executors.newFixedThreadPool(3);  // 监控循环 + 队列消费者 + 重试队列处理
-        this.fileCheckExecutorService = Executors.newCachedThreadPool();  // 文件检查任务(可伸缩)
+        this.fileCheckExecutorService = Executors.newScheduledThreadPool(2, r -> {
+            Thread t = new Thread(r, "monitor-file-check");
+            t.setDaemon(true);
+            return t;
+        });
         this.fileQueue = new LinkedBlockingQueue<>();
         this.failedFileQueue = new LinkedBlockingQueue<>();
         this.processedFiles = new ConcurrentHashMap<>();
-        this.supportedExtensions = new HashSet<>(Arrays.asList(config.getSupportedFormats()));
+        this.supportedExtensions = new HashSet<>();
+        if (config.getSupportedFormats() != null) {
+            for (String fmt : config.getSupportedFormats()) {
+                if (fmt != null && !fmt.isBlank()) {
+                    this.supportedExtensions.add(fmt.trim().toLowerCase(Locale.ROOT));
+                }
+            }
+        }
         this.processedLogger = processedLogger;
         this.watchKeys = new ConcurrentHashMap<>();
         this.running = false;
@@ -202,14 +216,21 @@ public class FileMonitorService {
         while (running) {
             try {
                 WatchKey key = watchService.poll(1, TimeUnit.SECONDS);
+                long now = System.currentTimeMillis();
+                if (now - lastDebounceCleanupAt > TimeUnit.MINUTES.toMillis(10)) {
+                    lastDebounceCleanupAt = now;
+                    cleanupOldRecords();
+                }
                 if (key == null) {
                     continue;
                 }
                 
+                boolean overflowed = false;
                 for (WatchEvent<?> event : key.pollEvents()) {
                     WatchEvent.Kind<?> kind = event.kind();
                     
                     if (kind == StandardWatchEventKinds.OVERFLOW) {
+                        overflowed = true;
                         continue;
                     }
                     
@@ -220,11 +241,14 @@ public class FileMonitorService {
                     if (dir == null) continue;
                     Path fullPath = dir.resolve(filename);
                     
-                    // 如果是新建的目录,递归注册监控
+                    // 如果是新建/移入的目录,递归注册监控并补扫目录内已存在的音频文件（修复 mv 整目录漏扫）
                     if (kind == StandardWatchEventKinds.ENTRY_CREATE && Files.isDirectory(fullPath)) {
                         try {
                             registerDirectoryRecursively(fullPath);
                             log.info(I18nUtil.getMessage("monitor.new.subdirectory"), fullPath);
+                            if (!paused) {
+                                scheduleDirectoryRescan(fullPath);
+                            }
                         } catch (IOException e) {
                             log.error(I18nUtil.getMessage("monitor.register.failed"), fullPath, e);
                         }
@@ -240,7 +264,16 @@ public class FileMonitorService {
                     }
                 }
                 
-                key.reset();
+                if (overflowed && !paused) {
+                    Path affectedDir = watchKeys.get(key);
+                    Path scanTarget = affectedDir != null ? affectedDir : Paths.get(config.getMonitorDirectory());
+                    log.warn("检测到文件系统 WatchService OVERFLOW 事件，触发增量补扫: {}", scanTarget);
+                    scheduleDirectoryRescan(scanTarget);
+                }
+
+                if (!key.reset()) {
+                    watchKeys.remove(key);
+                }
                 
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -248,87 +281,141 @@ public class FileMonitorService {
             }
         }
     }
+
+    private void scheduleDirectoryRescan(Path dir) {
+        if (!running || dir == null) return;
+        try {
+            fileCheckExecutorService.schedule(() -> {
+                if (running && !paused && Files.isDirectory(dir)) {
+                    scanExistingFiles(dir);
+                }
+            }, 1, TimeUnit.SECONDS);
+        } catch (RejectedExecutionException e) {
+            if (running) log.debug("无法调度目录补扫: {}", dir);
+        }
+    }
     
     /**
      * 处理文件事件
      */
     private void handleFileEvent(Path filePath, WatchEvent.Kind<?> kind) {
-        String filePathStr = filePath.toString();
-        
-        // 防止重复处理
-        Long lastProcessTime = processedFiles.get(filePathStr);
-        long currentTime = System.currentTimeMillis();
-        
-        if (lastProcessTime != null && (currentTime - lastProcessTime) < 5000) {
+        String filePathStr = filePath.toAbsolutePath().normalize().toString();
+        if (activeQueuedPaths.contains(filePathStr)) {
             return;
         }
-        
-        processedFiles.put(filePathStr, currentTime);
-        
+
+        long currentTime = System.currentTimeMillis();
         if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
-            log.info(I18nUtil.getMessage("monitor.new.file"), filePath.getFileName());
-            // 添加到队列,由专门的线程按顺序处理
-            // 新文件需要等待写入完成
-            try {
-                fileCheckExecutorService.submit(() -> addToQueue(filePath, true));
-            } catch (RejectedExecutionException e) {
-                if (running) throw e;
+            Long lastProcessTime = processedFiles.get(filePathStr);
+            if (lastProcessTime != null && (currentTime - lastProcessTime) < 5000) {
+                return;
             }
+            processedFiles.put(filePathStr, currentTime);
+            log.info(I18nUtil.getMessage("monitor.new.file"), filePath.getFileName());
+            addToQueue(filePath, true);
         } else if (kind == StandardWatchEventKinds.ENTRY_MODIFY) {
-            log.debug("文件被修改: {}", filePath.getFileName());
+            // 若文件此前因 0 字节被跳过、后续写入完成触发 ENTRY_MODIFY，重新纳入稳定检测，避免永久丢失
+            try {
+                if (Files.isRegularFile(filePath) && Files.size(filePath) > 0) {
+                    File file = filePath.toFile();
+                    if ((processedLogger == null || !processedLogger.isFileProcessed(file))
+                        && !shouldSkipForReview(file)) {
+                        Long lastProcessTime = processedFiles.get(filePathStr);
+                        if (lastProcessTime == null || (currentTime - lastProcessTime) >= 5000) {
+                            processedFiles.put(filePathStr, currentTime);
+                            scheduleFileStabilityCheck(filePath, filePathStr, Files.size(filePath), 0);
+                        }
+                    }
+                }
+            } catch (IOException ignored) {
+            }
         }
     }
-    
-    /**
-     * 添加文件到处理队列
-     * @param filePath 文件路径
-     * @param waitForStable 是否等待文件写入稳定(新文件需要,现有文件不需要)
-     */
-    private void addToQueue(Path filePath, boolean waitForStable) {
-        try {
-            // 首先检查是否已处理过（持久化日志）
-            File file = filePath.toFile();
-            if (processedLogger != null && processedLogger.isFileProcessed(file)) {
-                log.debug(I18nUtil.getMessage("monitor.file.processed"), filePath.getFileName());
-                return;
-            }
-            
-            if (shouldSkipForReview(file)) return;
 
-            // 只有新文件需要等待写入稳定,现有文件直接入队
-            if (waitForStable) {
-                // 等待文件完全写入（简单的重试机制）
-                int maxRetries = 10;
-                int retries = 0;
-                long lastSize = 0;
-                
-                while (retries < maxRetries) {
-                    Thread.sleep(1000);
-                    long currentSize = Files.size(filePath);
-                    if (currentSize == lastSize && currentSize > 0) {
-                        break;
-                    }
-                    lastSize = currentSize;
-                    retries++;
-                }
-            }
-            
-            if (Files.size(filePath) == 0) {
-                log.warn(I18nUtil.getMessage("monitor.file.size.zero"), filePath);
+    /**
+     * 准入检查并入队：先检查已处理记录和待确认状态（避免无谓的稳定等待），
+     * waitForStability=true 时通过非阻塞定时器等待文件写入完成。
+     */
+    private void addToQueue(Path filePath, boolean waitForStability) {
+        if (!running || closed || filePath == null || !Files.isRegularFile(filePath)) {
+            return;
+        }
+        File file = filePath.toFile();
+        if (processedLogger != null && processedLogger.isFileProcessed(file)) {
+            return;
+        }
+        if (shouldSkipForReview(file)) {
+            return;
+        }
+        String key = filePath.toAbsolutePath().normalize().toString();
+        if (waitForStability) {
+            scheduleFileStabilityCheck(filePath, key, -1L, 0);
+        } else if (activeQueuedPaths.add(key)) {
+            enqueueDeduped(file, key);
+        }
+    }
+
+    /**
+     * 非阻塞定时文件稳定性检查：不阻塞线程 sleep，文件持续写入时不提前把半截文件塞进处理队列。
+     */
+    private void scheduleFileStabilityCheck(Path filePath, String key, long lastSize, int attempts) {
+        if (!running || closed) {
+            activeQueuedPaths.remove(key);
+            return;
+        }
+        if (attempts == 0 && !activeQueuedPaths.add(key)) {
+            return;
+        }
+        long delaySec = attempts < 10 ? 1L : 3L;
+        try {
+            fileCheckExecutorService.schedule(() -> checkFileStability(filePath, key, lastSize, attempts),
+                delaySec, TimeUnit.SECONDS);
+        } catch (RejectedExecutionException e) {
+            activeQueuedPaths.remove(key);
+        }
+    }
+
+    private void checkFileStability(Path filePath, String key, long lastSize, int attempts) {
+        try {
+            if (!running || closed || !Files.isRegularFile(filePath)) {
+                activeQueuedPaths.remove(key);
                 return;
             }
-            
-            // 添加到队列
-            if (!running || Thread.currentThread().isInterrupted()) return;
-            fileQueue.offer(file);
-            log.info(I18nUtil.getMessage("monitor.file.queued"),
-                filePath.getFileName(), fileQueue.size());
-            
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            File file = filePath.toFile();
+            if ((processedLogger != null && processedLogger.isFileProcessed(file)) || shouldSkipForReview(file)) {
+                activeQueuedPaths.remove(key);
+                return;
+            }
+            long currentSize = Files.size(filePath);
+            if (currentSize > 0 && currentSize == lastSize) {
+                enqueueDeduped(file, key);
+                return;
+            }
+            if (attempts + 1 < MAX_STABILITY_CHECKS) {
+                scheduleFileStabilityCheck(filePath, key, currentSize, attempts + 1);
+                return;
+            }
+            if (currentSize == 0) {
+                log.warn(I18nUtil.getMessage("monitor.file.size.zero"), filePath);
+            } else {
+                log.warn("文件长时间持续变化未稳定，暂不入队半截文件（后续写入事件将重新触发）: {}", filePath);
+            }
+            activeQueuedPaths.remove(key);
         } catch (IOException e) {
             log.error("添加文件到队列失败: {}", filePath, e);
+            activeQueuedPaths.remove(key);
         }
+    }
+
+    private boolean enqueueDeduped(File file, String key) {
+        if (!running || closed) {
+            activeQueuedPaths.remove(key);
+            return false;
+        }
+        fileQueue.offer(file);
+        log.info(I18nUtil.getMessage("monitor.file.queued"),
+            file.getName(), fileQueue.size());
+        return true;
     }
     
     /**
@@ -359,6 +446,7 @@ public class FileMonitorService {
                     reviewSkipped = 0;
                     continue;
                 }
+                activeQueuedPaths.remove(file.toPath().toAbsolutePath().normalize().toString());
 
                 boolean skippedForReview = false;
                 try {
@@ -563,7 +651,9 @@ public class FileMonitorService {
                     continue;
                 }
                 
-                if (shouldSkipForReview(unprocessedFiles.get(0).toFile())) {
+                Path monitorRootNorm = Paths.get(config.getMonitorDirectory()).toAbsolutePath().normalize();
+                boolean isMonitorRootDir = Paths.get(folderPath).toAbsolutePath().normalize().equals(monitorRootNorm);
+                if (!isMonitorRootDir && shouldSkipForReview(unprocessedFiles.get(0).toFile())) {
                     reviewFiles += unprocessedFiles.size();
                     try {
                         File albumRoot = fileSystemUtils.getAlbumRootDirectory(unprocessedFiles.get(0).toFile());
@@ -577,16 +667,23 @@ public class FileMonitorService {
                 log.info(I18nUtil.getMessage("monitor.folder.status"),
                     new File(folderPath).getName(), unprocessedFiles.size(), skippedInFolder);
                 
-                // 将该文件夹的所有待处理文件按顺序加入队列
+                // 将该文件夹的所有待处理文件按顺序加入队列（带去重防止 pause/resume 或 OVERFLOW 重复入队）
                 for (Path path : unprocessedFiles) {
                     try {
                         if (!running || Thread.currentThread().isInterrupted()) continue;
+                        if (isMonitorRootDir && shouldSkipForReview(path.toFile())) {
+                            reviewFiles++;
+                            continue;
+                        }
                         if (Files.size(path) == 0) {
                             log.warn(I18nUtil.getMessage("monitor.file.size.zero"), path);
                             continue;
                         }
-                        fileQueue.offer(path.toFile());
-                        totalQueued++;
+                        String queueKey = path.toAbsolutePath().normalize().toString();
+                        if (activeQueuedPaths.add(queueKey)) {
+                            fileQueue.offer(path.toFile());
+                            totalQueued++;
+                        }
                     } catch (IOException e) {
                         log.error("添加文件到队列失败: {}", path, e);
                     }
@@ -632,9 +729,13 @@ public class FileMonitorService {
         for (List<Path> folderFiles : byFolder.values()) {
             folderFiles.sort(null);
             for (Path path : folderFiles) {
+                String key = path.toAbsolutePath().normalize().toString();
                 processedFiles.remove(path.toString());
-                fileQueue.offer(path.toFile());
-                queued++;
+                processedFiles.remove(key);
+                if (activeQueuedPaths.add(key)) {
+                    fileQueue.offer(path.toFile());
+                    queued++;
+                }
             }
         }
         if (queued > 0) {

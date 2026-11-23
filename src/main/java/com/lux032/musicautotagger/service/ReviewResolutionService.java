@@ -507,10 +507,12 @@ public class ReviewResolutionService {
         if (!config.isLlmAlbumAutoApply()) {
             return false;
         }
-        if (judgement.getConfidence() < config.getLlmAlbumAutoApplyMinConfidence()) {
+        double confidence = judgement.getConfidence();
+        double minConfidence = config.getLlmAlbumAutoApplyMinConfidence();
+        if (!Double.isFinite(confidence) || !Double.isFinite(minConfidence) || !(confidence >= minConfidence)) {
             log.info("LLM 置信度 {} 低于自动落盘阈值 {}，保持待人工确认",
-                String.format("%.2f", judgement.getConfidence()),
-                config.getLlmAlbumAutoApplyMinConfidence());
+                String.format("%.2f", confidence),
+                minConfidence);
             return false;
         }
         if (judgement.getChoiceIndex() > 0) {
@@ -734,7 +736,7 @@ public class ReviewResolutionService {
 
     private void finalizeReprocessSourceRecords(ReviewItem item) {
         if (processedLogger == null || item == null || item.getFiles() == null
-                || ReviewQueueService.findReprocessRoot(item) == null) {
+                || reviewQueue.findReprocessRoot(item) == null) {
             return;
         }
         for (ReviewItem.FileEntry entry : item.getFiles()) {

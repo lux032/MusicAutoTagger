@@ -1,6 +1,7 @@
 package com.lux032.musicautotagger.config;
 
 import lombok.Data;
+import lombok.ToString;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +29,7 @@ public class LlmProviderConfig {
     /** 完整请求地址，由用户自行填写（中转站路径形态五花八门，不做拼接猜测） */
     private String apiUrl;
 
+    @ToString.Exclude
     private String apiKey;
 
     /** 报文协议：openai | anthropic。不再从 URL 推断 */

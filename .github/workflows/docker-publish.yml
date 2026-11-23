@@ -37,9 +37,9 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      # Build JAR file (includes static web resources)
-      - name: Build with Maven
-        run: mvn clean package -DskipTests
+      # Run unit tests as CI gate (Dockerfile builds the production shaded JAR)
+      - name: Run unit tests
+        run: mvn -B clean test
 
       # Verify static resources are included
       - name: Verify web resources

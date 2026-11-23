@@ -44,10 +44,48 @@ public class ImageCompressor {
             return outcome.bytes;
         }
         if (outcome.allowFfmpegFallback && ffmpegPath != null && !ffmpegPath.isBlank()) {
-            byte[] converted = transcodeToJpegWithFfmpeg(data, ffmpegPath);
-            if (converted != null && converted.length > 0 && converted.length <= MAX_INPUT_BYTES) {
-                return compressImageDirect(converted).bytes;
+            String demuxer = detectSafeFfmpegDemuxer(data);
+            if (demuxer != null) {
+                if ("webp_pipe".equals(demuxer)) {
+                    int[] dims = UntrustedImageFetcher.parseWebpDimensions(data);
+                    if (dims == null || dims[0] <= 0 || dims[1] <= 0
+                        || Math.max(dims[0], dims[1]) > MAX_SOURCE_DIMENSION
+                        || (long) dims[0] * dims[1] > MAX_PIXELS) {
+                        log.warn("WebP cover dimensions invalid or over limit");
+                        return null;
+                    }
+                }
+                byte[] converted = transcodeToJpegWithFfmpeg(data, ffmpegPath, demuxer);
+                if (converted != null && converted.length > 0 && converted.length <= MAX_INPUT_BYTES) {
+                    return compressImageDirect(converted).bytes;
+                }
             }
+        }
+        return null;
+    }
+
+    /** 仅允许经过魔数白名单验证的静态图像格式进入受控 FFmpeg 解封装，杜绝任意播放列表/concat SSRF。 */
+    public static String detectSafeFfmpegDemuxer(byte[] data) {
+        if (data == null || data.length < 12) {
+            return null;
+        }
+        if (data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F'
+            && data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P') {
+            return "webp_pipe";
+        }
+        if ((data[0] & 0xff) == 0xff && (data[1] & 0xff) == 0xd8 && (data[2] & 0xff) == 0xff) {
+            return "jpeg_pipe";
+        }
+        if ((data[0] & 0xff) == 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G'
+            && data[4] == 0x0d && data[5] == 0x0a && data[6] == 0x1a && data[7] == 0x0a) {
+            return "png_pipe";
+        }
+        if (data[0] == 'G' && data[1] == 'I' && data[2] == 'F' && data[3] == '8'
+            && (data[4] == '7' || data[4] == '9') && data[5] == 'a') {
+            return "gif";
+        }
+        if (data[0] == 'B' && data[1] == 'M') {
+            return "bmp_pipe";
         }
         return null;
     }
@@ -100,7 +138,7 @@ public class ImageCompressor {
         }
     }
 
-    private static byte[] transcodeToJpegWithFfmpeg(byte[] data, String ffmpegPath) {
+    private static byte[] transcodeToJpegWithFfmpeg(byte[] data, String ffmpegPath, String demuxer) {
         Path dir = null;
         try {
             dir = Files.createTempDirectory("cover-compress-");
@@ -108,10 +146,16 @@ public class ImageCompressor {
             Path output = dir.resolve("output.jpg");
             Files.write(input, data);
             ProcessRunner.Result result = ProcessRunner.execute(List.of(
-                ffmpegPath, "-y", "-i", input.toString(), "-frames:v", "1",
+                ffmpegPath, "-nostdin", "-y", "-xerror",
+                "-protocol_whitelist", "file",
+                "-max_pixels", String.valueOf(MAX_PIXELS),
+                "-threads", "1",
+                "-f", demuxer,
+                "-i", input.toString(),
+                "-frames:v", "1",
                 "-vf", "scale='min(" + MAX_DIMENSION + ",iw)':'min(" + MAX_DIMENSION + ",ih)':force_original_aspect_ratio=decrease",
                 output.toString()), 20);
-            if (!result.isSuccess() || !Files.isRegularFile(output)) {
+            if (!result.isSuccess() || !Files.isRegularFile(output) || Files.size(output) > MAX_INPUT_BYTES) {
                 return null;
             }
             return Files.readAllBytes(output);

@@ -214,6 +214,42 @@ class LocalArchiveTest {
         }
     }
 
+    @Test
+    void missingCoverInterceptStillRejectsProtectedCreditsAndDetectsStaleRevision() throws Exception {
+        MusicConfig config = config();
+        config.setCoverMissingRequireReview(true);
+        Path source = root.resolve("incoming-missing-cover");
+        Path first = flac(source.resolve("one.flac"), JOINT_CREDIT, 1);
+        Path second = flac(source.resolve("two.flac"), "Hironori Anazawa", 2);
+        var secondAudio = AudioFileIO.read(second.toFile());
+        secondAudio.getTag().setField(FieldKey.ARTISTS, "Protected Orchestra");
+        secondAudio.commit();
+        var writer = new TagWriterService(config);
+        var queue = new ReviewQueueService(config);
+        var item = queue.enqueueRecoveryFolder(source.toString(), null, List.of(first.toFile(), second.toFile()), writer, null);
+
+        try (var service = new RecoveryService(config, null, new ProcessedFileLogger(config, null), queue,
+                new FolderAlbumCache(null, null, null), null, new FileSystemUtils(config), writer, null, null)) {
+            String revision = service.previewLocalArchive(item.getId()).revision();
+            // 受保护音轨的非法 credit 修改必须在进入缺封面队列前直接被拒
+            IOException protectedErr = assertThrows(IOException.class, () ->
+                service.confirmLocalArchive(item.getId(), revision, "New album", JOINT_CREDIT, JOINT_NAMES,
+                    Map.of("two.flac", List.of("Hironori Anazawa")), List.of(), RecoveryService.DuplicatePolicy.ASK));
+            assertEquals("local.archive.stale", protectedErr.getMessage());
+            assertEquals(ReviewItem.Kind.ALBUM_UNRESOLVED, queue.get(item.getId()).effectiveKind());
+
+            // 合法请求无封面时进入 COVER_MISSING 并保留 revision；若期间源文件变更，延迟提交必须拦截
+            ReviewItem deferred = service.confirmLocalArchive(item.getId(), revision, "New album", JOINT_CREDIT, JOINT_NAMES,
+                Map.of("one.flac", JOINT_NAMES), List.of(), RecoveryService.DuplicatePolicy.ASK);
+            assertEquals(ReviewItem.Kind.COVER_MISSING, deferred.effectiveKind());
+
+            Files.setLastModifiedTime(first, FileTime.fromMillis(9876543L));
+            IOException staleAfterDefer = assertThrows(IOException.class, () ->
+                service.commitDeferredLocalMissingCover(deferred, null, RecoveryService.DuplicatePolicy.ASK));
+            assertEquals("local.archive.stale", staleAfterDefer.getMessage());
+        }
+    }
+
     private static MusicMetadata metadata(String album, String albumArtist, String artist) {
         var md = new MusicMetadata();
         md.setAlbum(album);
@@ -232,6 +268,7 @@ class LocalArchiveTest {
         config.setProcessedFileLogPath(root.resolve("processed.log").toString());
         config.setReviewQueuePath(root.resolve("review.json").toString());
         config.setReviewStagingDirectory(root.resolve("staging").toString());
+        config.setCoverMissingRequireReview(false);
         return config;
     }
 

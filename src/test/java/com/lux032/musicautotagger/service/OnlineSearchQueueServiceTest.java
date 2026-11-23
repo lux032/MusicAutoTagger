@@ -362,4 +362,39 @@ class OnlineSearchQueueServiceTest {
                 "Failed retry() must not drop the task from finished history");
         }
     }
+
+    @Test
+    void rapidCancelBeforeWorkerStartsNeverDeadlocksQueue() throws Exception {
+        MusicConfig cfg = createConfig(1);
+        ReviewQueueService reviewQueue = new ReviewQueueService(cfg);
+        WebSearchClient client = new WebSearchClient() {
+            @Override public boolean hasEnabledEndpoint() { return true; }
+            @Override public String name() { return "tavily"; }
+            @Override public SearchResponse search(String sys, String usr) {
+                return validResponse("Recovered", false);
+            }
+        };
+        OnlineIdentificationService online = new OnlineIdentificationService(cfg, reviewQueue, stubTagWriter(cfg), null, null, client);
+        try (OnlineSearchQueueService sq = new OnlineSearchQueueService(cfg, reviewQueue, online)) {
+            for (int i = 0; i < 20; i++) {
+                ReviewItem item = enqueueDummyReview(reviewQueue, "CancelRace-" + i);
+                var enq = sq.enqueueReviewItem(item.getId(), false);
+                sq.cancel(String.valueOf(enq.task().get("id")));
+            }
+            // 队列不得死锁：后续任务必须正常执行完成
+            ReviewItem finalItem = enqueueDummyReview(reviewQueue, "AfterCancelStorm");
+            sq.enqueueReviewItem(finalItem.getId(), false);
+            long deadline = System.currentTimeMillis() + 5000;
+            boolean done = false;
+            while (System.currentTimeMillis() < deadline) {
+                ReviewItem updated = reviewQueue.get(finalItem.getId());
+                if (updated != null && updated.getOnlineCandidates() != null && !updated.getOnlineCandidates().isEmpty()) {
+                    done = true;
+                    break;
+                }
+                Thread.sleep(20);
+            }
+            assertTrue(done, "Queue must remain alive after rapid enqueue+cancel cycles");
+        }
+    }
 }

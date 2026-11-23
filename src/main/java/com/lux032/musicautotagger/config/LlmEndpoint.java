@@ -2,6 +2,7 @@ package com.lux032.musicautotagger.config;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.ToString;
 
 /**
  * 供应商 x 模型 展开后的单个可调用端点，是调用侧（LlmClient / NativeWebSearchClient）
@@ -16,6 +17,7 @@ public class LlmEndpoint {
     private String providerId;
     private String providerName;
     private String apiUrl;
+    @ToString.Exclude
     private String apiKey;
     private String model;
     /** openai | anthropic，来自供应商的显式配置 */

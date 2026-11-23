@@ -96,9 +96,22 @@ public class WebServer {
         httpConfig.setSendServerVersion(false);
         httpConfig.setSendDateHeader(false);
         
-        // 添加 ForwardedRequestCustomizer 以支持反向代理
-        // 这会处理 X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host 等头信息
-        ForwardedRequestCustomizer forwardedCustomizer = new ForwardedRequestCustomizer();
+        // 添加受信任内网代理限定版 ForwardedRequestCustomizer：
+        // 仅当直连对端位于回环/私网地址（如本机或 Docker 反代）时才采信 X-Forwarded-* 头，避免公网直连伪造
+        ForwardedRequestCustomizer forwardedCustomizer = new ForwardedRequestCustomizer() {
+            @Override
+            public void customize(org.eclipse.jetty.server.Connector conn,
+                                  HttpConfiguration channelConfig,
+                                  org.eclipse.jetty.server.Request request) {
+                try {
+                    java.net.InetAddress peer = java.net.InetAddress.getByName(request.getRemoteAddr());
+                    if (!com.lux032.musicautotagger.util.OutboundUrlValidator.isPublic(peer)) {
+                        super.customize(conn, channelConfig, request);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        };
         httpConfig.addCustomizer(forwardedCustomizer);
         
         // 创建 HTTP 连接器
@@ -112,6 +125,7 @@ public class WebServer {
         servletHandler.setContextPath("/");
         servletHandler.getSessionHandler().getSessionCookieConfig().setHttpOnly(true);
         servletHandler.getSessionHandler().getSessionCookieConfig().setName("MAT_SESSION");
+        servletHandler.getSessionHandler().setSameSite(org.eclipse.jetty.http.HttpCookie.SameSite.LAX);
         
         // 注册 Dashboard API
         DashboardServlet dashboardServlet = new DashboardServlet(
@@ -192,7 +206,8 @@ public class WebServer {
                 "/api/records/*");
         }
 
-        // API 认证过滤器
+        // 安全响应头与 API 认证/CSRF 过滤器
+        servletHandler.addFilter(SecurityHeadersFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
         servletHandler.addFilter(AuthFilter.class, "/api/*", EnumSet.of(DispatcherType.REQUEST));
 
         // 创建静态资源处理器（关闭浏览器强缓存并开启 ETag，避免升级镜像后子页继续命中旧 HTML）
@@ -235,6 +250,22 @@ public class WebServer {
      */
     public boolean isRunning() {
         return server != null && server.isRunning();
+    }
+
+    /** 统一追加基础安全响应头 */
+    public static class SecurityHeadersFilter implements jakarta.servlet.Filter {
+        @Override
+        public void doFilter(jakarta.servlet.ServletRequest request,
+                             jakarta.servlet.ServletResponse response,
+                             jakarta.servlet.FilterChain chain)
+                throws java.io.IOException, jakarta.servlet.ServletException {
+            if (response instanceof jakarta.servlet.http.HttpServletResponse resp) {
+                resp.setHeader("X-Content-Type-Options", "nosniff");
+                resp.setHeader("X-Frame-Options", "DENY");
+                resp.setHeader("Referrer-Policy", "same-origin");
+            }
+            chain.doFilter(request, response);
+        }
     }
 }
 

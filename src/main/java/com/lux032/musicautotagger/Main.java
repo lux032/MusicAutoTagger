@@ -39,6 +39,7 @@ public class Main {
             
             if (!config.isValid()) {
                 log.error(I18nUtil.getMessage("app.config.invalid"));
+                System.exit(1);
                 return;
             }
             
@@ -92,11 +93,17 @@ public class Main {
             stdinThread.setDaemon(true);
             stdinThread.start();
 
-            // 主线程阻塞，直到收到关闭信号
+            // 主线程阻塞，直到收到关闭信号（SIGTERM/SIGINT 或本地按 Enter）
             shutdownLatch.await();
+            // 显式触发优雅关闭：本地按 Enter 时 main 返回不会自动触发 ShutdownHook（Jetty/监控线程为非守护线程）
+            lifecycleManager.shutdown();
             
         } catch (Exception e) {
             log.error(I18nUtil.getMessage("main.error"), e);
+            if (lifecycleManager != null) {
+                lifecycleManager.shutdown();
+            }
+            System.exit(1);
         }
     }
 }

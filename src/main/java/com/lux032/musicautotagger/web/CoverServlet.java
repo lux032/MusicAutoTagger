@@ -11,8 +11,13 @@ import org.jaudiotagger.tag.images.Artwork;
 
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.service.CoverCandidateCache;
+import com.lux032.musicautotagger.service.ImageCompressor;
 
 import javax.imageio.ImageIO;
+import javax.imageio.ImageReadParam;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.MemoryCacheImageInputStream;
+import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
@@ -21,6 +26,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -28,8 +34,10 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -72,10 +80,12 @@ public class CoverServlet extends HttpServlet {
      * 64 条 × 几 MB 就是百兆级堆内存；它们本来也不需要缓存（跳过了解码，读盘很便宜）。
      */
     private static final int THUMB_CACHE_MAX_BYTES = 512 * 1024;
-    private final Map<String, byte[]> thumbCache = Collections.synchronizedMap(
+    private static final long MAX_DECODE_PIXELS = 50_000_000L;
+    private static final int MAX_DECODE_DIMENSION = 32768;
+    private final Map<String, Image> thumbCache = Collections.synchronizedMap(
         new LinkedHashMap<>(16, 0.75f, true) {
             @Override
-            protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
+            protected boolean removeEldestEntry(Map.Entry<String, Image> eldest) {
                 return size() > THUMB_CACHE_MAX;
             }
         });
@@ -90,14 +100,17 @@ public class CoverServlet extends HttpServlet {
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         String candidateSha = trimToNull(req.getParameter("candidateSha256"));
         if (CoverCandidateCache.validSha256(candidateSha)) {
-            Path candidate = CoverCandidateCache.directory(config).resolve(candidateSha.toLowerCase());
+            Path candidate = CoverCandidateCache.directory(config).resolve(candidateSha.toLowerCase(Locale.ROOT));
             candidate = candidate.resolveSibling(candidate.getFileName() + ".jpg");
-            if (Files.isRegularFile(candidate)) {
+            if (Files.isRegularFile(candidate) && Files.size(candidate) <= ImageCompressor.MAX_INPUT_BYTES) {
                 byte[] raw = Files.readAllBytes(candidate);
                 String fullParam = trimToNull(req.getParameter("full"));
                 boolean full = "1".equals(fullParam) || "true".equalsIgnoreCase(fullParam);
-                writeImage(resp, full ? raw : toThumbnail(raw), "image/jpeg");
-                return;
+                Image image = full ? new Image(raw, "image/jpeg") : toThumbnail(raw, "image/jpeg");
+                if (image != null) {
+                    writeImage(resp, image.data, image.mime);
+                    return;
+                }
             }
             resp.sendError(HttpServletResponse.SC_NOT_FOUND);
             return;
@@ -107,18 +120,18 @@ public class CoverServlet extends HttpServlet {
             // 内存缓存 key 带上封面偏好：切换「优先动画版」后同一 rgid 对应的图会变，
             // 不区分的话仪表盘会继续显示旧版本
             String cacheKey = ((config != null && config.isPreferAnimeCover()) ? "anime:" : "") + rgid;
-            byte[] thumb = thumbCache.get(cacheKey);
+            Image thumb = thumbCache.get(cacheKey);
             if (thumb == null) {
                 byte[] cached = readFromCoverCache(rgid);
                 if (cached != null) {
-                    thumb = toThumbnail(cached);
-                    if (thumb.length <= THUMB_CACHE_MAX_BYTES) {
+                    thumb = toThumbnail(cached, "image/jpeg");
+                    if (thumb != null && thumb.data.length <= THUMB_CACHE_MAX_BYTES) {
                         thumbCache.put(cacheKey, thumb);
                     }
                 }
             }
             if (thumb != null) {
-                writeImage(resp, thumb, "image/jpeg");
+                writeImage(resp, thumb.data, thumb.mime);
                 return;
             }
         }
@@ -128,16 +141,18 @@ public class CoverServlet extends HttpServlet {
             File source = allowedFile(rawPath);
             if (source != null) {
                 String cacheKey = "path:" + source.getAbsolutePath() + ":" + source.lastModified();
-                byte[] thumb = thumbCache.get(cacheKey);
+                Image thumb = thumbCache.get(cacheKey);
                 if (thumb == null) {
                     Image embedded = readEmbedded(source);
                     if (embedded != null) {
-                        thumb = toThumbnail(embedded.data);
-                        if (thumb.length <= THUMB_CACHE_MAX_BYTES) thumbCache.put(cacheKey, thumb);
+                        thumb = toThumbnail(embedded.data, embedded.mime);
+                        if (thumb != null && thumb.data.length <= THUMB_CACHE_MAX_BYTES) {
+                            thumbCache.put(cacheKey, thumb);
+                        }
                     }
                 }
                 if (thumb != null) {
-                    writeImage(resp, thumb, "image/jpeg");
+                    writeImage(resp, thumb.data, thumb.mime);
                     return;
                 }
             }
@@ -228,49 +243,78 @@ public class CoverServlet extends HttpServlet {
     }
 
     /**
-     * 缩成最长边 THUMB_SIZE 的 JPEG。任何环节出问题都退回原图，
-     * 宁可发得大一点，不能因为缩图失败就不显示封面。
+     * 受限解码并缩成最长边 THUMB_SIZE 的 JPEG：先经 ImageReader 校验宽高与像素上限并子采样，
+     * 防止恶意内嵌大图造成 512MB 容器 OOM；解码器无法处理的安全图片格式保留原 MIME。
      */
-    private byte[] toThumbnail(byte[] original) {
-        if (original == null || original.length == 0) {
-            return original;
+    private Image toThumbnail(byte[] original, String fallbackMime) {
+        if (original == null || original.length == 0 || original.length > ImageCompressor.MAX_INPUT_BYTES) {
+            return null;
         }
-        try {
-            BufferedImage source = ImageIO.read(new ByteArrayInputStream(original));
-            if (source == null) {
-                return original;
+        ImageReader reader = null;
+        try (MemoryCacheImageInputStream input = new MemoryCacheImageInputStream(new ByteArrayInputStream(original))) {
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
+            if (!readers.hasNext()) {
+                return null;
             }
-            int width = source.getWidth();
-            int height = source.getHeight();
+            reader = readers.next();
+            reader.setInput(input, true, true);
+            int width = reader.getWidth(0);
+            int height = reader.getHeight(0);
+            if (width <= 0 || height <= 0 || Math.max(width, height) > MAX_DECODE_DIMENSION
+                || (long) width * height > MAX_DECODE_PIXELS) {
+                log.warn("拒绝超大尺寸封面缩略图解码: {}x{}", width, height);
+                return null;
+            }
+            String format = reader.getFormatName() == null ? "jpeg" : reader.getFormatName().toLowerCase(Locale.ROOT);
+            String detectedMime = ("jpg".equals(format) || "jpeg".equals(format)) ? "image/jpeg" : "image/" + format;
             if (width <= THUMB_SIZE && height <= THUMB_SIZE) {
-                return original;
+                return new Image(original, detectedMime);
             }
 
-            double scale = (double) THUMB_SIZE / Math.max(width, height);
-            int targetWidth = Math.max(1, (int) Math.round(width * scale));
-            int targetHeight = Math.max(1, (int) Math.round(height * scale));
+            int subsample = Math.max(1, Math.max(width, height) / (THUMB_SIZE * 2));
+            ImageReadParam param = reader.getDefaultReadParam();
+            param.setSourceSubsampling(subsample, subsample, 0, 0);
+            BufferedImage source = reader.read(0, param);
+            if (source == null) {
+                return null;
+            }
+
+            double scale = Math.min(1.0, (double) THUMB_SIZE / Math.max(source.getWidth(), source.getHeight()));
+            int targetWidth = Math.max(1, (int) Math.round(source.getWidth() * scale));
+            int targetHeight = Math.max(1, (int) Math.round(source.getHeight() * scale));
 
             BufferedImage thumb = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_RGB);
             Graphics2D g = thumb.createGraphics();
             try {
+                g.setColor(Color.WHITE);
+                g.fillRect(0, 0, targetWidth, targetHeight);
                 g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
                     RenderingHints.VALUE_INTERPOLATION_BILINEAR);
                 g.setRenderingHint(RenderingHints.KEY_RENDERING,
                     RenderingHints.VALUE_RENDER_QUALITY);
-                g.drawImage(source.getScaledInstance(targetWidth, targetHeight, java.awt.Image.SCALE_SMOOTH),
-                    0, 0, null);
+                g.drawImage(source, 0, 0, targetWidth, targetHeight, null);
             } finally {
                 g.dispose();
             }
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             if (!ImageIO.write(thumb, "jpg", out) || out.size() == 0) {
-                return original;
+                return new Image(original, detectedMime);
             }
-            return out.toByteArray();
+            return new Image(out.toByteArray(), "image/jpeg");
         } catch (Exception e) {
-            log.debug("生成封面缩略图失败，退回原图: {}", e.getMessage());
-            return original;
+            log.debug("生成封面缩略图失败: {}", e.getMessage());
+            // 算术编码 JPEG 等安全已知图片解码失败且体积适中时退回原图，拒绝未知/恶意字节
+            if (ImageCompressor.detectSafeFfmpegDemuxer(original) != null && original.length <= 4 * 1024 * 1024) {
+                String safeMime = (fallbackMime != null && fallbackMime.startsWith("image/"))
+                    ? fallbackMime : "image/jpeg";
+                return new Image(original, safeMime);
+            }
+            return null;
+        } finally {
+            if (reader != null) {
+                reader.dispose();
+            }
         }
     }
 
@@ -278,6 +322,7 @@ public class CoverServlet extends HttpServlet {
         resp.setStatus(HttpServletResponse.SC_OK);
         resp.setContentType(mime);
         resp.setContentLength(data.length);
+        resp.setHeader("X-Content-Type-Options", "nosniff");
         // 同一 key 的封面基本不变，缓存 10 分钟，避免每次刷新面板都重新读盘
         resp.setHeader("Cache-Control", "private, max-age=600");
         try (OutputStream out = resp.getOutputStream()) {
@@ -316,7 +361,7 @@ public class CoverServlet extends HttpServlet {
     private static String md5(String text) {
         try {
             MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] digest = md.digest(text.getBytes());
+            byte[] digest = md.digest(text.getBytes(StandardCharsets.UTF_8));
             StringBuilder sb = new StringBuilder();
             for (byte b : digest) {
                 sb.append(String.format("%02x", b));

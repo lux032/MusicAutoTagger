@@ -429,7 +429,7 @@ public class AudioFingerprintService {
      * 超时与输出消费的处理见 {@link ProcessRunner}
      */
     private String runFpcalc(long timeoutSeconds, String... command) throws IOException, InterruptedException {
-        return ProcessRunner.run(Arrays.asList(command), timeoutSeconds);
+        return ProcessRunner.runSeparateStdout(Arrays.asList(command), timeoutSeconds);
     }
 
     /**

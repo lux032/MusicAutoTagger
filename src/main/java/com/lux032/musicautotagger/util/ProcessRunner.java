@@ -28,6 +28,9 @@ public final class ProcessRunner {
 
     /** 子进程退出后,等待输出线程读完剩余内容的时间 */
     private static final long READER_DRAIN_TIMEOUT_MS = 5000;
+    private static final long KILL_WAIT_TIMEOUT_SECONDS = 2;
+    private static final int MAX_STDOUT_CHARS = 4 * 1024 * 1024;
+    private static final int MAX_STDERR_CHARS = 256 * 1024;
 
     private static final AtomicLong READER_THREAD_SEQ = new AtomicLong();
 
@@ -54,6 +57,21 @@ public final class ProcessRunner {
     }
 
     /**
+     * 分离 stdout 与 stderr 执行子进程并仅返回 stdout（如 fpcalc -json），
+     * 避免底层 FFmpeg/libav 的 stderr 警告污染 JSON 输出。
+     */
+    public static String runSeparateStdout(List<String> command, long timeoutSeconds)
+            throws IOException, InterruptedException {
+        Result result = executeSeparateStreams(command, timeoutSeconds);
+        if (result.exitCode != 0) {
+            String detail = !result.stderr.isBlank() ? result.stderr.trim() : result.output.trim();
+            throw new IOException(describe(command) + " 执行失败，退出码: " + result.exitCode
+                + (detail.isBlank() ? "" : " - " + detail));
+        }
+        return result.output;
+    }
+
+    /**
      * 执行子进程并返回退出码与输出,不对非 0 退出码抛异常
      * 适用于调用方需要自行区分退出码的场景
      *
@@ -61,17 +79,46 @@ public final class ProcessRunner {
      */
     public static Result execute(List<String> command, long timeoutSeconds)
             throws IOException, InterruptedException {
+        return runInternal(command, timeoutSeconds, true);
+    }
+
+    /**
+     * 分离 stdout 与 stderr 执行子进程，均做输出上限保护防止 OOM。
+     */
+    public static Result executeSeparateStreams(List<String> command, long timeoutSeconds)
+            throws IOException, InterruptedException {
+        return runInternal(command, timeoutSeconds, false);
+    }
+
+    private static Result runInternal(List<String> command, long timeoutSeconds, boolean mergeErrorStream)
+            throws IOException, InterruptedException {
         ProcessBuilder processBuilder = new ProcessBuilder(command);
-        processBuilder.redirectErrorStream(true);
+        processBuilder.redirectErrorStream(mergeErrorStream);
 
         Process process = processBuilder.start();
-        StringBuilder output = new StringBuilder();
+        // 立即关闭子进程 stdin，避免 ffmpeg 等工具在交互提示处永久挂起
+        try {
+            process.getOutputStream().close();
+        } catch (IOException ignored) {
+        }
 
-        Thread readerThread = new Thread(
-            () -> drain(process, output),
-            "proc-reader-" + READER_THREAD_SEQ.incrementAndGet());
-        readerThread.setDaemon(true);
-        readerThread.start();
+        StringBuilder stdout = new StringBuilder();
+        StringBuilder stderr = new StringBuilder();
+
+        Thread stdoutThread = new Thread(
+            () -> drain(process.getInputStream(), stdout, MAX_STDOUT_CHARS),
+            "proc-stdout-" + READER_THREAD_SEQ.incrementAndGet());
+        stdoutThread.setDaemon(true);
+        stdoutThread.start();
+
+        Thread stderrThread = null;
+        if (!mergeErrorStream) {
+            stderrThread = new Thread(
+                () -> drain(process.getErrorStream(), stderr, MAX_STDERR_CHARS),
+                "proc-stderr-" + READER_THREAD_SEQ.incrementAndGet());
+            stderrThread.setDaemon(true);
+            stderrThread.start();
+        }
 
         try {
             if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
@@ -79,27 +126,55 @@ public final class ProcessRunner {
             }
 
             // 进程已退出,给输出线程一点时间读完管道里剩下的内容
-            readerThread.join(READER_DRAIN_TIMEOUT_MS);
-
-            synchronized (output) {
-                return new Result(process.exitValue(), output.toString());
+            stdoutThread.join(READER_DRAIN_TIMEOUT_MS);
+            if (stderrThread != null) {
+                stderrThread.join(READER_DRAIN_TIMEOUT_MS);
             }
+
+            String outStr;
+            String errStr;
+            synchronized (stdout) {
+                outStr = stdout.toString();
+            }
+            synchronized (stderr) {
+                errStr = stderr.toString();
+            }
+            return new Result(process.exitValue(), outStr, errStr);
         } finally {
             if (process.isAlive()) {
                 log.warn("强制终止子进程: {}", describe(command));
                 process.destroyForcibly();
+                try {
+                    process.waitFor(KILL_WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
             }
         }
     }
 
-    private static void drain(Process process, StringBuilder output) {
+    private static void drain(java.io.InputStream stream, StringBuilder output, int maxChars) {
+        boolean truncated = false;
         try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+                new InputStreamReader(stream, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 synchronized (output) {
-                    output.append(line).append(System.lineSeparator());
+                    if (output.length() < maxChars) {
+                        int remaining = maxChars - output.length();
+                        if (line.length() <= remaining) {
+                            output.append(line).append(System.lineSeparator());
+                        } else {
+                            output.append(line, 0, remaining);
+                            truncated = true;
+                        }
+                    } else {
+                        truncated = true;
+                    }
                 }
+            }
+            if (truncated) {
+                log.debug("子进程输出超过上限({} chars)，已截断后续诊断输出", maxChars);
             }
         } catch (IOException e) {
             // 超时强杀会关闭管道并在此抛异常,属于预期路径
@@ -117,10 +192,16 @@ public final class ProcessRunner {
     public static final class Result {
         private final int exitCode;
         private final String output;
+        private final String stderr;
 
         Result(int exitCode, String output) {
+            this(exitCode, output, "");
+        }
+
+        Result(int exitCode, String output, String stderr) {
             this.exitCode = exitCode;
             this.output = output;
+            this.stderr = stderr == null ? "" : stderr;
         }
 
         public int getExitCode() {
@@ -129,6 +210,10 @@ public final class ProcessRunner {
 
         public String getOutput() {
             return output;
+        }
+
+        public String getStderr() {
+            return stderr;
         }
 
         public boolean isSuccess() {

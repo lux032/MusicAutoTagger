@@ -84,7 +84,14 @@ public class CoverCandidateService implements AutoCloseable {
             File root = coverArtService.resolveAlbumRootDirectory(folder);
             File coverFile = coverArtService.findCoverFileInDirectory(root);
             byte[] data = null;
-            try { if (coverFile != null) data = Files.readAllBytes(coverFile.toPath()); }
+            try {
+                if (coverFile != null) {
+                    Path coverPath = coverFile.toPath();
+                    if (!Files.isSymbolicLink(coverPath) && Files.size(coverPath) <= ImageCompressor.MAX_INPUT_BYTES) {
+                        data = Files.readAllBytes(coverPath);
+                    }
+                }
+            }
             catch (Exception e) { log.debug("Unable to read local cover {}: {}", coverFile, e.getMessage()); }
             add(result, data, CoverCandidateView.Origin.FOLDER, root.getName(), null,
                 coverFile == null ? null : coverFile.getName(), null);
@@ -355,9 +362,20 @@ public class CoverCandidateService implements AutoCloseable {
 
     private boolean add(List<CoverCandidateView> target, byte[] data, CoverCandidateView.Origin origin,
                         String label, String url, String fileName, String rgid, String note) {
-        if (data == null || data.length == 0) return false;
+        if (data == null || data.length == 0 || data.length > ImageCompressor.MAX_INPUT_BYTES) return false;
+        // 先校验已知图片魔数与尺寸边界；不再对任意不可识别字节无限制调用 ffmpeg
         Optional<UntrustedImageFetcher.Result> inspected = UntrustedImageFetcher.inspect(data);
-        if (inspected.isEmpty()) inspected = convertWithFfmpeg(data);
+        if (inspected.isEmpty()) {
+            // 仅对算术编码 JPEG 等已验证图片魔数但 ImageIO 无法读头的合法图片走受控 ImageCompressor FFmpeg 兜底
+            if (ImageCompressor.detectSafeFfmpegDemuxer(data) == null) {
+                return false;
+            }
+            byte[] converted = ImageCompressor.compressImage(data, ffmpegPath());
+            if (converted == null || converted.length == 0) {
+                return false;
+            }
+            inspected = UntrustedImageFetcher.inspect(converted);
+        }
         if (inspected.isEmpty()) return false;
         return addInspected(target, inspected.get(), origin, label, url, fileName, rgid, note);
     }
@@ -404,24 +422,6 @@ public class CoverCandidateService implements AutoCloseable {
     private String ffmpegPath() {
         String ffmpeg = config == null ? null : config.getAudioNormalizeFfmpegPath();
         return (ffmpeg == null || ffmpeg.isBlank()) ? "ffmpeg" : ffmpeg.trim();
-    }
-
-    private Optional<UntrustedImageFetcher.Result> convertWithFfmpeg(byte[] data) {
-        Path dir = null;
-        try {
-            dir = Files.createTempDirectory("cover-candidate-");
-            Path input = dir.resolve("input.image"), output = dir.resolve("output.jpg");
-            Files.write(input, data);
-            ProcessRunner.Result result = ProcessRunner.execute(List.of(ffmpegPath(), "-y", "-i", input.toString(),
-                "-frames:v", "1", output.toString()), 20);
-            if (!result.isSuccess() || !Files.isRegularFile(output)) return Optional.empty();
-            return UntrustedImageFetcher.inspect(Files.readAllBytes(output));
-        } catch (Exception e) { return Optional.empty(); }
-        finally {
-            if (dir != null) try (var walk = Files.walk(dir)) {
-                for (Path p : walk.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
-            } catch (Exception ignored) {}
-        }
     }
 
     public Optional<ResolvedCover> resolveBySha256(String sha, List<CoverCandidateView> allowed) {

@@ -205,18 +205,26 @@ public class NativeWebSearchClient implements WebSearchClient {
     }
 
     private JsonObject send(String url, String key, String provider, JsonObject body) throws Exception {
+        com.lux032.musicautotagger.util.OutboundUrlValidator.validateAndResolve(
+            url, config.isLlmAllowPrivateEndpoints(), false, false);
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
-            .timeout(Duration.ofSeconds(config.getLlmWebSearchTimeoutSeconds()))
+            .timeout(Duration.ofSeconds(Math.max(5, config.getLlmWebSearchTimeoutSeconds())))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)));
-        if ("anthropic".equals(provider)) {
+        if ("anthropic".equalsIgnoreCase(provider)) {
             builder.header("x-api-key", key).header("anthropic-version", "2023-06-01")
                 .header("anthropic-beta", "web-search-2025-03-05");
         } else builder.header("Authorization", "Bearer " + key);
-        HttpResponse<String> response = http().send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        HttpResponse<java.io.InputStream> response = http().send(
+            builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+        String responseBody;
+        try (java.io.InputStream in = response.body()) {
+            responseBody = com.lux032.musicautotagger.util.OutboundUrlValidator.readBoundedString(
+                in, com.lux032.musicautotagger.util.OutboundUrlValidator.DEFAULT_MAX_RESPONSE_BYTES);
+        }
         if (response.statusCode() == 429 || response.statusCode() >= 500) throw new Retryable("http " + response.statusCode());
-        if (response.statusCode() != 200) throw new IllegalStateException("http " + response.statusCode() + ": " + truncate(response.body()));
-        JsonObject json = gson.fromJson(response.body(), JsonObject.class);
+        if (response.statusCode() != 200) throw new IllegalStateException("http " + response.statusCode() + ": " + truncate(responseBody));
+        JsonObject json = gson.fromJson(responseBody, JsonObject.class);
         if (json == null) throw new Retryable("invalid json");
         return json;
     }

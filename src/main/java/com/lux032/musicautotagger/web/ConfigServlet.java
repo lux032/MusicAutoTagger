@@ -168,7 +168,7 @@ public class ConfigServlet extends HttpServlet {
     }
 
     @Override
-    protected void doPut(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+    protected synchronized void doPut(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         if (!isCsrfValid(req)) {
             respondJson(resp, HttpServletResponse.SC_FORBIDDEN, Map.of("error", "csrf.invalid"));
             return;
@@ -200,7 +200,8 @@ public class ConfigServlet extends HttpServlet {
         handleString(body, updates, propertyUpdates, "animeCoverKeywords", false);
         handleIntegerInRange(body, updates, propertyUpdates, "animeCoverMaxCandidates", 1, 20);
         handleString(body, updates, propertyUpdates, "dbType", false);
-        handleString(body, updates, propertyUpdates, "dbSqlitePath", false);
+        // SQLite 数据库文件路径、队列与工作/回收站目录改为只读：防止会话劫持后指向敏感目录触发覆盖或递归删除
+        rejectIfChanged(body, "dbSqlitePath", config.getDbSqlitePath());
         handleString(body, updates, propertyUpdates, "dbHost", false);
         handleInteger(body, updates, propertyUpdates, "dbPort");
         handleString(body, updates, propertyUpdates, "dbDatabase", false);
@@ -225,13 +226,14 @@ public class ConfigServlet extends HttpServlet {
         handleBoolean(body, updates, propertyUpdates, "cueSplitEnabled");
         handleString(body, updates, propertyUpdates, "cueSplitOutputDir", false);
         handleString(body, updates, propertyUpdates, "releaseCountryPriority", false);
-        // 阶段六：待人工确认开关（队列路径 / 暂存目录仍为只读，只能改 config.properties）
+        // 阶段六：待人工确认开关（队列路径 / 暂存目录 / 工作目录 / 回收站目录均为只读，只能改 config.properties）
         handleBoolean(body, updates, propertyUpdates, "reviewEnabled");
         handleBoolean(body, updates, propertyUpdates, "reviewMissingTracksAutoOnlineSearch");
         handleBoolean(body, updates, propertyUpdates, "coverMissingRequireReview");
         handleBoolean(body, updates, propertyUpdates, "coverMissingAutoOnlineSearch");
         handleBoolean(body, updates, propertyUpdates, "enableLLMMatching");
-        handleBoolean(body, updates, propertyUpdates, "llmAllowPrivateEndpoints");
+        // 允许内网出站端点开关同样只读：防止被劫持会话直接打开 SSRF 通道
+        rejectIfBooleanChanged(body, "llmAllowPrivateEndpoints", config.isLlmAllowPrivateEndpoints());
         handleInteger(body, updates, propertyUpdates, "llmMaxTokens");
         handleDouble(body, updates, propertyUpdates, "llmTemperature");
         handleInteger(body, updates, propertyUpdates, "llmTimeoutSeconds");
@@ -251,11 +253,21 @@ public class ConfigServlet extends HttpServlet {
         handleDouble(body, updates, propertyUpdates, "llmAlbumAutoApplyMinConfidence");
         handleBoolean(body, updates, propertyUpdates, "partialRequireReadableTags");
         handleDouble(body, updates, propertyUpdates, "partialMinTagCoverage");
-        handleString(body, updates, propertyUpdates, "reviewQueuePath", false);
-        handleString(body, updates, propertyUpdates, "reviewStagingDirectory", false);
-        handleString(body, updates, propertyUpdates, "recoveryWorkDirectory", false);
-        handleString(body, updates, propertyUpdates, "recoveryTrashDirectory", false);
+        rejectIfChanged(body, "reviewQueuePath", config.getReviewQueuePath());
+        rejectIfChanged(body, "reviewStagingDirectory", config.getReviewStagingDirectory());
+        rejectIfChanged(body, "recoveryWorkDirectory", config.getRecoveryWorkDirectory());
+        rejectIfChanged(body, "recoveryTrashDirectory", config.getRecoveryTrashDirectory());
         handleInteger(body, updates, propertyUpdates, "recoveryTrashRetentionDays");
+
+        // 防掩码密钥外泄：若修改了目标端点 URL / Host / Port 且当前已存有配对密钥，则不允许继续沿用掩码密钥
+        enforceSecretReentryOnUrlChange(updates, "acoustIdApiUrl", config.getAcoustIdApiUrl(),
+            "acoustIdApiKey", config.getAcoustIdApiKey());
+        enforceSecretReentryOnUrlChange(updates, "tavilyApiUrl", config.getTavilyApiUrl(),
+            "tavilyApiKey", config.getTavilyApiKey());
+        enforceSecretReentryOnHostPortChange(updates, "proxyHost", config.getProxyHost(),
+            "proxyPort", config.getProxyPort(), "proxyPassword", config.getProxyPassword());
+        enforceSecretReentryOnHostPortChange(updates, "dbHost", config.getDbHost(),
+            "dbPort", config.getDbPort(), "dbPassword", config.getDbPassword());
 
         if (updates.isEmpty()) {
             respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "no.updates"));
@@ -400,22 +412,28 @@ public class ConfigServlet extends HttpServlet {
     }
 
     private void writeConfigAtomically(java.util.Properties props) throws IOException {
-        Path tempPath = configPath.resolveSibling("config.properties.tmp");
-        try (FileOutputStream fos = new FileOutputStream(tempPath.toFile())) {
-            props.store(fos, "Updated by web panel");
-        }
-
+        Path normalized = configPath.toAbsolutePath().normalize();
+        Path parent = normalized.getParent();
+        Path tempPath = Files.createTempFile(parent != null ? parent : Path.of("."), ".config.properties-", ".tmp");
         try {
-            Files.move(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (AtomicMoveNotSupportedException e) {
-            try {
-                Files.move(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
-            } catch (IOException moveError) {
-                Files.copy(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
-                deleteTempQuietly(tempPath);
+            com.lux032.musicautotagger.util.OutboundUrlValidator.setOwnerOnlyPermissions(tempPath);
+            try (FileOutputStream fos = new FileOutputStream(tempPath.toFile())) {
+                props.store(fos, "Updated by web panel");
             }
-        } catch (IOException moveError) {
-            Files.copy(tempPath, configPath, StandardCopyOption.REPLACE_EXISTING);
+
+            try {
+                Files.move(tempPath, normalized, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                try {
+                    Files.move(tempPath, normalized, StandardCopyOption.REPLACE_EXISTING);
+                } catch (IOException moveError) {
+                    Files.copy(tempPath, normalized, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } catch (IOException moveError) {
+                Files.copy(tempPath, normalized, StandardCopyOption.REPLACE_EXISTING);
+            }
+            com.lux032.musicautotagger.util.OutboundUrlValidator.setOwnerOnlyPermissions(normalized);
+        } finally {
             deleteTempQuietly(tempPath);
         }
     }
@@ -424,6 +442,7 @@ public class ConfigServlet extends HttpServlet {
         try (FileOutputStream fos = new FileOutputStream(configPath.toFile())) {
             props.store(fos, "Updated by web panel");
         }
+        com.lux032.musicautotagger.util.OutboundUrlValidator.setOwnerOnlyPermissions(configPath);
     }
 
     private void deleteTempQuietly(Path path) {
@@ -708,7 +727,14 @@ public class ConfigServlet extends HttpServlet {
         }
 
         if (trimmedValue != null && absolutePathFields.contains(field)) {
-            if (!Paths.get(trimmedValue).isAbsolute()) {
+            Path parsed;
+            try {
+                parsed = Paths.get(trimmedValue).normalize();
+            } catch (java.nio.file.InvalidPathException e) {
+                throwValidation("path.invalid", field);
+                return;
+            }
+            if (!parsed.isAbsolute() || parsed.getParent() == null) {
                 throwValidation("path.must.be.absolute", field);
             }
         }
@@ -774,6 +800,9 @@ public class ConfigServlet extends HttpServlet {
     }
 
     private double clamp(double value, double min, double max) {
+        if (!Double.isFinite(value)) {
+            return min;
+        }
         return Math.max(min, Math.min(max, value));
     }
 
@@ -782,7 +811,7 @@ public class ConfigServlet extends HttpServlet {
         if (!body.containsKey(field)) {
             return;
         }
-        Double value = asDouble(body.get(field));
+        Double value = asDouble(body.get(field), field);
         if (value == null) {
             return;
         }
@@ -790,19 +819,26 @@ public class ConfigServlet extends HttpServlet {
         setPropertyUpdate(propertyUpdates, field, String.valueOf(value));
     }
 
-    private Double asDouble(Object value) throws IOException {
+    private Double asDouble(Object value, String field) throws IOException {
         if (value == null) {
             return null;
         }
+        double parsed;
         if (value instanceof Number number) {
-            return number.doubleValue();
+            parsed = number.doubleValue();
+        } else {
+            try {
+                parsed = Double.parseDouble(String.valueOf(value));
+            } catch (NumberFormatException e) {
+                throwValidation("number.invalid", field);
+                return null;
+            }
         }
-        try {
-            return Double.parseDouble(String.valueOf(value));
-        } catch (NumberFormatException e) {
-            throwValidation("number.invalid", null);
+        if (!Double.isFinite(parsed)) {
+            throwValidation("number.invalid", field);
             return null;
         }
+        return parsed;
     }
 
     /**
@@ -882,6 +918,56 @@ public class ConfigServlet extends HttpServlet {
         }
     }
 
+    private void rejectIfBooleanChanged(Map<String, Object> body, String field, boolean currentValue) throws IOException {
+        if (!body.containsKey(field)) {
+            return;
+        }
+        Boolean incoming = asBoolean(body.get(field));
+        if (incoming != null && incoming.booleanValue() != currentValue) {
+            log.warn("拒绝通过 API 修改只读开关 {}(当前值 [{}],请求值 [{}])", field, currentValue, incoming);
+            throwValidation("field.readonly", field);
+        }
+    }
+
+    private void enforceSecretReentryOnUrlChange(Map<String, Object> updates,
+                                                 String urlField, String currentUrl,
+                                                 String secretField, String currentSecret) throws IOException {
+        if (!isSet(currentSecret) || !updates.containsKey(urlField) || updates.containsKey(secretField)) {
+            return;
+        }
+        String newUrl = (String) updates.get(urlField);
+        String oldTrimmed = currentUrl == null ? "" : currentUrl.trim();
+        String newTrimmed = newUrl == null ? "" : newUrl.trim();
+        if (oldTrimmed.equals(newTrimmed)) {
+            return;
+        }
+        if (!com.lux032.musicautotagger.util.OutboundUrlValidator.sameOrigin(oldTrimmed, newTrimmed)) {
+            log.warn("拒绝在修改 {} 时沿用掩码密钥 {}", urlField, secretField);
+            throwValidation("secret.required.on.endpoint.change", secretField);
+        }
+    }
+
+    private void enforceSecretReentryOnHostPortChange(Map<String, Object> updates,
+                                                      String hostField, String currentHost,
+                                                      String portField, int currentPort,
+                                                      String secretField, String currentSecret) throws IOException {
+        if (!isSet(currentSecret) || updates.containsKey(secretField)) {
+            return;
+        }
+        boolean hostChanged = false;
+        if (updates.containsKey(hostField)) {
+            String oldHost = currentHost == null ? "" : currentHost.trim();
+            String newHost = updates.get(hostField) == null ? "" : String.valueOf(updates.get(hostField)).trim();
+            hostChanged = !oldHost.equalsIgnoreCase(newHost);
+        }
+        boolean portChanged = updates.containsKey(portField)
+            && updates.get(portField) instanceof Integer p && p != currentPort;
+        if (hostChanged || portChanged) {
+            log.warn("拒绝在修改 {}:{} 时沿用掩码密钥 {}", hostField, portField, secretField);
+            throwValidation("secret.required.on.endpoint.change", secretField);
+        }
+    }
+
     /**
      * 有值则返回占位符,无值则返回 null
      */
@@ -900,13 +986,21 @@ public class ConfigServlet extends HttpServlet {
         }
         String token = req.getHeader("X-CSRF-Token");
         String sessionToken = (String) session.getAttribute(SESSION_CSRF_KEY);
-        return sessionToken != null && sessionToken.equals(token);
+        if (sessionToken == null || token == null) {
+            return false;
+        }
+        return java.security.MessageDigest.isEqual(
+            sessionToken.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+            token.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private Map<String, Object> readBodyAsMap(HttpServletRequest req) throws IOException {
         try (BufferedReader reader = req.getReader()) {
             Map<String, Object> data = gson.fromJson(reader, Map.class);
             return data == null ? new HashMap<>() : data;
+        } catch (com.google.gson.JsonParseException e) {
+            throwValidation("body.invalid", null);
+            return new HashMap<>();
         }
     }
 

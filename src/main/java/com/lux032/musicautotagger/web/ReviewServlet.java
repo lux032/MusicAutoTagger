@@ -342,10 +342,7 @@ public class ReviewServlet extends HttpServlet {
             respond(resp, 404, Map.of("error", "item.not.found"));
             return;
         }
-        // expand=1 会打 MusicBrainz，把候选展开到 release 级并计算时长相似度
-        if ("1".equals(req.getParameter("expand")) || "true".equals(req.getParameter("expand"))) {
-            item = resolutionService.expandCandidates(id);
-        }
+        // 注意：GET 端点保持严格只读无副作用；展开候选必须通过 POST /api/review/expand（带 CSRF 校验）触发
         respond(resp, 200, Map.of("item", toDetail(item)));
     }
 

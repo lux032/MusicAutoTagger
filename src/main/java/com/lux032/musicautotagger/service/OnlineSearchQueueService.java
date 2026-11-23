@@ -490,11 +490,28 @@ public class OnlineSearchQueueService implements AutoCloseable {
             } else {
                 return false;
             }
+            if (futureToCancel != null) {
+                futureToCancel.cancel(true);
+            }
+            // 若在工作线程进入 executeTask 之前就取消了 Future，FutureTask 不会执行 executeTask，
+            // 这里通过 CAS 接管收尾，彻底防止并发槽永久泄漏导致整条队列死锁。
+            boolean preemptedBeforeStart = rTask.started.compareAndSet(false, true);
+            if (preemptedBeforeStart) {
+                running.remove(rTask);
+                rTask.status = Status.CANCELLED;
+                rTask.stageCode = "CANCELLED";
+                rTask.finishedAt = System.currentTimeMillis();
+                rTask.updatedAt = rTask.finishedAt;
+                recordFinishedLocked(rTask);
+                dispatchNextLocked();
+            }
+            if (preemptedBeforeStart) {
+                final SearchTask cancelledTask = rTask;
+                // 避免持 queue lock 调 reviewQueue，移出锁外重置
+                workers.submit(() -> resetStuckCoverSearchStatus(cancelledTask, "IDLE", null));
+            }
+            return true;
         }
-        if (futureToCancel != null) {
-            futureToCancel.cancel(true);
-        }
-        return true;
     }
 
     /** 重试已失败或已中止的任务（以手动高优先级重新入队） */
@@ -607,6 +624,37 @@ public class OnlineSearchQueueService implements AutoCloseable {
     }
 
     private void executeTask(SearchTask task) {
+        if (!task.started.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            executeTaskBody(task);
+        } catch (Throwable t) {
+            log.error("LLM 搜索任务出现未预期致命异常: {}", task.folderName, t);
+            finishFailed(task, t instanceof Exception e ? e : new RuntimeException(t));
+            if (t instanceof Error err) {
+                throw err;
+            }
+        } finally {
+            ensureExitedRunning(task);
+        }
+    }
+
+    private void ensureExitedRunning(SearchTask task) {
+        synchronized (lock) {
+            if (running.remove(task)) {
+                if (task.status == Status.RUNNING) {
+                    task.status = task.cancelRequested ? Status.CANCELLED : Status.FAILED;
+                    task.finishedAt = System.currentTimeMillis();
+                    task.updatedAt = task.finishedAt;
+                    recordFinishedLocked(task);
+                }
+                dispatchNextLocked();
+            }
+        }
+    }
+
+    private void executeTaskBody(SearchTask task) {
         try {
             // 后台自动搜索：在真正开始执行时才在队列锁内认领，确保关机时排队的任务重启还能补跑
             if (task.origin == Origin.MISSING_TRACKS_AUTO && task.reviewItemId != null && reviewQueue != null) {
@@ -1098,6 +1146,7 @@ public class OnlineSearchQueueService implements AutoCloseable {
         private long finishedAt;
 
         private volatile boolean cancelRequested;
+        private final java.util.concurrent.atomic.AtomicBoolean started = new java.util.concurrent.atomic.AtomicBoolean(false);
         private Future<?> future;
 
         Map<String, Object> toView(Integer queuePosition) {

@@ -6,6 +6,7 @@ import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.util.ArtistCreditSupport;
 import com.lux032.musicautotagger.util.FileNameSanitizer;
 import com.lux032.musicautotagger.util.FlacId3Stripper;
+import com.lux032.musicautotagger.util.MetadataUtils;
 import com.lux032.musicautotagger.util.TagQualityEvaluator;
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
@@ -72,6 +73,20 @@ public class TagWriterService {
     public enum CollisionPolicy { REPLACE_SAME_AUDIO, PRESERVE_ALL }
     private final ThreadLocal<CollisionPolicy> collisionPolicyOverride = new ThreadLocal<>();
     private final ThreadLocal<Path> expectedReplaceTargetOverride = new ThreadLocal<>();
+    private final ThreadLocal<Set<Path>> batchWrittenTargets = new ThreadLocal<>();
+
+    /** 同批次专辑写入守卫：防止同一批次内两首等长曲目（如原唱与伴奏）写到同一目标路径互相覆盖。 */
+    public AutoCloseable batchNoIntraClobberScope() {
+        Set<Path> previous = batchWrittenTargets.get();
+        batchWrittenTargets.set(new java.util.HashSet<>());
+        return () -> {
+            if (previous == null) {
+                batchWrittenTargets.remove();
+            } else {
+                batchWrittenTargets.set(previous);
+            }
+        };
+    }
 
     /** Same-thread scope; nested scopes restore both values, including on exceptions. */
     public final class OutputScope implements AutoCloseable {
@@ -259,13 +274,16 @@ public class TagWriterService {
     private File publishWithoutClobbering(File sourceFile, File targetFile, Path staged) throws IOException {
         Double sourceDuration = null;
         boolean sourceDurationRead = false;
+        Set<Path> batchWritten = batchWrittenTargets.get();
 
         File candidate = targetFile;
         for (int attempt = 1; attempt <= MAX_CONFLICT_SUFFIX; attempt++) {
+            Path normalizedCandidate = candidate.toPath().toAbsolutePath().normalize();
             if (!candidate.exists()) {
                 try {
                     // 不带 REPLACE_EXISTING：若并发线程抢先创建了同名文件，会抛异常并重新判定
                     publish(sourceFile, staged, candidate.toPath(), false);
+                    if (batchWritten != null) batchWritten.add(normalizedCandidate);
                     logCopy(sourceFile, candidate, targetFile);
                     return candidate;
                 } catch (java.nio.file.FileAlreadyExistsException raced) {
@@ -277,10 +295,16 @@ public class TagWriterService {
                 candidate = withConflictSuffix(targetFile, attempt + 1);
                 continue;
             }
+            if (batchWritten != null && batchWritten.contains(normalizedCandidate)) {
+                log.warn("⚠ 同批次目标路径冲突，保留先写入音轨并另存: {}", candidate.getName());
+                candidate = withConflictSuffix(targetFile, attempt + 1);
+                continue;
+            }
             Path expectedReplaceTarget = expectedReplaceTargetOverride.get();
             if (expectedReplaceTarget != null
-                && candidate.toPath().toAbsolutePath().normalize().equals(expectedReplaceTarget)) {
+                && normalizedCandidate.equals(expectedReplaceTarget)) {
                 publish(sourceFile, staged, candidate.toPath(), true);
+                if (batchWritten != null) batchWritten.add(normalizedCandidate);
                 logCopy(sourceFile, candidate, targetFile);
                 return candidate;
             }
@@ -289,9 +313,12 @@ public class TagWriterService {
                 sourceDurationRead = true;
             }
             Double existingDuration = readPreciseDuration(candidate);
+            File contentToCheck = staged != null ? staged.toFile() : sourceFile;
             if (sourceDuration != null && existingDuration != null
-                && Math.abs(sourceDuration - existingDuration) <= SAME_AUDIO_DURATION_TOLERANCE_SECONDS) {
+                && Math.abs(sourceDuration - existingDuration) <= SAME_AUDIO_DURATION_TOLERANCE_SECONDS
+                && !isProvablyDifferentAudio(contentToCheck, candidate)) {
                 publish(sourceFile, staged, candidate.toPath(), true);
+                if (batchWritten != null) batchWritten.add(normalizedCandidate);
                 logCopy(sourceFile, candidate, targetFile);
                 return candidate;
             }
@@ -303,6 +330,71 @@ public class TagWriterService {
         throw new IOException("目标文件名冲突过多，放弃写入: " + targetFile.getAbsolutePath());
     }
 
+    /**
+     * 当两首文件时长接近时，进一步基于无损音频流指纹（FLAC STREAMINFO MD5）及元数据特征判断是否为不同音轨
+     * （例如同长度的原唱与伴奏/Off Vocal），避免误覆盖导致曲目丢失。
+     */
+    private boolean isProvablyDifferentAudio(File incoming, File existing) {
+        if (incoming == null || existing == null) {
+            return false;
+        }
+        String md5A = readFlacStreaminfoMd5(incoming);
+        String md5B = readFlacStreaminfoMd5(existing);
+        if (md5A != null && md5B != null && !md5A.equals(md5B)) {
+            return true;
+        }
+        try {
+            MusicMetadata mdA = readTags(incoming);
+            MusicMetadata mdB = readTags(existing);
+            if (mdA != null && mdB != null) {
+                if (mdA.getRecordingId() != null && !mdA.getRecordingId().isBlank()
+                    && mdB.getRecordingId() != null && !mdB.getRecordingId().isBlank()
+                    && !mdA.getRecordingId().equals(mdB.getRecordingId())) {
+                    return true;
+                }
+                if (mdA.getTitle() != null && !mdA.getTitle().isBlank()
+                    && mdB.getTitle() != null && !mdB.getTitle().isBlank()
+                    && MetadataUtils.hasVersionQualifier(mdA.getTitle()) != MetadataUtils.hasVersionQualifier(mdB.getTitle())) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private static String readFlacStreaminfoMd5(File file) {
+        if (file == null || !file.getName().toLowerCase(Locale.ROOT).endsWith(".flac")) {
+            return null;
+        }
+        try (java.io.InputStream in = Files.newInputStream(file.toPath())) {
+            byte[] head = in.readNBytes(42);
+            if (head.length < 42 || head[0] != 'f' || head[1] != 'L' || head[2] != 'a' || head[3] != 'C') {
+                return null;
+            }
+            if ((head[4] & 0x7f) != 0) {
+                return null;
+            }
+            int blockLen = ((head[5] & 0xff) << 16) | ((head[6] & 0xff) << 8) | (head[7] & 0xff);
+            if (blockLen < 34) {
+                return null;
+            }
+            boolean allZero = true;
+            for (int i = 26; i < 42; i++) {
+                if (head[i] != 0) {
+                    allZero = false;
+                    break;
+                }
+            }
+            if (allZero) {
+                return null;
+            }
+            return HexFormat.of().formatHex(head, 26, 42);
+        } catch (IOException ignored) {
+            return null;
+        }
+    }
+
     private void publish(File source, Path staged, Path target, boolean replace) throws IOException {
         if (staged == null) {
             if (replace) {
@@ -311,7 +403,11 @@ public class TagWriterService {
                 Files.copy(source.toPath(), target);
             }
         } else if (replace) {
-            Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            try {
+                Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING);
+            }
         } else {
             Files.move(staged, target);
         }
@@ -1217,6 +1313,35 @@ public class TagWriterService {
                 .add(artwork.getMimeType() + ":" + artwork.getDescription() + ":"
                     + artwork.getPictureType() + ":" + artwork.getImageUrl() + ":"
                     + (binary == null ? "" : Base64.getEncoder().encodeToString(binary)));
+        }
+    }
+
+    /** 在本地入库前预校验单轨受保护的结构化 ARTISTS 信用，避免缺封面拦截绕过保护校验。 */
+    void validateLocalArchiveTrackPermissions(Path file, List<String> trackArtists, boolean inheritAlbumArtists)
+            throws IOException {
+        if (!inheritAlbumArtists && trackArtists == null) {
+            return;
+        }
+        if (FlacId3Stripper.hasUnsafeId3(file.toFile())) {
+            throw new IOException("local.archive.write.failed");
+        }
+        try {
+            AudioFile audio = AudioFileIO.read(file.toFile());
+            Tag tag = audio.getTag();
+            String trackArtist = tag == null ? null : tag.getFirst(FieldKey.ARTIST);
+            List<String> existingArtists = tag == null ? null : readArtistNames(tag, FieldKey.ARTISTS);
+            if (inheritAlbumArtists) {
+                if ((trackArtist != null && !trackArtist.isBlank()) || existingArtists != null) {
+                    throw new IOException("local.archive.stale");
+                }
+            } else if (!LocalArchiveDraft.canSplitTrackCredit(trackArtist, existingArtists)) {
+                throw new IOException("local.archive.stale");
+            }
+        } catch (IOException e) {
+            if ("local.archive.stale".equals(e.getMessage())) throw e;
+            throw new IOException("local.archive.write.failed", e);
+        } catch (Exception e) {
+            throw new IOException("local.archive.write.failed", e);
         }
     }
 

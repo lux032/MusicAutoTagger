@@ -286,7 +286,10 @@ public class TavilyWebSearchClient implements WebSearchClient {
             body.add("include_domains", include);
         }
 
-        HttpRequest request = HttpRequest.newBuilder(URI.create(config.getTavilyApiUrl()))
+        String tavilyUrl = config.getTavilyApiUrl();
+        com.lux032.musicautotagger.util.OutboundUrlValidator.validateAndResolve(
+            tavilyUrl, config.isLlmAllowPrivateEndpoints(), false, false);
+        HttpRequest request = HttpRequest.newBuilder(URI.create(tavilyUrl))
             .header("Content-Type", "application/json")
             // 新版 Tavily 用 Bearer；旧版的 body.api_key 已废弃，不再兼容以免混淆错误信息
             .header("Authorization", "Bearer " + config.getTavilyApiKey())
@@ -294,15 +297,21 @@ public class TavilyWebSearchClient implements WebSearchClient {
             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)))
             .build();
 
-        HttpResponse<String> response = http().send(request, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<java.io.InputStream> response = http().send(
+            request, HttpResponse.BodyHandlers.ofInputStream());
+        String responseBody;
+        try (java.io.InputStream in = response.body()) {
+            responseBody = com.lux032.musicautotagger.util.OutboundUrlValidator.readBoundedString(
+                in, com.lux032.musicautotagger.util.OutboundUrlValidator.DEFAULT_MAX_RESPONSE_BYTES);
+        }
         if (response.statusCode() != 200) {
             throw new IllegalStateException("tavily http " + response.statusCode()
-                + ": " + truncate(response.body(), 300));
+                + ": " + truncate(responseBody, 300));
         }
 
         JsonObject json;
         try {
-            json = gson.fromJson(response.body(), JsonObject.class);
+            json = gson.fromJson(responseBody, JsonObject.class);
         } catch (JsonSyntaxException e) {
             throw new IllegalStateException("tavily 响应不是合法 JSON");
         }

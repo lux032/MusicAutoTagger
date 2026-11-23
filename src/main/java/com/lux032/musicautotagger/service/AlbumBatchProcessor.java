@@ -389,8 +389,17 @@ public class AlbumBatchProcessor {
         }
 
         // 指纹未识别的文件（没有 recordingId，使用原标签）：在选定版本里按时长定位，
-        // 对不上的作为附加曲目，避免原标签里的曲目号与版本曲目冲突。
+        // 批次内追踪已占用的 (discNo:trackNo) 槽位，避免同长度的原唱/伴奏或未识别轨抢占同一位置。
         if (!unresolvedAlbum && albumInfo.getReleaseId() != null && !albumInfo.getReleaseId().isEmpty()) {
+            java.util.Set<String> claimedPositions = new java.util.HashSet<>();
+            for (FolderAlbumCache.PendingFile pending : pendingFiles) {
+                MusicMetadata md = (MusicMetadata) pending.getMetadata();
+                if (md != null && md.getRecordingId() != null && !md.getRecordingId().isEmpty()
+                    && md.getTrackNo() != null && !md.getTrackNo().isBlank()) {
+                    String disc = (md.getDiscNo() == null || md.getDiscNo().isBlank()) ? "1" : md.getDiscNo().trim();
+                    claimedPositions.add(disc + ":" + md.getTrackNo().trim());
+                }
+            }
             LockedReleaseTrackResolver resolver = new LockedReleaseTrackResolver(musicBrainzClient);
             for (FolderAlbumCache.PendingFile pending : pendingFiles) {
                 MusicMetadata md = (MusicMetadata) pending.getMetadata();
@@ -398,10 +407,16 @@ public class AlbumBatchProcessor {
                     || md.isExtraTrack()) {
                     continue;
                 }
-                pending.setMetadata(resolver.resolve(md, md.getDuration(),
+                MusicMetadata resolved = resolver.resolve(md, md.getDuration(),
                     albumInfo.getReleaseId(), albumInfo.getReleaseGroupId(),
                     albumInfo.getAlbumTitle(), albumInfo.getAlbumArtist(),
-                    albumInfo.getReleaseType(), albumInfo.isCompilation()).getMetadata());
+                    albumInfo.getReleaseType(), albumInfo.isCompilation(),
+                    claimedPositions).getMetadata();
+                if (resolved != null && resolved.getTrackNo() != null && !resolved.getTrackNo().isBlank()) {
+                    String disc = (resolved.getDiscNo() == null || resolved.getDiscNo().isBlank()) ? "1" : resolved.getDiscNo().trim();
+                    claimedPositions.add(disc + ":" + resolved.getTrackNo().trim());
+                }
+                pending.setMetadata(resolved);
             }
         }
 
@@ -411,7 +426,8 @@ public class AlbumBatchProcessor {
         // 写入失败也要计入失败（processAndWriteFile 内部会吃掉异常），
         // 否则人工确认链路会把「写失败」当成成功。
         List<String> failedFileNames = new ArrayList<>();
-        
+
+        try (AutoCloseable ignoredBatchGuard = tagWriter.batchNoIntraClobberScope()) {
         for (FolderAlbumCache.PendingFile pending : pendingFiles) {
             try {
                 File audioFile = pending.getProcessingFile() != null ? pending.getProcessingFile() : pending.getAudioFile();
@@ -488,6 +504,9 @@ public class AlbumBatchProcessor {
             } finally {
                 cleanupPendingTemp(pending);
             }
+        }
+        } catch (Exception ignoredClose) {
+            log.debug("关闭同批次防覆盖守卫异常: {}", ignoredClose.getMessage());
         }
         
         log.info("========================================");

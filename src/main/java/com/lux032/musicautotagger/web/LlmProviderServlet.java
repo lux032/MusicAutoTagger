@@ -82,10 +82,10 @@ public class LlmProviderServlet extends HttpServlet {
             incoming = new ArrayList<>();
         }
 
-        Map<String, String> existingKeys = new HashMap<>();
+        Map<String, LlmProviderConfig> existingById = new HashMap<>();
         for (LlmProviderConfig provider : safeProviders()) {
             if (provider.getId() != null) {
-                existingKeys.put(provider.getId(), provider.getApiKey());
+                existingById.put(provider.getId(), provider);
             }
         }
 
@@ -103,9 +103,20 @@ public class LlmProviderServlet extends HttpServlet {
             if (provider.getApiUrl() != null) {
                 provider.setApiUrl(provider.getApiUrl().trim());
             }
-            // 掩码原样回传 = 保持原密钥不变；否则新配的供应商一保存就会把密钥抹成 "********"
+            // 掩码原样回传 = 保持原密钥不变，但仅在目标 Origin 未变化时允许复用，防止改 URL 窃取已存密钥
             if (SECRET_MASK.equals(provider.getApiKey())) {
-                provider.setApiKey(existingKeys.get(provider.getId()));
+                LlmProviderConfig existing = existingById.get(provider.getId());
+                if (existing != null && isSet(existing.getApiKey())) {
+                    if (!com.lux032.musicautotagger.util.OutboundUrlValidator.sameOrigin(
+                            existing.getApiUrl(), provider.getApiUrl())) {
+                        respondJson(resp, HttpServletResponse.SC_BAD_REQUEST,
+                            Map.of("error", "api.key.required.on.url.change"));
+                        return;
+                    }
+                    provider.setApiKey(existing.getApiKey());
+                } else {
+                    provider.setApiKey("");
+                }
             }
             provider.setFormat(provider.normalizedFormat());
             if (provider.getModels() == null) {
@@ -114,10 +125,12 @@ public class LlmProviderServlet extends HttpServlet {
             normalized.add(provider);
         }
 
-        config.setLlmProviders(normalized);
+        List<LlmProviderConfig> previous = config.getLlmProviders();
         try {
+            config.setLlmProviders(normalized);
             config.saveLlmProviders();
         } catch (IOException e) {
+            config.setLlmProviders(previous);
             log.error("保存 LLM 供应商配置失败", e);
             respondJson(resp, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, Map.of("error", "save.failed"));
             return;
@@ -154,9 +167,19 @@ public class LlmProviderServlet extends HttpServlet {
         String apiUrl = str(body.get("apiUrl"));
         String format = str(body.get("format"));
         String apiKey = str(body.get("apiKey"));
-        // 面板上编辑已有供应商时密钥是掩码，此时取已保存的真实值
+        // 面板上编辑已有供应商时密钥是掩码；仅在请求的 apiUrl 与已保存供应商 Origin 完全一致时才复用真实密钥
         if (apiKey == null || apiKey.isBlank() || SECRET_MASK.equals(apiKey)) {
-            apiKey = lookupKey(str(body.get("id")));
+            LlmProviderConfig existing = lookupProvider(str(body.get("id")));
+            if (existing != null && isSet(existing.getApiKey())) {
+                if (!com.lux032.musicautotagger.util.OutboundUrlValidator.sameOrigin(existing.getApiUrl(), apiUrl)) {
+                    respondJson(resp, HttpServletResponse.SC_BAD_REQUEST,
+                        Map.of("error", "api.key.required.on.url.change"));
+                    return;
+                }
+                apiKey = existing.getApiKey();
+            } else {
+                apiKey = null;
+            }
         }
 
         try {
@@ -175,13 +198,13 @@ public class LlmProviderServlet extends HttpServlet {
         }
     }
 
-    private String lookupKey(String providerId) {
+    private LlmProviderConfig lookupProvider(String providerId) {
         if (providerId == null) {
             return null;
         }
         for (LlmProviderConfig provider : safeProviders()) {
             if (providerId.equals(provider.getId())) {
-                return provider.getApiKey();
+                return provider;
             }
         }
         return null;

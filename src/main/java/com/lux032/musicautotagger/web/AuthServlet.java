@@ -11,20 +11,33 @@ import org.mindrot.jbcrypt.BCrypt;
 
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.util.ArrayDeque;
 import java.util.Base64;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class AuthServlet extends HttpServlet {
 
     private static final String SESSION_USER_KEY = "authUser";
     private static final String SESSION_CSRF_KEY = "csrfToken";
     private static final int SESSION_TIMEOUT_SECONDS = 30 * 60;
+    private static final int MAX_LOGIN_FAILURES = 10;
+    private static final long LOGIN_WINDOW_MILLIS = 15L * 60 * 1000;
+    private static final int MAX_TRACKED_CLIENTS = 1024;
+    /** 用户名不存在时执行的虚拟 BCrypt 校验，消除用户名时序枚举侧信道 */
+    private static final String DUMMY_BCRYPT_HASH =
+        "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW";
 
     private final AdminCredentialsStore credentialsStore;
     private final Gson gson;
     private final SecureRandom random;
+    private final Map<String, Deque<Long>> loginFailuresByClient = new ConcurrentHashMap<>();
+    private final Object setupLock = new Object();
 
     public AuthServlet(AdminCredentialsStore credentialsStore) {
         this.credentialsStore = credentialsStore;
@@ -100,6 +113,12 @@ public class AuthServlet extends HttpServlet {
     }
 
     private void handleLogin(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        String clientKey = clientKey(req);
+        if (isRateLimited(clientKey)) {
+            respondJson(resp, 429, Map.of("error", "too.many.attempts"));
+            return;
+        }
+
         AdminCredentialsStore.AdminCredentials creds = credentialsStore.load();
         if (creds == null) {
             respondJson(resp, HttpServletResponse.SC_CONFLICT, Map.of("error", "admin.not.setup"));
@@ -107,6 +126,10 @@ public class AuthServlet extends HttpServlet {
         }
 
         Map<String, String> body = readBodyAsMap(req);
+        if (body == null) {
+            respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "body.invalid"));
+            return;
+        }
         String username = body.get("username");
         String password = body.get("password");
 
@@ -117,17 +140,16 @@ public class AuthServlet extends HttpServlet {
             return;
         }
 
-        if (!username.equals(creds.username)) {
+        boolean userMatches = username.equals(creds.username);
+        String hashToVerify = userMatches ? creds.passwordHash : DUMMY_BCRYPT_HASH;
+        boolean passwordValid = BCrypt.checkpw(password, hashToVerify);
+        if (!userMatches || !passwordValid) {
+            recordLoginFailure(clientKey);
             respondJson(resp, HttpServletResponse.SC_UNAUTHORIZED, Map.of("error", "invalid.credentials"));
             return;
         }
 
-        boolean valid = BCrypt.checkpw(password, creds.passwordHash);
-        if (!valid) {
-            respondJson(resp, HttpServletResponse.SC_UNAUTHORIZED, Map.of("error", "invalid.credentials"));
-            return;
-        }
-
+        clearLoginFailures(clientKey);
         HttpSession session = createSession(req, username);
 
         Map<String, Object> payload = new HashMap<>();
@@ -138,34 +160,40 @@ public class AuthServlet extends HttpServlet {
     }
 
     private void handleSetup(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        if (credentialsStore.load() != null) {
-            respondJson(resp, HttpServletResponse.SC_CONFLICT, Map.of("error", "admin.already.setup"));
+        Map<String, String> body = readBodyAsMap(req);
+        if (body == null) {
+            respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "body.invalid"));
             return;
         }
-
-        Map<String, String> body = readBodyAsMap(req);
         String username = body.get("username");
         String password = body.get("password");
 
-        if (username == null || password == null) {
+        if (username == null || username.trim().isEmpty() || password == null) {
             respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "missing.credentials"));
             return;
         }
+        String normalizedUser = username.trim();
 
         if (password.length() < 8) {
             respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "password.too.short"));
             return;
         }
 
-        String hash = BCrypt.hashpw(password, BCrypt.gensalt(12));
-        AdminCredentialsStore.AdminCredentials creds = new AdminCredentialsStore.AdminCredentials(
-            username, hash, java.time.Instant.now().toString());
-        credentialsStore.save(creds);
+        synchronized (setupLock) {
+            if (credentialsStore.load() != null) {
+                respondJson(resp, HttpServletResponse.SC_CONFLICT, Map.of("error", "admin.already.setup"));
+                return;
+            }
+            String hash = BCrypt.hashpw(password, BCrypt.gensalt(12));
+            AdminCredentialsStore.AdminCredentials creds = new AdminCredentialsStore.AdminCredentials(
+                normalizedUser, hash, java.time.Instant.now().toString());
+            credentialsStore.save(creds);
+        }
 
-        HttpSession session = createSession(req, username);
+        HttpSession session = createSession(req, normalizedUser);
         Map<String, Object> payload = new HashMap<>();
         payload.put("authenticated", true);
-        payload.put("username", username);
+        payload.put("username", normalizedUser);
         payload.put("csrfToken", session.getAttribute(SESSION_CSRF_KEY));
         respondJson(resp, HttpServletResponse.SC_OK, payload);
     }
@@ -189,6 +217,10 @@ public class AuthServlet extends HttpServlet {
         }
 
         Map<String, String> body = readBodyAsMap(req);
+        if (body == null) {
+            respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "body.invalid"));
+            return;
+        }
         String currentPassword = body.get("currentPassword");
         String newPassword = body.get("newPassword");
 
@@ -212,7 +244,15 @@ public class AuthServlet extends HttpServlet {
             creds.username, newHash, java.time.Instant.now().toString());
         credentialsStore.save(updated);
 
-        respondJson(resp, HttpServletResponse.SC_OK, Map.of("updated", true));
+        // 改密后轮换 Session ID 与 CSRF Token，降低会话固定风险
+        try {
+            req.changeSessionId();
+        } catch (IllegalStateException ignored) {
+        }
+        String newCsrf = generateToken();
+        session.setAttribute(SESSION_CSRF_KEY, newCsrf);
+
+        respondJson(resp, HttpServletResponse.SC_OK, Map.of("updated", true, "csrfToken", newCsrf));
     }
 
     private void handleLogout(HttpServletRequest req, HttpServletResponse resp) throws IOException {
@@ -227,14 +267,30 @@ public class AuthServlet extends HttpServlet {
         respondJson(resp, HttpServletResponse.SC_OK, Map.of("authenticated", false));
     }
 
+    @SuppressWarnings("unchecked")
     private Map<String, String> readBodyAsMap(HttpServletRequest req) throws IOException {
         try (BufferedReader reader = req.getReader()) {
-            Map<String, String> data = gson.fromJson(reader, Map.class);
-            return data == null ? new HashMap<>() : data;
+            Map<String, Object> raw = gson.fromJson(reader, Map.class);
+            if (raw == null) {
+                return new HashMap<>();
+            }
+            Map<String, String> result = new HashMap<>();
+            for (Map.Entry<String, Object> entry : raw.entrySet()) {
+                if (entry.getKey() != null && entry.getValue() instanceof String s) {
+                    result.put(entry.getKey(), s);
+                }
+            }
+            return result;
+        } catch (com.google.gson.JsonParseException | ClassCastException e) {
+            return null;
         }
     }
 
     private HttpSession createSession(HttpServletRequest req, String username) {
+        HttpSession existing = req.getSession(false);
+        if (existing != null) {
+            existing.invalidate();
+        }
         HttpSession session = req.getSession(true);
         session.setMaxInactiveInterval(SESSION_TIMEOUT_SECONDS);
         session.setAttribute(SESSION_USER_KEY, username);
@@ -250,7 +306,50 @@ public class AuthServlet extends HttpServlet {
         }
         String token = req.getHeader("X-CSRF-Token");
         String sessionToken = (String) session.getAttribute(SESSION_CSRF_KEY);
-        return sessionToken != null && sessionToken.equals(token);
+        if (sessionToken == null || token == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+            sessionToken.getBytes(StandardCharsets.UTF_8),
+            token.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private String clientKey(HttpServletRequest req) {
+        String remote = req.getRemoteAddr();
+        return remote == null || remote.isBlank() ? "unknown" : remote;
+    }
+
+    private boolean isRateLimited(String clientKey) {
+        Deque<Long> deque = loginFailuresByClient.get(clientKey);
+        if (deque == null) {
+            return false;
+        }
+        long cutoff = System.currentTimeMillis() - LOGIN_WINDOW_MILLIS;
+        synchronized (deque) {
+            while (!deque.isEmpty() && deque.peekFirst() < cutoff) {
+                deque.pollFirst();
+            }
+            return deque.size() >= MAX_LOGIN_FAILURES;
+        }
+    }
+
+    private void recordLoginFailure(String clientKey) {
+        if (loginFailuresByClient.size() > MAX_TRACKED_CLIENTS) {
+            loginFailuresByClient.clear();
+        }
+        Deque<Long> deque = loginFailuresByClient.computeIfAbsent(clientKey, k -> new ArrayDeque<>());
+        long now = System.currentTimeMillis();
+        long cutoff = now - LOGIN_WINDOW_MILLIS;
+        synchronized (deque) {
+            while (!deque.isEmpty() && deque.peekFirst() < cutoff) {
+                deque.pollFirst();
+            }
+            deque.addLast(now);
+        }
+    }
+
+    private void clearLoginFailures(String clientKey) {
+        loginFailuresByClient.remove(clientKey);
     }
 
     private void respondJson(HttpServletResponse resp, int status, Map<String, Object> payload) throws IOException {

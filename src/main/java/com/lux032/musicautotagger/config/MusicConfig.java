@@ -1,6 +1,7 @@
 package com.lux032.musicautotagger.config;
 
 import lombok.Data;
+import lombok.ToString;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -29,6 +30,7 @@ public class MusicConfig {
     private String userAgent;
     
     // AcoustID 配置
+    @ToString.Exclude
     private String acoustIdApiKey;
     private String acoustIdApiUrl;
     
@@ -62,6 +64,7 @@ public class MusicConfig {
     private int dbPort;
     private String dbDatabase;
     private String dbUsername;
+    @ToString.Exclude
     private String dbPassword;
     private int dbMaxPoolSize;
     private int dbMinIdle;
@@ -72,6 +75,7 @@ public class MusicConfig {
     private String proxyHost;
     private int proxyPort;
     private String proxyUsername;
+    @ToString.Exclude
     private String proxyPassword;
 
     // 国际化配置
@@ -130,6 +134,7 @@ public class MusicConfig {
     // 以下四个平行列表是旧结构，仅用于首次启动时迁移到 llmProviders。
     // 迁移完成（即 llm-providers.json 已存在）后它们不再参与任何运行时判断。
     @Deprecated
+    @ToString.Exclude
     private List<String> llmApiKeys;
     @Deprecated
     private List<String> llmApiUrls;
@@ -181,6 +186,7 @@ public class MusicConfig {
      * 且是否真的检索完全不可控；tavily 用外部检索器取回真实 URL，再让普通 chat 端点归纳。
      */
     private String webSearchProvider;
+    @ToString.Exclude
     private String tavilyApiKey;
     private String tavilyApiUrl;
     /** basic 便宜但摘要短，advanced 更适合小众/日系发行的考据 */

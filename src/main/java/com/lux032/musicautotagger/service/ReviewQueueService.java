@@ -80,6 +80,10 @@ public class ReviewQueueService {
         return Paths.get("data", "review-staging");
     }
 
+    public Path getStagingRoot() {
+        return stagingRoot.toAbsolutePath().normalize();
+    }
+
     // ==================== 查询 ====================
 
     /** 返回新入队优先的列表，不以更新时间排序，避免搜索或处置让旧条目跳到顶部。 */
@@ -757,8 +761,9 @@ public class ReviewQueueService {
 
         List<ReviewItem.FileEntry> entries = new ArrayList<>();
         List<StagingMove> plannedMoves = new ArrayList<>();
+        int entryIndex = 0;
         for (FolderAlbumCache.PendingFile pending : pendingFiles) {
-            entries.add(buildEntry(pending, stagingDir, plannedMoves));
+            entries.add(buildEntry(pending, stagingDir, entryIndex++, plannedMoves));
         }
         item.setFiles(entries);
 
@@ -886,7 +891,7 @@ public class ReviewQueueService {
         }
     }
 
-    private ReviewItem.FileEntry buildEntry(FolderAlbumCache.PendingFile pending, Path stagingDir,
+    private ReviewItem.FileEntry buildEntry(FolderAlbumCache.PendingFile pending, Path stagingDir, int index,
                                             List<StagingMove> plannedMoves) {
         ReviewItem.FileEntry entry = new ReviewItem.FileEntry();
         File original = pending.getAudioFile();
@@ -901,10 +906,13 @@ public class ReviewQueueService {
         }
 
         // 转码产生的临时文件：挪进暂存目录，避免长期挂起时被系统清理。
+        // 带唯一序号前缀防止多碟专辑同名文件（如 Disc 1/01.flac 与 Disc 2/01.flac）互相覆盖。
         // 注意：这里只「登记计划」，真正的移动要等 JSON 落盘成功之后。
         File processing = pending.getProcessingFile();
         if (processing != null && !processing.equals(original) && processing.exists()) {
-            Path target = stagingDir.resolve(processing.getName()).toAbsolutePath().normalize();
+            String safeBase = new File(processing.getName()).getName();
+            String stagedName = String.format("%03d_%s", index, safeBase);
+            Path target = stagingDir.resolve(stagedName).toAbsolutePath().normalize();
             entry.setStagedPath(target.toString());
             if (!processing.toPath().toAbsolutePath().normalize().equals(target)) {
                 plannedMoves.add(new StagingMove(entry, processing.toPath(), target,
@@ -1009,32 +1017,59 @@ public class ReviewQueueService {
         return restored;
     }
 
+    private static final java.util.regex.Pattern REPROCESS_DIR_PATTERN =
+        java.util.regex.Pattern.compile("^reprocess-[A-Za-z0-9._-]+$");
+
     private void cleanupStaging(ReviewItem item) {
-        Path reprocessRoot = findReprocessRoot(item);
+        if (item == null) {
+            return;
+        }
+        // 已入库音乐库条目绝不允许删除任何目录
+        if (item.effectiveKind() == ReviewItem.Kind.COVER_MISSING
+                && item.getMissingCover() != null
+                && item.getMissingCover().getMode() == ReviewItem.MissingCover.Mode.LIBRARY_EXISTING) {
+            item.setStagingDir(null);
+            item.setReprocessDir(null);
+            return;
+        }
+        Path base = getStagingRoot();
+        Path reprocessRoot = findReprocessRoot(item, base);
         String stagingDir = item.getStagingDir();
         if (stagingDir != null) {
-            Path dir = Paths.get(stagingDir);
-            if (Files.isDirectory(dir)) {
+            Path dir = Paths.get(stagingDir).toAbsolutePath().normalize();
+            if (isStrictlyInside(dir, base) && Files.isDirectory(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
                 deleteRecursivelyQuietly(dir);
             }
             item.setStagingDir(null);
         }
-        if (reprocessRoot != null && Files.exists(reprocessRoot)) {
+        if (reprocessRoot != null && isStrictlyInside(reprocessRoot, base) && Files.exists(reprocessRoot)) {
             deleteRecursivelyQuietly(reprocessRoot);
         }
         item.setReprocessDir(null);
     }
 
+    /** 定位本队列托管的暂存根目录内「处理记录 -> 重新识别」生成的临时目录（reprocess-<UUID>）。 */
+    public Path findReprocessRoot(ReviewItem item) {
+        return findReprocessRoot(item, this.stagingRoot);
+    }
+
     /**
-     * 定位「处理记录 -> 重新识别」生成的临时根目录（reprocess-*）。
-     * 普通监控目录条目的 stagingDir 为 review-staging/<itemId>，此方法返回 null。
+     * 定位「处理记录 -> 重新识别」生成的临时根目录（reprocess-*），严格限定在 stagingRoot 直接子目录下，
+     * 绝不越界匹配用户音乐库或监控目录中同名祖先目录。
      */
-    public static Path findReprocessRoot(ReviewItem item) {
-        if (item == null) {
+    public static Path findReprocessRoot(ReviewItem item, Path stagingRoot) {
+        if (item == null || stagingRoot == null) {
             return null;
         }
+        if (item.effectiveKind() == ReviewItem.Kind.COVER_MISSING
+                && item.getMissingCover() != null
+                && item.getMissingCover().getMode() == ReviewItem.MissingCover.Mode.LIBRARY_EXISTING) {
+            return null;
+        }
+        Path base = stagingRoot.toAbsolutePath().normalize();
+        Path realBase = tryRealPath(base);
         for (String candidate : new String[] { item.getReprocessDir(), item.getFolderPath(), item.getStagingDir() }) {
-            Path root = reprocessAncestor(candidate);
+            Path root = reprocessChildWithin(candidate, base, realBase);
             if (root != null) {
                 return root;
             }
@@ -1042,22 +1077,52 @@ public class ReviewQueueService {
         return null;
     }
 
-    private static Path reprocessAncestor(String rawPath) {
+    private static Path reprocessChildWithin(String rawPath, Path base, Path realBase) {
         if (rawPath == null || rawPath.isBlank()) {
             return null;
         }
         try {
             Path cur = Paths.get(rawPath.trim()).toAbsolutePath().normalize();
-            while (cur != null) {
-                Path fn = cur.getFileName();
-                if (fn != null && fn.toString().startsWith("reprocess-")) {
-                    return cur;
-                }
-                cur = cur.getParent();
+            if (!isStrictlyInside(cur, base)) {
+                return null;
             }
+            Path rel = base.relativize(cur);
+            if (rel.getNameCount() < 1) {
+                return null;
+            }
+            String topName = rel.getName(0).toString();
+            if (!REPROCESS_DIR_PATTERN.matcher(topName).matches()) {
+                return null;
+            }
+            Path candidateRoot = base.resolve(topName).toAbsolutePath().normalize();
+            if (!isStrictlyInside(candidateRoot, base)) {
+                return null;
+            }
+            if (Files.isSymbolicLink(candidateRoot)) {
+                return null;
+            }
+            if (realBase != null && Files.exists(candidateRoot)) {
+                Path realCandidate = candidateRoot.toRealPath();
+                if (!isStrictlyInside(realCandidate, realBase)) {
+                    return null;
+                }
+            }
+            return candidateRoot;
         } catch (Exception ignored) {
+            return null;
         }
-        return null;
+    }
+
+    private static boolean isStrictlyInside(Path candidate, Path base) {
+        return candidate != null && base != null && candidate.startsWith(base) && !candidate.equals(base);
+    }
+
+    private static Path tryRealPath(Path path) {
+        try {
+            return Files.exists(path) ? path.toRealPath() : null;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private void deleteRecursivelyQuietly(Path root) {

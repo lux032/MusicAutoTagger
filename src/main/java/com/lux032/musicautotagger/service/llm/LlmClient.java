@@ -5,8 +5,10 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonSyntaxException;
 import com.lux032.musicautotagger.config.LlmEndpoint;
 import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.util.OutboundUrlValidator;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.InputStream;
 import java.net.Authenticator;
 import java.net.InetSocketAddress;
 import java.net.PasswordAuthentication;
@@ -145,7 +147,18 @@ public class LlmClient {
                     } else {
                         log.warn("LLM #{} ({}) 重试用尽: {}", i + 1, endpoint.label(), e.getMessage());
                     }
+                } catch (LlmException e) {
+                    if ("interrupted".equals(e.getMessage()) || Thread.currentThread().isInterrupted()) {
+                        throw e;
+                    }
+                    lastError = e;
+                    log.warn("LLM #{} ({} / {} / {}) 调用失败且不可重试: {}",
+                        i + 1, endpoint.label(), provider.name(), apiUrl, e.getMessage());
+                    break;
                 } catch (Exception e) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new LlmException("interrupted", e);
+                    }
                     // 非可重试错误（鉴权失败 / 模型名错误 / 响应结构不符）：直接换下一个端点
                     // 必须带上 URL 与协议：404 这类错误的响应体常常是空的，
                     // 只报「http 404」无法判断到底是路径写错还是模型名不存在
@@ -177,6 +190,12 @@ public class LlmClient {
                             String systemPrompt, String userPrompt, int maxTokens)
             throws RetryableException, LlmException {
 
+        try {
+            OutboundUrlValidator.validateAndResolve(apiUrl, config.isLlmAllowPrivateEndpoints(), false, false);
+        } catch (OutboundUrlValidator.ValidationException e) {
+            throw new LlmException(e.getMessage(), e);
+        }
+
         JsonObject body = provider.buildRequestBody(
             model, systemPrompt, userPrompt, maxTokens, config.getLlmTemperature());
 
@@ -187,9 +206,14 @@ public class LlmClient {
             .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)));
         provider.applyAuthHeaders(builder, apiKey);
 
-        HttpResponse<String> response;
+        int status;
+        String responseBody;
         try {
-            response = httpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString());
+            HttpResponse<InputStream> response = httpClient().send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+            status = response.statusCode();
+            try (InputStream in = response.body()) {
+                responseBody = OutboundUrlValidator.readBoundedString(in, OutboundUrlValidator.DEFAULT_MAX_RESPONSE_BYTES);
+            }
         } catch (java.io.IOException e) {
             throw new RetryableException("network: " + e.getMessage(), e);
         } catch (InterruptedException e) {
@@ -197,19 +221,18 @@ public class LlmClient {
             throw new LlmException("interrupted", e);
         }
 
-        int status = response.statusCode();
         if (status == 429 || status >= 500) {
-            throw new RetryableException(describeHttpError(status, apiUrl, provider, response.body()));
+            throw new RetryableException(describeHttpError(status, apiUrl, provider, responseBody));
         }
         if (status != 200) {
-            throw new LlmException(describeHttpError(status, apiUrl, provider, response.body()));
+            throw new LlmException(describeHttpError(status, apiUrl, provider, responseBody));
         }
 
         JsonObject json;
         try {
-            json = gson.fromJson(response.body(), JsonObject.class);
+            json = gson.fromJson(responseBody, JsonObject.class);
         } catch (JsonSyntaxException e) {
-            throw new RetryableException("响应不是合法 JSON: " + truncate(response.body()), e);
+            throw new RetryableException("响应不是合法 JSON: " + truncate(responseBody), e);
         }
         if (json == null) {
             throw new RetryableException("响应为空");
@@ -218,22 +241,26 @@ public class LlmClient {
         String text = provider.extractText(json);
         if (text == null || text.isEmpty()) {
             throw new LlmException("响应中没有可用文本（协议可能不匹配，可用 llm.provider 显式指定）: "
-                + truncate(response.body()));
+                + truncate(responseBody));
         }
         return text;
     }
 
-    /** 供 {@link TavilyWebSearchClient} 等外部 HTTP 调用复用同一套代理设置 */
-    public static HttpClient buildHttpClient(MusicConfig config) {
+    /** 构造带有统一超时、代理及禁止重定向策略的 HttpClient.Builder */
+    public static HttpClient.Builder httpClientBuilder(MusicConfig config) {
         HttpClient.Builder builder = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30));
+            .connectTimeout(Duration.ofSeconds(30))
+            .followRedirects(HttpClient.Redirect.NEVER);
 
-        if (config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isEmpty()) {
+        if (config != null && config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isEmpty()) {
             builder.proxy(ProxySelector.of(new InetSocketAddress(config.getProxyHost(), config.getProxyPort())));
             if (config.getProxyUsername() != null && !config.getProxyUsername().isEmpty()) {
                 builder.authenticator(new Authenticator() {
                     @Override
                     protected PasswordAuthentication getPasswordAuthentication() {
+                        if (getRequestorType() != RequestorType.PROXY) {
+                            return null;
+                        }
                         return new PasswordAuthentication(
                             config.getProxyUsername(),
                             (config.getProxyPassword() == null ? "" : config.getProxyPassword()).toCharArray());
@@ -242,7 +269,12 @@ public class LlmClient {
             }
             log.info("LLM 请求将走代理: {}:{}", config.getProxyHost(), config.getProxyPort());
         }
-        return builder.build();
+        return builder;
+    }
+
+    /** 供 {@link TavilyWebSearchClient} 等外部 HTTP 调用复用同一套代理设置 */
+    public static HttpClient buildHttpClient(MusicConfig config) {
+        return httpClientBuilder(config).build();
     }
 
     private static void sleepOrAbort(long millis) throws LlmException {

@@ -109,11 +109,11 @@ public class CueSplitService {
             File doneMarker = new File(outputDir, DONE_MARKER);
             List<File> existingSplitFiles = listSplitFiles(outputDir);
             if (doneMarker.exists()) {
-                if (!existingSplitFiles.isEmpty()) {
+                if (!existingSplitFiles.isEmpty() && matchesDoneMarker(doneMarker, cueFile, bigAudioFile)) {
                     return SplitResult.existing(existingSplitFiles, cueInfo, outputDir);
                 }
                 outputDir = new File(outputRoot,
-                    albumRootDir.getName() + "__" + System.currentTimeMillis());
+                    scopedOutputDirName(albumRootDir, bigAudioFile) + "__" + System.currentTimeMillis());
                 doneMarker = new File(outputDir, DONE_MARKER);
             }
 
@@ -167,7 +167,8 @@ public class CueSplitService {
 
     private File prepareOutputDir(String outputRoot, File albumRootDir, File cueFile) {
         File baseDir = new File(outputRoot);
-        File outputDir = new File(baseDir, albumRootDir.getName());
+        String scopedName = scopedOutputDirName(albumRootDir, cueFile);
+        File outputDir = new File(baseDir, scopedName);
         if (!outputDir.exists()) {
             return outputDir;
         }
@@ -178,14 +179,35 @@ public class CueSplitService {
         }
 
         String suffix = Integer.toHexString(
-            Math.abs((albumRootDir.getAbsolutePath() + cueFile.lastModified()).hashCode()));
-        File fallbackDir = new File(baseDir, albumRootDir.getName() + "__" + suffix);
+            Math.abs((getCanonicalPath(albumRootDir) + "|" + cueFile.lastModified()).hashCode()));
+        File fallbackDir = new File(baseDir, scopedName + "__" + suffix);
         if (!fallbackDir.exists()) {
             return fallbackDir;
         }
 
         String timestamp = String.valueOf(System.currentTimeMillis());
-        return new File(baseDir, albumRootDir.getName() + "__" + timestamp);
+        return new File(baseDir, scopedName + "__" + timestamp);
+    }
+
+    /** 输出目录附带源目录规范路径短哈希，杜绝不同艺人同名文件夹（如 Greatest Hits / CD1）互相串轨。 */
+    private String scopedOutputDirName(File albumRootDir, File referenceFile) {
+        String key = getCanonicalPath(albumRootDir);
+        String hash = shortSha256(key);
+        return albumRootDir.getName() + "__" + hash;
+    }
+
+    private static String shortSha256(String text) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(text.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(12);
+            for (int i = 0; i < 6; i++) {
+                sb.append(String.format("%02x", digest[i]));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(Math.abs(text.hashCode()));
+        }
     }
 
     private void copyCoverArt(File albumRootDir, File outputDir) {
@@ -230,11 +252,37 @@ public class CueSplitService {
 
     private void writeDoneMarker(File doneMarker, File cueFile, File audioFile) {
         try {
-            String content = "cue=" + cueFile.getName() + System.lineSeparator() +
-                "audio=" + audioFile.getName() + System.lineSeparator();
+            String content = "cue=" + cueFile.getName() + System.lineSeparator()
+                + "audio=" + audioFile.getName() + System.lineSeparator()
+                + "sourcePath=" + getCanonicalPath(audioFile) + System.lineSeparator()
+                + "sourceSize=" + audioFile.length() + System.lineSeparator()
+                + "sourceMtime=" + audioFile.lastModified() + System.lineSeparator();
             Files.writeString(doneMarker.toPath(), content, StandardCharsets.UTF_8);
         } catch (IOException e) {
             log.warn("Failed to write cue split marker: {}", e.getMessage());
+        }
+    }
+
+    private boolean matchesDoneMarker(File doneMarker, File cueFile, File audioFile) {
+        try {
+            List<String> lines = Files.readAllLines(doneMarker.toPath(), StandardCharsets.UTF_8);
+            Map<String, String> kv = new HashMap<>();
+            for (String line : lines) {
+                int idx = line.indexOf('=');
+                if (idx > 0) {
+                    kv.put(line.substring(0, idx).trim(), line.substring(idx + 1).trim());
+                }
+            }
+            String expectedPath = getCanonicalPath(audioFile);
+            if (!expectedPath.equals(kv.get("sourcePath"))) {
+                return false;
+            }
+            if (!String.valueOf(audioFile.length()).equals(kv.get("sourceSize"))) {
+                return false;
+            }
+            return String.valueOf(audioFile.lastModified()).equals(kv.get("sourceMtime"));
+        } catch (IOException e) {
+            return false;
         }
     }
 
@@ -268,6 +316,7 @@ public class CueSplitService {
 
             List<String> command = new ArrayList<>();
             command.add(ffmpegPath);
+            command.add("-nostdin");
             command.add("-y");
             command.add("-i");
             command.add(inputFile.getAbsolutePath());
@@ -350,11 +399,8 @@ public class CueSplitService {
 
             String upper = line.toUpperCase(Locale.ROOT);
             if (upper.startsWith("FILE ")) {
+                // 带引号的 FILE "Artist - Album.flac" WAVE 必须完整保留引号内含空格的文件名
                 String fileName = extractQuotedValue(line);
-                if (fileName != null && !fileName.isEmpty()) {
-                    String[] tokens = fileName.split("\\s+");
-                    fileName = tokens[0];
-                }
                 if (fileName == null || fileName.isEmpty()) {
                     String[] parts = line.split("\\s+");
                     if (parts.length >= 2) {
@@ -363,6 +409,12 @@ public class CueSplitService {
                 }
                 albumInfo.setReferencedFileName(stripQuotes(fileName));
             } else if (upper.startsWith("TRACK ")) {
+                String[] parts = line.split("\\s+");
+                if (parts.length >= 3 && !"AUDIO".equalsIgnoreCase(parts[2])) {
+                    // 跳过 CD-Extra 数据轨（如 MODE1/2352）
+                    currentTrack = null;
+                    continue;
+                }
                 int number = parseTrackNumber(line);
                 currentTrack = new CueTrack(number);
                 albumInfo.getTracks().add(currentTrack);
@@ -409,13 +461,32 @@ public class CueSplitService {
     }
 
     private List<String> readCueLines(Path cuePath) throws IOException {
-        try (BufferedReader reader = Files.newBufferedReader(cuePath, StandardCharsets.UTF_8)) {
-            return reader.lines().toList();
-        } catch (IOException e) {
-            try (BufferedReader reader = Files.newBufferedReader(cuePath, Charset.defaultCharset())) {
-                return reader.lines().toList();
+        // Files.readAllLines 在解码失败时抛出受检 MalformedInputException（IOException 子类），
+        // 修复原先 reader.lines().toList() 抛出未检 UncheckedIOException 导致回退代码成为死代码的问题。
+        List<Charset> candidates = new ArrayList<>();
+        candidates.add(StandardCharsets.UTF_8);
+        for (String name : List.of("GB18030", "Shift_JIS", "Windows-1252")) {
+            if (Charset.isSupported(name)) {
+                candidates.add(Charset.forName(name));
             }
         }
+        if (!candidates.contains(Charset.defaultCharset())) {
+            candidates.add(Charset.defaultCharset());
+        }
+        IOException lastError = null;
+        for (Charset cs : candidates) {
+            try {
+                List<String> lines = Files.readAllLines(cuePath, cs);
+                if (!lines.isEmpty() && lines.get(0).startsWith("\uFEFF")) {
+                    lines = new ArrayList<>(lines);
+                    lines.set(0, lines.get(0).substring(1));
+                }
+                return lines;
+            } catch (IOException e) {
+                lastError = e;
+            }
+        }
+        throw lastError != null ? lastError : new IOException("Unable to read CUE file: " + cuePath);
     }
 
     private String extractQuotedValue(String line) {
