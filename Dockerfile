@@ -1,5 +1,5 @@
-# 使用多阶段构建
-FROM maven:3.9-eclipse-temurin-17 AS builder
+# 使用多阶段构建（JAR 为跨平台字节码，固定在构建机原生架构编译，避免 QEMU arm64 重复慢编译）
+FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-17 AS builder
 
 # 设置工作目录
 WORKDIR /app
@@ -14,8 +14,13 @@ RUN mvn clean package -DskipTests
 # 运行阶段
 FROM eclipse-temurin:17-jre
 
-# 安装 chromaprint (fpcalc)、ffmpeg 与 gosu（用于安全降权启动）
-RUN apt-get update && apt-get install -y libchromaprint-tools ffmpeg gosu && rm -rf /var/lib/apt/lists/*
+# 安装 chromaprint (fpcalc) 和 ffmpeg（保持独立层以复用既有镜像构建缓存）
+RUN apt-get update && apt-get install -y libchromaprint-tools ffmpeg && rm -rf /var/lib/apt/lists/*
+
+# 安装 gosu（用于安全降权启动，独立单包层避免失效上方重型 ffmpeg 缓存）
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
 
 # 创建应用目录
 WORKDIR /app
