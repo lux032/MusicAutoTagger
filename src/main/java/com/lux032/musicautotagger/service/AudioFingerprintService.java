@@ -56,31 +56,16 @@ public class AudioFingerprintService {
     }
     
     /**
-     * 创建 HttpClient,支持代理配置
+     * 创建 HttpClient,支持代理与认证配置（委托给共享 HttpClientFactory）
      */
     private CloseableHttpClient createHttpClient(MusicConfig config) {
-        HttpClientBuilder builder = HttpClients.custom();
-        
-        // 设置超时
-        RequestConfig requestConfig = RequestConfig.custom()
-            .setConnectionRequestTimeout(Timeout.ofSeconds(30))
-            .setResponseTimeout(Timeout.ofSeconds(30))
-            .build();
-        builder.setDefaultRequestConfig(requestConfig);
-        
-        // 配置代理
-        if (config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isEmpty()) {
-            HttpHost proxy = new HttpHost(config.getProxyHost(), config.getProxyPort());
-            builder.setProxy(proxy);
+        if (com.lux032.musicautotagger.util.HttpClientFactory.isProxyConfigured(config)) {
             log.info(I18nUtil.getMessage("proxy.acoustid.enabled", config.getProxyHost(), config.getProxyPort()));
-            
-            // 注意: 代理认证功能已简化,如需认证代理,请使用系统代理设置
-            // 或在代理软件中配置允许本地连接无需认证
-        } else if (config.isProxyEnabled()) {
+        } else if (config != null && config.isProxyEnabled()) {
             log.warn(I18nUtil.getMessage("proxy.enabled.no.host"));
         }
-        
-        return builder.build();
+        return com.lux032.musicautotagger.util.HttpClientFactory.buildApacheHttpClient(
+            config, Timeout.ofSeconds(30), null, Timeout.ofSeconds(30));
     }
     
     /**

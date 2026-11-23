@@ -230,6 +230,10 @@ class P1Task3FrontendI18nOpsRegressionTest {
     void u2_coversHtmlMapsAllBackendErrorCodes() throws Exception {
         String coversHtml = Files.readString(
             PROJECT_ROOT.resolve("src/main/resources/static/covers.html"), StandardCharsets.UTF_8);
+        String errorsJs = Files.readString(
+            PROJECT_ROOT.resolve("src/main/resources/static/errors.js"), StandardCharsets.UTF_8);
+        assertTrue(coversHtml.contains("errors.js") && coversHtml.contains("AppErrors.humanError"),
+            "covers.html should delegate error mapping to shared errors.js");
         for (String realCode : List.of(
                 "unreject.log.failed",
                 "recovery.no.audio.files",
@@ -241,8 +245,8 @@ class P1Task3FrontendI18nOpsRegressionTest {
                 "local.archive.write.failed",
                 "online\\.track\\.coverage\\.insufficient:",
                 "recovery\\.workspace\\.count\\.mismatch:")) {
-            assertTrue(coversHtml.contains(realCode),
-                "covers.html should map backend error code: " + realCode);
+            assertTrue(errorsJs.contains(realCode),
+                "shared errors.js should map backend error code: " + realCode);
         }
     }
 
@@ -319,10 +323,14 @@ class P1Task3FrontendI18nOpsRegressionTest {
 
     @Test
     void u1AndU3_frontendAssetsContainRacePollingAuthAndFeedbackFixes() throws Exception {
+        String apiJs = Files.readString(PROJECT_ROOT.resolve("src/main/resources/static/api.js"), StandardCharsets.UTF_8);
+        assertTrue(apiJs.contains("resp.status === 401") && apiJs.contains("stopBackgroundPolling"),
+            "shared api.js should stop polling and handle HTTP 401 uniformly");
+
         String reviewHtml = Files.readString(PROJECT_ROOT.resolve("src/main/resources/static/review.html"), StandardCharsets.UTF_8);
         assertTrue(reviewHtml.contains("id=\"detailSearchLiveSlot\""), "review.html should have surgical live-card slot");
         assertTrue(reviewHtml.contains("syncDetailSearchLiveCard()"), "review.html should avoid full renderDetail() on queue tick");
-        assertTrue(reviewHtml.contains("resp.status === 401"), "review.html should redirect on 401");
+        assertTrue(reviewHtml.contains("AppApi.request"), "review.html should use shared AppApi.request (401 redirect)");
 
         String coversHtml = Files.readString(PROJECT_ROOT.resolve("src/main/resources/static/covers.html"), StandardCharsets.UTF_8);
         assertTrue(coversHtml.contains("listSeq:") && coversHtml.contains("itemSeq:"), "covers.html should track request sequence tokens");
@@ -339,7 +347,7 @@ class P1Task3FrontendI18nOpsRegressionTest {
         assertTrue(shellJs.contains("resp.status === 401"), "shell.js should stop and redirect on 401");
 
         String recoveryHtml = Files.readString(PROJECT_ROOT.resolve("src/main/resources/static/recovery.html"), StandardCharsets.UTF_8);
-        assertTrue(recoveryHtml.contains("r.status === 401"), "recovery.html should redirect on 401");
+        assertTrue(recoveryHtml.contains("AppApi.request"), "recovery.html should use shared AppApi.request (401 redirect)");
 
         String indexHtml = Files.readString(PROJECT_ROOT.resolve("src/main/resources/static/index.html"), StandardCharsets.UTF_8);
         assertTrue(indexHtml.contains("/api/recovery/summary"), "index.html should poll lightweight /api/recovery/summary");

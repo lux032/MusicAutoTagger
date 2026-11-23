@@ -80,6 +80,7 @@ public class RecoveryService implements AutoCloseable {
     private final AlbumArtistPolicy albumArtistPolicy;
     private final LlmArtistSplitter artistSplitter;
     private final LocalArchiveDraft localArchiveDraft;
+    private final RecoveryTrashService trashService;
     private final Gson gson = new Gson();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "manual-recovery");
@@ -151,6 +152,8 @@ public class RecoveryService implements AutoCloseable {
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
         this.artistSplitter = artistSplitter;
         this.localArchiveDraft = new LocalArchiveDraft(new LlmClient(config));
+        this.trashService = new RecoveryTrashService(
+            config, fileSystemUtils, gson, this::resolveItem, this::collectAudioFiles, this::invalidateSummaryCache);
         this.onlineIdentificationService = onlineIdentificationOverride != null
             ? onlineIdentificationOverride
             : new OnlineIdentificationService(config, reviewQueue, tagWriter, fingerprintService, artistSplitter);
@@ -166,65 +169,8 @@ public class RecoveryService implements AutoCloseable {
         return searchQueueService;
     }
 
-    private static final String PENDING_REPLACE_PREFIX = ".pending-replace-";
-    private static final String PENDING_REPLACE_MANIFEST = ".manifest.json";
-    private static final java.util.concurrent.atomic.AtomicLong TRASH_SEQ =
-        new java.util.concurrent.atomic.AtomicLong(1);
-
-    /**
-     * 恢复上次在替换音乐库旧归档中途崩溃遗留的持久化备份，避免用户原库专辑永久丢失。
-     */
     private void recoverPendingReplacements() {
-        Path root = trashRoot();
-        if (!Files.isDirectory(root)) return;
-        try (var stream = Files.list(root)) {
-            for (Path dir : stream.toList()) {
-                String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
-                if (!name.startsWith(PENDING_REPLACE_PREFIX) || !Files.isDirectory(dir)) {
-                    continue;
-                }
-                Path manifestPath = dir.resolve(PENDING_REPLACE_MANIFEST);
-                boolean allRestored = true;
-                if (Files.isRegularFile(manifestPath)) {
-                    try {
-                        JsonArray entries = gson.fromJson(Files.readString(manifestPath), JsonArray.class);
-                        if (entries != null) {
-                            for (int i = entries.size() - 1; i >= 0; i--) {
-                                JsonObject obj = entries.get(i).getAsJsonObject();
-                                Path backup = Path.of(obj.get("backup").getAsString());
-                                Path original = Path.of(obj.get("original").getAsString());
-                                if (Files.exists(backup)) {
-                                    if (!Files.exists(original)) {
-                                        Files.createDirectories(original.getParent());
-                                        moveAcrossDevices(backup, original);
-                                        log.warn("已从崩溃恢复被替换的旧归档: {}", original);
-                                    } else {
-                                        // 目标已存在（说明新归档已落盘），安全转入可见回收站而非直接删除
-                                        Path safeTrash = root.resolve(System.currentTimeMillis() + "_"
-                                            + TRASH_SEQ.getAndIncrement() + "_RECOVERED_" + original.getFileName());
-                                        moveAcrossDevices(backup, safeTrash);
-                                        log.warn("检测到崩溃残留替换备份，已保留至回收站: {}", safeTrash);
-                                    }
-                                }
-                            }
-                        }
-                    } catch (Exception e) {
-                        allRestored = false;
-                        log.error("恢复崩溃残留替换备份失败，保留目录以防丢数据: {} - {}", dir, e.getMessage());
-                    }
-                } else {
-                    allRestored = false;
-                }
-                if (allRestored) {
-                    try {
-                        deleteRecursively(dir);
-                    } catch (IOException ignored) {
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.warn("扫描崩溃残留替换备份失败: {}", e.getMessage());
-        }
+        trashService.recoverPendingReplacements();
     }
 
     /**
@@ -488,16 +434,7 @@ public class RecoveryService implements AutoCloseable {
 
     /** 统计回收站当前条目数量（仅统计主体条目，忽略 manifest .json 与临时替换备份）。 */
     public int countTrash() {
-        Path root = trashRoot();
-        if (!Files.isDirectory(root)) return 0;
-        try (var stream = Files.list(root)) {
-            return (int) stream.filter(p -> {
-                String name = p.getFileName().toString();
-                return !name.endsWith(".json") && !name.startsWith(PENDING_REPLACE_PREFIX);
-            }).count();
-        } catch (Exception e) {
-            return 0;
-        }
+        return trashService.countTrash();
     }
 
     public boolean isOnlineSearchAvailable() {
@@ -668,115 +605,19 @@ public class RecoveryService implements AutoCloseable {
 
     /** 回收站条目列表，按入站时间倒序。 */
     public List<Map<String, Object>> listTrash() {
-        List<Map<String, Object>> result = new ArrayList<>();
-        Path root = trashRoot();
-        if (!Files.isDirectory(root)) return result;
-        try (var stream = Files.list(root)) {
-            for (Path path : stream.toList()) {
-                String entryName = path.getFileName().toString();
-                if (entryName.endsWith(".json") || entryName.startsWith(PENDING_REPLACE_PREFIX)) continue;
-                Map<String, Object> entry = new LinkedHashMap<>();
-                String sourceType = null;
-                String relativePath = null;
-                boolean outputKind = false;
-                Path manifest = path.resolveSibling(path.getFileName() + ".json");
-                if (Files.isRegularFile(manifest)) {
-                    try {
-                        JsonObject json = gson.fromJson(Files.readString(manifest), JsonObject.class);
-                        if (json != null) {
-                            outputKind = json.has("kind") && TRASH_KIND_OUTPUT.equals(json.get("kind").getAsString())
-                                && json.has("originalPath");
-                            if (outputKind) sourceType = TRASH_KIND_OUTPUT;
-                            else if (json.has("sourceType")) sourceType = json.get("sourceType").getAsString();
-                            if (json.has("relativePath")) relativePath = json.get("relativePath").getAsString();
-                        }
-                    } catch (Exception ignored) {
-                        // manifest 损坏时仍然列出条目，只是无法自动恢复
-                    }
-                }
-                List<File> audioFiles = collectAudioFiles(path.toFile());
-                entry.put("id", path.getFileName().toString());
-                entry.put("sourceType", sourceType);
-                entry.put("relativePath", relativePath);
-                entry.put("restorable", sourceType != null && relativePath != null);
-                entry.put("trashedAt", trashedAt(path));
-                entry.put("fileCount", audioFiles.size());
-                entry.put("path", path.toAbsolutePath().toString());
-                result.add(entry);
-            }
-        } catch (Exception e) {
-            log.warn("列出回收站失败: {}", e.getMessage());
-        }
-        result.sort(Comparator.comparingLong(m -> -((Number) m.get("trashedAt")).longValue()));
-        return result;
+        return trashService.listTrash();
     }
 
     /**
-     * 把回收站条目恢复回原隔离目录。
-     * 只搬回隔离副本，<b>不会删除已经生成的输出目录</b>；
-     * 原路径已存在时直接拒绝，避免覆盖用户后来放回去的文件。
+     * 把回收站条目恢复回原隔离目录或音乐库原位。
      */
-    public synchronized void restoreFromTrash(String id) throws IOException {
-        Path entry = resolveTrashEntry(id);
-        Path manifest = entry.resolveSibling(entry.getFileName() + ".json");
-        if (!Files.isRegularFile(manifest)) throw new IOException("trash.manifest.missing");
-
-        String sourceType;
-        String relativePath;
-        try {
-            JsonObject json = gson.fromJson(Files.readString(manifest), JsonObject.class);
-            if (json.has("kind") && TRASH_KIND_OUTPUT.equals(json.get("kind").getAsString())) {
-                restoreOutputFromTrash(entry, manifest, json.get("originalPath").getAsString());
-                return;
-            }
-            sourceType = json.get("sourceType").getAsString();
-            relativePath = json.get("relativePath").getAsString();
-        } catch (Exception e) {
-            throw new IOException("trash.manifest.invalid", e);
-        }
-
-        File target = resolveItem(SourceType.valueOf(sourceType), relativePath);
-        if (target.exists()) throw new IOException("trash.restore.target.exists");
-        Files.createDirectories(target.toPath().getParent());
-        moveAcrossDevices(entry, target.toPath());
-        Files.deleteIfExists(manifest);
-        invalidateSummaryCache();
-        LogCollector.addLog("SUCCESS", "已从回收站恢复: " + relativePath + " → " + sourceType);
-    }
-
-    /** 被替换的旧归档搬回音乐库原位；只允许还原到输出目录内且目标未被占用。 */
-    private void restoreOutputFromTrash(Path entry, Path manifest, String originalPath) throws IOException {
-        try (var libraryWrite = LibraryWriteGuard.acquire()) {
-            Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
-            Path target = Path.of(originalPath).toAbsolutePath().normalize();
-            if (!target.startsWith(outputRoot) || target.equals(outputRoot)) throw new IOException("trash.manifest.invalid");
-            if (Files.exists(target)) throw new IOException("trash.restore.target.exists");
-            Files.createDirectories(target.getParent());
-            moveAcrossDevices(entry, target);
-            Files.deleteIfExists(manifest);
-            invalidateSummaryCache();
-            LogCollector.addLog("SUCCESS", "已从回收站还原到音乐库: " + displayOutputPath(target));
-        }
+    public void restoreFromTrash(String id) throws IOException {
+        trashService.restoreFromTrash(id);
     }
 
     /** 立即彻底删除回收站条目。 */
-    public synchronized void deleteFromTrash(String id) throws IOException {
-        Path entry = resolveTrashEntry(id);
-        deleteRecursively(entry);
-        Files.deleteIfExists(entry.resolveSibling(entry.getFileName() + ".json"));
-        invalidateSummaryCache();
-        LogCollector.addLog("WARN", "已删除回收站条目: " + id);
-    }
-
-    /** 挡住 id 里的路径穿越，只允许操作回收站根下的直接子项。 */
-    private Path resolveTrashEntry(String id) throws IOException {
-        if (id == null || id.isBlank()) throw new IOException("trash.id.required");
-        if (id.endsWith(".json") || id.startsWith(PENDING_REPLACE_PREFIX)) throw new IOException("trash.id.invalid");
-        Path root = trashRoot().toAbsolutePath().normalize();
-        Path entry = root.resolve(id).toAbsolutePath().normalize();
-        if (!entry.getParent().equals(root)) throw new IOException("trash.id.invalid");
-        if (!Files.exists(entry)) throw new IOException("trash.entry.not.found");
-        return entry;
+    public void deleteFromTrash(String id) throws IOException {
+        trashService.deleteFromTrash(id);
     }
 
     public LocalArchiveDraft.Draft previewLocalArchive(String itemId) throws IOException {
@@ -1886,7 +1727,7 @@ public class RecoveryService implements AutoCloseable {
             units.add(relative.getNameCount() >= 3 ? relative.subpath(0, 2) : relative);
         }
         // 备份落盘在持久化的回收站目录（.pending-replace-*）而非易失工作区，防止提交中途崩溃重启后原专辑被误删
-        Path backupRoot = trashRoot().resolve(PENDING_REPLACE_PREFIX + taskId + "_" + TRASH_SEQ.getAndIncrement());
+        Path backupRoot = trashService.nextPendingReplaceRoot(taskId);
         int index = 0;
         for (Path unit : units) {
             Path destination = outputRoot.resolve(unit).toAbsolutePath().normalize();
@@ -1933,7 +1774,7 @@ public class RecoveryService implements AutoCloseable {
                 obj.addProperty("backup", s.stagedBackup().toAbsolutePath().normalize().toString());
                 manifest.add(obj);
             }
-            Files.writeString(backupRoot.resolve(PENDING_REPLACE_MANIFEST), gson.toJson(manifest));
+            Files.writeString(backupRoot.resolve(RecoveryTrashService.PENDING_REPLACE_MANIFEST), gson.toJson(manifest));
         }
     }
 
@@ -2362,58 +2203,12 @@ public class RecoveryService implements AutoCloseable {
         return files;
     }
 
-    /**
-     * 跨挂载点的移动兜底。
-     *
-     * 典型 Docker 部署里隔离目录（容器 overlay 层或独立 bind mount）与
-     * 回收站（./data 卷）分属不同文件系统，Files.move 会直接抛
-     * "Invalid cross-device link"。复制后校验再删源，避免半途失败丢数据。
-     */
     private void moveAcrossDevices(Path source, Path target) throws IOException {
-        try (var libraryWrite = LibraryWriteGuard.acquire()) {
-            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-                throw new java.nio.file.FileAlreadyExistsException(target.toString());
-            }
-            try {
-                Files.move(source, target);
-                return;
-            } catch (java.nio.file.FileAlreadyExistsException exists) {
-                throw exists;
-            } catch (IOException crossDevice) {
-                log.debug("跨设备移动，改为复制后删除: {} -> {}", source, target);
-            }
-            if (Files.isDirectory(source)) {
-                Path parent = target.getParent();
-                if (parent != null) Files.createDirectories(parent);
-                Path stagingCopy = Files.createTempDirectory(parent != null ? parent : Path.of("."), ".move-copy-");
-                try {
-                    int[] counts = fileSystemUtils.copyDirectoryRecursively(source, stagingCopy);
-                    if (counts[1] > 0 || listFiles(stagingCopy).size() != listFiles(source).size()) {
-                        throw new IOException("recovery.move.copy.incomplete");
-                    }
-                    if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
-                        throw new java.nio.file.FileAlreadyExistsException(target.toString());
-                    }
-                    Files.move(stagingCopy, target);
-                } catch (IOException e) {
-                    try { deleteRecursively(stagingCopy); } catch (IOException ignored) {}
-                    throw e;
-                }
-            } else {
-                Files.createDirectories(target.getParent());
-                Files.copy(source, target);
-                if (Files.size(target) != Files.size(source)) {
-                    Files.deleteIfExists(target);
-                    throw new IOException("recovery.move.copy.incomplete");
-                }
-            }
-            deleteRecursively(source);
-        }
+        trashService.moveAcrossDevices(source, target);
     }
 
     private Path trashRoot() {
-        String configured = config.getRecoveryTrashDirectory();
-        return Path.of(configured == null || configured.isBlank() ? "data/recovery-trash" : configured);
+        return trashService.trashRoot();
     }
 
     /**
@@ -2454,117 +2249,23 @@ public class RecoveryService implements AutoCloseable {
 
     private void moveToTrash(File source, String jobId, SourceType sourceType,
                              String relativePath) throws IOException {
-        int retention = config.getRecoveryTrashRetentionDays();
-        if (retention == 0) {
-            deleteRecursively(source.toPath());
-            invalidateSummaryCache();
-            return;
-        }
-        Path root = trashRoot();
-        Files.createDirectories(root);
-        String safeName = source.getName().replaceAll("[^\\p{L}\\p{N}._ -]", "_");
-        long trashedAt = System.currentTimeMillis();
-        // PARTIAL/FAILED 历史副本或同毫秒多次回收可能同名，附加原子序号杜绝目标路径碰撞。
-        Path target = root.resolve(trashedAt + "_" + TRASH_SEQ.getAndIncrement() + "_" + jobId + "_" + sourceType + "_" + safeName);
-        moveAcrossDevices(source.toPath(), target);
-
-        JsonObject manifest = new JsonObject();
-        manifest.addProperty("sourceType", String.valueOf(sourceType));
-        manifest.addProperty("relativePath", relativePath);
-        manifest.addProperty("trashedAt", trashedAt);
-        Files.writeString(target.resolveSibling(target.getFileName() + ".json"), gson.toJson(manifest));
-        invalidateSummaryCache();
+        trashService.moveToTrash(source, jobId, sourceType, relativePath);
     }
 
-    /**
-     * 把音乐库里的旧归档移入回收站。manifest 记录原绝对路径，还原时搬回音乐库而不是隔离目录。
-     * 与隔离副本不同，这里忽略「保留 0 天即直接删除」：提交失败时还要靠它回滚。
-     */
     private Path moveOutputToTrash(Path original, String jobId) throws IOException {
-        Path root = trashRoot();
-        Files.createDirectories(root);
-        String safeName = original.getFileName().toString().replaceAll("[^\\p{L}\\p{N}._ -]", "_");
-        long trashedAt = System.currentTimeMillis();
-        Path target = root.resolve(trashedAt + "_" + TRASH_SEQ.getAndIncrement() + "_" + jobId + "_" + TRASH_KIND_OUTPUT + "_" + safeName);
-        moveAcrossDevices(original, target);
-
-        JsonObject manifest = new JsonObject();
-        manifest.addProperty("kind", TRASH_KIND_OUTPUT);
-        manifest.addProperty("originalPath", original.toAbsolutePath().toString());
-        manifest.addProperty("relativePath", displayOutputPath(original));
-        manifest.addProperty("trashedAt", trashedAt);
-        Files.writeString(target.resolveSibling(target.getFileName() + ".json"), gson.toJson(manifest));
-        return target;
+        return trashService.moveOutputToTrash(original, jobId);
     }
-
-    private static final String TRASH_KIND_OUTPUT = "OUTPUT";
 
     private String displayOutputPath(Path path) {
-        try {
-            return Path.of(config.getOutputDirectory()).toAbsolutePath().normalize()
-                .relativize(path.toAbsolutePath().normalize()).toString();
-        } catch (IllegalArgumentException e) {
-            return path.toString();
-        }
+        return trashService.displayOutputPath(path);
     }
 
     private void cleanupExpiredTrash() {
-        int retention = config.getRecoveryTrashRetentionDays();
-        if (retention < 0) return;
-        Path root = trashRoot();
-        if (!Files.isDirectory(root)) return;
-        long cutoff = System.currentTimeMillis() - retention * 86_400_000L;
-        try (var stream = Files.list(root)) {
-            for (Path path : stream.toList()) {
-                // manifest 随主体一起删，不单独参与判定；跳过崩溃恢复专用的 .pending-replace-* 目录
-                String fileName = path.getFileName().toString();
-                if (fileName.endsWith(".json") || fileName.startsWith(PENDING_REPLACE_PREFIX)) continue;
-                if (trashedAt(path) < cutoff) {
-                    deleteRecursively(path);
-                    Files.deleteIfExists(path.resolveSibling(path.getFileName() + ".json"));
-                }
-            }
-        } catch (Exception e) {
-            log.warn("清理恢复回收站失败: {}", e.getMessage());
-        }
-    }
-
-    /**
-     * 入站时间取自 manifest。
-     * 不能用 lastModifiedTime：Files.move 会保留原始 mtime，
-     * 一张早年下载的专辑刚进回收站就会被判为过期。
-     */
-    private long trashedAt(Path entry) {
-        Path manifest = entry.resolveSibling(entry.getFileName() + ".json");
-        try {
-            if (Files.isRegularFile(manifest)) {
-                JsonObject json = gson.fromJson(Files.readString(manifest), JsonObject.class);
-                if (json != null && json.has("trashedAt")) return json.get("trashedAt").getAsLong();
-            }
-        } catch (Exception ignored) {
-            // 降级到目录名前缀
-        }
-        String name = entry.getFileName().toString();
-        int separator = name.indexOf('_');
-        if (separator > 0) {
-            try {
-                return Long.parseLong(name.substring(0, separator));
-            } catch (NumberFormatException ignored) {
-                // 说明不是本服务写入的条目
-            }
-        }
-        return Long.MAX_VALUE; // 无法判定时保守保留
+        trashService.cleanupExpiredTrash();
     }
 
     private void deleteRecursively(Path path) throws IOException {
-        if (!Files.exists(path)) {
-            return;
-        }
-        try (java.util.stream.Stream<Path> stream = Files.walk(path)) {
-            for (Path item : stream.sorted(Comparator.reverseOrder()).toList()) {
-                Files.deleteIfExists(item);
-            }
-        }
+        RecoveryTrashService.deleteRecursively(path);
     }
 
     @Override

@@ -1305,6 +1305,92 @@ public class ReviewQueueService {
         return storeFile.resolveSibling(storeFile.getFileName() + ".bak");
     }
 
+    /** 已决历史条目归档文件（NDJSON，每行一条紧凑 JSON），防止 review-queue.json 无限膨胀。 */
+    public Path getArchiveFile() {
+        String fileName = storeFile.getFileName() == null ? "review-queue.json" : storeFile.getFileName().toString();
+        String archiveName = fileName.endsWith(".json")
+            ? fileName.substring(0, fileName.length() - 5) + "-archive.jsonl"
+            : fileName + ".archive.jsonl";
+        return storeFile.resolveSibling(archiveName);
+    }
+
+    private static final int DEFAULT_MAX_RETAINED_RESOLVED_ITEMS = 500;
+    private volatile int maxRetainedResolvedItems = DEFAULT_MAX_RETAINED_RESOLVED_ITEMS;
+    private final Gson compactGson = new Gson();
+
+    public void setMaxRetainedResolvedItems(int limit) {
+        this.maxRetainedResolvedItems = Math.max(0, limit);
+    }
+
+    private boolean isArchivableResolvedItem(ReviewItem item) {
+        if (item == null || item.getStatus() == null || item.getStatus() == ReviewItem.Status.PENDING_REVIEW) {
+            return false;
+        }
+        // 尚待恢复收尾的条目不可归档
+        if (item.getRecoveryCommitState() == ReviewItem.RecoveryCommitState.COMMITTED) {
+            return false;
+        }
+        // 缺少封面页的「已确认无封面」与「已忽略」记录用于音乐库重复扫描跳过守卫，保留在活态队列
+        if (item.effectiveKind() == ReviewItem.Kind.COVER_MISSING) {
+            if (item.getStatus() == ReviewItem.Status.REJECTED) {
+                return false;
+            }
+            if (item.getStatus() == ReviewItem.Status.CONFIRMED
+                    && item.getMissingCover() != null
+                    && item.getMissingCover().isConfirmedNoCover()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static long resolvedOrderTime(ReviewItem item) {
+        if (item.getUpdatedAt() > 0) return item.getUpdatedAt();
+        return item.getCreatedAt();
+    }
+
+    /**
+     * 超出活态历史保留上限时，将最旧的已决条目追加归档至 review-queue-archive.jsonl，
+     * 追加成功后再从活态 items 移除，保证零数据丢失且活态 JSON 体积受控。
+     */
+    private void archiveResolvedItemsIfNeeded() {
+        int limit = this.maxRetainedResolvedItems;
+        List<ReviewItem> archivable = new ArrayList<>();
+        for (ReviewItem item : items.values()) {
+            if (isArchivableResolvedItem(item)) {
+                archivable.add(item);
+            }
+        }
+        int excess = archivable.size() - limit;
+        if (excess <= 0) {
+            return;
+        }
+        archivable.sort(Comparator.comparingLong(ReviewQueueService::resolvedOrderTime));
+        List<ReviewItem> toArchive = archivable.subList(0, excess);
+        Path archivePath = getArchiveFile();
+        try {
+            Path parent = archivePath.toAbsolutePath().getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            try (java.io.BufferedWriter writer = Files.newBufferedWriter(
+                    archivePath, StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND)) {
+                for (ReviewItem item : toArchive) {
+                    writer.write(compactGson.toJson(item));
+                    writer.newLine();
+                }
+            }
+            for (ReviewItem item : toArchive) {
+                items.remove(item.getId());
+            }
+            log.info("已归档 {} 条历史待确认记录到 {}", toArchive.size(), archivePath.getFileName());
+        } catch (IOException e) {
+            log.warn("归档历史待确认记录失败，保留在活态队列中以免丢失: {}", e.getMessage());
+        }
+    }
+
     private int countPendingInternal() {
         int count = 0;
         for (ReviewItem item : items.values()) {
@@ -1320,6 +1406,7 @@ public class ReviewQueueService {
      * 不能向下层描述“已保存”而实际没有。
      */
     private void save() throws IOException {
+        archiveResolvedItemsIfNeeded();
         Path parent = storeFile.toAbsolutePath().getParent();
         if (parent != null) {
             Files.createDirectories(parent);

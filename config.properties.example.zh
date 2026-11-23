@@ -9,6 +9,13 @@
 #
 
 # ========================================
+# Web 面板配置
+# ========================================
+
+# Web 监控面板监听端口（1-65535，也可通过环境变量 WEB_PORT 指定）
+web.port=8080
+
+# ========================================
 # 监控目录配置
 # ========================================
 
@@ -43,6 +50,9 @@ cover.preferAnimeEdition=false
 cover.animeEditionKeywords=\u30a2\u30cb\u30e1\u76e4,\u30a2\u30cb\u30e1\u7248,\u30a2\u30cb\u30e1\u30fb\u30b8\u30e3\u30b1\u30c3\u30c8,\u30a2\u30cb\u30e1\u30b8\u30e3\u30b1\u30c3\u30c8,\u30a2\u30cb\u30e1\u30a4\u30e9\u30b9\u30c8,\u30a2\u30cb\u30e1 ver,\u30a2\u30cb\u30e1ver,\u30a2\u30cb\u30e1\u30a4\u30c8\u76e4,anime edition,anime version,anime cover,anime jacket,anime ver,\u671f\u9593\u751f\u7523\u9650\u5b9a\u76e4
 # 最多尝试多少个候选发行版的封面（1-20），避免请求过多
 cover.animeEditionMaxCandidates=5
+
+# 发行地区优先级（逗号分隔国家或地区代码，如 JP,US,GB,XW；越靠前优先级越高，留空不筛选）
+release.countryPriority=
 
 # User Agent（必须修改为你的邮箱）
 # 格式：ApplicationName/Version ( contact@email.com )

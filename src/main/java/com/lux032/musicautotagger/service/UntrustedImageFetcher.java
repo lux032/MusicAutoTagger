@@ -78,17 +78,11 @@ public class UntrustedImageFetcher implements AutoCloseable {
     }
 
     private boolean isProxyConfigured() {
-        return config != null && config.isProxyEnabled()
-            && config.getProxyHost() != null && !config.getProxyHost().isBlank()
-            && config.getProxyPort() > 0;
+        return com.lux032.musicautotagger.util.HttpClientFactory.isProxyConfigured(config);
     }
 
     private CloseableHttpClient proxyClient() {
-        String host = config.getProxyHost().trim();
-        int port = config.getProxyPort();
-        String user = config.getProxyUsername() == null ? "" : config.getProxyUsername();
-        String pass = config.getProxyPassword() == null ? "" : config.getProxyPassword();
-        String sig = host + ":" + port + ":" + user + ":" + pass.hashCode();
+        String sig = com.lux032.musicautotagger.util.HttpClientFactory.proxySignature(config);
         CloseableHttpClient existing = this.proxyClient;
         if (existing != null && sig.equals(this.activeProxySignature)) {
             return existing;
@@ -99,20 +93,11 @@ public class UntrustedImageFetcher implements AutoCloseable {
                 return existing;
             }
             CloseableHttpClient old = existing;
-            RequestConfig requestConfig = RequestConfig.custom()
-                .setConnectionRequestTimeout(Timeout.ofSeconds(5))
-                .setConnectTimeout(Timeout.ofSeconds(8)).setResponseTimeout(Timeout.ofSeconds(12)).build();
-            HttpClientBuilder builder = HttpClients.custom()
-                .setProxy(new HttpHost(host, port))
-                .setDefaultRequestConfig(requestConfig)
+            CloseableHttpClient created = com.lux032.musicautotagger.util.HttpClientFactory
+                .apacheHttpClientBuilder(config, Timeout.ofSeconds(5), Timeout.ofSeconds(8), Timeout.ofSeconds(12))
                 .disableRedirectHandling()
-                .disableAutomaticRetries();
-            if (!user.isEmpty() && !pass.isEmpty()) {
-                BasicCredentialsProvider creds = new BasicCredentialsProvider();
-                creds.setCredentials(new AuthScope(host, port), new UsernamePasswordCredentials(user, pass.toCharArray()));
-                builder.setDefaultCredentialsProvider(creds);
-            }
-            CloseableHttpClient created = builder.build();
+                .disableAutomaticRetries()
+                .build();
             this.proxyClient = created;
             this.activeProxySignature = sig;
             if (old != null) {

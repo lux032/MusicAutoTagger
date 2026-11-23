@@ -7,6 +7,9 @@
     <link rel="icon" href="logo.png" type="image/png">
     <link rel="stylesheet" href="app.css?v=11">
     <script src="i18n.js?v=1"></script>
+    <script src="ui.js?v=1"></script>
+    <script src="errors.js?v=1"></script>
+    <script src="api.js?v=1"></script>
     <script src="shell.js?v=2"></script>
     <script src="search-queue.js?v=3"></script>
     <style>
@@ -739,73 +742,15 @@
     }
     const isNew = item => state.seenBefore > 0 && item.status === 'PENDING_REVIEW' && Number(item.createdAt) > state.seenBefore;
 
-    let toastTimer = null;
-    function toast(msg) {
-        const el = $('toast');
-        el.textContent = msg;
-        el.style.display = 'block';
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => { el.style.display = 'none'; }, 4000);
-    }
+    const toast = msg => AppUI.toast(msg, { duration: 4000 });
 
-    async function api(path, options = {}) {
-        options.headers = options.headers || {};
-        if (state.csrf) options.headers['X-CSRF-Token'] = state.csrf;
-        if (options.body) options.headers['Content-Type'] = 'application/json';
-        const resp = await fetch(path, { credentials: 'same-origin', ...options });
-        if (resp.status === 401) {
-            if (window.SearchQueue && typeof SearchQueue.stop === 'function') SearchQueue.stop();
-            location.href = '/index.html';
-            throw new Error('unauthorized');
-        }
-        let data = {};
-        try { data = await resp.json(); } catch (e) { /* ignore */ }
-        if (!resp.ok) {
-            const error = new Error(data.error || ('HTTP ' + resp.status));
-            error.data = data;
-            throw error;
-        }
-        return data;
+    function api(path, options = {}) {
+        return AppApi.request(path, { ...options, csrfToken: state.csrf, redirectOn401: '/index.html' });
     }
 
     const isNarrow = () => window.matchMedia('(max-width: 980px)').matches;
 
-    // 后端错误码 -> 人话。GET（展开）与 POST（处置）共用。
-    const ERROR_KEYS = {
-        'item.already.resolved': 'review.error.already.resolved',
-        'item.not.rejected': 'review.error.item.not.rejected',
-        'folder.already.pending': 'review.error.folder.already.pending',
-        'unreject.log.failed': 'review.error.unreject.log.failed',
-        'files.missing': 'review.error.files.missing',
-        'candidate.not.found': 'review.error.candidate.not.found',
-        'release.id.required': 'review.error.release.required',
-        'csrf.invalid': 'review.error.csrf',
-        'candidates.expand.failed': 'review.error.expand.failed',
-        'llm.judge.disabled': 'review.error.llm.disabled',
-        'llm.not.configured': 'review.error.llm.not.configured',
-        'llm.call.failed': 'review.error.llm.call.failed',
-        'llm.web.search.unavailable': 'review.error.web.search.unavailable',
-        'recovery.unavailable': 'review.error.recovery.unavailable',
-        'recovery.already.running': 'review.error.online.already.running',
-        'item.not.found': 'review.error.item.not.found',
-        'recovery.no.audio.files': 'review.error.no.audio.files',
-        'cover.selection.expired': 'review.error.cover.expired',
-        'online.destination.exists': 'review.error.destination.exists',
-        'online.duplicate.exists': 'review.duplicate.title',
-        'local.archive.stale': 'review.local.error.stale',
-        'local.archive.metadata.required': 'review.local.error.required',
-        'local.archive.tracks.invalid': 'review.local.error.tracks',
-        'local.archive.write.failed': 'review.local.error.write'
-    };
-
-    function humanError(message) {
-        const coverage = /^online\.track\.coverage\.insufficient:(\d+)\/(\d+)$/.exec(message || '');
-        if (coverage) return tf('review.error.online.coverage.insufficient', coverage[1], coverage[2]);
-        const mismatch = /^recovery\.workspace\.count\.mismatch:(\d+)\/(\d+)$/.exec(message || '');
-        if (mismatch) return tf('recovery.workspace.count.mismatch', mismatch[1], mismatch[2]);
-        const key = ERROR_KEYS[message];
-        return key ? t(key) : message;
-    }
+    const humanError = message => AppErrors.humanError(message);
 
     function statusBadge(status) {
         const map = {
@@ -2219,11 +2164,7 @@
     let pendingOnline = null; // {itemId, candidateId}
     let pendingCoverSha256 = null;
 
-    function formatBytes(value) {
-        if (value < 1024) return value + ' B';
-        if (value < 1024 * 1024) return (value / 1024).toFixed(0) + ' KB';
-        return (value / 1024 / 1024).toFixed(1) + ' MB';
-    }
+    const formatBytes = value => AppUI.formatBytes(value, 1);
 
     function chooseCover(sha) {
         pendingCoverSha256 = sha || null;
@@ -2510,11 +2451,7 @@
 
     function baseName(path) { return String(path || '').split(/[\\/]/).pop() || ''; }
 
-    function formatDuration(seconds) {
-        const m = Math.floor(seconds / 60);
-        const s = Math.round(seconds % 60);
-        return m + ':' + String(s).padStart(2, '0');
-    }
+    const formatDuration = seconds => AppUI.formatDuration(seconds);
 
     function ago(ms) {
         if (!ms) return '';
@@ -2526,17 +2463,13 @@
             if (abs < 3600) return rtf.format(Math.round(sec / 60), 'minute');
             if (abs < 86400) return rtf.format(Math.round(sec / 3600), 'hour');
             if (abs < 86400 * 30) return rtf.format(Math.round(sec / 86400), 'day');
-            return new Date(ms).toLocaleDateString(I18n.language === 'zh_CN' ? 'zh-CN' : 'en-US');
+            return new Date(ms).toLocaleDateString(AppUI.locale());
         } catch (e) {
-            return new Date(ms).toLocaleDateString(I18n.language === 'zh_CN' ? 'zh-CN' : 'en-US');
+            return new Date(ms).toLocaleDateString(AppUI.locale());
         }
     }
 
-    function escapeHtml(text) {
-        return String(text == null ? '' : text)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
+    const escapeHtml = text => AppUI.escapeHtml(text);
 
     // 联网候选里的 URL 可能直接来自模型输出，只放行 http/https，挡住 javascript: 等协议
     function safeUrl(url) {

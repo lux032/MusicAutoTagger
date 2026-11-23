@@ -1013,6 +1013,13 @@ public class MusicConfig {
     }
     
     /**
+     * 暴露声明式配置字段元数据（单一事实源，供 Web 配置接口与校验逻辑共享）。
+     */
+    public static java.util.Map<String, ConfigFieldSpec.Spec> fieldSpecs() {
+        return ConfigFieldSpec.all();
+    }
+
+    /**
      * 验证配置是否有效
      */
     public boolean isValid() {

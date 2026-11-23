@@ -85,9 +85,6 @@ public class ProcessedFileLogger {
             log.info(I18nUtil.getMessage("logger.init.file"), config.getProcessedFileLogPath());
             initLogFile();
         }
-        // 历史记录的全量目录扫描回填暂不在启动时执行；
-        // 新处理的专辑仍会在正常写入链路中持久化 target_file_path。
-        // backfillMissingTargetPaths();
     }
 
     /**
@@ -950,123 +947,6 @@ public class ProcessedFileLogger {
         }
     }
 
-    /** 启动时为历史记录寻找输出目录中已归档的音频文件并持久化目标路径。 */
-    private void backfillMissingTargetPaths() {
-        String output = config.getOutputDirectory();
-        if (output == null || output.isBlank()) return;
-        Path outputRoot = Path.of(output).toAbsolutePath();
-        if (!Files.isDirectory(outputRoot)) return;
-        if (isDbMode) backfillDbTargetPaths(outputRoot); else backfillFileTargetPaths(outputRoot);
-    }
-
-    private void backfillDbTargetPaths(Path outputRoot) {
-        if (!targetFilePathColumnAvailable) return;
-        String placeholders = NON_MB_RECORDING_IDS.stream().map(x -> "?")
-            .collect(java.util.stream.Collectors.joining(", "));
-        String sql = "SELECT file_path, album, title FROM processed_files WHERE target_file_path IS NULL "
-            + "AND (recording_id IS NULL OR recording_id NOT IN (" + placeholders + "))";
-        try (Connection conn = databaseService.getConnection();
-             PreparedStatement query = conn.prepareStatement(sql)) {
-            int index = 1;
-            for (String sentinel : NON_MB_RECORDING_IDS) query.setString(index++, sentinel);
-            List<String[]> updates = new ArrayList<>();
-            try (ResultSet rs = query.executeQuery()) {
-                while (rs.next()) {
-                    String target = findArchivedAudio(outputRoot, rs.getString("album"),
-                        rs.getString("file_path"), rs.getString("title"));
-                    if (target != null) updates.add(new String[]{target, rs.getString("file_path")});
-                }
-            }
-            try (PreparedStatement update = conn.prepareStatement(
-                    "UPDATE processed_files SET target_file_path = ? WHERE file_path = ?")) {
-                for (String[] row : updates) {
-                    update.setString(1, row[0]); update.setString(2, row[1]); update.addBatch();
-                }
-                if (!updates.isEmpty()) update.executeBatch();
-            }
-        } catch (SQLException e) {
-            log.warn("历史目标路径自愈回填失败: {}", e.getMessage());
-        }
-    }
-
-    private void backfillFileTargetPaths(Path outputRoot) {
-        fileLock.writeLock().lock();
-        try {
-            Path logPath = Path.of(config.getProcessedFileLogPath());
-            if (!Files.exists(logPath)) return;
-            Path tempPath = logPath.resolveSibling(logPath.getFileName() + ".backfill-target.tmp");
-            try {
-                try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8);
-                     BufferedWriter writer = Files.newBufferedWriter(tempPath, StandardCharsets.UTF_8)) {
-                    String line;
-                    while ((line = reader.readLine()) != null) {
-                        String[] parts = splitLogLine(line);
-                        parts = Arrays.copyOf(parts, Math.max(parts.length, 8));
-                        for (int i = 0; i < parts.length; i++) if (parts[i] == null) parts[i] = "";
-                        if (parts[7].isBlank() && isBackfillable(parts[1], parts[4])) {
-                            String target = findArchivedAudio(outputRoot, parts[4], parts[0], parts[3]);
-                            if (target != null) parts[7] = target;
-                        }
-                        writer.write(formatLogLine(parts));
-                        writer.newLine();
-                    }
-                }
-                moveReplaceAtomic(tempPath, logPath);
-            } catch (IOException e) {
-                log.warn("文件日志历史目标路径自愈回填失败: {}", e.getMessage());
-            } finally {
-                try {
-                    Files.deleteIfExists(tempPath);
-                } catch (IOException ignored) {
-                }
-            }
-        } finally {
-            fileLock.writeLock().unlock();
-        }
-    }
-
-    private String findArchivedAudio(Path outputRoot, String album, String sourcePath, String title) {
-        if (album == null || album.isBlank()) return null;
-        String albumDir = com.lux032.musicautotagger.util.FileNameSanitizer.sanitize(album);
-        String sourceName = sourcePath == null ? "" : new File(sourcePath).getName();
-        String safeTitle = title == null ? "" : com.lux032.musicautotagger.util.FileNameSanitizer.sanitize(title);
-        try (java.util.stream.Stream<Path> artists = Files.list(outputRoot)) {
-            for (Path artist : artists.filter(Files::isDirectory).toList()) {
-                Path directory = artist.resolve(albumDir);
-                if (!Files.isDirectory(directory)) continue;
-                List<Path> candidates;
-                try (java.util.stream.Stream<Path> files = Files.list(directory)) {
-                    candidates = files.filter(Files::isRegularFile)
-                        .filter(p -> isAudioExtension(p.getFileName().toString())).sorted().toList();
-                }
-                Path exact = candidates.stream()
-                    .filter(p -> p.getFileName().toString().equalsIgnoreCase(sourceName)).findFirst().orElse(null);
-                if (exact != null) return exact.toFile().getAbsolutePath();
-                if (!safeTitle.isBlank()) {
-                    Path byTitle = candidates.stream().filter(p ->
-                        p.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
-                            .contains(safeTitle.toLowerCase(java.util.Locale.ROOT)))
-                        .findFirst().orElse(null);
-                    if (byTitle != null) return byTitle.toFile().getAbsolutePath();
-                }
-                // 单曲专辑无歧义；多曲专辑不能把所有历史行错误指向同一首。
-                if (candidates.size() == 1) return candidates.get(0).toFile().getAbsolutePath();
-            }
-        } catch (IOException e) {
-            log.debug("探测历史归档文件失败 (album={}): {}", album, e.getMessage());
-        }
-        return null;
-    }
-
-    private boolean isAudioExtension(String name) {
-        int dot = name.lastIndexOf('.');
-        if (dot < 0) return false;
-        String extension = name.substring(dot + 1);
-        String[] supported = config.getSupportedFormats();
-        if (supported == null || supported.length == 0) return true;
-        return Arrays.stream(supported).anyMatch(x -> extension.equalsIgnoreCase(x.replace(".", "")));
-    }
-
     private static String nullToEmpty(String value) { return value == null ? "" : value; }
 
     /** 对文件模式日志单列进行最小转义（仅转义 \\、|、\\r、\\n，保持普通路径与旧日志格式兼容）。 */
@@ -1374,17 +1254,26 @@ public class ProcessedFileLogger {
     }
 
     /**
-     * 返回符合条件的所有记录（不分页，最多 max 条），用于「选择全部匹配结果」的批量操作与 CSV 导出。
+     * 流式读取符合条件的记录（不将 10 万条记录一次性全部加载到 JVM 堆内存，用于流式 CSV 导出）。
+     * @return 实际流出的记录数
      */
-    public List<ProcessedRecord> findRecords(ProcessedRecordQuery q, int max) {
+    public int streamRecords(ProcessedRecordQuery q, int max, java.util.function.Consumer<ProcessedRecord> consumer) {
+        if (consumer == null || max <= 0) {
+            return 0;
+        }
         if (!isDbMode) {
-            return filterFileRecords(q).stream()
+            int[] count = {0};
+            filterFileRecords(q).stream()
                 .filter(r -> q.status == null || r.status == q.status)
                 .sorted(fileComparator(q.sort))
                 .limit(max)
-                .toList();
+                .forEach(r -> {
+                    consumer.accept(r);
+                    count[0]++;
+                });
+            return count[0];
         }
-        List<ProcessedRecord> result = new ArrayList<>();
+        int emitted = 0;
         List<Object> params = new ArrayList<>();
         String where = baseWhere(q, params);
         String status = statusSql(q.status);
@@ -1395,11 +1284,23 @@ public class ProcessedFileLogger {
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             bind(pstmt, params);
             try (ResultSet rs = pstmt.executeQuery()) {
-                while (rs.next()) result.add(mapRow(rs));
+                while (rs.next()) {
+                    consumer.accept(mapRow(rs));
+                    emitted++;
+                }
             }
         } catch (SQLException e) {
-            throw new RuntimeException("查询处理记录失败: " + e.getMessage(), e);
+            throw new RuntimeException("流式查询处理记录失败: " + e.getMessage(), e);
         }
+        return emitted;
+    }
+
+    /**
+     * 返回符合条件的所有记录（不分页，最多 max 条），用于「选择全部匹配结果」的批量操作与导出。
+     */
+    public List<ProcessedRecord> findRecords(ProcessedRecordQuery q, int max) {
+        List<ProcessedRecord> result = new ArrayList<>();
+        streamRecords(q, max, result::add);
         return result;
     }
 

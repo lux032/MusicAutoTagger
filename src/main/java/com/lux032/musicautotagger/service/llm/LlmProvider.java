@@ -3,6 +3,7 @@ package com.lux032.musicautotagger.service.llm;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.lux032.musicautotagger.util.JsonUtils;
 
 import java.net.http.HttpRequest;
 import java.util.Locale;
@@ -121,19 +122,18 @@ public interface LlmProvider {
 
         @Override
         public String extractText(JsonObject response) {
-            if (response == null || !response.has("content") || !response.get("content").isJsonArray()) {
+            JsonArray content = JsonUtils.array(response, "content");
+            if (content == null) {
                 return null;
             }
-            JsonArray content = response.getAsJsonArray("content");
             StringBuilder sb = new StringBuilder();
             for (JsonElement element : content) {
-                if (!element.isJsonObject()) {
+                if (element == null || !element.isJsonObject()) {
                     continue;
                 }
-                JsonObject block = element.getAsJsonObject();
-                JsonElement text = block.get("text");
-                if (text != null && text.isJsonPrimitive()) {
-                    sb.append(text.getAsString());
+                String text = JsonUtils.string(element.getAsJsonObject(), "text");
+                if (text != null) {
+                    sb.append(text);
                 }
             }
             String result = sb.toString().trim();
@@ -184,29 +184,18 @@ public interface LlmProvider {
 
         @Override
         public String extractText(JsonObject response) {
-            if (response == null || !response.has("choices") || !response.get("choices").isJsonArray()) {
-                return null;
-            }
-            JsonArray choices = response.getAsJsonArray("choices");
-            if (choices.size() == 0 || !choices.get(0).isJsonObject()) {
+            JsonArray choices = JsonUtils.array(response, "choices");
+            if (choices == null || choices.size() == 0 || !choices.get(0).isJsonObject()) {
                 return null;
             }
             JsonObject first = choices.get(0).getAsJsonObject();
-            JsonElement messageElement = first.get("message");
-            if (messageElement != null && messageElement.isJsonObject()) {
-                JsonElement content = messageElement.getAsJsonObject().get("content");
-                if (content != null && content.isJsonPrimitive()) {
-                    String text = content.getAsString().trim();
-                    return text.isEmpty() ? null : text;
-                }
+            JsonObject message = JsonUtils.object(first, "message");
+            String content = JsonUtils.trimmedString(message, "content");
+            if (content != null) {
+                return content;
             }
             // 少数兼容端点直接返回 text 字段
-            JsonElement text = first.get("text");
-            if (text != null && text.isJsonPrimitive()) {
-                String value = text.getAsString().trim();
-                return value.isEmpty() ? null : value;
-            }
-            return null;
+            return JsonUtils.trimmedString(first, "text");
         }
     }
 }

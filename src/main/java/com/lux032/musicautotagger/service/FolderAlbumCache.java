@@ -59,13 +59,17 @@ public class FolderAlbumCache {
     private final Set<String> missingCoverFolders = ConcurrentHashMap.newKeySet();
 
     /**
-     * 文件夹级锁：把「自动写入授权 + 写入」与「判定缺曲 / 未确定」串行化。
+     * 文件夹级锁与活跃时间存储（256 条带固定内存上限，避免无界锁对象泄漏）。
      * 加锁顺序固定为 folderLock → folderAlbumCache，避免死锁。
      */
-    private final Map<String, Object> folderLocks = new ConcurrentHashMap<>();
+    private final FolderStateStore stateStore = new FolderStateStore();
 
     public Object folderLock(String folderPath) {
-        return folderLocks.computeIfAbsent(folderPath == null ? "" : folderPath, k -> new Object());
+        return stateStore.lockFor(folderPath);
+    }
+
+    FolderStateStore stateStore() {
+        return stateStore;
     }
 
     /** 文件夹 -> 缓存专辑曲目数与实际文件数连续不一致的次数 */
@@ -160,6 +164,7 @@ public class FolderAlbumCache {
     }
 
     public CachedAlbumInfo getFolderAlbum(String folderPath, int musicFilesCount, boolean musicFilesCountReliable) {
+        stateStore.touch(folderPath);
         CachedAlbumInfo cached = folderAlbumCache.get(folderPath);
         if (cached != null) {
             CacheSource cachedSource = cached.getSource() != null ? cached.getSource() : CacheSource.UNKNOWN;
@@ -211,6 +216,7 @@ public class FolderAlbumCache {
      * @param albumInfo 专辑信息
      */
     public void setFolderAlbum(String folderPath, CachedAlbumInfo albumInfo) {
+        stateStore.touch(folderPath);
         synchronized (folderAlbumCache) {
             if (rejectAutomaticLockIfUnresolved(folderPath, albumInfo)) {
                 return;
@@ -274,6 +280,7 @@ public class FolderAlbumCache {
      * @param albumInfo 专辑信息
      */
     public void forceSetFolderAlbum(String folderPath, CachedAlbumInfo albumInfo) {
+        stateStore.touch(folderPath);
         synchronized (folderAlbumCache) {
             folderAlbumCache.put(folderPath, albumInfo);
             folderSampleCollectors.remove(folderPath);
@@ -1654,7 +1661,23 @@ public class FolderAlbumCache {
         folderDiagnoses.remove(folderPath);
         folderMissingTracks.remove(folderPath);
         missingCoverFolders.remove(folderPath);
+        stateStore.removeTracking(folderPath);
         log.info("已清除文件夹专辑缓存: {}", folderPath);
+    }
+
+    /**
+     * 安全驱逐超过指定空闲时长的文件夹状态，防止长时间运行后文件夹状态表无限增长。
+     * 仍有待处理文件或已由人工确认锁定的文件夹会被保护而不驱逐。
+     */
+    public int evictIdleFolders(long maxIdleMs) {
+        Set<String> protectedFolders = new HashSet<>(getFoldersWithPendingFiles());
+        for (Map.Entry<String, CachedAlbumInfo> entry : folderAlbumCache.entrySet()) {
+            CachedAlbumInfo info = entry.getValue();
+            if (info != null && info.getSource() != null && info.getSource().isManual()) {
+                protectedFolders.add(entry.getKey());
+            }
+        }
+        return stateStore.evictIdleFolders(maxIdleMs, protectedFolders, this::clearFolderCache);
     }
     
     /**

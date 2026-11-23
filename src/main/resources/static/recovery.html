@@ -7,6 +7,9 @@
     <link rel="icon" href="logo.png" type="image/png">
     <link rel="stylesheet" href="app.css?v=11">
     <script src="i18n.js?v=1"></script>
+    <script src="ui.js?v=1"></script>
+    <script src="errors.js?v=1"></script>
+    <script src="api.js?v=1"></script>
     <script src="shell.js?v=2"></script>
     <script src="search-queue.js?v=3"></script>
     <style>
@@ -313,15 +316,7 @@
     const errorKeys = {
         'csrf.invalid': 'recovery.error.csrf',
         'recovery.already.running': 'recovery.error.already.running',
-        'recovery.item.not.found': 'recovery.error.item.not.found',
-        'recovery.llm.partial.only': 'recovery.error.llm.partial.only',
-        'recovery.directory.not.configured': 'recovery.error.directory.not.configured',
-        'llm.web.search.unavailable': 'recovery.error.web.search.unavailable',
-        'trash.restore.target.exists': 'recovery.error.restore.target.exists',
-        'trash.manifest.missing': 'recovery.error.manifest.missing',
-        'trash.manifest.invalid': 'recovery.error.manifest.invalid',
-        'trash.entry.not.found': 'recovery.error.entry.not.found',
-        'trash.id.invalid': 'recovery.error.id.invalid'
+        'llm.web.search.unavailable': 'recovery.error.web.search.unavailable'
     };
 
     const itemKey = i => i.sourceType + '\n' + i.relativePath;
@@ -445,21 +440,16 @@
         }, 4000);
     }
 
-    async function api(path, opt = {}) {
-        opt.headers = opt.headers || {};
-        if (csrfToken) opt.headers['X-CSRF-Token'] = csrfToken;
-        if (opt.body) opt.headers['Content-Type'] = 'application/json';
-        const r = await fetch(path, { credentials: 'same-origin', ...opt });
-        if (r.status === 401) {
-            if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = null; }
-            if (window.SearchQueue && typeof SearchQueue.stop === 'function') SearchQueue.stop();
-            location.href = '/index.html';
-            throw new Error('unauthorized');
-        }
-        let d = {};
-        try { d = await r.json(); } catch (e) { /* ignore */ }
-        if (!r.ok) throw new Error(errorKeys[d.error] ? T(errorKeys[d.error]) : (d.error || ('HTTP ' + r.status)));
-        return d;
+    function api(path, opt = {}) {
+        return AppApi.request(path, {
+            ...opt,
+            csrfToken,
+            onUnauthorized: () => {
+                if (jobsTimer) { clearInterval(jobsTimer); jobsTimer = null; }
+                location.href = '/index.html';
+            },
+            mapError: code => AppErrors.humanError(code, errorKeys)
+        });
     }
 
     function setTab(tab) {
@@ -705,11 +695,7 @@
         }).join('');
     }
 
-    function humanError(message) {
-        if (message === 'online.destination.exists') return T('review.error.destination.exists');
-        const mismatch = /^recovery\.workspace\.count\.mismatch:(\d+)\/(\d+)$/.exec(message || '');
-        return mismatch ? TF('recovery.workspace.count.mismatch', mismatch[1], mismatch[2]) : message;
-    }
+    const humanError = message => (message ? AppErrors.humanError(message, errorKeys) : message);
 
     function modeBadge(j) {
         if (j.mode === 'ONLINE_SEARCH') return T('recovery.job.online');
@@ -809,19 +795,8 @@
         } catch (e) { toast(TF('recovery.dismiss.failed', e.message)); }
     }
 
-    function toast(t) {
-        const e = document.getElementById('toast');
-        e.textContent = t;
-        e.style.display = 'block';
-        clearTimeout(e._t);
-        e._t = setTimeout(() => { e.style.display = 'none'; }, 4200);
-    }
-
-    function esc(t) {
-        return String(t == null ? '' : t)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
+    const toast = msg => AppUI.toast(msg, { duration: 4200 });
+    const esc = text => AppUI.escapeHtml(text);
 
     init();
 </script>

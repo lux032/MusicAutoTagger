@@ -191,58 +191,78 @@ public class ProcessedRecordService {
         return new FolderResolver().resolve(filePath).folderPath;
     }
 
-    /** 导出：不分页，最多 limit 条，不做文件探测（导出大量记录时逐个 stat 太慢）。 */
-    public List<ProcessedRecord> export(ProcessedRecordQuery query, int limit) {
+    private static final int EXPORT_FOLDER_CHUNK = 100;
+
+    /**
+     * 流式导出处理记录：直接边查询边写入回调，避免大库 10 万条导出时在堆内存一次性堆积全部记录。
+     */
+    public int exportStream(ProcessedRecordQuery query, int limit,
+                            java.util.function.Consumer<ProcessedRecord> consumer) {
+        if (consumer == null || limit <= 0) {
+            return 0;
+        }
         FolderResolver resolver = new FolderResolver();
         if (query != null && query.isFolderView()) {
             if (logger.isFolderPathColumnAvailable()) {
                 List<String> matchedFolders = logger.findFolderPathsSql(query, limit);
                 if (matchedFolders != null) {
-                    if (matchedFolders.isEmpty()) return List.of();
-                    List<ProcessedRecord> fetched = logger.findRecordsByFolderPaths(matchedFolders, limit);
-                    Map<String, List<ProcessedRecord>> byFolder = new LinkedHashMap<>();
-                    for (String fp : matchedFolders) {
-                        byFolder.put(normalizeFolderKey(fp), new ArrayList<>());
-                    }
-                    if (fetched != null) {
-                        for (ProcessedRecord r : fetched) {
-                            FolderInfo info = resolver.resolve(r.filePath);
-                            r.folderPath = info.folderPath;
-                            r.discName = info.discName;
-                            byFolder.computeIfAbsent(normalizeFolderKey(info.folderPath), k -> new ArrayList<>()).add(r);
+                    if (matchedFolders.isEmpty()) return 0;
+                    int emitted = 0;
+                    for (int i = 0; i < matchedFolders.size() && emitted < limit; i += EXPORT_FOLDER_CHUNK) {
+                        List<String> chunk = matchedFolders.subList(i, Math.min(i + EXPORT_FOLDER_CHUNK, matchedFolders.size()));
+                        int remaining = limit - emitted;
+                        List<ProcessedRecord> fetched = logger.findRecordsByFolderPaths(chunk, remaining);
+                        Map<String, List<ProcessedRecord>> byFolder = new LinkedHashMap<>();
+                        for (String fp : chunk) {
+                            byFolder.put(normalizeFolderKey(fp), new ArrayList<>());
+                        }
+                        if (fetched != null) {
+                            for (ProcessedRecord r : fetched) {
+                                FolderInfo info = resolver.resolve(r.filePath);
+                                r.folderPath = info.folderPath;
+                                r.discName = info.discName;
+                                byFolder.computeIfAbsent(normalizeFolderKey(info.folderPath), k -> new ArrayList<>()).add(r);
+                            }
+                        }
+                        for (List<ProcessedRecord> children : byFolder.values()) {
+                            children.sort(Comparator.comparing((ProcessedRecord r) -> r.filePath == null ? "" : r.filePath,
+                                String.CASE_INSENSITIVE_ORDER));
+                            for (ProcessedRecord r : children) {
+                                consumer.accept(r);
+                                emitted++;
+                                if (emitted >= limit) return emitted;
+                            }
                         }
                     }
-                    List<ProcessedRecord> result = new ArrayList<>();
-                    for (List<ProcessedRecord> children : byFolder.values()) {
-                        children.sort(Comparator.comparing((ProcessedRecord r) -> r.filePath == null ? "" : r.filePath,
-                            String.CASE_INSENSITIVE_ORDER));
-                        for (ProcessedRecord r : children) {
-                            result.add(r);
-                            if (result.size() >= limit) return result;
-                        }
-                    }
-                    return result;
+                    return emitted;
                 }
             }
             FolderFilterResult filtered = filterFolderGroups(query, resolver);
-            List<ProcessedRecord> result = new ArrayList<>();
+            int emitted = 0;
             for (FolderGroup g : filtered.matched) {
                 List<ProcessedRecord> children = new ArrayList<>(g.records);
                 children.sort(Comparator.comparing((ProcessedRecord r) -> r.filePath == null ? "" : r.filePath,
                     String.CASE_INSENSITIVE_ORDER));
                 for (ProcessedRecord r : children) {
                     r.folderPath = g.summary.folderPath;
-                    result.add(r);
-                    if (result.size() >= limit) return result;
+                    consumer.accept(r);
+                    emitted++;
+                    if (emitted >= limit) return emitted;
                 }
             }
-            return result;
+            return emitted;
         }
-        List<ProcessedRecord> records = logger.findRecords(query, limit);
-        for (ProcessedRecord r : records) {
+        return logger.streamRecords(query, limit, r -> {
             r.folderPath = resolver.resolve(r.filePath).folderPath;
-        }
-        return records;
+            consumer.accept(r);
+        });
+    }
+
+    /** 导出：不分页，最多 limit 条，不做文件探测（保留列表返回形式供既有调用方复用）。 */
+    public List<ProcessedRecord> export(ProcessedRecordQuery query, int limit) {
+        List<ProcessedRecord> result = new ArrayList<>();
+        exportStream(query, limit, result::add);
+        return result;
     }
 
     /** 解析批量操作的目标：显式路径列表优先，否则使用筛选条件。 */

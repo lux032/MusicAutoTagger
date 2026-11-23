@@ -12,7 +12,7 @@
 - [x] **任务 1（P1 核心管道：封面/歌词 + 识别/写盘）**：`C-1` ~ `C-6`、`A-1` ~ `A-5`（11 大项，2026-11-23 全部完成并通过 `mvn test -B` 363/363，含新增专项回归测试 `P1Task1CorePipelineRegressionTest`）
 - [x] **任务 2（P1 数据库、持久化、LLM 与并发配置）**：`D-1` ~ `D-6`（6 大项，2026-11-23 全部完成并通过 `mvn test -B` 370/370，含新增专项回归测试 `P1Task2DataLlmConcurrencyRegressionTest`）
 - [x] **任务 3（P1 前端交互、i18n 与运维部署）**：`U-1` ~ `U-3`、`O-1`（4 大项，2026-11-23 全部完成并通过 `mvn test -B` 379/379，含新增专项回归测试 `P1Task3FrontendI18nOpsRegressionTest`）
-- [ ] **任务 4（P2 中长期架构重构）**：God Classes 拆解、基础设施收敛、前端公共模块抽取（3 大方向）
+- [x] **任务 4（P2 中长期架构重构）**：`P2-1` ~ `P2-3`（God Classes 拆解、基础设施收敛、前端公共模块抽取，2026-11-23 全部完成并通过 `mvn test -B` 389/389，含新增专项回归测试 `P2ArchitectureRefactoringRegressionTest`）
 
 ---
 
@@ -116,6 +116,18 @@
 
 ## 任务 4：P2 中长期架构演进（按需分步实施）
 
-- [ ] **P2-1：拆解超大型 God Classes 与消除循环依赖**（`MusicBrainzClient`、`RecoveryService`、`FolderAlbumCache`、`TagWriterService`、`ProcessedFileLogger`、`AudioFileProcessorService`、`MusicConfig`）
-- [ ] **P2-2：基础设施与依赖收敛**（统一 Jackson/Gson、统一共享 HTTP 客户端工厂、`review-queue.json` 历史归档、流式 CSV 导出）
-- [ ] **P2-3：前端工程化去重**（从 5 个内联 HTML 页面抽离共享 `static/api.js`、`static/ui.js`、`static/errors.js`）
+- [x] **P2-1：拆解超大型 God Classes 与消除配置漂移**
+  - `MusicBrainzClient` 抽离 Cover Art Archive 查询/动画版选图/下载为 `CoverArtArchiveClient`
+  - `TagWriterService` 抽离路径命名与曲目号解析为 `TargetPathResolver`，抽离原子发布/防静默覆盖/FLAC MD5 比对/POSIX 权限为 `AtomicAudioPublisher`
+  - `RecoveryService` 抽离回收站管理、跨设备移动与崩溃替换备份恢复为 `RecoveryTrashService`
+  - `FolderAlbumCache` 引入 `FolderStateStore`（256 路有界分段锁替代无界 `folderLocks` + `evictIdleFolders()` 空闲目录安全驱逐）
+  - `AudioFileProcessorService` 抽离文件夹标准化计划为 `FolderNormalizationCoordinator`
+  - `ProcessedFileLogger` 彻底清理已停用的死代码 `backfillMissingTargetPaths*`
+  - `MusicConfig` 新增单一事实源 `ConfigFieldSpec` 字段元数据注册表并补齐 `config.properties.example` / `config.properties.example.zh` 中的 `web.port` 与 `release.countryPriority`
+- [x] **P2-2：基础设施与持久化收敛**
+  - 新增 `HttpClientFactory` 统一 JDK `HttpClient` 与 Apache `HttpClient 5` 构建（代理、代理认证、禁止自动重定向、过期/空闲连接清理），并接入 `LlmClient`、`MusicBrainzClient`、`AudioFingerprintService`、`LyricsService`、`UntrustedImageFetcher`
+  - 新增 `JsonUtils` 提供共享 Gson/ObjectMapper 实例与空/类型安全读取器，接入 `LlmProvider`
+  - `ReviewQueueService` 新增已决历史条目自动归档到 `review-queue-archive.jsonl`（NDJSON，默认活态上限 500，保护待确认、已提交待收尾以及 `COVER_MISSING` 扫描跳过守卫记录）
+  - `ProcessedFileLogger.streamRecords()` / `ProcessedRecordService.exportStream()` / `RecordsServlet` 改造为流式 CSV 导出，避免大数据集整表装入堆内存
+- [x] **P2-3：前端工程化去重**
+  - 零构建成本抽离共享静态模块 `static/ui.js`（`AppUI`：`escapeHtml`、`toast`、`formatBytes`、`formatDuration`、`locale`、`withButtonLock`）、`static/errors.js`（`AppErrors`：统一 `ERROR_KEYS` + `humanError`）与 `static/api.js`（`AppApi`：统一 `X-CSRF-Token`、401 停轮询/跳转与 JSON/文件请求处理），全面接入 `index.html`、`review.html`、`covers.html`、`recovery.html`、`records.html` 与 `search-queue.js`

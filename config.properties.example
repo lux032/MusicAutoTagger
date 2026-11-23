@@ -9,6 +9,13 @@
 #
 
 # ========================================
+# Web Dashboard Configuration
+# ========================================
+
+# Web dashboard HTTP listening port (1-65535; env WEB_PORT also supported)
+web.port=8080
+
+# ========================================
 # Monitor Directory Configuration
 # ========================================
 

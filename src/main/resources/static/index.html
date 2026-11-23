@@ -6,6 +6,9 @@
     <title>音乐自动标签器 - 仪表板</title>
     <link rel="icon" href="logo.png" type="image/png">
     <link rel="stylesheet" href="app.css?v=11">
+    <script src="ui.js?v=1"></script>
+    <script src="errors.js?v=1"></script>
+    <script src="api.js?v=1"></script>
     <script src="search-queue.js?v=3"></script>
     <style>
         /* ---- 概览（仪表板）专用 ---- */
@@ -1195,30 +1198,13 @@
             });
         }
 
-        let toastTimer = null;
         function showToast(msg, isError = false) {
-            const el = document.getElementById('toast');
-            if (!el) return;
-            el.textContent = msg;
-            el.style.background = isError ? 'var(--danger)' : '';
-            el.style.display = 'block';
-            clearTimeout(toastTimer);
-            toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3800);
+            AppUI.toast(msg, { duration: 3800, isError });
         }
 
-        // 高风险写操作与表单防连点锁
-        const inFlightActions = new Set();
-        async function withButtonLock(lockKey, btnId, fn) {
-            if (inFlightActions.has(lockKey)) return;
-            inFlightActions.add(lockKey);
-            const btn = btnId ? document.getElementById(btnId) : null;
-            if (btn) btn.disabled = true;
-            try {
-                return await fn();
-            } finally {
-                inFlightActions.delete(lockKey);
-                if (btn) btn.disabled = false;
-            }
+        // 高风险写操作与表单防连点锁（复用共享 AppUI.withButtonLock）
+        function withButtonLock(lockKey, btnId, fn) {
+            return AppUI.withButtonLock(lockKey, btnId, fn);
         }
 
         function showLoginOverlay(show) {
@@ -1660,24 +1646,22 @@
         }
 
         async function authFetch(url, options = {}) {
-            const opts = { credentials: 'same-origin', ...options };
-            opts.headers = opts.headers || {};
-            if (authState.csrfToken && opts.method && opts.method.toUpperCase() !== 'GET') {
-                opts.headers['X-CSRF-Token'] = authState.csrfToken;
-            }
-            if (!opts.headers['Content-Type'] && opts.body) {
-                opts.headers['Content-Type'] = 'application/json';
-            }
-            const response = await fetch(url, opts);
-            if (response.status === 401) {
-                if (window.SearchQueue && typeof SearchQueue.stop === 'function') {
-                    SearchQueue.stop();
+            try {
+                return await AppApi.request(url, {
+                    ...options,
+                    rawResponse: true,
+                    csrfToken: authState.csrfToken,
+                    onUnauthorized: async () => {
+                        document.getElementById('content').style.display = 'none';
+                        await checkAuth();
+                    }
+                });
+            } catch (err) {
+                if (err && err.status === 401) {
+                    throw new Error(t('web.login.required'));
                 }
-                document.getElementById('content').style.display = 'none';
-                await checkAuth();
-                throw new Error(t('web.login.required'));
+                throw err;
             }
-            return response;
         }
 
         async function checkAuth() {
@@ -1875,16 +1859,8 @@
             isFirstLoad = true;
         }
 
-        // 安全的文本转义函数，转义全部 HTML 特殊字符含单双引号，防止属性与内联脚本 XSS
-        function escapeHtml(text) {
-            if (text == null) return '';
-            return String(text)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#39;');
-        }
+        // 安全的文本转义函数（复用共享 AppUI.escapeHtml，转义 5 字符防止属性与内联脚本 XSS）
+        const escapeHtml = text => AppUI.escapeHtml(text);
 
         // 创建文本节点的辅助函数
         function createTextElement(tag, text, className) {

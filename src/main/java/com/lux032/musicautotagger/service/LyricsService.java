@@ -44,14 +44,10 @@ public class LyricsService implements AutoCloseable {
     LyricsService(MusicConfig config, String baseUrl) {
         this.config = config;
         this.baseUrl = baseUrl;
-        HttpClientBuilder builder = HttpClients.custom().disableAutomaticRetries()
-            .setDefaultRequestConfig(RequestConfig.custom()
-                .setConnectTimeout(Timeout.ofSeconds(2))
-                .setConnectionRequestTimeout(Timeout.ofSeconds(1))
-                .setResponseTimeout(Timeout.ofSeconds(2)).build());
-        if (config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isBlank())
-            builder.setProxy(new HttpHost(config.getProxyHost(), config.getProxyPort()));
-        client = builder.build();
+        client = com.lux032.musicautotagger.util.HttpClientFactory
+            .apacheHttpClientBuilder(config, Timeout.ofSeconds(1), Timeout.ofSeconds(2), Timeout.ofSeconds(2))
+            .disableAutomaticRetries()
+            .build();
     }
 
     /** Legacy adapter; callers with local precision should use lookup or enrich. */

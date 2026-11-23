@@ -142,7 +142,6 @@ public class RecordsServlet extends HttpServlet {
 
     private void export(HttpServletRequest req, HttpServletResponse resp) throws IOException {
         ProcessedRecordQuery query = queryFromParams(req);
-        List<ProcessedRecord> records = service.export(query, EXPORT_LIMIT);
         String stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
         resp.setStatus(200);
         resp.setContentType("text/csv; charset=UTF-8");
@@ -152,11 +151,15 @@ public class RecordsServlet extends HttpServlet {
         w.write('\uFEFF'); // BOM：让 Excel 以 UTF-8 打开，中文/日文不乱码
         w.write(csvLine("status", "processed_time", "artist", "title", "album", "recording_id",
             "release_group_id", "file_path", "target_file_path", "folder_path"));
-        for (ProcessedRecord r : records) {
+        int[] written = {0};
+        service.exportStream(query, EXPORT_LIMIT, r -> {
             String folderPath = r.folderPath != null ? r.folderPath : service.resolveFolderPath(r.filePath);
             w.write(csvLine(r.status == null ? "" : r.status.name(), r.processedTime, r.artist, r.title, r.album,
                 r.recordingId, r.releaseGroupId, r.filePath, r.targetFilePath, folderPath));
-        }
+            if ((++written[0] % 500) == 0) {
+                w.flush();
+            }
+        });
         w.flush();
     }
 

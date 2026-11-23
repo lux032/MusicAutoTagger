@@ -7,6 +7,9 @@
     <link rel="icon" type="image/png" href="logo.png">
     <link rel="stylesheet" href="app.css?v=11">
     <script src="i18n.js?v=1"></script>
+    <script src="ui.js?v=1"></script>
+    <script src="errors.js?v=1"></script>
+    <script src="api.js?v=1"></script>
     <script src="shell.js?v=2"></script>
     <script src="search-queue.js?v=3"></script>
     <style>
@@ -375,82 +378,12 @@
         dupContext: null
     };
 
-    function esc(s) {
-        return String(s == null ? '' : s)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
-
-    function fmtBytes(n) {
-        const v = Number(n) || 0;
-        if (v < 1024) return v + ' B';
-        if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB';
-        return (v / 1024 / 1024).toFixed(2) + ' MB';
-    }
-
-    function fmtDur(sec) {
-        const s = Number(sec) || 0;
-        if (s <= 0) return '-';
-        const m = Math.floor(s / 60), r = Math.floor(s % 60);
-        return m + ':' + String(r).padStart(2, '0');
-    }
-
-    function toast(msg) {
-        const el = $('toast');
-        el.textContent = msg;
-        el.style.display = 'block';
-        clearTimeout(el._t);
-        el._t = setTimeout(() => { el.style.display = 'none'; }, 3800);
-    }
-
-    const ERROR_KEYS = {
-        'csrf.invalid': 'review.error.csrf',
-        'item.not.found': 'review.error.item.not.found',
-        'item.already.resolved': 'review.error.already.resolved',
-        'item.not.rejected': 'review.error.item.not.rejected',
-        'folder.already.pending': 'review.error.folder.already.pending',
-        'unreject.log.failed': 'review.error.unreject.log.failed',
-        'recovery.no.audio.files': 'review.error.no.audio.files',
-        'files.missing': 'review.error.files.missing',
-        'candidate.not.found': 'review.error.candidate.not.found',
-        'release.id.required': 'review.error.release.required',
-        'candidates.expand.failed': 'review.error.expand.failed',
-        'online.destination.exists': 'review.error.destination.exists',
-        'recovery.unavailable': 'review.error.recovery.unavailable',
-        'recovery.already.running': 'sq.toast.already',
-        'local.archive.stale': 'review.local.error.stale',
-        'local.archive.metadata.required': 'review.local.error.required',
-        'local.archive.tracks.invalid': 'review.local.error.tracks',
-        'local.archive.write.failed': 'review.local.error.write',
-        'cover.upload.empty': 'covers.err.upload.empty',
-        'cover.upload.too.large': 'covers.err.upload.too.large',
-        'cover.upload.invalid': 'covers.err.upload.invalid',
-        'cover.url.required': 'covers.err.url.required',
-        'cover.url.fetch.failed': 'covers.err.url.fetch.failed',
-        'cover.selection.required': 'covers.err.selection.required',
-        'cover.selection.expired': 'covers.err.selection.expired',
-        'cover.embed.partial.failed': 'covers.err.embed.partial.failed',
-        'cover.apply.write.failed': 'covers.err.apply.write.failed',
-        'cover.scan.already.running': 'covers.err.scan.already.running',
-        'cover.search.unavailable': 'covers.err.search.unavailable',
-        'search.queue.closed': 'covers.err.queue.closed',
-        'unsafe.output.root': 'covers.err.unsafe.root',
-        'missing.id': 'covers.err.missing.id'
-    };
-
-    function humanError(code) {
-        if (!code) return t('review.action.failed', 'Error');
-        const msg = String(code);
-        const coverage = /^online\.track\.coverage\.insufficient:(\d+)\/(\d+)$/.exec(msg);
-        if (coverage) {
-            return tf('review.error.online.coverage.insufficient', coverage[1], coverage[2]);
-        }
-        const mismatch = /^recovery\.workspace\.count\.mismatch:(\d+)\/(\d+)$/.exec(msg);
-        if (mismatch) {
-            return tf('recovery.workspace.count.mismatch', mismatch[1], mismatch[2]);
-        }
-        return ERROR_KEYS[msg] ? t(ERROR_KEYS[msg], msg) : msg;
-    }
+    const esc = s => AppUI.escapeHtml(s);
+    const fmtBytes = n => AppUI.formatBytes(n, 2);
+    const fmtDur = sec => AppUI.formatDuration(sec, '-');
+    const toast = msg => AppUI.toast(msg, { duration: 3800 });
+    const COVER_ERROR_OVERRIDES = { 'recovery.already.running': 'sq.toast.already' };
+    const humanError = code => AppErrors.humanError(code, COVER_ERROR_OVERRIDES);
 
     function captureDraftFromDom() {
         if (!state.item || state.draftItemId !== state.item.id) return;
@@ -462,30 +395,15 @@
         if (detEl) state.tracksOpen = detEl.open;
     }
 
-    async function api(path, opt = {}) {
-        opt.headers = opt.headers || {};
-        if (state.csrfToken && opt.method && opt.method.toUpperCase() !== 'GET') {
-            opt.headers['X-CSRF-Token'] = state.csrfToken;
-        }
-        if (opt.body && !(opt.body instanceof File) && !(opt.body instanceof Blob) && !opt.headers['Content-Type']) {
-            opt.headers['Content-Type'] = 'application/json';
-        }
-        const resp = await fetch(path, { credentials: 'same-origin', ...opt });
-        if (resp.status === 401) {
-            clearTimeout(state.scanPollTimer);
-            if (window.SearchQueue && typeof SearchQueue.stop === 'function') SearchQueue.stop();
-            location.href = 'index.html';
-            throw new Error('unauthorized');
-        }
-        let data = {};
-        try { data = await resp.json(); } catch (e) {}
-        if (!resp.ok) {
-            const err = new Error(data.error || ('HTTP ' + resp.status));
-            err.status = resp.status;
-            err.data = data;
-            throw err;
-        }
-        return data;
+    function api(path, opt = {}) {
+        return AppApi.request(path, {
+            ...opt,
+            csrfToken: state.csrfToken,
+            onUnauthorized: () => {
+                clearTimeout(state.scanPollTimer);
+                location.href = 'index.html';
+            }
+        });
     }
 
     async function ensureAuth() {

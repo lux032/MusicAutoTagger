@@ -61,6 +61,8 @@ import java.util.Set;
 public class TagWriterService {
 
     private final MusicConfig config;
+    private final TargetPathResolver targetPathResolver;
+    private final AtomicAudioPublisher publisher;
     /**
      * 恢复任务线程专用输出根目录，不影响并发运行的常规监控线程。
      *
@@ -115,6 +117,8 @@ public class TagWriterService {
 
     public TagWriterService(MusicConfig config) {
         this.config = config;
+        this.targetPathResolver = new TargetPathResolver(config);
+        this.publisher = new AtomicAudioPublisher(this::readTags);
     }
 
     public void setThreadOutputRoot(File root) {
@@ -254,280 +258,42 @@ public class TagWriterService {
     }
 
     /** 判定「同一段音频」的时长容差（秒）。重编码 / 降采样带来的时长偏差远小于此值。 */
-    static final double SAME_AUDIO_DURATION_TOLERANCE_SECONDS = 1.0;
-    private static final int MAX_CONFLICT_SUFFIX = 99;
+    static final double SAME_AUDIO_DURATION_TOLERANCE_SECONDS = AtomicAudioPublisher.SAME_AUDIO_DURATION_TOLERANCE_SECONDS;
 
-    /**
-     * 复制源文件到目标路径，但不会用另一首歌覆盖已存在的文件。
-     *
-     * <p>背景：识别出错时（例如两首不同的歌被认成同一个 recording、落到同一曲目位置），
-     * 旧实现直接 REPLACE_EXISTING，后写入的歌会静默覆盖先写入的歌，造成数据丢失。
-     * 这类错误下两条记录的 recording_id 是相同的，无法靠元数据区分，只能看音频本身。</p>
-     *
-     * <ul>
-     *   <li>目标不存在：直接写入；</li>
-     *   <li>目标存在且音频时长一致（同一首歌：重新识别 / 重复文件）：覆盖，行为与旧版一致；</li>
-     *   <li>目标存在但时长不一致或无法判断：保留原文件，另存为 {@code 名称 (2).ext}。</li>
-     * </ul>
-     *
-     * @return 实际写入的目标文件
-     */
     File copyWithoutClobbering(File sourceFile, File targetFile) throws IOException {
         return publishWithoutClobbering(sourceFile, targetFile, null);
     }
 
     private File publishWithoutClobbering(File sourceFile, File targetFile, Path staged) throws IOException {
-        Double sourceDuration = null;
-        boolean sourceDurationRead = false;
-        Set<Path> batchWritten = batchWrittenTargets.get();
-
-        File candidate = targetFile;
-        for (int attempt = 1; attempt <= MAX_CONFLICT_SUFFIX; attempt++) {
-            Path normalizedCandidate = candidate.toPath().toAbsolutePath().normalize();
-            if (!candidate.exists()) {
-                try {
-                    // 不带 REPLACE_EXISTING：若并发线程抢先创建了同名文件，会抛异常并重新判定
-                    publish(sourceFile, staged, candidate.toPath(), false);
-                    if (batchWritten != null) batchWritten.add(normalizedCandidate);
-                    logCopy(sourceFile, candidate, targetFile);
-                    return candidate;
-                } catch (java.nio.file.FileAlreadyExistsException raced) {
-                    // 落入下面的「已存在」判定
-                }
-            }
-
-            if (collisionPolicyOverride.get() == CollisionPolicy.PRESERVE_ALL) {
-                candidate = withConflictSuffix(targetFile, attempt + 1);
-                continue;
-            }
-            if (batchWritten != null && batchWritten.contains(normalizedCandidate)) {
-                log.warn("⚠ 同批次目标路径冲突，保留先写入音轨并另存: {}", candidate.getName());
-                candidate = withConflictSuffix(targetFile, attempt + 1);
-                continue;
-            }
-            Path expectedReplaceTarget = expectedReplaceTargetOverride.get();
-            if (expectedReplaceTarget != null
-                && normalizedCandidate.equals(expectedReplaceTarget)) {
-                publish(sourceFile, staged, candidate.toPath(), true);
-                if (batchWritten != null) batchWritten.add(normalizedCandidate);
-                logCopy(sourceFile, candidate, targetFile);
-                return candidate;
-            }
-            if (!sourceDurationRead) {
-                sourceDuration = readPreciseDuration(sourceFile);
-                sourceDurationRead = true;
-            }
-            Double existingDuration = readPreciseDuration(candidate);
-            File contentToCheck = staged != null ? staged.toFile() : sourceFile;
-            if (sourceDuration != null && existingDuration != null
-                && Math.abs(sourceDuration - existingDuration) <= SAME_AUDIO_DURATION_TOLERANCE_SECONDS
-                && !isProvablyDifferentAudio(contentToCheck, candidate)) {
-                publish(sourceFile, staged, candidate.toPath(), true);
-                if (batchWritten != null) batchWritten.add(normalizedCandidate);
-                logCopy(sourceFile, candidate, targetFile);
-                return candidate;
-            }
-
-            log.warn("⚠ 目标文件已存在且音频不同（新 {}s / 已有 {}s），不覆盖: {}",
-                formatDuration(sourceDuration), formatDuration(existingDuration), candidate.getName());
-            candidate = withConflictSuffix(targetFile, attempt + 1);
-        }
-        throw new IOException("目标文件名冲突过多，放弃写入: " + targetFile.getAbsolutePath());
-    }
-
-    /**
-     * 当两首文件时长接近时，进一步基于无损音频流指纹（FLAC STREAMINFO MD5）及元数据特征判断是否为不同音轨
-     * （例如同长度的原唱与伴奏/Off Vocal），避免误覆盖导致曲目丢失。
-     */
-    private boolean isProvablyDifferentAudio(File incoming, File existing) {
-        if (incoming == null || existing == null) {
-            return false;
-        }
-        String md5A = readFlacStreaminfoMd5(incoming);
-        String md5B = readFlacStreaminfoMd5(existing);
-        if (md5A != null && md5B != null && !md5A.equals(md5B)) {
-            return true;
-        }
-        try {
-            MusicMetadata mdA = readTags(incoming);
-            MusicMetadata mdB = readTags(existing);
-            if (mdA != null && mdB != null) {
-                if (mdA.getRecordingId() != null && !mdA.getRecordingId().isBlank()
-                    && mdB.getRecordingId() != null && !mdB.getRecordingId().isBlank()
-                    && !mdA.getRecordingId().equals(mdB.getRecordingId())) {
-                    return true;
-                }
-                if (mdA.getTitle() != null && !mdA.getTitle().isBlank()
-                    && mdB.getTitle() != null && !mdB.getTitle().isBlank()
-                    && MetadataUtils.hasVersionQualifier(mdA.getTitle()) != MetadataUtils.hasVersionQualifier(mdB.getTitle())) {
-                    return true;
-                }
-            }
-        } catch (Exception ignored) {
-        }
-        return false;
-    }
-
-    private static String readFlacStreaminfoMd5(File file) {
-        if (file == null || !file.getName().toLowerCase(Locale.ROOT).endsWith(".flac")) {
-            return null;
-        }
-        try (java.io.InputStream in = Files.newInputStream(file.toPath())) {
-            byte[] head = in.readNBytes(42);
-            if (head.length < 42 || head[0] != 'f' || head[1] != 'L' || head[2] != 'a' || head[3] != 'C') {
-                return null;
-            }
-            if ((head[4] & 0x7f) != 0) {
-                return null;
-            }
-            int blockLen = ((head[5] & 0xff) << 16) | ((head[6] & 0xff) << 8) | (head[7] & 0xff);
-            if (blockLen < 34) {
-                return null;
-            }
-            boolean allZero = true;
-            for (int i = 26; i < 42; i++) {
-                if (head[i] != 0) {
-                    allZero = false;
-                    break;
-                }
-            }
-            if (allZero) {
-                return null;
-            }
-            return HexFormat.of().formatHex(head, 26, 42);
-        } catch (IOException ignored) {
-            return null;
-        }
-    }
-
-    private void publish(File source, Path staged, Path target, boolean replace) throws IOException {
-        if (staged == null) {
-            if (replace) {
-                Files.copy(source.toPath(), target, StandardCopyOption.REPLACE_EXISTING);
-            } else {
-                Files.copy(source.toPath(), target);
-            }
-        } else if (replace) {
-            try {
-                Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-        } else {
-            Files.move(staged, target);
-        }
-    }
-
-    private void logCopy(File sourceFile, File actual, File intended) {
-        if (actual.equals(intended)) {
-            log.info("复制文件: {} -> {}", sourceFile.getName(), actual.getName());
-        } else {
-            log.warn("⚠ 目标路径冲突，已另存: {} -> {}（请检查该曲目的识别结果）",
-                sourceFile.getName(), actual.getName());
-            LogCollector.addLog("WARN", "目标路径冲突，未覆盖已有文件，已另存为: " + actual.getName()
-                + "（源文件: " + sourceFile.getName() + "，请检查识别结果）");
-        }
+        return publisher.publishWithoutClobbering(
+            sourceFile,
+            targetFile,
+            staged,
+            collisionPolicyOverride.get(),
+            expectedReplaceTargetOverride.get(),
+            batchWrittenTargets.get()
+        );
     }
 
     static File withConflictSuffix(File targetFile, int n) {
-        String name = targetFile.getName();
-        int dot = name.lastIndexOf('.');
-        String base = dot > 0 ? name.substring(0, dot) : name;
-        String ext = dot > 0 ? name.substring(dot) : "";
-        return new File(targetFile.getParentFile(), base + " (" + n + ")" + ext);
+        return TargetPathResolver.withConflictSuffix(targetFile, n);
     }
 
     public static Double readPreciseDuration(File file) {
-        try {
-            double seconds = AudioFileIO.read(file).getAudioHeader().getPreciseTrackLength();
-            return Double.isFinite(seconds) && seconds > 0 ? seconds : null;
-        } catch (Exception e) {
-            log.debug("读取音频时长失败: {} - {}", file.getName(), e.getMessage());
-            return null;
-        }
-    }
-
-    private static String formatDuration(Double seconds) {
-        return seconds == null ? "?" : String.format("%.1f", seconds);
+        return AtomicAudioPublisher.readPreciseDuration(file);
     }
 
     /**
-     * 确定目标文件路径
-     * 按照"专辑艺术家/专辑"的目录结构组织文件
-     * 使用专辑艺术家(Album Artist)而不是单曲艺术家,避免多艺术家专辑分层混乱
+     * 确定目标文件路径（路径解析委托给 {@link TargetPathResolver}）
      */
     private File determineTargetFile(File sourceFile, MusicMetadata metadata) {
-        String fileName = sourceFile.getName();
-        String extension = "";
-        int dotIndex = fileName.lastIndexOf('.');
-        if (dotIndex > 0) {
-            extension = fileName.substring(dotIndex);
-        }
-
-        // 构建文件名(使用单曲艺术家)
-        String newFileName = fileName;
-        if (config.isAutoRename() && metadata.getArtist() != null && metadata.getTitle() != null) {
-            // 优先使用 metadata 中的碟号和曲目号构建前缀（来自 MusicBrainz）
-            // 附加曲目不在所选版本中，没有真实曲目号：不编造，也不沿用源文件名里的序号
-            String trackPrefix = metadata.isExtraTrack() ? "" : buildTrackPrefixFromMetadata(metadata);
-
-            // 如果 metadata 没有碟号曲目号，尝试从原始文件名提取
-            if (trackPrefix.isEmpty() && !metadata.isExtraTrack()) {
-                trackPrefix = extractTrackPrefix(fileName);
-            }
-
-            String artist = sanitizeFileName(metadata.getArtist());
-            String title = sanitizeFileName(metadata.getTitle());
-
-            // 如果有曲目编号前缀，保留它
-            if (trackPrefix != null && !trackPrefix.isEmpty()) {
-                newFileName = trackPrefix + artist + " - " + title + extension;
-            } else {
-                newFileName = artist + " - " + title + extension;
-            }
-
-            // 艺术家和曲名各自都不超限,拼起来仍可能超过文件系统的单文件名字节上限
-            newFileName = FileNameSanitizer.limitFileName(newFileName, extension);
-        }
-
-        // 构建目录结构: 输出目录/专辑艺术家/专辑/文件名
-        // 关键改动: 使用 albumArtist 而不是 artist 来创建文件夹
-        Path targetPath;
-
-        // 优先使用专辑艺术家,如果没有则回退到单曲艺术家
-        String folderArtist = metadata.getAlbumArtist();
-        if (folderArtist == null || folderArtist.isEmpty()) {
-            folderArtist = metadata.getArtist();
-        }
-
-        if (folderArtist != null && !folderArtist.isEmpty()) {
-            String artistDir = sanitizeFileName(folderArtist);
-
-            if (metadata.getAlbum() != null && !metadata.getAlbum().isEmpty()) {
-                // 有专辑艺术家和专辑信息: 输出目录/专辑艺术家/专辑/文件名
-                String albumDir = sanitizeFileName(metadata.getAlbum());
-                targetPath = outputRoot().resolve(artistDir).resolve(albumDir).resolve(newFileName);
-                log.info("目标路径: {}/{}/{} (专辑艺术家: {})", artistDir, albumDir, newFileName, folderArtist);
-            } else {
-                // 只有艺术家信息: 输出目录/专辑艺术家/文件名
-                targetPath = outputRoot().resolve(artistDir).resolve(newFileName);
-                log.info("目标路径: {}/{} (无专辑信息)", artistDir, newFileName);
-            }
-        } else {
-            // 没有艺术家信息: 直接放在输出目录下
-            targetPath = outputRoot().resolve(newFileName);
-            log.warn("目标路径: {} (无艺术家信息)", newFileName);
-        }
-
-        // 确保目标目录存在
-        File targetFile = targetPath.toFile();
+        File targetFile = targetPathResolver.resolveTargetFile(sourceFile, metadata, outputRoot());
         File parentDir = targetFile.getParentFile();
         if (!parentDir.exists()) {
             log.info("创建目录: {}", parentDir.getAbsolutePath());
             parentDir.mkdirs();
             ensureWritablePermissions(parentDir.toPath(), true);
         }
-
         return targetFile;
     }
 
@@ -546,92 +312,12 @@ public class TagWriterService {
         }
     }
 
-    /**
-     * 从 metadata 的碟号和曲目号构建文件名前缀
-     * 格式: "碟号.曲目号 " (如 "2.05 " 或 "1.12 ")
-     * 如果只有曲目号没有碟号，格式: "曲目号. " (如 "05. ")
-     */
-    private String buildTrackPrefixFromMetadata(MusicMetadata metadata) {
-        String discNo = metadata.getDiscNo();
-        String trackNo = metadata.getTrackNo();
-
-        if (trackNo == null || trackNo.isEmpty()) {
-            return "";
-        }
-
-        try {
-            int track = Integer.parseInt(trackNo.split("/")[0].trim()); // 处理 "5/49" 格式
-
-            if (discNo != null && !discNo.isEmpty()) {
-                int disc = Integer.parseInt(discNo.split("/")[0].trim()); // 处理 "2/2" 格式
-                // 多碟专辑: "碟号.曲目号 " 格式 (曲目号补零到2位)
-                String prefix = String.format("%d.%02d ", disc, track);
-                log.info("使用 metadata 构建文件名前缀: {} (碟号: {}, 曲目号: {})", prefix, disc, track);
-                return prefix;
-            } else {
-                // 单碟专辑: "曲目号. " 格式 (曲目号补零到2位)
-                String prefix = String.format("%02d. ", track);
-                log.info("使用 metadata 构建文件名前缀: {} (曲目号: {})", prefix, track);
-                return prefix;
-            }
-        } catch (NumberFormatException e) {
-            log.warn("无法解析碟号/曲目号: discNo={}, trackNo={}", discNo, trackNo);
-            return "";
-        }
-    }
-
-    private static final java.util.regex.Pattern AUDIO_EXT_SUFFIX =
-        java.util.regex.Pattern.compile("(?i)\\.(mp3|flac|m4a|ogg|wav|mp4|aac|opus|ape|tta|alac|wma|aiff|aif|dsf|dff|wv)$");
-    private static final java.util.regex.Pattern DISC_TRACK_PREFIX =
-        java.util.regex.Pattern.compile("^(\\d+\\.\\d+)\\s+.+$");
-    private static final java.util.regex.Pattern TRACK_DOT_PREFIX =
-        java.util.regex.Pattern.compile("^(\\d+)\\.\\s*(.+)$");
-
     private static boolean isStripAborted(FlacId3Stripper.Result result) {
         return result == FlacId3Stripper.Result.FAILED || result == FlacId3Stripper.Result.SKIPPED_UNSAFE;
     }
 
-    /**
-     * 从文件名中提取曲目编号前缀（备选方案）
-     * 支持多种格式:
-     * - "01. Title.flac" -> "01. "
-     * - "01.Title.flac" -> "01. "
-     * - "2.01 Title.flac" -> "2.01 " (碟号.曲目号)
-     * - "39. Title.flac" -> "39. "
-     * - "01.flac" / "01." -> "" (不会误截取扩展名或越界)
-     */
     static String extractTrackPrefix(String fileName) {
-        if (fileName == null || fileName.isEmpty()) {
-            return "";
-        }
-        String stem = AUDIO_EXT_SUFFIX.matcher(fileName).replaceFirst("");
-        if (stem.isEmpty()) {
-            return "";
-        }
-        java.util.regex.Matcher discTrackMatcher = DISC_TRACK_PREFIX.matcher(stem);
-        if (discTrackMatcher.matches()) {
-            return discTrackMatcher.group(1) + " ";
-        }
-        java.util.regex.Matcher trackDotMatcher = TRACK_DOT_PREFIX.matcher(stem);
-        if (trackDotMatcher.matches()) {
-            String rest = trackDotMatcher.group(2);
-            if (!rest.isEmpty() && Character.isDigit(rest.charAt(0))) {
-                int numEnd = 0;
-                while (numEnd < rest.length() && Character.isDigit(rest.charAt(numEnd))) {
-                    numEnd++;
-                }
-                if (numEnd < rest.length() && !rest.substring(numEnd).isBlank()) {
-                    return trackDotMatcher.group(1) + "." + rest.substring(0, numEnd) + " ";
-                }
-                return "";
-            }
-            if (!rest.isBlank()) {
-                return trackDotMatcher.group(1) + ". ";
-            }
-        }
-
-        log.debug("无法从文件名提取曲目编号: {}", fileName);
-        return "";
+        return TargetPathResolver.extractTrackPrefix(fileName);
     }
 
     static String[] splitPosition(String value, String explicitTotal) {
@@ -1619,54 +1305,7 @@ public class TagWriterService {
     }
 
     private void ensureWritablePermissions(Path path, boolean isDirectory) {
-        try {
-            if (Files.getFileAttributeView(path, PosixFileAttributeView.class) == null) {
-                return;
-            }
-            String modeKey = isDirectory ? "MTG_DIR_MODE" : "MTG_FILE_MODE";
-            String configuredMode = System.getenv(modeKey);
-            if (configuredMode == null || configuredMode.isBlank()) {
-                String enabled = System.getenv("MTG_CHMOD");
-                if (enabled != null && enabled.equalsIgnoreCase("false")) {
-                    return;
-                }
-                configuredMode = isDirectory ? "rwxr-xr-x" : "rw-r--r--";
-            }
-            Set<PosixFilePermission> permissions = parsePermissions(configuredMode.trim());
-            Files.setPosixFilePermissions(path, permissions);
-        } catch (Exception e) {
-            log.debug("无法设置文件权限: {}", path);
-        }
-    }
-
-    private Set<PosixFilePermission> parsePermissions(String mode) {
-        if (mode.matches("[0-7]{3,4}")) {
-            String digits = mode.length() == 4 ? mode.substring(1) : mode;
-            Set<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-            applyPermissions(permissions, digits.charAt(0), PosixFilePermission.OWNER_READ,
-                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
-            applyPermissions(permissions, digits.charAt(1), PosixFilePermission.GROUP_READ,
-                PosixFilePermission.GROUP_WRITE, PosixFilePermission.GROUP_EXECUTE);
-            applyPermissions(permissions, digits.charAt(2), PosixFilePermission.OTHERS_READ,
-                PosixFilePermission.OTHERS_WRITE, PosixFilePermission.OTHERS_EXECUTE);
-            return permissions;
-        }
-        return PosixFilePermissions.fromString(mode);
-    }
-
-    private void applyPermissions(Set<PosixFilePermission> permissions, char digit,
-                                  PosixFilePermission read, PosixFilePermission write,
-                                  PosixFilePermission execute) {
-        int value = digit - '0';
-        if ((value & 4) != 0) {
-            permissions.add(read);
-        }
-        if ((value & 2) != 0) {
-            permissions.add(write);
-        }
-        if ((value & 1) != 0) {
-            permissions.add(execute);
-        }
+        AtomicAudioPublisher.ensureWritablePermissions(path, isDirectory);
     }
 
     static String albumArtistFromTag(String value) {

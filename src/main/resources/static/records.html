@@ -7,6 +7,9 @@
     <link rel="icon" href="logo.png" type="image/png">
     <link rel="stylesheet" href="app.css?v=11">
     <script src="i18n.js?v=1"></script>
+    <script src="ui.js?v=1"></script>
+    <script src="errors.js?v=1"></script>
+    <script src="api.js?v=1"></script>
     <script src="shell.js?v=2"></script>
     <script src="search-queue.js?v=3"></script>
     <style>
@@ -617,19 +620,17 @@
     }
 
     // ---------------- 数据 ----------------
-    async function api(path, opt = {}) {
-        opt.headers = opt.headers || {};
-        if (csrfToken) opt.headers['X-CSRF-Token'] = csrfToken;
-        if (opt.body) opt.headers['Content-Type'] = 'application/json';
-        const r = await fetch(path, opt);
-        let d = {};
-        try { d = await r.json(); } catch (e) { /* ignore */ }
-        if (r.status === 401) { location.href = '/index.html'; throw new Error('unauthorized'); }
-        if (!r.ok) {
-            const known = { 'csrf.invalid': 'records.error.csrf', 'records.no.target': 'records.error.no.target' };
-            throw new Error(known[d.error] ? T(known[d.error]) : (d.message || d.error || ('HTTP ' + r.status)));
-        }
-        return d;
+    const RECORDS_ERROR_OVERRIDES = { 'csrf.invalid': 'records.error.csrf' };
+    function api(path, opt = {}) {
+        return AppApi.request(path, {
+            ...opt,
+            csrfToken,
+            redirectOn401: '/index.html',
+            mapError: (code, data) => {
+                const translated = AppErrors.humanError(code, RECORDS_ERROR_OVERRIDES);
+                return translated !== code ? translated : (data.message || code);
+            }
+        });
     }
 
     async function load({ silent = false } = {}) {
@@ -1392,20 +1393,8 @@
         return [`hsl(216, 26%, ${light}%)`, `hsl(216, 26%, ${light - 18}%)`];
     }
 
-    let toastTimer = null;
-    function toast(t) {
-        const e = document.getElementById('toast');
-        e.textContent = t;
-        e.style.display = 'block';
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => e.style.display = 'none', 5000);
-    }
-
-    function esc(t) {
-        return String(t == null ? '' : t)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
+    const toast = msg => AppUI.toast(msg, { duration: 5000 });
+    const esc = text => AppUI.escapeHtml(text);
 
     init();
 </script>

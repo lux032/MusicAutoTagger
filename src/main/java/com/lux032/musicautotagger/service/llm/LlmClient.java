@@ -246,30 +246,12 @@ public class LlmClient {
         return text;
     }
 
-    /** 构造带有统一超时、代理及禁止重定向策略的 HttpClient.Builder */
+    /** 构造带有统一超时、代理及禁止重定向策略的 HttpClient.Builder（委托给共享 HttpClientFactory） */
     public static HttpClient.Builder httpClientBuilder(MusicConfig config) {
-        HttpClient.Builder builder = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
-            .followRedirects(HttpClient.Redirect.NEVER);
-
-        if (config != null && config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isEmpty()) {
-            builder.proxy(ProxySelector.of(new InetSocketAddress(config.getProxyHost(), config.getProxyPort())));
-            if (config.getProxyUsername() != null && !config.getProxyUsername().isEmpty()) {
-                builder.authenticator(new Authenticator() {
-                    @Override
-                    protected PasswordAuthentication getPasswordAuthentication() {
-                        if (getRequestorType() != RequestorType.PROXY) {
-                            return null;
-                        }
-                        return new PasswordAuthentication(
-                            config.getProxyUsername(),
-                            (config.getProxyPassword() == null ? "" : config.getProxyPassword()).toCharArray());
-                    }
-                });
-            }
+        if (com.lux032.musicautotagger.util.HttpClientFactory.isProxyConfigured(config)) {
             log.info("LLM 请求将走代理: {}:{}", config.getProxyHost(), config.getProxyPort());
         }
-        return builder;
+        return com.lux032.musicautotagger.util.HttpClientFactory.jdkHttpClientBuilder(config);
     }
 
     /** 供 {@link TavilyWebSearchClient} 等外部 HTTP 调用复用同一套代理设置 */
