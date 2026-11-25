@@ -286,7 +286,7 @@ public class OnlineIdentificationService {
         }
     }
 
-    private String buildPrompt(File root, List<File> files, List<Integer> durations, boolean analyzeCover) {
+    String buildPrompt(File root, List<File> files, List<Integer> durations, boolean analyzeCover) {
         StringBuilder sb = new StringBuilder();
         sb.append("Research the exact music release represented by this local album folder.\n");
         sb.append("FOLDER: ").append(root.getName()).append("\nFILE COUNT: ").append(files.size()).append('\n');
@@ -304,6 +304,7 @@ public class OnlineIdentificationService {
         sb.append("VISUAL COVER ANALYSIS REQUESTED: ").append(analyzeCover)
             .append(". This API integration currently uses cover-derived text only when available; do not claim you saw an image unless image evidence is supplied.\n");
         sb.append("Search current official and music database sources. ");
+        appendRegionPreference(sb);
         appendJsonSchema(sb);
         return sb.toString();
     }
@@ -355,8 +356,68 @@ public class OnlineIdentificationService {
           .append("with bonus tracks, or a larger soundtrack collection. Prefer official store pages, the label site, VGMdb, Discogs.\n")
           .append("If the closest release above is in fact the right edition and the extra local files are simply not part of it,\n")
           .append("return it as a candidate and explain which local files do not belong to it.\n");
+        appendRegionPreference(sb);
         appendJsonSchema(sb);
         return sb.toString();
+    }
+
+    private void appendRegionPreference(StringBuilder sb) {
+        List<String> rawRegions = config == null ? null : config.getReleaseCountryPriority();
+        if (rawRegions == null || rawRegions.isEmpty()) {
+            return;
+        }
+        java.util.LinkedHashSet<String> normalized = new java.util.LinkedHashSet<>();
+        for (String region : rawRegions) {
+            if (region != null) {
+                String code = region.trim().toUpperCase(Locale.ROOT);
+                if (!code.isEmpty()) {
+                    normalized.add(code);
+                }
+            }
+        }
+        if (normalized.isEmpty()) {
+            return;
+        }
+        List<String> regions = new ArrayList<>(normalized);
+        sb.append("\nPREFERRED RELEASE REGIONS (priority order): ")
+          .append(String.join(", ", regions)).append('\n');
+        sb.append("- When multiple regional editions exist, prefer editions released in regions listed earlier above.\n");
+
+        String primaryRegion = null;
+        for (String code : regions) {
+            if (!"XW".equals(code) && !"XE".equals(code)) {
+                primaryRegion = code;
+                break;
+            }
+        }
+        if (primaryRegion != null) {
+            sb.append("- Primary naming region: ").append(primaryRegion)
+              .append(" (").append(regionLanguageHint(primaryRegion)).append("). ")
+              .append("For ALL artist and creator fields (\"artist\", \"artists\", \"album_artist\", \"album_artists\", ")
+              .append("\"tracks[].artist\", \"tracks[].artists\", \"tracks[].composers\", \"tracks[].lyricists\", \"tracks[].arrangers\"), ")
+              .append("display names in the preferred region's official/standard form as much as possible:\n")
+              .append("  1. Prefer official native names directly attested on preferred-region sources (official sites, MusicBrainz, VGMdb, Wikipedia, Apple Music, Discogs).\n")
+              .append("  2. If retrieved sources only list a romanized or foreign-language spelling for an artist or creator with a well-known official name in ")
+              .append(primaryRegion)
+              .append(" (e.g., \"Yuki Kajiura\" -> \"梶浦由記\" for JP), convert/localize it to that official name.\n")
+              .append("  3. Keep official stylized Latin stage names (e.g., \"YOASOBI\", \"LiSA\", \"Aimer\", \"TeddyLoid\") and Western/international artists commonly credited in Latin in ")
+              .append(primaryRegion)
+              .append(" (e.g., \"Taylor Swift\", \"Hans Zimmer\") in their original Latin form; do not force phonetic transliteration on them.\n")
+              .append("  4. For obscure or ambiguous personal names whose exact native characters/kanji are uncertain, keep the source's attested spelling instead of guessing.\n")
+              .append("  5. Keep display strings (\"artist\", \"album_artist\", \"tracks[].artist\") and their split arrays (\"artists\", \"album_artists\", \"tracks[].artists\") in the EXACT SAME script/language and order.\n")
+              .append("  6. Keep album and track titles faithful to the matched official edition's tracklist; do not freely translate track titles.\n");
+        }
+    }
+
+    private static String regionLanguageHint(String code) {
+        return switch (code) {
+            case "JP" -> "Japanese / 日本語 (Kanji & Kana)";
+            case "CN" -> "Simplified Chinese / 简体中文";
+            case "TW", "HK" -> "Traditional Chinese / 繁體中文";
+            case "KR" -> "Korean / 한국어";
+            case "US", "GB", "AU", "CA", "NZ" -> "English / Latin";
+            default -> "official language and naming used in " + code;
+        };
     }
 
     private void appendJsonSchema(StringBuilder sb) {
@@ -364,11 +425,14 @@ public class OnlineIdentificationService {
           .append("{\"needs_second_round\":boolean,\"candidates\":[{\"title\":string,\"artist\":string,\"artists\":[string],")
           .append("\"album_artist\":string,\"album_artists\":[string],\"release_date\":string,\"edition\":string,\"country\":string,")
           .append("\"label\":string,\"catalog_number\":string,\"cover_url\":string,\"confidence\":number 0..1,")
-          .append("\"reason\":string,\"tracks\":[{\"disc\":number,\"track\":number,\"title\":string,\"artist\":string,\"artists\":[string],\"duration\":number}],")
+          .append("\"reason\":string,\"tracks\":[{\"disc\":number,\"track\":number,\"title\":string,\"artist\":string,\"artists\":[string],\"composers\":[string],\"lyricists\":[string],\"arrangers\":[string],\"duration\":number}],")
           .append("\"source_urls\":[string]}],\"clues\":[{\"url\":string,\"title\":string,\"snippet\":string}]}.\n")
           .append("For \"artists\", \"album_artists\", and \"tracks[].artists\", always list each individual credited artist separately in order ")
           .append("(e.g. \"artist\":\"TeddyLoid, 佐倉綾音 & 井上和\", \"artists\":[\"TeddyLoid\",\"佐倉綾音\",\"井上和\"]), ")
-          .append("and never split a single band or artist whose own name contains punctuation (e.g. \"Earth, Wind & Fire\" -> [\"Earth, Wind & Fire\"]).");
+          .append("and never split a single band or artist whose own name contains punctuation (e.g. \"Earth, Wind & Fire\" -> [\"Earth, Wind & Fire\"]).\n")
+          .append("For \"tracks[].composers\", \"tracks[].lyricists\", and \"tracks[].arrangers\": ")
+          .append("list each credited person separately in order ONLY when explicitly attested in the cited sources (omit empty fields or use [] when unknown); ")
+          .append("NEVER infer or assume the performer/artist/album_artist is the composer, lyricist, or arranger; NEVER invent MusicBrainz IDs.");
     }
 
     Parsed parse(WebSearchClient.SearchResponse response) throws LlmClient.LlmException {
@@ -431,8 +495,16 @@ public class OnlineIdentificationService {
         long high=c.getSources().stream().filter(e->"HIGH".equals(e.getReliability())).count();
         long mediumDomains=c.getSources().stream().filter(e->"MEDIUM".equals(e.getReliability())).map(ReviewItem.OnlineEvidence::getDomain).distinct().count();
         c.setOfficialCandidate(high>=1||mediumDomains>=2);
-        JsonArray tracks=arr(o,"tracks");if(tracks!=null)for(JsonElement te:tracks){if(!te.isJsonObject())continue;JsonObject t=te.getAsJsonObject();ReviewItem.OnlineTrack track=new ReviewItem.OnlineTrack();track.setDiscNo(integer(t,"disc"));track.setTrackNo(integer(t,"track"));track.setTitle(str(t,"title"));track.setArtist(str(t,"artist"));track.setArtists(new ArrayList<>(resolveStructuredArtists(track.getArtist(), strList(t, "artists"), c.getArtists(), c.getArtist())));track.setDuration(integerNullable(t,"duration"));c.getTracks().add(track);}
+        JsonArray tracks=arr(o,"tracks");if(tracks!=null)for(JsonElement te:tracks){if(!te.isJsonObject())continue;JsonObject t=te.getAsJsonObject();ReviewItem.OnlineTrack track=new ReviewItem.OnlineTrack();track.setDiscNo(integer(t,"disc"));track.setTrackNo(integer(t,"track"));track.setTitle(str(t,"title"));track.setArtist(str(t,"artist"));track.setArtists(new ArrayList<>(resolveStructuredArtists(track.getArtist(), strList(t, "artists"), c.getArtists(), c.getArtist())));track.setComposers(new ArrayList<>(distinctCleanNames(strList(t, "composers"))));track.setLyricists(new ArrayList<>(distinctCleanNames(strList(t, "lyricists"))));track.setArrangers(new ArrayList<>(distinctCleanNames(strList(t, "arrangers"))));track.setDuration(integerNullable(t,"duration"));c.getTracks().add(track);}
         return c;
+    }
+
+    private static List<String> distinctCleanNames(List<String> raw) {
+        List<String> cleaned = ArtistCreditSupport.cleanNames(raw);
+        if (cleaned.isEmpty()) {
+            return List.of();
+        }
+        return List.copyOf(new java.util.LinkedHashSet<>(cleaned));
     }
 
     private List<String> resolveStructuredArtists(String display, List<String> explicit,
@@ -505,7 +577,7 @@ public class OnlineIdentificationService {
         if (o == null || !o.has(k) || !o.get(k).isJsonArray()) return List.of();
         List<String> out = new ArrayList<>();
         for (JsonElement el : o.getAsJsonArray(k)) {
-            if (el != null && el.isJsonPrimitive()) {
+            if (el != null && el.isJsonPrimitive() && el.getAsJsonPrimitive().isString()) {
                 String value = el.getAsString().trim();
                 if (!value.isEmpty()) out.add(value);
             }

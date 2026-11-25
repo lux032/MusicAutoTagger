@@ -604,6 +604,14 @@ public class TagWriterService {
         return false;
     }
 
+    private void clearCreatorTags(Tag tag, FieldKey key, String plural, List<String> mbidKeys) throws Exception {
+        deleteFieldSafely(tag, key);
+        writeCustomTextTag(tag, plural, null);
+        for (String alias : mbidKeys) {
+            writeCustomTextTag(tag, alias, null);
+        }
+    }
+
     private void writeCreatorNames(Tag tag, FieldKey key, String plural, List<String> names, String display,
                                    List<String> mbidKeys, List<String> mbids) throws Exception {
         if (display == null || display.isEmpty()) return;
@@ -765,20 +773,26 @@ public class TagWriterService {
             setFieldSafely(tag, FieldKey.TRACK_TOTAL, track[1]);
         }
 
-        // 写入作曲家
-        if (metadata.getComposer() != null && !metadata.getComposer().isEmpty()) {
+        // 写入或显式清空作曲家
+        if (metadata.isClearComposer()) {
+            clearCreatorTags(tag, FieldKey.COMPOSER, "COMPOSERS", COMPOSER_MBID_KEYS);
+        } else if (metadata.getComposer() != null && !metadata.getComposer().isEmpty()) {
             writeCreatorNames(tag, FieldKey.COMPOSER, "COMPOSERS", metadata.getComposers(), metadata.getComposer(),
                 COMPOSER_MBID_KEYS, metadata.getComposerIds());
         }
 
-        // 写入作词家 (使用 LYRICIST 字段)
-        if (metadata.getLyricist() != null && !metadata.getLyricist().isEmpty()) {
+        // 写入或显式清空作词家 (使用 LYRICIST 字段)
+        if (metadata.isClearLyricist()) {
+            clearCreatorTags(tag, FieldKey.LYRICIST, "LYRICISTS", LYRICIST_MBID_KEYS);
+        } else if (metadata.getLyricist() != null && !metadata.getLyricist().isEmpty()) {
             writeCreatorNames(tag, FieldKey.LYRICIST, "LYRICISTS", metadata.getLyricists(), metadata.getLyricist(),
                 LYRICIST_MBID_KEYS, metadata.getLyricistIds());
         }
 
-        // 写入编曲（部分容器可能不支持该字段，失败只记日志）
-        if (metadata.getArranger() != null && !metadata.getArranger().isEmpty()) {
+        // 写入或显式清空编曲（部分容器可能不支持该字段，失败只记日志）
+        if (metadata.isClearArranger()) {
+            clearCreatorTags(tag, FieldKey.ARRANGER, "ARRANGERS", ARRANGER_MBID_KEYS);
+        } else if (metadata.getArranger() != null && !metadata.getArranger().isEmpty()) {
             writeCreatorNames(tag, FieldKey.ARRANGER, "ARRANGERS", metadata.getArrangers(), metadata.getArranger(),
                 ARRANGER_MBID_KEYS, metadata.getArrangerIds());
         }

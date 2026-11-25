@@ -342,6 +342,24 @@
         .local-track .artist-editor { margin-top: 8px; }
         .local-track .hint { display: block; margin-top: 3px; }
         #localDialog [hidden] { display: none; }
+        .match-credits { margin: 2px 0 6px 46px; font-size: 11.5px; color: var(--text-mute); line-height: 1.5; }
+        .online-dialog { display: flex; flex-direction: column; width: min(600px, 96vw); max-height: min(92vh, calc(100dvh - 40px)); overflow: hidden; }
+        .online-dialog > .dialog-stack { overflow-y: auto; overscroll-behavior: contain; padding: 2px; }
+        .online-dialog > .dialog-title, .online-dialog > .dialog-subtitle, .online-dialog > .dialog-actions { flex-shrink: 0; }
+        .online-dialog > .dialog-actions { margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
+        #onlineDialog [hidden] { display: none; }
+        .oc-credit-track { padding: 10px 0; border-bottom: 1px solid var(--border); display: grid; gap: 6px; }
+        .oc-credit-track:last-child { border-bottom: 0; padding-bottom: 2px; }
+        .oc-credit-head { font-size: 12.5px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+        .oc-credit-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+        .oc-credit-row .oc-k { font-size: 12px; color: var(--text-soft); white-space: nowrap; }
+        .oc-credit-row input { font-size: 12.5px; padding: 5px 8px; }
+        .credit-src { font-size: 11px; padding: 2px 6px; border-radius: 999px; white-space: nowrap; font-weight: 500; border: 1px solid var(--border); background: var(--bg-soft); color: var(--text-soft); }
+        .credit-src.src-MUSICBRAINZ { background: #e8f1ff; border-color: #c5dcff; color: #1d4ed8; }
+        .credit-src.src-LOCAL { background: #f1f5f9; border-color: #cbd5e1; color: #475569; }
+        .credit-src.src-ONLINE { background: #e3f4f8; border-color: #bae6fd; color: #0e7490; }
+        .credit-src.src-MANUAL { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+        .credit-src.src-NONE { background: transparent; border-color: transparent; color: var(--text-mute); }
 
         .cover-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; margin-top:8px; }
         .cover-choice { border:2px solid var(--border); border-radius:8px; padding:6px; cursor:pointer; background:#fff; text-align:left; font:inherit; }
@@ -364,8 +382,8 @@
         }
         @media (max-width: 640px) {
             .detail-body { padding: 16px 14px 8px; }
-            .local-dialog { padding: 18px; }
-            .local-dialog .dialog-subtitle { margin-bottom: 10px; }
+            .local-dialog, .online-dialog { padding: 18px; }
+            .local-dialog .dialog-subtitle, .online-dialog .dialog-subtitle { margin-bottom: 10px; }
             .decision { padding: 10px 14px; }
             .cand-row { grid-template-columns: 20px minmax(0, 1fr); }
             .cand.static .cand-row { grid-template-columns: minmax(0, 1fr); }
@@ -507,7 +525,7 @@
 
 <!-- 确认联网候选 -->
 <div class="overlay" id="onlineDialog" role="dialog" aria-modal="true">
-    <div class="dialog" style="width: min(560px, 96vw);">
+    <div class="dialog online-dialog">
         <div class="dialog-title" data-i18n="review.online.dialog.title">确认联网候选</div>
         <div class="dialog-subtitle" data-i18n="review.online.dialog.subtitle">所有文件先写入工作目录，全部成功后才原子提交归档。</div>
         <div class="dialog-stack">
@@ -536,6 +554,11 @@
                 <label for="ocDir" data-i18n="review.online.dir">归档目录名</label>
                 <input id="ocDir" type="text" placeholder="留空则自动生成" data-i18n-placeholder="review.online.dir.placeholder">
             </div>
+            <details class="local-tracks" id="ocCreditsDetails" hidden>
+                <summary id="ocCreditsSummary"></summary>
+                <div class="hint" style="margin-top:6px" data-i18n="review.online.credits.hint">自动合并优先级：MusicBrainz &gt; 本地标签 &gt; 联网提取。多人请用分号「;」分隔；将已有内容清空会在归档时删除该标签。</div>
+                <div id="ocCreditsList"></div>
+            </details>
             <div class="form-row">
                 <div class="cover-head">
                     <label data-i18n="review.online.cover.choose">选择要嵌入的封面</label>
@@ -1485,6 +1508,15 @@
         </div>`;
     }
 
+    function formatOnlineTrackCredits(x) {
+        if (!x) return '';
+        const parts = [];
+        if (Array.isArray(x.composers) && x.composers.length) parts.push(`${t('review.online.credit.short.composer')}: ${x.composers.join(' / ')}`);
+        if (Array.isArray(x.lyricists) && x.lyricists.length) parts.push(`${t('review.online.credit.short.lyricist')}: ${x.lyricists.join(' / ')}`);
+        if (Array.isArray(x.arrangers) && x.arrangers.length) parts.push(`${t('review.online.credit.short.arranger')}: ${x.arrangers.join(' / ')}`);
+        return parts.join(' · ');
+    }
+
     function renderOnline(item) {
         const list = item.onlineCandidates || [];
         const clues = item.onlineClues || [];
@@ -1494,7 +1526,11 @@
         const s = item.systemSuggestion || {};
         const sysId = s.primaryAction === 'CONFIRM_ONLINE' && s.primaryActionParams ? s.primaryActionParams.onlineCandidateId : null;
         const sel = state.selection;
-        const localPaths = new Set((item.files || []).map(f => f.originalPath).filter(Boolean));
+        const localPaths = new Set();
+        (item.files || []).forEach(f => {
+            if (f.originalPath) localPaths.add(f.originalPath);
+            if (f.matchPath) localPaths.add(f.matchPath);
+        });
         const totalLocal = (item.files || []).length;
 
         const cards = list.map(c => {
@@ -1510,8 +1546,11 @@
             ].join('');
             const sub = [c.albumArtist || c.artist, c.releaseDate || t('review.date.unknown')].filter(Boolean).map(escapeHtml).join(' · ');
             const covCls = coverage >= 0.85 ? 'd-ok' : (coverage >= 0.6 ? 'd-warn' : 'd-bad');
-            const trackRows = (c.tracks || []).filter(x => x.matchedFilePath).map(x => `<div class="match-line"><span class="num">${x.discNo || 1}-${x.trackNo || '-'}</span>${escapeHtml(x.title || '')}
-                → ${escapeHtml(baseName(x.matchedFilePath))} · ${escapeHtml(tf('review.match', percent(x.matchConfidence)))}</div>`).join('');
+            const trackRows = (c.tracks || []).filter(x => x.matchedFilePath).map(x => {
+                const creditText = formatOnlineTrackCredits(x);
+                return `<div class="match-line"><span class="num">${x.discNo || 1}-${x.trackNo || '-'}</span>${escapeHtml(x.title || '')}
+                → ${escapeHtml(baseName(x.matchedFilePath))} · ${escapeHtml(tf('review.match', percent(x.matchConfidence)))}</div>${creditText ? `<div class="match-credits">${escapeHtml(creditText)}</div>` : ''}`;
+            }).join('');
             const sources = (c.sources || []).map(src => `<div class="src-line"><span class="src-rel">${escapeHtml(src.reliability || '?')}</span>${linkOrText(src.url, src.title || src.domain || src.url)}${src.snippet ? ' — ' + escapeHtml(src.snippet) : ''}</div>`).join('');
             const candidateArtists = (c.albumArtists && c.albumArtists.length)
                 ? c.albumArtists
@@ -2198,10 +2237,131 @@
         }
     }
 
+    function parseCreditInput(raw) {
+        const seen = new Set();
+        const out = [];
+        for (const part of String(raw || '').split(/[;；\r\n]+/)) {
+            const v = part.trim();
+            if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+        }
+        return out;
+    }
+
+    function sameNameList(a, b) {
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+        return true;
+    }
+
+    function resolveInitialOnlineCreditRole(baseNames, baseSource, onlineNames, onlineConfident) {
+        const base = Array.isArray(baseNames) ? baseNames.filter(Boolean) : [];
+        if (base.length && baseSource && baseSource !== 'NONE') {
+            return { names: [...base], source: baseSource };
+        }
+        const online = onlineConfident && Array.isArray(onlineNames) ? onlineNames.filter(Boolean) : [];
+        if (online.length) {
+            return { names: [...online], source: 'ONLINE' };
+        }
+        return { names: [], source: 'NONE' };
+    }
+
+    function updateCreditSourceBadge(badgeEl, source) {
+        const code = source || 'NONE';
+        badgeEl.className = 'credit-src src-' + code;
+        badgeEl.textContent = t('review.online.credits.source.' + code, code);
+    }
+
+    function renderOnlineCreditsEditor(item, c) {
+        const details = $('ocCreditsDetails');
+        const list = $('ocCreditsList');
+        list.replaceChildren();
+        const files = item.files || [];
+        if (!files.length) {
+            details.hidden = true;
+            pendingOnline.creditRows = [];
+            return;
+        }
+        details.hidden = false;
+        details.open = false;
+
+        const tracks = c.tracks || [];
+        const rows = [];
+        const roleDefs = [
+            { key: 'composers', baseKey: 'composers', srcKey: 'composerSource', labelKey: 'review.online.credits.composer' },
+            { key: 'lyricists', baseKey: 'lyricists', srcKey: 'lyricistSource', labelKey: 'review.online.credits.lyricist' },
+            { key: 'arrangers', baseKey: 'arrangers', srcKey: 'arrangerSource', labelKey: 'review.online.credits.arranger' }
+        ];
+
+        function refreshSummary() {
+            let populatedTracks = 0;
+            let editedFields = 0;
+            for (const row of rows) {
+                let any = false;
+                for (const role of row.roles) {
+                    const cur = parseCreditInput(role.input.value);
+                    if (cur.length) any = true;
+                    if (!sameNameList(cur, role.initial)) editedFields++;
+                }
+                if (any) populatedTracks++;
+            }
+            $('ocCreditsSummary').textContent = editedFields > 0
+                ? tf('review.online.credits.summary.edited', populatedTracks, rows.length, editedFields)
+                : tf('review.online.credits.summary', populatedTracks, rows.length);
+        }
+
+        for (const f of files) {
+            const pathKey = f.matchPath || f.originalPath;
+            if (!pathKey) continue;
+            const matchedTrack = tracks.find(tr => tr.matchConfidence >= 0.6
+                && (tr.matchedFilePath === pathKey || tr.matchedFilePath === f.originalPath));
+            const card = document.createElement('div');
+            card.className = 'oc-credit-track';
+            const head = document.createElement('div');
+            head.className = 'oc-credit-head';
+            const prefix = matchedTrack
+                ? `${matchedTrack.discNo || 1}-${matchedTrack.trackNo || '-'} `
+                : (f.trackNo ? `${f.trackNo}. ` : '');
+            head.textContent = prefix + (matchedTrack?.title || f.title || f.fileName || baseName(pathKey));
+            head.title = f.fileName || pathKey;
+            card.append(head);
+
+            const rowRoles = [];
+            for (const def of roleDefs) {
+                const init = resolveInitialOnlineCreditRole(
+                    f[def.baseKey], f[def.srcKey], matchedTrack?.[def.key], !!matchedTrack);
+                const line = document.createElement('div');
+                line.className = 'oc-credit-row';
+                const label = document.createElement('span');
+                label.className = 'oc-k';
+                label.textContent = t(def.labelKey);
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.value = init.names.join('; ');
+                input.placeholder = t('review.online.credits.placeholder');
+                input.setAttribute('aria-label', `${head.textContent} - ${t(def.labelKey)}`);
+                const badge = document.createElement('span');
+                updateCreditSourceBadge(badge, init.source);
+                input.addEventListener('input', () => {
+                    const cur = parseCreditInput(input.value);
+                    const changed = !sameNameList(cur, init.names);
+                    updateCreditSourceBadge(badge, changed ? 'MANUAL' : init.source);
+                    refreshSummary();
+                });
+                line.append(label, input, badge);
+                card.append(line);
+                rowRoles.push({ key: def.key, initial: init.names, input });
+            }
+            list.append(card);
+            rows.push({ pathKey, roles: rowRoles });
+        }
+        pendingOnline.creditRows = rows;
+        refreshSummary();
+    }
+
     function doConfirmOnline() {
         const item = state.item, c = selectedCandidate();
         if (!item || !c || state.selection.type !== 'online') return;
-        pendingOnline = { itemId: item.id, candidateId: c.id };
+        pendingOnline = { itemId: item.id, candidateId: c.id, creditRows: [] };
         pendingCoverSha256 = null;
         $('ocTitle').value = c.title || '';
         const defaultArtist = c.albumArtist || c.artist || '';
@@ -2216,6 +2376,7 @@
         $('ocEdition').value = c.edition || '';
         $('ocDir').value = '';
         if ($('ocConfirmNoCover')) { $('ocConfirmNoCover').checked = false; $('ocConfirmNoCover').disabled = false; }
+        renderOnlineCreditsEditor(item, c);
         $('onlineError').style.display = 'none';
         chooseCover(null);
         openOverlay('onlineDialog');
@@ -2243,6 +2404,22 @@
             selectedCoverSha256: pendingCoverSha256,
             confirmNoCover: !pendingCoverSha256 && !!$('ocConfirmNoCover')?.checked
         };
+        const trackCredits = {};
+        for (const row of (pendingOnline.creditRows || [])) {
+            const override = {};
+            for (const role of row.roles) {
+                const cur = parseCreditInput(role.input.value);
+                if (!sameNameList(cur, role.initial)) {
+                    override[role.key] = cur;
+                }
+            }
+            if (Object.keys(override).length > 0) {
+                trackCredits[row.pathKey] = override;
+            }
+        }
+        if (Object.keys(trackCredits).length > 0) {
+            payload.trackCredits = trackCredits;
+        }
         if (!payload.albumTitle) {
             const err = $('onlineError');
             err.textContent = t('review.album.title.required');

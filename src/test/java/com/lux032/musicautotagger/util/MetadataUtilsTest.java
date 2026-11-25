@@ -1,13 +1,12 @@
 package com.lux032.musicautotagger.util;
 
 import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.model.ReviewItem;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.*;
 
 class MetadataUtilsTest {
 
@@ -149,5 +148,126 @@ class MetadataUtilsTest {
 
         assertEquals("Arranger", copy.getArranger());
         assertNull(copy.getCoverArtData());
+    }
+
+    @Test
+    void resolveOnlineTrackCreditsAppliesIndependentFourTierPriority() {
+        MusicMetadata mb = new MusicMetadata();
+        mb.setRecordingId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        mb.setComposer("MB Composer");
+        mb.setComposers(List.of("MB Composer"));
+        mb.setComposerIds(List.of("11111111-1111-4111-8111-111111111111"));
+
+        MusicMetadata local = new MusicMetadata();
+        local.setComposer("Local Composer");
+        local.setLyricist("Local Lyricist");
+        local.setLyricists(List.of("Local Lyricist"));
+
+        ReviewItem.OnlineTrack online = new ReviewItem.OnlineTrack();
+        online.setComposers(List.of("Online Composer"));
+        online.setLyricists(List.of("Online Lyricist"));
+        online.setArrangers(List.of("梶浦由記", "森空青"));
+
+        MetadataUtils.ResolvedTrackCredits resolved =
+            MetadataUtils.resolveOnlineTrackCredits(null, mb, local, online, true);
+
+        // Composer: MB wins and retains MBID
+        assertEquals(MetadataUtils.CreditSource.MUSICBRAINZ, resolved.composer().source());
+        assertEquals("MB Composer", resolved.composer().display());
+        assertEquals(List.of("11111111-1111-4111-8111-111111111111"), resolved.composer().mbids());
+        // Lyricist: Local beats Online
+        assertEquals(MetadataUtils.CreditSource.LOCAL, resolved.lyricist().source());
+        assertEquals("Local Lyricist", resolved.lyricist().display());
+        // Arranger: Online fills blank with no MBID
+        assertEquals(MetadataUtils.CreditSource.ONLINE, resolved.arranger().source());
+        assertEquals("梶浦由記, 森空青", resolved.arranger().display());
+        assertEquals(List.of("梶浦由記", "森空青"), resolved.arranger().names());
+        assertNull(resolved.arranger().mbids());
+
+        // Low-confidence online track must be ignored
+        MetadataUtils.ResolvedTrackCredits lowConf =
+            MetadataUtils.resolveOnlineTrackCredits(null, mb, local, online, false);
+        assertEquals(MetadataUtils.CreditSource.NONE, lowConf.arranger().source());
+        assertNull(lowConf.arranger().display());
+    }
+
+    @Test
+    void resolveAndApplyManualOverrideAndExplicitClear() {
+        MusicMetadata mb = new MusicMetadata();
+        mb.setComposer("MB Composer");
+        mb.setComposers(List.of("MB Composer"));
+        mb.setComposerIds(List.of("11111111-1111-4111-8111-111111111111"));
+        mb.setLyricist("MB Lyricist");
+        mb.setLyricists(List.of("MB Lyricist"));
+        mb.setLyricistIds(List.of("22222222-2222-4222-8222-222222222222"));
+
+        ReviewItem.TrackCreditsOverride manual = new ReviewItem.TrackCreditsOverride();
+        manual.setComposers(List.of("澤野弘之", "澤野弘之"));
+        manual.setLyricists(List.of()); // explicit clear
+        manual.setArrangers(null);      // untouched
+
+        ReviewItem.OnlineTrack online = new ReviewItem.OnlineTrack();
+        online.setArrangers(List.of("Online Arranger"));
+
+        MetadataUtils.ResolvedTrackCredits resolved =
+            MetadataUtils.resolveOnlineTrackCredits(manual, mb, null, online, true);
+
+        assertEquals(MetadataUtils.CreditSource.MANUAL, resolved.composer().source());
+        assertEquals("澤野弘之", resolved.composer().display());
+        assertNull(resolved.composer().mbids());
+        assertFalse(resolved.composer().clear());
+
+        assertEquals(MetadataUtils.CreditSource.MANUAL, resolved.lyricist().source());
+        assertTrue(resolved.lyricist().clear());
+        assertNull(resolved.lyricist().display());
+
+        assertEquals(MetadataUtils.CreditSource.ONLINE, resolved.arranger().source());
+        assertEquals("Online Arranger", resolved.arranger().display());
+
+        MusicMetadata target = new MusicMetadata();
+        target.setComposer("Old");
+        target.setComposerIds(List.of("11111111-1111-4111-8111-111111111111"));
+        target.setLyricist("Old L");
+        target.setLyricistIds(List.of("22222222-2222-4222-8222-222222222222"));
+
+        MetadataUtils.applyResolvedTrackCredits(resolved, target);
+        assertEquals("澤野弘之", target.getComposer());
+        assertEquals(List.of("澤野弘之"), target.getComposers());
+        assertNull(target.getComposerIds());
+        assertFalse(target.isClearComposer());
+
+        assertNull(target.getLyricist());
+        assertNull(target.getLyricists());
+        assertNull(target.getLyricistIds());
+        assertTrue(target.isClearLyricist());
+
+        assertEquals("Online Arranger", target.getArranger());
+        assertEquals(List.of("Online Arranger"), target.getArrangers());
+        assertNull(target.getArrangerIds());
+        assertFalse(target.isClearArranger());
+    }
+
+    @Test
+    void extractQueuedMusicBrainzCreditsDistinguishesMbFromCopiedLocalTags() {
+        // Path B: recovery folder queued snapshot equals local tags (no MB recordingId)
+        MusicMetadata local = new MusicMetadata();
+        local.setComposer("Local Composer");
+        local.setLyricist("Local Lyricist");
+        MusicMetadata pathBQueued = local.copyWithoutHeavyFields();
+        assertNull(MetadataUtils.extractQueuedMusicBrainzCredits(pathBQueued, local));
+
+        // Path A: MB provided composer (+ MBID) and merged local lyricist as fallback
+        MusicMetadata pathAQueued = new MusicMetadata();
+        pathAQueued.setRecordingId("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        pathAQueued.setComposer("MB Composer");
+        pathAQueued.setComposers(List.of("MB Composer"));
+        pathAQueued.setComposerIds(List.of("11111111-1111-4111-8111-111111111111"));
+        pathAQueued.setLyricist("Local Lyricist");
+
+        MusicMetadata extracted = MetadataUtils.extractQueuedMusicBrainzCredits(pathAQueued, local);
+        assertNotNull(extracted);
+        assertEquals("MB Composer", extracted.getComposer());
+        assertEquals(List.of("11111111-1111-4111-8111-111111111111"), extracted.getComposerIds());
+        assertNull(extracted.getLyricist(), "Fallback copied from local must remain LOCAL, not MUSICBRAINZ");
     }
 }

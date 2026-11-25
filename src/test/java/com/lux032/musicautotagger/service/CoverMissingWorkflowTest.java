@@ -662,6 +662,86 @@ class CoverMissingWorkflowTest {
         assertTrue(f4.isFile());
     }
 
+    @Test
+    void deferredOnlineMissingCoverPersistsManualTrackCreditsAcrossQueueReload() throws Exception {
+        Path albumDir = Files.createDirectory(monitorDir.resolve("OnlineMissingCoverCredits"));
+        File flac = createFlac(albumDir.resolve("01. Starlight.flac"), "Starlight", "Singer", "Old", "Singer", null);
+        // 给源文件写入原有作词，用于验证显式清空经过缺封面中转和队列重载后仍能生效
+        var audio = AudioFileIO.read(flac);
+        Tag t = audio.getTagOrCreateAndSetDefault();
+        t.setField(FieldKey.LYRICIST, "Old Lyricist");
+        ((org.jaudiotagger.tag.flac.FlacTag) t).setField("LYRICISTS", "Old Lyricist");
+        audio.commit();
+
+        ReviewItem item = reviewQueue.enqueueRecoveryFolder(albumDir.toString(), null, List.of(flac), tagWriter, null);
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("cand-cover");
+        cand.setTitle("Starlight Single");
+        cand.setArtist("Singer");
+        cand.setAlbumArtist("Singer");
+        ReviewItem.OnlineTrack track = new ReviewItem.OnlineTrack();
+        track.setDiscNo(1);
+        track.setTrackNo(1);
+        track.setTitle("Starlight");
+        track.setArtist("Singer");
+        track.setArrangers(List.of("Online Arranger"));
+        track.setDuration(120);
+        cand.setTracks(List.of(track));
+        item.setOnlineCandidates(List.of(cand));
+        OnlineIdentificationService online = new OnlineIdentificationService(config, reviewQueue, tagWriter, null, null);
+        item.setEvidenceHash(online.evidenceHashForFolder(albumDir.toFile()));
+        reviewQueue.update(item);
+
+        ReviewItem.TrackCreditsOverride manual = new ReviewItem.TrackCreditsOverride();
+        manual.setComposers(List.of("梶浦由記", "澤野弘之"));
+        manual.setLyricists(List.of()); // 显式清空原有作词
+        manual.setArrangers(null);      // 沿用联网提取的编曲
+
+        AudioFingerprintService stubFp = new AudioFingerprintService(config) {
+            @Override
+            public List<Integer> extractDurationSequence(List<File> files) {
+                return List.of(120);
+            }
+        };
+
+        // 1. 首次联网确认：无封面 -> 被拦截转入 COVER_MISSING，并持久化 onlineTrackCredits
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, processedLogger, reviewQueue, folderAlbumCache, null,
+                new com.lux032.musicautotagger.util.FileSystemUtils(config), tagWriter, stubFp, coverCandidateService, null)) {
+            ReviewItem held = recovery.confirmOnlineCandidate(item.getId(), cand.getId(),
+                "Starlight Single", "Singer", "2026-08-01", "", null, null,
+                RecoveryService.DuplicatePolicy.ASK, null, false,
+                Map.of(flac.getAbsolutePath(), manual));
+            assertEquals(ReviewItem.Kind.COVER_MISSING, held.effectiveKind());
+            assertEquals(ReviewItem.Status.PENDING_REVIEW, held.getStatus());
+            assertEquals(1, held.getMissingCover().getOnlineTrackCredits().size());
+        }
+
+        // 2. 模拟进程重启：重新从磁盘加载 ReviewQueueService，并在「缺少封面」页补图提交
+        ReviewQueueService reloadedQueue = new ReviewQueueService(config);
+        try (RecoveryService recovery2 = new RecoveryService(
+                config, null, processedLogger, reloadedQueue, folderAlbumCache, null,
+                new com.lux032.musicautotagger.util.FileSystemUtils(config), tagWriter, stubFp, coverCandidateService, null);
+             CoverMissingService coverService = new CoverMissingService(
+                config, reloadedQueue, folderAlbumCache, batchProcessor, tagWriter, coverCandidateService, processedLogger)) {
+            coverService.setRecoveryService(recovery2);
+            CoverCandidateView uploaded = coverService.uploadCover(
+                item.getId(), createImageBytes(600, 600, "jpg"), "front.jpg");
+            ReviewItem done = coverService.applyCover(
+                item.getId(), uploaded.getSha256(), RecoveryService.DuplicatePolicy.ASK);
+            assertEquals(ReviewItem.Status.CONFIRMED, done.getStatus());
+        }
+
+        Path archived = outputDir.resolve("Singer/Starlight Single/1.01 Singer - Starlight.flac");
+        assertTrue(Files.isRegularFile(archived));
+        assertTrue(tagWriter.hasEmbeddedCover(archived.toFile()));
+        MusicMetadata written = tagWriter.readTags(archived.toFile());
+        assertEquals("梶浦由記, 澤野弘之", written.getComposer());
+        assertEquals(List.of("梶浦由記", "澤野弘之"), written.getComposers());
+        assertNull(written.getLyricist(), "Explicitly cleared lyricist must survive missing-cover detour and restart");
+        assertEquals("Online Arranger", written.getArranger());
+    }
+
     private Map<String, Object> awaitScan(CoverMissingService service) throws InterruptedException {
         long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
         while (service.isLibraryScanRunning() && System.nanoTime() < deadline) {

@@ -218,11 +218,13 @@ public class ReviewServlet extends HttpServlet {
                 }
                 case "online-confirm": {
                     if (recoveryService == null) throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
+                    Map<String, ReviewItem.TrackCreditsOverride> trackCredits = parseTrackCredits(body.get("trackCredits"));
                     ReviewItem item = recoveryService.confirmOnlineCandidate(id, str(body.get("candidateId")),
                         str(body.get("albumTitle")), str(body.get("albumArtist")), str(body.get("releaseDate")),
                         str(body.get("edition")), str(body.get("archiveDirectoryName")),
                         str(body.get("selectedCoverSha256")), duplicatePolicy(str(body.get("duplicatePolicy"))),
-                        strList(body.get("albumArtists")), Boolean.TRUE.equals(body.get("confirmNoCover")));
+                        strList(body.get("albumArtists")), Boolean.TRUE.equals(body.get("confirmNoCover")),
+                        trackCredits);
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item),
                         "movedToMissingCover", item.effectiveKind() == ReviewItem.Kind.COVER_MISSING));
                     return;
@@ -462,6 +464,10 @@ public class ReviewServlet extends HttpServlet {
                 Map<String, Object> fm = new LinkedHashMap<>();
                 fm.put("fileName", f.getFileName());
                 fm.put("originalPath", f.getOriginalPath());
+                String matchPath = RecoveryService.effectiveReviewFilePath(item, f);
+                if (matchPath != null && !matchPath.equals(f.getOriginalPath())) {
+                    fm.put("matchPath", matchPath);
+                }
                 fm.put("duration", f.getDuration());
                 if (f.getMetadata() != null) {
                     fm.put("title", f.getMetadata().getTitle());
@@ -469,6 +475,22 @@ public class ReviewServlet extends HttpServlet {
                     fm.put("trackNo", f.getMetadata().getTrackNo());
                     fm.put("discNo", f.getMetadata().getDiscNo());
                 }
+                com.lux032.musicautotagger.model.MusicMetadata queued = f.getMetadata();
+                com.lux032.musicautotagger.model.MusicMetadata local = recoveryService != null
+                    ? recoveryService.readLocalTagsForReviewFile(item, f) : null;
+                com.lux032.musicautotagger.model.MusicMetadata mbCredits =
+                    com.lux032.musicautotagger.util.MetadataUtils.extractQueuedMusicBrainzCredits(queued, local);
+                com.lux032.musicautotagger.model.MusicMetadata localFallback =
+                    local != null ? local : (mbCredits == null ? queued : null);
+                com.lux032.musicautotagger.util.MetadataUtils.ResolvedTrackCredits baseCredits =
+                    com.lux032.musicautotagger.util.MetadataUtils.resolveOnlineTrackCredits(
+                        null, mbCredits, localFallback, null, false);
+                fm.put("composers", toCreditPreviewList(baseCredits.composer()));
+                fm.put("composerSource", baseCredits.composer().source().name());
+                fm.put("lyricists", toCreditPreviewList(baseCredits.lyricist()));
+                fm.put("lyricistSource", baseCredits.lyricist().source().name());
+                fm.put("arrangers", toCreditPreviewList(baseCredits.arranger()));
+                fm.put("arrangerSource", baseCredits.arranger().source().name());
                 files.add(fm);
             }
         }
@@ -543,6 +565,72 @@ public class ReviewServlet extends HttpServlet {
 
     private String str(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private static List<String> toCreditPreviewList(
+            com.lux032.musicautotagger.util.MetadataUtils.ResolvedCreditRole role) {
+        if (role == null || role.source() == com.lux032.musicautotagger.util.MetadataUtils.CreditSource.NONE) {
+            return List.of();
+        }
+        if (role.names() != null && !role.names().isEmpty()) {
+            return role.names();
+        }
+        return role.display() != null && !role.display().isBlank() ? List.of(role.display()) : List.of();
+    }
+
+    private Map<String, ReviewItem.TrackCreditsOverride> parseTrackCredits(Object value) throws IOException {
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof Map<?, ?> map)) {
+            throw new IOException("online.track.credits.invalid");
+        }
+        Map<String, ReviewItem.TrackCreditsOverride> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (!(entry.getKey() instanceof String pathKey) || pathKey.isBlank()
+                    || !(entry.getValue() instanceof Map<?, ?> rawOverride)) {
+                throw new IOException("online.track.credits.invalid");
+            }
+            for (Object fieldKey : rawOverride.keySet()) {
+                if (!(fieldKey instanceof String k)
+                        || (!"composers".equals(k) && !"lyricists".equals(k) && !"arrangers".equals(k))) {
+                    throw new IOException("online.track.credits.invalid");
+                }
+            }
+            ReviewItem.TrackCreditsOverride override = new ReviewItem.TrackCreditsOverride();
+            override.setComposers(parseOptionalCreditList(rawOverride, "composers"));
+            override.setLyricists(parseOptionalCreditList(rawOverride, "lyricists"));
+            override.setArrangers(parseOptionalCreditList(rawOverride, "arrangers"));
+            if (override.getComposers() != null || override.getLyricists() != null || override.getArrangers() != null) {
+                result.put(pathKey, override);
+            }
+        }
+        return result;
+    }
+
+    private List<String> parseOptionalCreditList(Map<?, ?> rawOverride, String key) throws IOException {
+        if (!rawOverride.containsKey(key)) {
+            return null;
+        }
+        Object raw = rawOverride.get(key);
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof List<?> list) {
+            List<String> values = new ArrayList<>();
+            for (Object el : list) {
+                if (!(el instanceof String s)) {
+                    throw new IOException("online.track.credits.invalid");
+                }
+                values.add(s);
+            }
+            return com.lux032.musicautotagger.util.MetadataUtils.cleanDistinctCreditNames(values);
+        }
+        if (raw instanceof String text) {
+            return com.lux032.musicautotagger.util.MetadataUtils.cleanDistinctCreditNames(
+                com.lux032.musicautotagger.util.ArtistCreditSupport.parseSemicolonOrLineList(text));
+        }
+        throw new IOException("online.track.credits.invalid");
     }
 
     private Map<String, List<String>> trackArtistLists(Object value) throws IOException {

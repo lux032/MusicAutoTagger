@@ -35,10 +35,11 @@ import java.util.Set;
 public class TavilyWebSearchClient implements WebSearchClient {
 
     /** 生成检索词的系统提示：只吐 JSON，不要解释 */
-    private static final String QUERY_SYSTEM =
+    static final String QUERY_SYSTEM =
         "You generate web search queries for identifying a music release. "
-        + "Read the folder name, file names and existing tags, then produce short, high-signal queries. "
+        + "Read the folder name, file names, existing tags, and any PREFERRED RELEASE REGIONS, then produce short, high-signal queries. "
         + "Cover name variants: original language title, romanized title, catalog number, label, artist. "
+        + "When PREFERRED RELEASE REGIONS are provided (e.g. JP), include preferred-region or native-language query variants and release/credits keywords (such as VGMdb, Discogs, or native credits terms) to surface official native names and track credits. "
         + "Do NOT include site: operators. Return ONLY JSON: {\"queries\":[string]}.";
 
     private static final int MAX_QUERIES = 4;

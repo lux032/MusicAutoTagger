@@ -936,8 +936,22 @@ public class RecoveryService implements AutoCloseable {
                                                            DuplicatePolicy duplicatePolicy,
                                                            List<String> manualAlbumArtists,
                                                            boolean confirmNoCover) throws IOException {
+        return confirmOnlineCandidate(itemId, candidateId, albumTitle, albumArtist, releaseDate, edition,
+            archiveDirectoryName, selectedCoverSha256, duplicatePolicy, manualAlbumArtists, confirmNoCover, null);
+    }
+
+    public synchronized ReviewItem confirmOnlineCandidate(String itemId, String candidateId,
+                                                           String albumTitle, String albumArtist,
+                                                           String releaseDate, String edition,
+                                                           String archiveDirectoryName,
+                                                           String selectedCoverSha256,
+                                                           DuplicatePolicy duplicatePolicy,
+                                                           List<String> manualAlbumArtists,
+                                                           boolean confirmNoCover,
+                                                           Map<String, ReviewItem.TrackCreditsOverride> manualTrackCredits) throws IOException {
         return confirmOnlineCandidateInternal(itemId, candidateId, albumTitle, albumArtist, releaseDate, edition,
-            archiveDirectoryName, selectedCoverSha256, null, duplicatePolicy, manualAlbumArtists, confirmNoCover, true);
+            archiveDirectoryName, selectedCoverSha256, null, duplicatePolicy, manualAlbumArtists,
+            confirmNoCover, true, manualTrackCredits);
     }
 
     /** 「缺少封面」页补图或确认无封面后，继续完成之前暂缓的「联网候选确认入库」。 */
@@ -955,7 +969,8 @@ public class RecoveryService implements AutoCloseable {
             mc.getAlbumTitle(), mc.getAlbumArtist(), mc.getReleaseDate(), null,
             mc.getArchiveDirectoryName(), null, confirmNoCover ? null : coverBytes,
             duplicatePolicy == null ? DuplicatePolicy.ASK : duplicatePolicy,
-            mc.getAlbumArtists(), confirmNoCover, false);
+            mc.getAlbumArtists(), confirmNoCover, false,
+            mc.getOnlineTrackCredits());
     }
 
     private ReviewItem confirmOnlineCandidateInternal(String itemId, String candidateId,
@@ -967,7 +982,8 @@ public class RecoveryService implements AutoCloseable {
                                                       DuplicatePolicy duplicatePolicy,
                                                       List<String> manualAlbumArtists,
                                                       boolean confirmNoCover,
-                                                      boolean allowMissingCoverIntercept) throws IOException {
+                                                      boolean allowMissingCoverIntercept,
+                                                      Map<String, ReviewItem.TrackCreditsOverride> manualTrackCredits) throws IOException {
         ReviewItem item = reviewQueue.get(itemId);
         if (item == null) throw new IOException("item.not.found");
         if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) throw new IOException("item.already.resolved");
@@ -1101,6 +1117,9 @@ public class RecoveryService implements AutoCloseable {
                     details.setArchiveDirectoryName(albumDir);
                     details.setRecordingIdSentinel("ONLINE_SEARCH");
                     details.setOnlineCandidateId(candidateId);
+                    if (manualTrackCredits != null && !manualTrackCredits.isEmpty()) {
+                        details.setOnlineTrackCredits(copyTrackCreditsOverrides(manualTrackCredits));
+                    }
                     if (chosen.getCoverCandidates() != null && !chosen.getCoverCandidates().isEmpty()) {
                         details.setCoverCandidates(new ArrayList<>(chosen.getCoverCandidates()));
                     }
@@ -1115,13 +1134,34 @@ public class RecoveryService implements AutoCloseable {
         Files.createDirectories(workRoot.toPath());
         List<Path> committed;
         // 入队前指纹识别阶段已从 MusicBrainz 拿到的曲目级元数据（作曲/作词/编曲/流派等），
-        // 按原始路径索引；MusicBrainz 有值则覆盖源文件标签，没有则保留源文件原值。
+        // 按原始路径索引；并在单文件隔离重识别（single-<jobId>）场景下按唯一条目文件名兜底映射。
         java.util.Map<String, MusicMetadata> queuedMetadataByOriginalPath = new java.util.HashMap<>();
         if (item.getFiles() != null) {
             for (ReviewItem.FileEntry entry : item.getFiles()) {
                 if (entry.getOriginalPath() != null && entry.getMetadata() != null) {
                     queuedMetadataByOriginalPath.put(
                         new File(entry.getOriginalPath()).getAbsolutePath(), entry.getMetadata());
+                }
+            }
+        }
+        String singleFallbackEntryPath = null;
+        if (item.getRecoverySourceType() != null
+                && originalFiles.size() == 1
+                && item.getFiles() != null && item.getFiles().size() == 1) {
+            File singleOriginal = originalFiles.get(0);
+            String singlePath = singleOriginal.getAbsolutePath();
+            ReviewItem.FileEntry onlyEntry = item.getFiles().get(0);
+            if (onlyEntry != null) {
+                String entryName = meaningful(onlyEntry.getFileName())
+                    ? onlyEntry.getFileName()
+                    : (onlyEntry.getOriginalPath() == null ? null : new File(onlyEntry.getOriginalPath()).getName());
+                if (singleOriginal.getName().equals(entryName)) {
+                    if (onlyEntry.getOriginalPath() != null) {
+                        singleFallbackEntryPath = new File(onlyEntry.getOriginalPath()).getAbsolutePath();
+                    }
+                    if (!queuedMetadataByOriginalPath.containsKey(singlePath) && onlyEntry.getMetadata() != null) {
+                        queuedMetadataByOriginalPath.put(singlePath, onlyEntry.getMetadata());
+                    }
                 }
             }
         }
@@ -1132,14 +1172,21 @@ public class RecoveryService implements AutoCloseable {
         try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(workRoot)) {
             for (File file : files) {
                 MusicMetadata original = tagWriter.readTags(file);
-                MusicMetadata md = original == null ? new MusicMetadata() : original;
+                MusicMetadata md = original == null ? new MusicMetadata() : original.copyWithoutHeavyFields();
                 String matchedPath = originalPathByProcessingPath.getOrDefault(
                     file.getAbsolutePath(), file.getAbsolutePath());
-                MetadataUtils.overlayTrackCredits(queuedMetadataByOriginalPath.get(matchedPath), md);
+                MusicMetadata queued = queuedMetadataByOriginalPath.get(matchedPath);
+                MetadataUtils.overlayNonCreatorTrackMetadata(queued, md);
+                ReviewItem.OnlineTrack track = trackByFile.get(matchedPath);
+                ReviewItem.TrackCreditsOverride manualOverride = resolveManualTrackCredits(
+                    manualTrackCredits, matchedPath, singleFallbackEntryPath);
+                MusicMetadata mbCredits = MetadataUtils.extractQueuedMusicBrainzCredits(queued, original);
+                MetadataUtils.ResolvedTrackCredits resolvedCredits = MetadataUtils.resolveOnlineTrackCredits(
+                    manualOverride, mbCredits, original, track, track != null);
+                MetadataUtils.applyResolvedTrackCredits(resolvedCredits, md);
                 md.setAlbum(finalAlbum);
                 ArtistCreditSupport.applyAlbumArtistCredit(md, finalArtist, finalAlbumArtists, albumArtistPolicy);
                 md.setReleaseDate(finalDate);
-                ReviewItem.OnlineTrack track = trackByFile.get(matchedPath);
                 if (track != null) {
                     if (meaningful(track.getTitle())) md.setTitle(track.getTitle());
                     if (meaningful(track.getArtist())) {
@@ -1220,6 +1267,76 @@ public class RecoveryService implements AutoCloseable {
         }
         finishCommittedRecovery(item);
         return item;
+    }
+
+    /**
+     * 供待确认详情页只读查看单个文件当前的本地标签，用于准确区分 MusicBrainz 与本地来源的幕后人员。
+     */
+    public MusicMetadata readLocalTagsForReviewFile(ReviewItem item, ReviewItem.FileEntry entry) {
+        if (tagWriter == null || entry == null) {
+            return null;
+        }
+        String path = effectiveReviewFilePath(item, entry);
+        if (!meaningful(path)) {
+            return null;
+        }
+        File file = new File(path);
+        return file.isFile() ? tagWriter.readTags(file) : null;
+    }
+
+    /**
+     * 计算待确认条目的文件在联网曲目匹配中的有效路径（单文件隔离重识别时回指原隔离路径）。
+     */
+    public static String effectiveReviewFilePath(ReviewItem item, ReviewItem.FileEntry entry) {
+        if (entry == null) {
+            return null;
+        }
+        if (item != null && item.getRecoverySourceType() != null
+                && item.getRecoverySourcePath() != null && !item.getRecoverySourcePath().isBlank()
+                && item.getFiles() != null && item.getFiles().size() == 1) {
+            File recoverySource = new File(item.getRecoverySourcePath());
+            if (recoverySource.isFile()) {
+                return recoverySource.getAbsolutePath();
+            }
+        }
+        return entry.getOriginalPath();
+    }
+
+    private static Map<String, ReviewItem.TrackCreditsOverride> copyTrackCreditsOverrides(
+            Map<String, ReviewItem.TrackCreditsOverride> source) {
+        Map<String, ReviewItem.TrackCreditsOverride> copy = new LinkedHashMap<>();
+        if (source == null) {
+            return copy;
+        }
+        for (Map.Entry<String, ReviewItem.TrackCreditsOverride> entry : source.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null) {
+                continue;
+            }
+            ReviewItem.TrackCreditsOverride src = entry.getValue();
+            ReviewItem.TrackCreditsOverride dst = new ReviewItem.TrackCreditsOverride();
+            dst.setComposers(src.getComposers() == null ? null : new ArrayList<>(src.getComposers()));
+            dst.setLyricists(src.getLyricists() == null ? null : new ArrayList<>(src.getLyricists()));
+            dst.setArrangers(src.getArrangers() == null ? null : new ArrayList<>(src.getArrangers()));
+            copy.put(entry.getKey(), dst);
+        }
+        return copy;
+    }
+
+    private static ReviewItem.TrackCreditsOverride resolveManualTrackCredits(
+            Map<String, ReviewItem.TrackCreditsOverride> overrides,
+            String matchedPath,
+            String singleFallbackEntryPath) {
+        if (overrides == null || overrides.isEmpty()) {
+            return null;
+        }
+        ReviewItem.TrackCreditsOverride direct = overrides.get(matchedPath);
+        if (direct != null) {
+            return direct;
+        }
+        if (singleFallbackEntryPath != null) {
+            return overrides.get(singleFallbackEntryPath);
+        }
+        return null;
     }
 
     private boolean isTemporarySourceItem(ReviewItem item) {

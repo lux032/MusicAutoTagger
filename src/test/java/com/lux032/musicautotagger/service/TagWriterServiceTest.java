@@ -285,6 +285,73 @@ class TagWriterServiceTest {
         assertEquals("Existing Arranger", tag.getFirst(FieldKey.ARRANGER));
     }
 
+    @Test
+    void explicitCreatorClearFlagsDeleteStandardPluralAndMbidTagsAcrossContainers() throws Exception {
+        MusicMetadata initial = new MusicMetadata();
+        initial.setTitle("Song");
+        initial.setComposer("Composer A, Composer B");
+        initial.setComposers(List.of("Composer A", "Composer B"));
+        initial.setComposerIds(List.of("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"));
+        initial.setLyricist("Lyricist A");
+        initial.setLyricists(List.of("Lyricist A"));
+        initial.setLyricistIds(List.of("33333333-3333-4333-8333-333333333333"));
+        initial.setArranger("Arranger A");
+        initial.setArrangers(List.of("Arranger A"));
+        initial.setArrangerIds(List.of("44444444-4444-4444-8444-444444444444"));
+
+        // copyWithoutHeavyFields 必须保留显式清空标志
+        MusicMetadata clearMeta = new MusicMetadata();
+        clearMeta.setClearComposer(true);
+        clearMeta.setClearArranger(true);
+        MusicMetadata copied = clearMeta.copyWithoutHeavyFields();
+        assertEquals(true, copied.isClearComposer());
+        assertEquals(false, copied.isClearLyricist());
+        assertEquals(true, copied.isClearArranger());
+
+        org.jaudiotagger.tag.wav.WavTag wavTag =
+            new org.jaudiotagger.tag.wav.WavTag(org.jaudiotagger.audio.wav.WavOptions.READ_ID3_ONLY);
+        wavTag.setID3Tag(new ID3v24Tag());
+
+        TagWriterService writer = new TagWriterService(MusicConfig.getInstance());
+        Method readNames = TagWriterService.class.getDeclaredMethod(
+            "readCreatorNames", org.jaudiotagger.tag.Tag.class, FieldKey.class, String.class);
+        readNames.setAccessible(true);
+        Method readIds = TagWriterService.class.getDeclaredMethod(
+            "readCreatorIds", org.jaudiotagger.tag.Tag.class, String.class, List.class);
+        readIds.setAccessible(true);
+
+        for (org.jaudiotagger.tag.Tag tag : List.of(
+                new FlacTag(), new VorbisCommentTag(), new ID3v23Tag(), new ID3v24Tag(), new Mp4Tag(), wavTag)) {
+            String type = tag.getClass().getSimpleName();
+            invokeUpdateTextTags(tag, initial);
+            assertEquals("Composer A", tag.getFirst(FieldKey.COMPOSER), type);
+            assertEquals("Lyricist A", tag.getFirst(FieldKey.LYRICIST), type);
+            assertEquals("Arranger A", tag.getFirst(FieldKey.ARRANGER), type);
+
+            // 仅清空 composer 与 arranger，lyricist 必须保留
+            invokeUpdateTextTags(tag, clearMeta);
+            assertEquals("", tag.getFirst(FieldKey.COMPOSER), type);
+            assertNull(readNames.invoke(writer, tag, FieldKey.COMPOSER, "COMPOSERS"), type);
+            assertNull(readIds.invoke(writer, tag, "MUSICBRAINZ_COMPOSERID", List.of("Composer A", "Composer B")), type);
+            assertEquals("", tag.getFirst(FieldKey.ARRANGER), type);
+            assertNull(readNames.invoke(writer, tag, FieldKey.ARRANGER, "ARRANGERS"), type);
+            assertNull(readIds.invoke(writer, tag, "MUSICBRAINZ_ARRANGERID", List.of("Arranger A")), type);
+
+            assertEquals("Lyricist A", tag.getFirst(FieldKey.LYRICIST), type);
+            assertEquals(List.of("Lyricist A"), readNames.invoke(writer, tag, FieldKey.LYRICIST, "LYRICISTS"), type);
+            assertEquals(List.of("33333333-3333-4333-8333-333333333333"),
+                readIds.invoke(writer, tag, "MUSICBRAINZ_LYRICISTID", List.of("Lyricist A")), type);
+
+            // 再单独清空 lyricist
+            MusicMetadata clearLyricistOnly = new MusicMetadata();
+            clearLyricistOnly.setClearLyricist(true);
+            invokeUpdateTextTags(tag, clearLyricistOnly);
+            assertEquals("", tag.getFirst(FieldKey.LYRICIST), type);
+            assertNull(readNames.invoke(writer, tag, FieldKey.LYRICIST, "LYRICISTS"), type);
+            assertNull(readIds.invoke(writer, tag, "MUSICBRAINZ_LYRICISTID", List.of("Lyricist A")), type);
+        }
+    }
+
     private static void invokeUpdateTextTags(org.jaudiotagger.tag.Tag tag, MusicMetadata metadata) throws Exception {
         TagWriterService writer = new TagWriterService(MusicConfig.getInstance());
         Method method = TagWriterService.class.getDeclaredMethod(

@@ -229,6 +229,7 @@ public class ReviewItem {
             this.missingCover.localTrackArtistFallbacks = copyOnWrite(this.missingCover.localTrackArtistFallbacks);
             this.missingCover.coverCandidates = copyOnWrite(this.missingCover.coverCandidates);
             this.missingCover.archivedOutputDirs = copyOnWrite(this.missingCover.archivedOutputDirs);
+            this.missingCover.onlineTrackCredits = concurrentMap(this.missingCover.onlineTrackCredits);
         }
     }
 
@@ -315,6 +316,8 @@ public class ReviewItem {
         private List<String> localTrackArtistFallbacks = new CopyOnWriteArrayList<>();
         /** 联网候选 ID（若来自联网候选确认） */
         private String onlineCandidateId;
+        /** 联网确认时用户在弹窗中提交的逐曲幕后人员覆盖（按本地文件绝对路径索引） */
+        private Map<String, TrackCreditsOverride> onlineTrackCredits = new ConcurrentHashMap<>();
         /** 用户补充的自定义搜索关键词 */
         private String customSearchQuery;
         private long coverSearchedAt;
@@ -349,6 +352,10 @@ public class ReviewItem {
 
         public void setArchivedOutputDirs(List<String> archivedOutputDirs) {
             this.archivedOutputDirs = copyOnWrite(archivedOutputDirs);
+        }
+
+        public void setOnlineTrackCredits(Map<String, TrackCreditsOverride> onlineTrackCredits) {
+            this.onlineTrackCredits = concurrentMap(onlineTrackCredits);
         }
     }
 
@@ -413,6 +420,17 @@ public class ReviewItem {
         private String reliability;
     }
 
+    /**
+     * 人工在联网确认弹窗中提交的单曲幕后人员覆盖。
+     * 字段为 null 表示未改动（沿用自动合并规则），空列表表示人工显式清空，非空列表表示人工覆盖。
+     */
+    @Data
+    public static class TrackCreditsOverride {
+        private List<String> composers;
+        private List<String> lyricists;
+        private List<String> arrangers;
+    }
+
     @Data
     public static class OnlineTrack {
         private int discNo;
@@ -420,6 +438,9 @@ public class ReviewItem {
         private String title;
         private String artist;
         private List<String> artists = new ArrayList<>();
+        private List<String> composers = new ArrayList<>();
+        private List<String> lyricists = new ArrayList<>();
+        private List<String> arrangers = new ArrayList<>();
         private Integer duration;
         private String matchedFilePath;
         private double matchConfidence;

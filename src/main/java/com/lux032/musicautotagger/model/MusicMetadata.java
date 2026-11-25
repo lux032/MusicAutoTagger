@@ -61,6 +61,10 @@ public class MusicMetadata {
     private List<String> composerIds;
     private List<String> lyricistIds;
     private List<String> arrangerIds;
+    /** 显式删除音频内既有的作曲 / 作词 / 编曲标签及其伴随复数标签与 MBID。 */
+    private boolean clearComposer;
+    private boolean clearLyricist;
+    private boolean clearArranger;
     private String lyrics;
     /** Reliable local audio length only; never populated from MusicBrainz. */
     private Double localPreciseDuration;
@@ -145,6 +149,9 @@ public class MusicMetadata {
         copy.composerIds = composerIds == null ? null : List.copyOf(composerIds);
         copy.lyricistIds = lyricistIds == null ? null : List.copyOf(lyricistIds);
         copy.arrangerIds = arrangerIds == null ? null : List.copyOf(arrangerIds);
+        copy.clearComposer = clearComposer;
+        copy.clearLyricist = clearLyricist;
+        copy.clearArranger = clearArranger;
         copy.lyrics = lyrics;
         copy.localPreciseDuration = localPreciseDuration;
         copy.weakLyricsIdentity = weakLyricsIdentity;

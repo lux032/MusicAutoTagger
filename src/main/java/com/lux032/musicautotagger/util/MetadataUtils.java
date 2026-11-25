@@ -2,11 +2,16 @@ package com.lux032.musicautotagger.util;
 
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.model.MusicMetadata;
+import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.AudioFingerprintService;
 
 import java.text.Normalizer;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -465,6 +470,283 @@ public class MetadataUtils {
             target.setGenres(from.getGenres());
         }
         return target;
+    }
+
+    private static final Set<String> SENTINEL_RECORDING_IDS = Set.of(
+        "ONLINE_SEARCH", "LOCAL_TAGS", "FAILED", "REVIEW_REJECTED"
+    );
+
+    public enum CreditSource {
+        MANUAL, MUSICBRAINZ, LOCAL, ONLINE, NONE
+    }
+
+    public record ResolvedCreditRole(
+        CreditSource source,
+        String display,
+        List<String> names,
+        List<String> mbids,
+        boolean clear
+    ) {
+        public static ResolvedCreditRole empty() {
+            return new ResolvedCreditRole(CreditSource.NONE, null, List.of(), null, false);
+        }
+
+        public static ResolvedCreditRole cleared() {
+            return new ResolvedCreditRole(CreditSource.MANUAL, null, List.of(), null, true);
+        }
+    }
+
+    public record ResolvedTrackCredits(
+        ResolvedCreditRole composer,
+        ResolvedCreditRole lyricist,
+        ResolvedCreditRole arranger
+    ) {}
+
+    /**
+     * 判断元数据是否携带真实的 MusicBrainz recordingId（排除各类内部哨兵值）。
+     */
+    public static boolean hasMusicBrainzRecordingId(MusicMetadata metadata) {
+        if (metadata == null || isBlank(metadata.getRecordingId())) {
+            return false;
+        }
+        return !SENTINEL_RECORDING_IDS.contains(metadata.getRecordingId().trim());
+    }
+
+    /**
+     * 仅叠加队列中除作曲/作词/编曲之外的曲目级辅助信息（歌词、流派），供联网归档配合结构化幕后人员解析使用。
+     */
+    public static MusicMetadata overlayNonCreatorTrackMetadata(MusicMetadata from, MusicMetadata target) {
+        if (from == null || target == null) {
+            return target;
+        }
+        if (isBlank(target.getLyrics()) && !isBlank(from.getLyrics())) {
+            target.setLyrics(from.getLyrics());
+            target.setAutomaticLyrics(from.getAutomaticLyrics());
+            target.setLocalPreciseDuration(from.getLocalPreciseDuration());
+        }
+        if (from.getGenres() != null && !from.getGenres().isEmpty()) {
+            target.setGenres(List.copyOf(from.getGenres()));
+        }
+        return target;
+    }
+
+    /**
+     * 从队列持久化的曲目元数据中分离出真正来自 MusicBrainz（而非从原本地文件原样复制）的作曲/作词/编曲字段。
+     */
+    public static MusicMetadata extractQueuedMusicBrainzCredits(MusicMetadata queued, MusicMetadata local) {
+        if (queued == null) {
+            return null;
+        }
+        boolean mbIdentity = hasMusicBrainzRecordingId(queued);
+        MusicMetadata extracted = new MusicMetadata();
+        boolean any = false;
+        if (isQueuedRoleFromMusicBrainz(mbIdentity,
+                queued.getComposer(), queued.getComposerIds(),
+                local == null ? null : local.getComposer(),
+                local == null ? null : local.getComposerIds())) {
+            copyComposer(queued, extracted);
+            any = true;
+        }
+        if (isQueuedRoleFromMusicBrainz(mbIdentity,
+                queued.getLyricist(), queued.getLyricistIds(),
+                local == null ? null : local.getLyricist(),
+                local == null ? null : local.getLyricistIds())) {
+            copyLyricist(queued, extracted);
+            any = true;
+        }
+        if (isQueuedRoleFromMusicBrainz(mbIdentity,
+                queued.getArranger(), queued.getArrangerIds(),
+                local == null ? null : local.getArranger(),
+                local == null ? null : local.getArrangerIds())) {
+            copyArranger(queued, extracted);
+            any = true;
+        }
+        return any ? extracted : null;
+    }
+
+    private static boolean isQueuedRoleFromMusicBrainz(boolean mbIdentity,
+                                                       String queuedDisplay, List<String> queuedIds,
+                                                       String localDisplay, List<String> localIds) {
+        if (isBlank(queuedDisplay)) {
+            return false;
+        }
+        boolean hasQueuedIds = queuedIds != null && !queuedIds.isEmpty();
+        if (mbIdentity && hasQueuedIds) {
+            return true;
+        }
+        if (isBlank(localDisplay)) {
+            return true;
+        }
+        if (!queuedDisplay.trim().equals(localDisplay.trim())) {
+            return true;
+        }
+        return hasQueuedIds && !Objects.equals(queuedIds, localIds);
+    }
+
+    /**
+     * 按确定优先级逐字段（作曲 / 作词 / 编曲独立）解析联网归档时的最终幕后人员：
+     * 手动编辑 > MusicBrainz 指纹结果 > 本地文件已有标签 > 联网提取（仅高置信度匹配）。
+     */
+    public static ResolvedTrackCredits resolveOnlineTrackCredits(
+            ReviewItem.TrackCreditsOverride manualOverride,
+            MusicMetadata musicBrainz,
+            MusicMetadata local,
+            ReviewItem.OnlineTrack onlineTrack,
+            boolean onlineConfident) {
+        ResolvedCreditRole composer = resolveRole(
+            manualOverride == null ? null : manualOverride.getComposers(),
+            musicBrainz == null ? null : musicBrainz.getComposer(),
+            musicBrainz == null ? null : musicBrainz.getComposers(),
+            musicBrainz == null ? null : musicBrainz.getComposerIds(),
+            local == null ? null : local.getComposer(),
+            local == null ? null : local.getComposers(),
+            local == null ? null : local.getComposerIds(),
+            onlineTrack == null ? null : onlineTrack.getComposers(),
+            onlineConfident
+        );
+        ResolvedCreditRole lyricist = resolveRole(
+            manualOverride == null ? null : manualOverride.getLyricists(),
+            musicBrainz == null ? null : musicBrainz.getLyricist(),
+            musicBrainz == null ? null : musicBrainz.getLyricists(),
+            musicBrainz == null ? null : musicBrainz.getLyricistIds(),
+            local == null ? null : local.getLyricist(),
+            local == null ? null : local.getLyricists(),
+            local == null ? null : local.getLyricistIds(),
+            onlineTrack == null ? null : onlineTrack.getLyricists(),
+            onlineConfident
+        );
+        ResolvedCreditRole arranger = resolveRole(
+            manualOverride == null ? null : manualOverride.getArrangers(),
+            musicBrainz == null ? null : musicBrainz.getArranger(),
+            musicBrainz == null ? null : musicBrainz.getArrangers(),
+            musicBrainz == null ? null : musicBrainz.getArrangerIds(),
+            local == null ? null : local.getArranger(),
+            local == null ? null : local.getArrangers(),
+            local == null ? null : local.getArrangerIds(),
+            onlineTrack == null ? null : onlineTrack.getArrangers(),
+            onlineConfident
+        );
+        return new ResolvedTrackCredits(composer, lyricist, arranger);
+    }
+
+    private static ResolvedCreditRole resolveRole(
+            List<String> manualNames,
+            String mbDisplay, List<String> mbNames, List<String> mbIds,
+            String localDisplay, List<String> localNames, List<String> localIds,
+            List<String> onlineNames, boolean onlineConfident) {
+        if (manualNames != null) {
+            List<String> cleaned = cleanDistinctCreditNames(manualNames);
+            if (cleaned.isEmpty()) {
+                return ResolvedCreditRole.cleared();
+            }
+            return new ResolvedCreditRole(CreditSource.MANUAL, String.join(", ", cleaned), cleaned, null, false);
+        }
+        if (!isBlank(mbDisplay) || (mbNames != null && !mbNames.isEmpty())) {
+            return buildMetadataRole(CreditSource.MUSICBRAINZ, mbDisplay, mbNames, mbIds);
+        }
+        if (!isBlank(localDisplay) || (localNames != null && !localNames.isEmpty())) {
+            return buildMetadataRole(CreditSource.LOCAL, localDisplay, localNames, localIds);
+        }
+        if (onlineConfident && onlineNames != null && !onlineNames.isEmpty()) {
+            List<String> cleaned = cleanDistinctCreditNames(onlineNames);
+            if (!cleaned.isEmpty()) {
+                return new ResolvedCreditRole(CreditSource.ONLINE, String.join(", ", cleaned), cleaned, null, false);
+            }
+        }
+        return ResolvedCreditRole.empty();
+    }
+
+    private static ResolvedCreditRole buildMetadataRole(CreditSource source,
+                                                        String display, List<String> names, List<String> ids) {
+        List<String> cleanedNames = cleanDistinctCreditNames(names);
+        String effectiveDisplay = !isBlank(display)
+            ? display.trim()
+            : (cleanedNames.isEmpty() ? null : String.join(", ", cleanedNames));
+        if (isBlank(effectiveDisplay)) {
+            return ResolvedCreditRole.empty();
+        }
+        List<String> effectiveIds = ids == null || ids.isEmpty() ? null : List.copyOf(ids);
+        return new ResolvedCreditRole(source, effectiveDisplay, cleanedNames, effectiveIds, false);
+    }
+
+    public static List<String> cleanDistinctCreditNames(List<String> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<String> dedup = new LinkedHashSet<>();
+        for (String name : raw) {
+            if (name != null) {
+                String trimmed = name.trim();
+                if (!trimmed.isEmpty()) {
+                    dedup.add(trimmed);
+                }
+            }
+        }
+        return dedup.isEmpty() ? List.of() : List.copyOf(dedup);
+    }
+
+    /**
+     * 将解析好的幕后人员结果写入目标 {@link MusicMetadata}（含显式清空标志与 MBID 对齐处理）。
+     */
+    public static MusicMetadata applyResolvedTrackCredits(ResolvedTrackCredits resolved, MusicMetadata target) {
+        if (resolved == null || target == null) {
+            return target;
+        }
+        applyResolvedComposer(resolved.composer(), target);
+        applyResolvedLyricist(resolved.lyricist(), target);
+        applyResolvedArranger(resolved.arranger(), target);
+        return target;
+    }
+
+    private static void applyResolvedComposer(ResolvedCreditRole role, MusicMetadata target) {
+        if (role == null || role.source() == CreditSource.NONE) {
+            return;
+        }
+        if (role.clear()) {
+            target.setComposer(null);
+            target.setComposers(null);
+            target.setComposerIds(null);
+            target.setClearComposer(true);
+            return;
+        }
+        target.setClearComposer(false);
+        target.setComposer(role.display());
+        target.setComposers(role.names().isEmpty() ? null : List.copyOf(role.names()));
+        target.setComposerIds(role.mbids() == null ? null : List.copyOf(role.mbids()));
+    }
+
+    private static void applyResolvedLyricist(ResolvedCreditRole role, MusicMetadata target) {
+        if (role == null || role.source() == CreditSource.NONE) {
+            return;
+        }
+        if (role.clear()) {
+            target.setLyricist(null);
+            target.setLyricists(null);
+            target.setLyricistIds(null);
+            target.setClearLyricist(true);
+            return;
+        }
+        target.setClearLyricist(false);
+        target.setLyricist(role.display());
+        target.setLyricists(role.names().isEmpty() ? null : List.copyOf(role.names()));
+        target.setLyricistIds(role.mbids() == null ? null : List.copyOf(role.mbids()));
+    }
+
+    private static void applyResolvedArranger(ResolvedCreditRole role, MusicMetadata target) {
+        if (role == null || role.source() == CreditSource.NONE) {
+            return;
+        }
+        if (role.clear()) {
+            target.setArranger(null);
+            target.setArrangers(null);
+            target.setArrangerIds(null);
+            target.setClearArranger(true);
+            return;
+        }
+        target.setClearArranger(false);
+        target.setArranger(role.display());
+        target.setArrangers(role.names().isEmpty() ? null : List.copyOf(role.names()));
+        target.setArrangerIds(role.mbids() == null ? null : List.copyOf(role.mbids()));
     }
 
     private static void copyCreatorCreditsIfMissing(MusicMetadata from, MusicMetadata target, boolean logPreserve) {
