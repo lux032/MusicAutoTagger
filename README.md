@@ -9,7 +9,7 @@
 [![MusicBrainz](https://img.shields.io/badge/Data-MusicBrainz-purple.svg)](https://musicbrainz.org/)
 [![LrcLib](https://img.shields.io/badge/Lyrics-LrcLib-green.svg)](https://lrclib.net/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.6.0-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
+[![Version](https://img.shields.io/badge/Version-1.6.1-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
 
 [English](README.md) | [简体中文](README_ZH.md)
 
@@ -32,7 +32,14 @@ The built-in real-time monitoring dashboard provides:
 - ✅ Pending review queue, missing-cover review, and manual re-identification pages, sharing one design system
 - 🗂️ Processed records page: switchable folder/file views, search/filter history, re-identify or forget single files or whole albums, export CSV
 
-## 🆕 What's New in 1.6.0
+## 🆕 What's New in 1.6.1
+
+- 🔗 **Unified Recovery Record Lineage**: All 6 quarantine recovery archiving paths (Online Search confirmation, AI-assisted Local Tags archiving, quarantine full re-identification, Missing Covers completion/confirm-no-cover, Pending Review MB confirmation/unlisted archive, and Partial LLM artist matching) now converge onto a single monitored-source record via `RecoveryOriginRegistry` (`data/recovery-origins.json`), preventing split `FAILED` + output-path duplicate rows in **Processed Records**.
+- 🧹 **Automatic Startup Reconciliation**: New `RecoveryRecordReconciler` automatically merges historical split records created prior to `1.6.1` on startup (before file monitoring starts) using confirmed review history or strict album-wide bijective FLAC `STREAMINFO` MD5 matching, preserving original `processed_time` without touching any audio files on disk.
+- ♻️ **Safe Re-identification & Old Archive Replacement**: Re-identifying recovered albums replaces and cleans up old archived files and empty folders when target paths change, preserves existing library files if re-identification fails, and warns in the **Processed Records** confirmation dialog when non-MusicBrainz (Online / AI Local Tags) records are selected.
+- 🛡️ **Zero-Migration Reliability Hardening**: Crash-safe idempotent replay of committed track records, single-transaction/single-lock atomic record migration across SQLite/MySQL/File modes, same-origin audio-fingerprint guards before peer quarantine cleanup, and zero database schema changes required.
+
+### Highlights from 1.6.0
 
 - 🧭 **First-Run Setup Wizard & Standby Mode**: Fresh deployments start in standby mode so file monitoring does not scan download folders before configuration is ready. A guided 5-step wizard (Account & language → Directories & proxy → AcoustID / MusicBrainz → Optional AI & web search → Organization preferences) provides live connectivity checks and activates all services in-process with no restart needed.
 - 🌍 **MusicBrainz Country Priority & Native East Asian Artist Naming**: `release.countryPriority` is now enforced uniformly across all 6 MusicBrainz release-selection and duration-matching paths (`track/duration match > countryPriority > media format > earlier date`). New `tag.artist.preferNativeName=true` resolves romanized East Asian artist credits (e.g. `Yuki Kajiura`) to native entity names (`梶浦由記`) while preserving official Latin stage names (`YOASOBI`, `LiSA`, `Aimer`), Western artists, join phrases, and MBID alignment.
@@ -141,7 +148,7 @@ If you prefer to run it locally for development or testing:
 mvn clean package
 
 # 2. Run
-java -jar target/MusicDemo-1.6.0.jar
+java -jar target/MusicDemo-1.6.1.jar
 
 # 3. Access Web Dashboard
 # Open http://localhost:8080 in your browser

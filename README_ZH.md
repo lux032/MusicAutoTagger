@@ -9,7 +9,7 @@
 [![MusicBrainz](https://img.shields.io/badge/Data-MusicBrainz-purple.svg)](https://musicbrainz.org/)
 [![LrcLib](https://img.shields.io/badge/Lyrics-LrcLib-green.svg)](https://lrclib.net/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.6.0-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
+[![Version](https://img.shields.io/badge/Version-1.6.1-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
 
 [简体中文](README_ZH.md) | [English](README.md)
 
@@ -32,7 +32,14 @@
 - ✅ 「待确认」「缺少封面」与「重新识别」页面，与仪表盘共用一套设计系统
 - 🗂️ 「处理记录」页面：支持文件夹 / 文件双视图切换，搜索筛选历史记录，按单曲或整张专辑重新识别 / 删除记录，流式导出 CSV
 
-## 🆕 1.6.0 新增内容
+## 🆕 1.6.1 修复与改进
+
+- 🔗 **统一全部 6 个恢复入库出口为单条主记录**：新增 `RecoveryOriginRegistry`（`data/recovery-origins.json`）持久化追踪 `failed/`、`partial/` 及单文件恢复工作区到监控源文件的血缘，并在回收站移入/还原中完整透传；联网搜索、AI 辅助本地标签入库、隔离目录重新识别、缺封面补图/确认无封面、待确认页确认/未收录归档以及部分识别 LLM 匹配全部收敛为监控源单条 `SUCCESS` 记录，彻底解决「处理记录」中同时残留失败记录与归档记录的问题。
+- 🧹 **启动期历史分裂记录自动幂等对账**：新增 `RecoveryRecordReconciler`，启动时（文件监控扫描前）自动根据已确认恢复队列历史或整夹双向唯一 FLAC `STREAMINFO` MD5 精确匹配，将升级前已分裂的历史专辑记录原子合并为监控源单条 `SUCCESS` 记录，保留原归档时间，绝不改动或删除磁盘音频文件。
+- ♻️ **已恢复记录重新识别旧归档替换与失败保底**：重新识别成功且输出路径变更时自动替换并清理旧归档文件与空目录；重新识别失败时保留原音乐库文件不动，同时在「处理记录」重新识别弹窗中对联网搜索 / AI 辅助入库记录展示醒目确认提示。
+- 🛡️ **并发与崩溃恢复加固（零侵入升级）**：提交阶段支持逐曲回写清单崩溃重放、跨 SQLite / MySQL / 文件日志的单事务原子迁移，以及对侧同名隔离副本清理前的同源/音频指纹防误删校验，升级无需任何手动数据库迁移。
+
+### 1.6.0 主要特性
 
 - 🧭 **首次启动初始化引导与待命模式**：全新部署启动后默认进入待命模式，在完成配置前不会提前扫描下载目录；Web 面板提供 5 步向导（账号与语言 → 目录与代理 → AcoustID / MusicBrainz → AI 与联网搜索（可选） → 整理偏好与启动确认），内置实时连通性自检，提交后在进程内直接激活服务，无需重启容器。
 - 🌍 **MusicBrainz 发行地区优先级全链路生效与东亚艺人原生名归一**：`release.countryPriority` 统一覆盖全部 6 条选版与时长匹配路径（`曲目/时长匹配 > 地区优先级 > 介质格式 > 更早发行日`）。新增 `tag.artist.preferNativeName=true`（支持热更新），当 MusicBrainz 将东亚艺人署名写作纯罗马音（如 `Yuki Kajiura`）时自动归一为原生文字（`梶浦由記`），同时保留官方拉丁艺名（`YOASOBI`、`LiSA`、`Aimer`）、欧美艺人、连接词与 MBID 对齐。
@@ -150,7 +157,7 @@
 mvn clean package
 
 # 2. 运行
-java -jar target/MusicDemo-1.6.0.jar
+java -jar target/MusicDemo-1.6.1.jar
 
 # 3. 访问 Web 面板
 # 浏览器打开 http://localhost:8080

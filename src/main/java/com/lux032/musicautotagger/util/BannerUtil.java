@@ -21,7 +21,7 @@ public class BannerUtil {
             "\n" +
             " ════════════════════════════════════════════════════════════════════════════\n" +
             "  Music Auto Tagger - Automatic Music Metadata Recognition System\n" +
-            "  Version: 1.6.0 | Powered by AcoustID & MusicBrainz\n" +
+            "  Version: 1.6.1 | Powered by AcoustID & MusicBrainz\n" +
             " ════════════════════════════════════════════════════════════════════════════\n";
 
         System.out.println(banner);
