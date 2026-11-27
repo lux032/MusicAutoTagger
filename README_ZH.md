@@ -9,7 +9,7 @@
 [![MusicBrainz](https://img.shields.io/badge/Data-MusicBrainz-purple.svg)](https://musicbrainz.org/)
 [![LrcLib](https://img.shields.io/badge/Lyrics-LrcLib-green.svg)](https://lrclib.net/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.4.0-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
+[![Version](https://img.shields.io/badge/Version-1.6.0-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
 
 [简体中文](README_ZH.md) | [English](README.md)
 
@@ -25,25 +25,22 @@
 
 内置实时监控面板提供：
 - 📊 实时统计信息和处理进度
+- 🧭 首次启动 5 步初始化引导（待命模式 + 免重启进程内激活）
 - 📝 最近处理的文件及详细元数据
 - 📋 实时系统日志，支持自动滚动
 - ⚙️ 系统配置和状态概览
-- ✅ 「待确认」与「重新识别」页面，与仪表盘共用一套设计系统
-- 🗂️ 「处理记录」页面：搜索筛选历史记录，按单曲或整张专辑重新识别 / 删除记录，导出 CSV
+- ✅ 「待确认」「缺少封面」与「重新识别」页面，与仪表盘共用一套设计系统
+- 🗂️ 「处理记录」页面：支持文件夹 / 文件双视图切换，搜索筛选历史记录，按单曲或整张专辑重新识别 / 删除记录，流式导出 CSV
 
-## 🆕 1.4.0 新增内容
+## 🆕 1.6.0 新增内容
 
-- 🖥️ **前端界面重做**：仪表盘 / 待确认 / 重新识别 三个页面共用统一设计系统 —— 仪表盘左右分栏布局、「最近整理的专辑」封面墙、统一的弹层与 Toast、窄屏折叠导航，中英文文案已全部补齐。
-- ✅ **人工待确认队列**（`review.enabled`）：当单曲能识别但无法确定专辑时，整个文件夹进待确认队列而不是“猜一个”直接归档。原文件保持原标签、原文件名、原位置，由你选择确认发行版、标记为“MusicBrainz 中没有”或驳回。
-- 🛠️ **重新识别与恢复**：为 `partial_files` / `failed_files` 隔离目录提供人工重试入口。重试在独立工作区原子提交（失败回滚、支持跨文件系统移动），并新增带保留天数的**回收站**，隔离副本可随时还原。
-- 🌐 **联网辅助识别**：面向难例的可选联网搜索，支持两种实现 —— 模型原生 Web Search 或 **Tavily**（`llm.webSearch.provider`）。候选需满足「1 个 HIGH 或 2 个独立 MEDIUM 来源」，且**只产出候选**，必须经待确认页人工确认后才会归档。
-- 🤖 **LLM 配置模型重构**：以「供应商」为一等公民（名称 / URL / Key / 显式选择 OpenAI 或 Claude 协议 / 多个模型），存于 `data/llm-providers.json`。支持**一键拉取模型**填充下拉框，同时充当连通性自检；首次启动自动从旧的逗号列表配置迁移。服务端默认只放行公网 HTTPS 以防 SSRF，自建 Ollama 等场景需显式开启 `llm.allowPrivateEndpoints`。
-- 🧠 **LLM 专辑判定**：对模棱两可的专辑匹配可选由 LLM 仲裁，并可设置自动应用的置信度阀值。
-- 🎨 **优先刮刷动画版封面**（`cover.preferAnimeEdition`）：日系 OP/ED 单曲常同时存在アニメ盤与通常盤，开启后会列出同一 Release Group 下的全部发行版并按关键词打分选出动画版，找不到时回退默认封面。
-- 🏷️ **写入专辑类型标签**：支持写入 EP / Single / Album 等发行类型与 MusicBrainz ID，以适配 Plex 等播放器的区分逻辑。
-- 🕘 **历史封面回填**：设置 → 高级 → 维护工具中手动触发，按专辑（而非按文件）请求 MusicBrainz 补全已处理记录的 `release_group_id` 并预热封面缓存。可中断、可重跑、不改音频文件，且只接受 score ≥ 80 且标题完全相等的匹配。
-- ⚡ **匹配与性能修复**：重排缓存优先级（人工确认 > 时长序列 > 快速扫描 > 投票），修复多碟专辑曲目数误算、按 Release Group 比较得分差距、标签扫描结果缓存，并从 artist-credit 解析专辑艺术家（不再把单一艺术家专辑归入 `Various Artists`）。
-- 🔒 **安全加固**：`audio.normalize.ffmpegPath` 改为只读（避免任意命令执行），`GET /api/config` 对密钥做掩码返回，写接口校验 CSRF，文件名补齐长度、Windows 保留设备名与路径穿越清洗。
+- 🧭 **首次启动初始化引导与待命模式**：全新部署启动后默认进入待命模式，在完成配置前不会提前扫描下载目录；Web 面板提供 5 步向导（账号与语言 → 目录与代理 → AcoustID / MusicBrainz → AI 与联网搜索（可选） → 整理偏好与启动确认），内置实时连通性自检，提交后在进程内直接激活服务，无需重启容器。
+- 🌍 **MusicBrainz 发行地区优先级全链路生效与东亚艺人原生名归一**：`release.countryPriority` 统一覆盖全部 6 条选版与时长匹配路径（`曲目/时长匹配 > 地区优先级 > 介质格式 > 更早发行日`）。新增 `tag.artist.preferNativeName=true`（支持热更新），当 MusicBrainz 将东亚艺人署名写作纯罗马音（如 `Yuki Kajiura`）时自动归一为原生文字（`梶浦由記`），同时保留官方拉丁艺名（`YOASOBI`、`LiSA`、`Aimer`）、欧美艺人、连接词与 MBID 对齐。
+- 🖼️ **缺少封面审核工作流**（`covers.html`）：缺封面专辑不再直接裸奔入库，而是转入独立的「缺少封面」队列（`cover.missing.requireReview=true`，独立于 `review.enabled`），支持后台 iTunes + AI 联网搜图、手动上传、原图灯箱预览、统一封面压缩与按需扫描存量音乐库补图。
+- ✅ **待确认页三段式重构、结构化原因诊断与 AI 本地归档**：待确认页升级为「建议 → 选择核对 → 决策」三段式交互，内置逐曲时长对照、结构化原因卡片（`ReviewDiagnosis`）、队列搜索/按原因筛选与直达链接，并新增针对 MusicBrainz 未收录专辑的 AI 辅助本地标签归档。
+- 🎼 **联网归档幕后人员提取/编辑与结构化多艺人标签**：联网识别支持提取曲目级作曲/作词/编曲并按 `release.countryPriority` 本地化命名，确认弹窗支持查看来源徽章并手动编辑/清空（优先级：`手动 > MusicBrainz > 本地 > 联网`）。FLAC/Vorbis、ID3v2.3/v2.4、MP4 全面写入结构化多值 `ARTISTS` / `ALBUM_ARTISTS` / `COMPOSERS` / `LYRICISTS` / `ARRANGERS` 及索引对齐的创作者 MBID；`tag.albumArtist.collapseToVariousArtists` 默认值改为 `false`，并配套提供存量 `Various Artists` 专辑批量刷新与归位维护工具。
+- 🔎 **统一联网搜索队列与处理记录文件夹视图**：待确认、缺少封面与恢复页共用统一后台联网搜索队列（`llm.webSearch.maxConcurrency`，默认 `1`）及实时进度卡片；处理记录页新增可切换的文件夹视图与内联展开，改用 `folder_path` 索引 SQL 分页与流式 CSV 导出。
+- 🔒 **安全、稳定性与运维部署全面加固**：完成 P0–P2 全量审计修复，涵盖出站 SSRF 防护与 DNS 固定（`OutboundUrlValidator`）、FFmpeg 安全调用、全局常量时间 CSRF 与登录限流、恢复工作区崩溃回滚、多碟/匹配/歌词回填修复、可配置 `web.port` / `WEB_PORT`、`gosu` 安全降权、`$BUILDPLATFORM` 多架构快速构建以及 CI 强制测试门禁（`mvn -B clean test`）。
 
 从旧版本升级前，请先阅读 [UPGRADE_NOTES.md](UPGRADE_NOTES.md)。
 
@@ -126,7 +123,7 @@
 
     启动后，在浏览器中访问 `http://localhost:8080` 即可查看实时监控面板。
     面板使用本地管理员账号，存放在 `data/admin.json`。
-    第一次访问会提示创建管理员账号。
+    首次访问会进入 5 步初始化引导（创建管理员账号、语言、目录、代理、AcoustID / MusicBrainz、可选 AI 与联网搜索），期间处于待命模式不会提前扫描下载目录，完成后在进程内直接启动服务。
     如果 `config.properties` 不存在，程序启动时会自动生成默认配置。
 
     面板功能包括：
@@ -134,8 +131,8 @@
     - 📝 **最近整理的专辑**：按专辑聚合展示最近成功归档的封面墙
     - 📋 **运行日志**：实时查看系统运行日志，支持自动滚动
     - ⚙️ **设置与系统信息**：在面板内完成全部配置（API Key / 数据库 / 代理 / LLM 供应商 / 联网搜索 / 恢复等）
-    - ✅ **待确认 / 重新识别**：人工确认专辑、重试隔离文件、管理回收站
-    - 🗂️ **处理记录**：搜索 / 筛选已处理文件，单条或整张专辑批量「重新识别」或删除记录，导出 CSV
+    - ✅ **待确认 / 缺少封面 / 重新识别**：人工确认专辑、补全缺失封面、重试隔离文件、管理回收站
+    - 🗂️ **处理记录**：支持文件夹 / 文件双视图，搜索 / 筛选已处理文件，单条或整张专辑批量「重新识别」或删除记录，流式导出 CSV
 
 ## 💻 本地运行
 
@@ -153,7 +150,7 @@
 mvn clean package
 
 # 2. 运行
-java -jar target/MusicDemo-1.4.0.jar
+java -jar target/MusicDemo-1.6.0.jar
 
 # 3. 访问 Web 面板
 # 浏览器打开 http://localhost:8080

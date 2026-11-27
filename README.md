@@ -9,7 +9,7 @@
 [![MusicBrainz](https://img.shields.io/badge/Data-MusicBrainz-purple.svg)](https://musicbrainz.org/)
 [![LrcLib](https://img.shields.io/badge/Lyrics-LrcLib-green.svg)](https://lrclib.net/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.4.0-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
+[![Version](https://img.shields.io/badge/Version-1.6.0-brightgreen.svg)](https://github.com/lux032/MusicAutoTagger/releases)
 
 [English](README.md) | [简体中文](README_ZH.md)
 
@@ -25,25 +25,22 @@
 
 The built-in real-time monitoring dashboard provides:
 - 📊 Real-time statistics and processing progress
+- 🧭 First-run setup wizard with standby mode and in-process activation
 - 📝 Recently processed files with detailed metadata
 - 📋 Live system logs with auto-scroll
 - ⚙️ System configuration and status overview
-- ✅ Pending review queue and manual re-identification pages, sharing one design system
-- 🗂️ Processed records page: search/filter history, re-identify or forget single files or whole albums, export CSV
+- ✅ Pending review queue, missing-cover review, and manual re-identification pages, sharing one design system
+- 🗂️ Processed records page: switchable folder/file views, search/filter history, re-identify or forget single files or whole albums, export CSV
 
-## 🆕 What's New in 1.4.0
+## 🆕 What's New in 1.6.0
 
-- 🖥️ **Redesigned Web UI**: A shared design system across the dashboard, review, and recovery pages — two-column dashboard layout, cover-art wall for recent albums, unified dialogs/toasts, collapsible navigation on narrow screens, and a fully localized (CN/EN) interface.
-- ✅ **Manual Review Queue** (`review.enabled`): When tracks are recognized but the album cannot be determined, the folder is queued instead of being archived by guesswork. Original files keep their tags, names, and locations until you confirm a release, archive it as “not in MusicBrainz”, or reject it.
-- 🛠️ **Re-identification & Recovery**: A dedicated page for the `partial_files` / `failed_files` quarantine folders. Retry jobs run in an atomic workspace (rollback on failure, cross-filesystem safe), and a **recycle bin** with a retention policy keeps the quarantined copies restorable.
-- 🌐 **Online-assisted Identification**: Optional web search to build album candidates for hard cases, with two backends — native model web search or **Tavily** (`llm.webSearch.provider`). Candidates require at least one HIGH or two independent MEDIUM sources, and they always end up in the review queue for human confirmation, never auto-archived.
-- 🤖 **New LLM Configuration Model**: Providers are first-class (name / URL / key / explicit OpenAI or Claude protocol / multiple models), stored in `data/llm-providers.json`. **Pull models** from a provider to fill a dropdown and self-test connectivity in one click. Old comma-separated settings are migrated automatically on first start. Server-side SSRF guards only allow public HTTPS endpoints unless `llm.allowPrivateEndpoints` is enabled.
-- 🧠 **LLM Album Judging**: Optional LLM arbitration for ambiguous album matches, with an auto-apply confidence threshold.
-- 🎨 **Anime-edition Cover Preference** (`cover.preferAnimeEdition`): For Japanese OP/ED singles that ship both an anime jacket and a regular artist jacket, candidate releases are scored by keyword so the anime cover wins, with fallback to the default cover.
-- 🏷️ **Release-type Tags for Plex**: Writes EP / Single / Album release types and MusicBrainz IDs so Plex and similar players can distinguish them properly.
-- 🕘 **Historical Cover Backfill**: A maintenance tool (Settings → Advanced) that backfills `release_group_id` for already-processed records album-by-album and warms the cover cache. Resumable, never touches audio files, and only accepts exact title matches with score ≥ 80.
-- ⚡ **Matching & Performance Fixes**: Cache priority reordered (manual > duration sequence > quick scan > voting), multi-disc track counting fixed, release-group–level margin comparison, cached tag scanning, and album-artist resolution from artist credits (no more single-artist albums landing in `Various Artists`).
-- 🔒 **Security Hardening**: `audio.normalize.ffmpegPath` is read-only via the API (command-execution vector), secrets are returned masked from `GET /api/config`, write APIs validate CSRF, and filenames are sanitized for length, reserved device names, and traversal-unsafe components.
+- 🧭 **First-Run Setup Wizard & Standby Mode**: Fresh deployments start in standby mode so file monitoring does not scan download folders before configuration is ready. A guided 5-step wizard (Account & language → Directories & proxy → AcoustID / MusicBrainz → Optional AI & web search → Organization preferences) provides live connectivity checks and activates all services in-process with no restart needed.
+- 🌍 **MusicBrainz Country Priority & Native East Asian Artist Naming**: `release.countryPriority` is now enforced uniformly across all 6 MusicBrainz release-selection and duration-matching paths (`track/duration match > countryPriority > media format > earlier date`). New `tag.artist.preferNativeName=true` resolves romanized East Asian artist credits (e.g. `Yuki Kajiura`) to native entity names (`梶浦由記`) while preserving official Latin stage names (`YOASOBI`, `LiSA`, `Aimer`), Western artists, join phrases, and MBID alignment.
+- 🖼️ **Missing-Cover Review Workflow** (`covers.html`): Releases lacking cover art are held in a dedicated **Missing Covers** queue (`cover.missing.requireReview=true`, independent of `review.enabled`) with background iTunes + AI web search, manual upload, full-resolution lightbox preview, unified image compression, and an on-demand library scan to backfill missing covers in place.
+- ✅ **Pending Review Redesign, Structured Diagnosis & AI Local Archiving**: Three-stage review layout (*Suggestion → Compare & Select → Decide*) with track-by-track duration comparison, structured diagnosis cards (`ReviewDiagnosis`), searchable/filterable queue with deep links, and AI-assisted local album archiving for releases absent from MusicBrainz.
+- 🎼 **Online Archive Credits & Structured Multi-Artist Tags**: Online identification extracts track-level composers, lyricists, and arrangers aligned with `release.countryPriority` and provides an editable credits preview in the Online Confirm modal (`Manual > MusicBrainz > Local > Online`). All containers (FLAC/Vorbis, ID3v2.3/v2.4, MP4) now write structured multi-value `ARTISTS` / `ALBUM_ARTISTS` / `COMPOSERS` / `LYRICISTS` / `ARRANGERS` with index-aligned creator MBIDs. `tag.albumArtist.collapseToVariousArtists` now defaults to `false`, paired with a maintenance tool to bulk-refresh and relocate legacy `Various Artists` albums.
+- 🔎 **Unified LLM Web Search Queue & Records Folder View**: Pending Review, Missing Covers, and Recovery share a unified background search queue (`llm.webSearch.maxConcurrency`, default `1`) with live progress cards. Processed Records adds a switchable **Folder View** with inline album expansion, indexed SQL pagination, and streaming CSV export.
+- 🔒 **Security, Reliability & Deployment Hardening**: Comprehensive P0–P2 audit fixes including SSRF protection with DNS pinning (`OutboundUrlValidator`), hardened FFmpeg execution, centralized constant-time CSRF & login rate-limiting, crash-safe recovery rollback, multi-disc/matching/lyrics-backfill fixes, configurable `web.port` / `WEB_PORT`, `gosu`-based privilege drop, faster `$BUILDPLATFORM` multi-arch Docker builds, and mandatory CI test gating (`mvn -B clean test`).
 
 Upgrading from an earlier version? Read [UPGRADE_NOTES.md](UPGRADE_NOTES.md) first.
 
@@ -124,7 +121,7 @@ The easiest way to run the application. Configuration is done in the web UI afte
 3.  **Access Web Monitoring Dashboard**
 
     Open `http://localhost:8080` in your browser.
-    - First visit will prompt you to create an admin account (stored in `data/admin.json`).
+    - First visit launches the 5-step setup wizard in standby mode (admin account, language, paths, proxy, AcoustID/MusicBrainz, optional AI/web search) and activates monitoring in-process once completed.
     - If `config.properties` is missing, the app auto-generates it on startup.
     - All settings (API keys, database, proxy, paths, language) are managed in the web UI.
 
@@ -144,7 +141,7 @@ If you prefer to run it locally for development or testing:
 mvn clean package
 
 # 2. Run
-java -jar target/MusicDemo-1.4.0.jar
+java -jar target/MusicDemo-1.6.0.jar
 
 # 3. Access Web Dashboard
 # Open http://localhost:8080 in your browser

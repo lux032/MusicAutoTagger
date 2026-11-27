@@ -86,6 +86,11 @@ file.autoRename=true
 # true：写为 "Various Artists"；false：保留 MusicBrainz 原始署名。
 tag.albumArtist.collapseToVariousArtists=false
 
+# 当 MusicBrainz 将东亚艺人署名写作纯拉丁/罗马音（如 "Yuki Kajiura"）而对应艺人实体为东亚原生文字（如 "梶浦由記"）时，
+# 是否优先使用原生文字名写入 ARTIST / ALBUM_ARTIST。
+# 官方拉丁艺名（如 YOASOBI、LiSA、Aimer）、欧美艺人及非拉丁角色名署名不受影响。
+tag.artist.preferNativeName=true
+
 # 是否创建备份文件（已废弃，现在使用复制模式）
 # 程序会将处理后的文件复制到输出目录，原文件保持不变
 file.createBackup=false
