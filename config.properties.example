@@ -85,6 +85,12 @@ file.autoRename=true
 # true: write "Various Artists"; false: preserve the MusicBrainz credited names.
 tag.albumArtist.collapseToVariousArtists=false
 
+# Prefer native East Asian artist entity names when MusicBrainz credits an East Asian
+# artist purely in Latin/Romanized script (e.g. "Yuki Kajiura" -> "梶浦由記").
+# Official Latin stage names (e.g. YOASOBI, LiSA, Aimer), Western artists, and non-Latin
+# character credits are preserved unchanged.
+tag.artist.preferNativeName=true
+
 # Create backup files (deprecated, now using copy mode)
 # The program will copy processed files to output directory, keeping originals unchanged
 file.createBackup=false

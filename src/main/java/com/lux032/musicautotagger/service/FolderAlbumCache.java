@@ -1136,11 +1136,13 @@ public class FolderAlbumCache {
                                 releaseResult.getReleaseType(),
                                 releaseResult.isCompilation());
                         candidateInfo.setReleaseTrackCount(releaseResult.getTrackCount());
+                        candidateInfo.setReleaseCountry(releaseResult.getReleaseCountry());
+                        candidateInfo.setReleaseDate(releaseResult.getReleaseDate());
                         candidates.add(candidateInfo);
 
-                        log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 格式: {})",
+                        log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 地区: {}, 格式: {})",
                             candidateArtist, releaseTitle, releaseResult.getDurations().size(),
-                            releaseResult.getReleaseId(), releaseResult.getMediaFormat());
+                            releaseResult.getReleaseId(), releaseResult.getReleaseCountry(), releaseResult.getMediaFormat());
                     }
                 } catch (Exception e) {
                     log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());
@@ -1332,11 +1334,13 @@ public class FolderAlbumCache {
                                 releaseResult.getReleaseType(),
                                 releaseResult.isCompilation());
                         candidateInfo.setReleaseTrackCount(releaseResult.getTrackCount());
+                        candidateInfo.setReleaseCountry(releaseResult.getReleaseCountry());
+                        candidateInfo.setReleaseDate(releaseResult.getReleaseDate());
                         candidates.add(candidateInfo);
                         
-                        log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 格式: {})",
+                        log.info("候选版本: {} - {} ({}首曲目, Release ID: {}, 地区: {}, 格式: {})",
                             normalizedArtist, releaseTitle, releaseResult.getDurations().size(),
-                            releaseResult.getReleaseId(), releaseResult.getMediaFormat());
+                            releaseResult.getReleaseId(), releaseResult.getReleaseCountry(), releaseResult.getMediaFormat());
                     }
                 } catch (Exception e) {
                     log.warn("获取专辑{}的时长序列失败: {}", releaseGroupId, e.getMessage());

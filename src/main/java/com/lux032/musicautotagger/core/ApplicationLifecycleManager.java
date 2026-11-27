@@ -132,8 +132,8 @@ public class ApplicationLifecycleManager {
         lyricsBackfillService = new LyricsBackfillService(config, lyricsService, tagWriter);
         albumArtistRefreshService = new AlbumArtistRefreshService(config, musicBrainzClient, tagWriter, processedLogger);
         
-        // 初始化时长序列匹配服务
-        durationSequenceService = new DurationSequenceService();
+        // 初始化时长序列匹配服务（注入配置以读取 release.countryPriority）
+        durationSequenceService = new DurationSequenceService(config);
         
         // 初始化文件夹专辑缓存（注入依赖服务）
         folderAlbumCache = new FolderAlbumCache(

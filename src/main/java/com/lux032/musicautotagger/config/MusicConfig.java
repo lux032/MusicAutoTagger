@@ -87,6 +87,7 @@ public class MusicConfig {
     // 歌词配置
     private boolean exportLyricsToFile; // 是否将歌词导出为独立文件
     private volatile boolean collapseAlbumArtistToVariousArtists = false; // 多艺术家专辑是否折叠为 VA
+    private volatile boolean preferNativeArtistName = true; // 东亚艺人纯罗马音署名是否优先使用原生文字名
 
     // 音频规格规范化配置
     private boolean audioNormalizeEnabled; // 是否将高规格音频转换为24/48
@@ -97,7 +98,7 @@ public class MusicConfig {
     private String cueSplitOutputDir; // cue 分割输出目录
 
     // 发行地区优先级配置
-    private List<String> releaseCountryPriority; // 发行地区优先级列表
+    private volatile List<String> releaseCountryPriority = List.of(); // 发行地区优先级列表（不可变副本，支持安全热更新）
 
     // 人工确认队列配置（阶段六）
     /**
@@ -222,6 +223,7 @@ public class MusicConfig {
         this.autoRename = true;
         this.createBackup = true;
         this.collapseAlbumArtistToVariousArtists = false;
+        this.preferNativeArtistName = true;
         this.failedDirectory = null; // 默认不移动失败文件
         this.partialDirectory = null; // 默认不移动部分识别文件
         this.maxRetries = 3; // 默认重试3次
@@ -260,7 +262,7 @@ public class MusicConfig {
         this.cueSplitOutputDir = null;
 
         // 发行地区优先级默认配置（空列表表示不按地区筛选）
-        this.releaseCountryPriority = new ArrayList<>();
+        this.releaseCountryPriority = List.of();
 
         // 人工确认队列默认配置
         this.reviewEnabled = false;
@@ -343,6 +345,21 @@ public class MusicConfig {
         ));
     }
 
+    /** 线程安全发布不可变地区优先级副本，避免并发读取与热更新出现竞态或脏写。 */
+    public void setReleaseCountryPriority(List<String> releaseCountryPriority) {
+        if (releaseCountryPriority == null || releaseCountryPriority.isEmpty()) {
+            this.releaseCountryPriority = List.of();
+            return;
+        }
+        List<String> cleaned = new ArrayList<>(releaseCountryPriority.size());
+        for (String code : releaseCountryPriority) {
+            if (code != null && !code.isBlank()) {
+                cleaned.add(code.trim());
+            }
+        }
+        this.releaseCountryPriority = List.copyOf(cleaned);
+    }
+
     /**
      * 获取配置单例
      */
@@ -414,6 +431,12 @@ public class MusicConfig {
             if (props.containsKey("tag.albumArtist.collapseToVariousArtists")) {
                 this.collapseAlbumArtistToVariousArtists = Boolean.parseBoolean(
                     props.getProperty("tag.albumArtist.collapseToVariousArtists"));
+            }
+            if (props.containsKey("tag.artist.preferNativeName")) {
+                this.preferNativeArtistName = Boolean.parseBoolean(
+                    props.getProperty("tag.artist.preferNativeName"));
+            } else {
+                this.preferNativeArtistName = true;
             }
             if (props.containsKey("file.supportedFormats")) {
                 String formats = props.getProperty("file.supportedFormats", "").trim();
@@ -571,12 +594,13 @@ public class MusicConfig {
             if (props.containsKey("release.countryPriority")) {
                 String countryPriorityStr = props.getProperty("release.countryPriority", "").trim();
                 if (!countryPriorityStr.isEmpty()) {
-                    this.releaseCountryPriority = Arrays.asList(countryPriorityStr.split(","))
-                        .stream()
+                    setReleaseCountryPriority(Arrays.stream(countryPriorityStr.split(","))
                         .map(String::trim)
                         .filter(s -> !s.isEmpty())
-                        .collect(java.util.stream.Collectors.toList());
+                        .collect(java.util.stream.Collectors.toList()));
                     System.out.println("Release country priority configured: " + this.releaseCountryPriority);
+                } else {
+                    setReleaseCountryPriority(List.of());
                 }
             }
 
@@ -919,6 +943,8 @@ public class MusicConfig {
         props.setProperty("file.createBackup", String.valueOf(createBackup));
         props.setProperty("tag.albumArtist.collapseToVariousArtists",
             String.valueOf(collapseAlbumArtistToVariousArtists));
+        props.setProperty("tag.artist.preferNativeName",
+            String.valueOf(preferNativeArtistName));
         if (supportedFormats != null && supportedFormats.length > 0) {
             props.setProperty("file.supportedFormats", String.join(",", supportedFormats));
         }

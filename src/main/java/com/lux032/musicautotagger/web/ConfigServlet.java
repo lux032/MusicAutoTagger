@@ -103,6 +103,7 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("autoRename", "file.autoRename"),
             Map.entry("createBackup", "file.createBackup"),
             Map.entry("collapseAlbumArtistToVariousArtists", "tag.albumArtist.collapseToVariousArtists"),
+            Map.entry("preferNativeArtistName", "tag.artist.preferNativeName"),
             Map.entry("failedDirectory", "file.failedDirectory"),
             Map.entry("partialDirectory", "file.partialDirectory"),
             Map.entry("maxRetries", "file.maxRetries"),
@@ -273,6 +274,7 @@ public class ConfigServlet extends HttpServlet {
         handleBoolean(safeBody, updates, propertyUpdates, "autoRename");
         handleBoolean(safeBody, updates, propertyUpdates, "createBackup");
         handleBoolean(safeBody, updates, propertyUpdates, "collapseAlbumArtistToVariousArtists");
+        handleBoolean(safeBody, updates, propertyUpdates, "preferNativeArtistName");
         handleString(safeBody, updates, propertyUpdates, "failedDirectory", false);
         handleString(safeBody, updates, propertyUpdates, "partialDirectory", false);
         handleInteger(safeBody, updates, propertyUpdates, "maxRetries");
@@ -380,6 +382,7 @@ public class ConfigServlet extends HttpServlet {
         data.put("autoRename", config.isAutoRename());
         data.put("createBackup", config.isCreateBackup());
         data.put("collapseAlbumArtistToVariousArtists", config.isCollapseAlbumArtistToVariousArtists());
+        data.put("preferNativeArtistName", config.isPreferNativeArtistName());
         data.put("failedDirectory", config.getFailedDirectory());
         data.put("partialDirectory", config.getPartialDirectory());
         data.put("maxRetries", config.getMaxRetries());
@@ -640,6 +643,9 @@ public class ConfigServlet extends HttpServlet {
         if (updates.containsKey("collapseAlbumArtistToVariousArtists")) {
             config.setCollapseAlbumArtistToVariousArtists(
                 (Boolean) updates.get("collapseAlbumArtistToVariousArtists"));
+        }
+        if (updates.containsKey("preferNativeArtistName")) {
+            config.setPreferNativeArtistName((Boolean) updates.get("preferNativeArtistName"));
         }
         if (updates.containsKey("failedDirectory")) {
             config.setFailedDirectory((String) updates.get("failedDirectory"));

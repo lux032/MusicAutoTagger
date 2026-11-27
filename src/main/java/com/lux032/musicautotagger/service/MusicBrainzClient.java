@@ -204,21 +204,49 @@ public class MusicBrainzClient {
      * @param releaseGroupId Release Group ID
      * @return 包含时长列表和选中的 Release ID 的结果对象
      */
+    /** 单次查询期间使用的不可变配置快照，避免并发热更新导致缓存键与选版/署名不一致。 */
+    private record EffectiveLookupConfig(
+            List<String> countryPriority,
+            boolean preferNativeArtistName,
+            boolean collapseToVariousArtists) {
+        String cacheKeyFor(String releaseGroupId) {
+            String countryKey = MusicBrainzReleasePriority.normalizeCountryPriorityKey(countryPriority);
+            return releaseGroupId + "|cp=" + countryKey
+                + "|nat=" + preferNativeArtistName
+                + "|va=" + collapseToVariousArtists;
+        }
+    }
+
+    private List<String> releaseCountryPriority() {
+        List<String> priority = config != null ? config.getReleaseCountryPriority() : null;
+        return priority == null || priority.isEmpty() ? List.of() : List.copyOf(priority);
+    }
+
+    private EffectiveLookupConfig snapshotLookupConfig() {
+        return new EffectiveLookupConfig(
+            releaseCountryPriority(),
+            isPreferNativeArtistName(),
+            albumArtistPolicy.shouldCollapse());
+    }
+
     public AlbumDurationResult getAlbumDurationSequence(String releaseGroupId) throws IOException, InterruptedException {
-        TimedValue<AlbumDurationResult> cached = releaseGroupId == null ? null : albumDurationCache.get(releaseGroupId);
+        EffectiveLookupConfig snap = snapshotLookupConfig();
+        String cacheKey = releaseGroupId == null ? null : snap.cacheKeyFor(releaseGroupId);
+        TimedValue<AlbumDurationResult> cached = cacheKey == null ? null : albumDurationCache.get(cacheKey);
         if (cached != null && cached.fresh()) {
             log.debug("使用缓存的专辑时长序列: {}", releaseGroupId);
             return cached.value;
         }
-        AlbumDurationResult result = fetchAlbumDurationSequence(releaseGroupId);
-        if (releaseGroupId != null && result != null && result.getDurations() != null
+        AlbumDurationResult result = fetchAlbumDurationSequence(releaseGroupId, snap);
+        if (cacheKey != null && result != null && result.getDurations() != null
             && !result.getDurations().isEmpty()) {
-            albumDurationCache.put(releaseGroupId, new TimedValue<>(result));
+            albumDurationCache.put(cacheKey, new TimedValue<>(result));
         }
         return result;
     }
 
-    private AlbumDurationResult fetchAlbumDurationSequence(String releaseGroupId) throws IOException, InterruptedException {
+    private AlbumDurationResult fetchAlbumDurationSequence(String releaseGroupId, EffectiveLookupConfig snap)
+            throws IOException, InterruptedException {
         rateLimit();
         
         // 查询 release-group 获取所有 releases
@@ -228,6 +256,8 @@ public class MusicBrainzClient {
         try {
             String response = executeRequest(url);
             JsonNode root = objectMapper.readTree(response);
+            String releaseType = normalizeReleaseType(root.path("primary-type").asText(""));
+            boolean compilation = hasCompilationSecondaryType(root);
             
             // 获取所有 releases
             JsonNode releases = root.path("releases");
@@ -239,28 +269,37 @@ public class MusicBrainzClient {
             log.info("Release Group {} 共有 {} 个releases，开始查找有时长数据的版本",
                 releaseGroupId, releases.size());
             
-            // 按优先级排序所有 releases
-            List<JsonNode> sortedReleases = new ArrayList<>();
+            // 排除纯视频格式；构造探查序列（前 3 个优先地区版本 + 前 3 个基线格式版本，去重），
+            // 确保即便优先地区前 3 个版本均缺时长，也能安全回退到有完整时长的基线版本。
+            List<JsonNode> audioReleases = new ArrayList<>();
             for (JsonNode release : releases) {
-                sortedReleases.add(release);
+                if (scoreReleaseForDuration(release) >= 0) {
+                    audioReleases.add(release);
+                }
             }
-            sortedReleases.sort((r1, r2) -> {
-                int score1 = scoreReleaseForDuration(r1);
-                int score2 = scoreReleaseForDuration(r2);
-                return Integer.compare(score2, score1); // 降序
-            });
+            List<JsonNode> probeReleases = buildSingleProbeOrder(audioReleases, snap.countryPriority());
             
-            // 尝试前3个最佳 release（或更少如果总数不足3个）
-            int tryCount = Math.min(3, sortedReleases.size());
-            for (int i = 0; i < tryCount; i++) {
-                JsonNode release = sortedReleases.get(i);
+            IOException lastFetchError = null;
+            for (int i = 0; i < probeReleases.size(); i++) {
+                JsonNode release = probeReleases.get(i);
                 String releaseId = release.path("id").asText();
                 String releaseTitle = release.path("title").asText();
+                String mediaFormat = extractMediaFormat(release);
+                String releaseCountry = blankToNull(release.path("country").asText(null));
+                String releaseDate = blankToNull(release.path("date").asText(null));
                 
-                log.debug("尝试第 {}/{} 个release: {} (ID: {})",
-                    i + 1, tryCount, releaseTitle, releaseId);
+                log.debug("尝试第 {}/{} 个release: {} (ID: {}, 地区: {}, 格式: {})",
+                    i + 1, probeReleases.size(), releaseTitle, releaseId, releaseCountry, mediaFormat);
                 
-                List<Integer> durations = getReleaseDurationSequence(releaseId);
+                List<Integer> durations;
+                try {
+                    durations = getReleaseDurationSequence(releaseId);
+                } catch (IOException e) {
+                    lastFetchError = e;
+                    log.warn("获取 Release {}({}) 时长失败，继续尝试下一个候选: {}",
+                        releaseTitle, releaseId, e.getMessage());
+                    continue;
+                }
                 
                 // 如果获取到有效的时长序列（至少有一些曲目），返回结果
                 if (!durations.isEmpty()) {
@@ -268,21 +307,65 @@ public class MusicBrainzClient {
                         releaseTitle, durations.size());
                     // 带上真实曲目数：部分曲目缺时长时，覆盖检查不能把缺的当成「版本里没有」
                     return new AlbumDurationResult(durations, releaseId, releaseTitle,
-                        Math.max(calculateTrackCount(release), durations.size()));
+                        Math.max(calculateTrackCount(release), durations.size()),
+                        mediaFormat, releaseType, compilation, null, releaseCountry, releaseDate);
                 } else {
                     log.debug("Release {} 没有时长数据，继续尝试下一个", releaseTitle);
                 }
             }
 
+            if (lastFetchError != null) {
+                throw lastFetchError;
+            }
+
             // 所有尝试都失败
             log.warn("Release Group {} 的前{}个release都没有时长数据",
-                releaseGroupId, tryCount);
+                releaseGroupId, probeReleases.size());
             return new AlbumDurationResult(new ArrayList<>(), null);
             
         } catch (ParseException e) {
             log.error("解析 Release Group 响应失败", e);
             return new AlbumDurationResult(new ArrayList<>(), null);
         }
+    }
+
+    private List<JsonNode> buildSingleProbeOrder(List<JsonNode> audioReleases, List<String> countryPriority) {
+        if (audioReleases.isEmpty()) {
+            return List.of();
+        }
+        List<JsonNode> baseline = new ArrayList<>(audioReleases);
+        baseline.sort((r1, r2) -> MusicBrainzReleasePriority.compareReleaseJson(r1, r2, List.of()));
+        if (countryPriority.isEmpty()) {
+            return baseline.subList(0, Math.min(3, baseline.size()));
+        }
+        List<JsonNode> preferred = new ArrayList<>();
+        for (JsonNode r : audioReleases) {
+            if (MusicBrainzReleasePriority.countryRank(r.path("country").asText(null), countryPriority) != Integer.MAX_VALUE) {
+                preferred.add(r);
+            }
+        }
+        preferred.sort((r1, r2) -> MusicBrainzReleasePriority.compareReleaseJson(r1, r2, countryPriority));
+
+        List<JsonNode> combined = new ArrayList<>();
+        Set<String> seenIds = new LinkedHashSet<>();
+        int prefLimit = Math.min(3, preferred.size());
+        for (int i = 0; i < prefLimit; i++) {
+            JsonNode r = preferred.get(i);
+            if (seenIds.add(r.path("id").asText(""))) {
+                combined.add(r);
+            }
+        }
+        int fallbackAdded = 0;
+        for (JsonNode r : baseline) {
+            if (fallbackAdded >= 3) {
+                break;
+            }
+            if (seenIds.add(r.path("id").asText(""))) {
+                combined.add(r);
+                fallbackAdded++;
+            }
+        }
+        return combined;
     }
     
     /**
@@ -293,20 +376,23 @@ public class MusicBrainzClient {
      * @return 包含所有 Release 时长序列的列表
      */
     public List<AlbumDurationResult> getAllReleaseDurationSequences(String releaseGroupId) throws IOException, InterruptedException {
+        EffectiveLookupConfig snap = snapshotLookupConfig();
+        String cacheKey = releaseGroupId == null ? null : snap.cacheKeyFor(releaseGroupId);
         TimedValue<List<AlbumDurationResult>> cached =
-            releaseGroupId == null ? null : allReleaseDurationCache.get(releaseGroupId);
+            cacheKey == null ? null : allReleaseDurationCache.get(cacheKey);
         if (cached != null && cached.fresh()) {
             log.debug("使用缓存的全部版本时长序列: {}", releaseGroupId);
             return new ArrayList<>(cached.value);
         }
-        List<AlbumDurationResult> result = fetchAllReleaseDurationSequences(releaseGroupId);
-        if (releaseGroupId != null && result != null && !result.isEmpty()) {
-            allReleaseDurationCache.put(releaseGroupId, new TimedValue<>(new ArrayList<>(result)));
+        List<AlbumDurationResult> result = fetchAllReleaseDurationSequences(releaseGroupId, snap);
+        if (cacheKey != null && result != null && !result.isEmpty()) {
+            allReleaseDurationCache.put(cacheKey, new TimedValue<>(new ArrayList<>(result)));
         }
         return result;
     }
 
-    private List<AlbumDurationResult> fetchAllReleaseDurationSequences(String releaseGroupId) throws IOException, InterruptedException {
+    private List<AlbumDurationResult> fetchAllReleaseDurationSequences(String releaseGroupId, EffectiveLookupConfig snap)
+            throws IOException, InterruptedException {
         rateLimit();
         
         List<AlbumDurationResult> results = new ArrayList<>();
@@ -322,8 +408,8 @@ public class MusicBrainzClient {
             JsonNode root = objectMapper.readTree(response);
             String releaseType = normalizeReleaseType(root.path("primary-type").asText(""));
             boolean compilation = hasCompilationSecondaryType(root);
-            // Release Group 层的艺术家，作为各 Release 缺失 artist-credit 时的兜底
-            String groupArtist = resolveAlbumArtistFromCredits(root.path("artist-credit"));
+            // Release Group 层的艺术家（使用本次查询的不可变配置快照）
+            String groupArtist = resolveAlbumArtistFromCredits(root.path("artist-credit"), snap);
             
             // 获取所有 releases
             JsonNode releases = root.path("releases");
@@ -335,64 +421,159 @@ public class MusicBrainzClient {
             log.info("Release Group {} 共有 {} 个 releases，获取所有有效版本的时长序列",
                 releaseGroupId, releases.size());
             
-            // 按优先级排序所有 releases（优先选择 CD 或 Digital 格式）
-            List<JsonNode> sortedReleases = new ArrayList<>();
+            List<JsonNode> audioReleases = new ArrayList<>();
             for (JsonNode release : releases) {
-                sortedReleases.add(release);
+                if (scoreReleaseForDuration(release) >= 0) {
+                    audioReleases.add(release);
+                }
             }
-            sortedReleases.sort((r1, r2) -> {
-                int score1 = scoreReleaseForDuration(r1);
-                int score2 = scoreReleaseForDuration(r2);
-                return Integer.compare(score2, score1); // 降序
-            });
-            
-            // 获取所有有时长数据的 release（最多尝试10个）
-            int tryCount = Math.min(10, sortedReleases.size());
-        int successCount = 0;
-        
-        for (int i = 0; i < tryCount && successCount < 5; i++) {
-            JsonNode release = sortedReleases.get(i);
-            String releaseId = release.path("id").asText();
-            String releaseTitle = release.path("title").asText();
-            int trackCount = calculateTrackCount(release);
-            
-            // 跳过视频格式
-            int score = scoreReleaseForDuration(release);
-            if (score < 0) {
-                continue;
+
+            List<JsonNode> baselineSorted = new ArrayList<>(audioReleases);
+            baselineSorted.sort((r1, r2) -> MusicBrainzReleasePriority.compareReleaseJson(r1, r2, List.of()));
+
+            if (snap.countryPriority().isEmpty()) {
+                int tryCount = Math.min(10, baselineSorted.size());
+                int successCount = 0;
+                for (int i = 0; i < tryCount && successCount < 5; i++) {
+                    AlbumDurationResult fetched = fetchSingleReleaseDurationResult(
+                        baselineSorted.get(i), releaseType, compilation, groupArtist, snap);
+                    if (fetched != null) {
+                        results.add(fetched);
+                        successCount++;
+                    }
+                }
+                log.info("共获取到 {} 个 release 的时长序列", results.size());
+                return results;
             }
-            
-            // 获取媒体格式
-            String mediaFormat = extractMediaFormat(release);
-            
-            // 该 Release 的专辑艺术家（多人/未知才是 Various Artists）
-            String releaseArtist = resolveAlbumArtistFromCredits(release.path("artist-credit"));
-            if (releaseArtist == null) {
-                releaseArtist = groupArtist;
+
+            // 配置了地区优先级时：同时保留「优先地区候选（优先覆盖不同曲目数，最多 3 个）」与
+            // 「与空地区配置等价的基线候选（最多 5 个）」，按 releaseId 去重且优先地区排在前面。
+            // 这样既保证 JP 等目标地区不被超过 5 个非目标地区 CD 截断，又保证绝不因地区配置
+            // 挤掉原本应参与跨专辑歧义/margin 判定的基线候选。
+            List<JsonNode> preferredSorted = new ArrayList<>();
+            for (JsonNode release : audioReleases) {
+                if (MusicBrainzReleasePriority.countryRank(
+                        release.path("country").asText(null), snap.countryPriority()) != Integer.MAX_VALUE) {
+                    preferredSorted.add(release);
+                }
             }
-            
-            log.debug("尝试获取 release {} 的时长序列 (ID: {}, 曲目数: {}, 格式: {})",
-                releaseTitle, releaseId, trackCount, mediaFormat);
-            
-            List<Integer> durations = getReleaseDurationSequence(releaseId);
-            
-            // 如果获取到有效的时长序列
-            if (!durations.isEmpty()) {
-                results.add(new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount, mediaFormat,
-                    releaseType, compilation, releaseArtist));
-                successCount++;
-                log.info("✓ 成功获取 release {} 的时长序列 ({} 首曲目, 格式: {})",
-                    releaseTitle, durations.size(), mediaFormat);
+            preferredSorted.sort((r1, r2) -> MusicBrainzReleasePriority.compareReleaseJson(r1, r2, snap.countryPriority()));
+            List<JsonNode> preferredDiversified = prioritizeDistinctTrackCounts(preferredSorted);
+
+            Map<String, AlbumDurationResult> fetchedById = new LinkedHashMap<>();
+            Set<String> attemptedIds = new LinkedHashSet<>();
+            IOException lastFetchError = null;
+
+            int prefSuccess = 0;
+            int prefAttempts = Math.min(6, preferredDiversified.size());
+            for (int i = 0; i < prefAttempts && prefSuccess < 3; i++) {
+                JsonNode release = preferredDiversified.get(i);
+                String releaseId = release.path("id").asText("");
+                if (releaseId.isEmpty() || !attemptedIds.add(releaseId)) {
+                    continue;
+                }
+                try {
+                    AlbumDurationResult fetched = fetchSingleReleaseDurationResult(
+                        release, releaseType, compilation, groupArtist, snap);
+                    if (fetched != null) {
+                        fetchedById.put(releaseId, fetched);
+                        prefSuccess++;
+                    }
+                } catch (IOException e) {
+                    lastFetchError = e;
+                    log.warn("拉取优先地区 Release {} 时长失败，继续回退到后续/基线候选: {}", releaseId, e.getMessage());
+                }
             }
-        }
-            
-            log.info("共获取到 {} 个 release 的时长序列", results.size());
+
+            int baselineSuccess = 0;
+            int baselineTryBudget = Math.min(10, baselineSorted.size());
+            for (int i = 0; i < baselineTryBudget && baselineSuccess < 5; i++) {
+                JsonNode release = baselineSorted.get(i);
+                String releaseId = release.path("id").asText("");
+                if (releaseId.isEmpty()) {
+                    continue;
+                }
+                if (fetchedById.containsKey(releaseId)) {
+                    baselineSuccess++;
+                    continue;
+                }
+                if (!attemptedIds.add(releaseId)) {
+                    continue;
+                }
+                try {
+                    AlbumDurationResult fetched = fetchSingleReleaseDurationResult(
+                        release, releaseType, compilation, groupArtist, snap);
+                    if (fetched != null) {
+                        fetchedById.put(releaseId, fetched);
+                        baselineSuccess++;
+                    }
+                } catch (IOException e) {
+                    lastFetchError = e;
+                    log.warn("拉取基线 Release {} 时长失败，继续尝试后续候选: {}", releaseId, e.getMessage());
+                }
+            }
+
+            if (fetchedById.isEmpty() && lastFetchError != null) {
+                throw lastFetchError;
+            }
+
+            results.addAll(fetchedById.values());
+            log.info("共获取到 {} 个 release 的时长序列（优先地区有效: {}, 基线有效: {}）",
+                results.size(), prefSuccess, baselineSuccess);
             return results;
             
         } catch (ParseException e) {
             log.error("解析 Release Group 响应失败", e);
             return results;
         }
+    }
+
+    /** 将优先地区候选中曲目数各不相同的首个版本排到前面，其余保持原优先级顺序，避免重复曲目数占满配额。 */
+    private List<JsonNode> prioritizeDistinctTrackCounts(List<JsonNode> sorted) {
+        if (sorted.size() <= 1) {
+            return sorted;
+        }
+        List<JsonNode> firstPerCount = new ArrayList<>();
+        List<JsonNode> extras = new ArrayList<>();
+        Set<Integer> seenCounts = new LinkedHashSet<>();
+        for (JsonNode r : sorted) {
+            int count = calculateTrackCount(r);
+            if (seenCounts.add(count)) {
+                firstPerCount.add(r);
+            } else {
+                extras.add(r);
+            }
+        }
+        firstPerCount.addAll(extras);
+        return firstPerCount;
+    }
+
+    private AlbumDurationResult fetchSingleReleaseDurationResult(
+            JsonNode release, String releaseType, boolean compilation,
+            String groupArtist, EffectiveLookupConfig snap) throws IOException, InterruptedException {
+        String releaseId = release.path("id").asText();
+        String releaseTitle = release.path("title").asText();
+        int trackCount = calculateTrackCount(release);
+        String mediaFormat = extractMediaFormat(release);
+        String releaseCountry = blankToNull(release.path("country").asText(null));
+        String releaseDate = blankToNull(release.path("date").asText(null));
+
+        String releaseArtist = resolveAlbumArtistFromCredits(release.path("artist-credit"), snap);
+        if (releaseArtist == null) {
+            releaseArtist = groupArtist;
+        }
+
+        log.debug("尝试获取 release {} 的时长序列 (ID: {}, 曲目数: {}, 地区: {}, 格式: {})",
+            releaseTitle, releaseId, trackCount, releaseCountry, mediaFormat);
+
+        List<Integer> durations = getReleaseDurationSequence(releaseId);
+        if (durations.isEmpty()) {
+            return null;
+        }
+        log.info("✓ 成功获取 release {} 的时长序列 ({} 首曲目, 地区: {}, 格式: {})",
+            releaseTitle, durations.size(), releaseCountry, mediaFormat);
+        return new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount, mediaFormat,
+            releaseType, compilation, releaseArtist, releaseCountry, releaseDate);
     }
     
     /**
@@ -401,6 +582,7 @@ public class MusicBrainzClient {
      */
     public List<AlbumDurationResult> getReleasesForGroup(String releaseGroupId)
             throws IOException, InterruptedException {
+        EffectiveLookupConfig snap = snapshotLookupConfig();
         rateLimit();
         List<AlbumDurationResult> results = new ArrayList<>();
         String url = String.format("%s/release-group/%s?fmt=json&inc=releases+media+artist-credits",
@@ -411,7 +593,7 @@ public class MusicBrainzClient {
             JsonNode root = objectMapper.readTree(response);
             String releaseType = normalizeReleaseType(root.path("primary-type").asText(""));
             boolean compilation = hasCompilationSecondaryType(root);
-            String groupArtist = resolveAlbumArtistFromCredits(root.path("artist-credit"));
+            String groupArtist = resolveAlbumArtistFromCredits(root.path("artist-credit"), snap);
             JsonNode releases = root.path("releases");
             if (!releases.isArray() || releases.size() == 0) {
                 log.info("Release Group {} 确认没有任何 Release（正常响应，非请求失败）", releaseGroupId);
@@ -420,17 +602,15 @@ public class MusicBrainzClient {
 
             List<JsonNode> sortedReleases = new ArrayList<>();
             for (JsonNode release : releases) {
-                sortedReleases.add(release);
+                if (scoreReleaseForDuration(release) >= 0) {
+                    sortedReleases.add(release);
+                }
             }
-            sortedReleases.sort((r1, r2) -> Integer.compare(
-                scoreReleaseForDuration(r2), scoreReleaseForDuration(r1)));
+            sortedReleases.sort((r1, r2) -> MusicBrainzReleasePriority.compareReleaseJson(r1, r2, snap.countryPriority()));
 
             int tryCount = Math.min(10, sortedReleases.size());
             for (int i = 0; i < tryCount; i++) {
                 JsonNode release = sortedReleases.get(i);
-                if (scoreReleaseForDuration(release) < 0) {
-                    continue;
-                }
                 String releaseId = release.path("id").asText();
                 if (releaseId.isEmpty()) {
                     log.warn("Release Group {} 返回缺少 releaseId 的版本，已忽略", releaseGroupId);
@@ -440,7 +620,9 @@ public class MusicBrainzClient {
                 String releaseTitle = release.path("title").asText();
                 int trackCount = calculateTrackCount(release);
                 String mediaFormat = extractMediaFormat(release);
-                String releaseArtist = resolveAlbumArtistFromCredits(release.path("artist-credit"));
+                String releaseCountry = blankToNull(release.path("country").asText(null));
+                String releaseDate = blankToNull(release.path("date").asText(null));
+                String releaseArtist = resolveAlbumArtistFromCredits(release.path("artist-credit"), snap);
                 if (releaseArtist == null) {
                     releaseArtist = groupArtist;
                 }
@@ -464,7 +646,7 @@ public class MusicBrainzClient {
                     log.info("✓ Release {} 存在且获取到 {} 首曲目时长", releaseTitle, durations.size());
                 }
                 results.add(new AlbumDurationResult(durations, releaseId, releaseTitle, trackCount,
-                    mediaFormat, releaseType, compilation, releaseArtist));
+                    mediaFormat, releaseType, compilation, releaseArtist, releaseCountry, releaseDate));
             }
             log.info("Release Group {} 共展开 {} 个实际 Release 候选", releaseGroupId, results.size());
             return results;
@@ -472,6 +654,12 @@ public class MusicBrainzClient {
             log.error("解析 Release Group 响应失败", e);
             return results;
         }
+    }
+
+    /** 从 artist-credit 节点按不可变配置快照解析专辑艺术家。 */
+    private String resolveAlbumArtistFromCredits(JsonNode artistCredits, EffectiveLookupConfig snap) {
+        return albumArtistPolicy.resolveFromCredits(
+            artistCredits, snap.collapseToVariousArtists(), snap.preferNativeArtistName());
     }
 
     /** 从 artist-credit 节点按配置解析专辑艺术家。 */
@@ -493,6 +681,10 @@ public class MusicBrainzClient {
         private final boolean compilation;
         /** 该 Release 的专辑艺术家（来自 MusicBrainz artist-credit）；未知时为 null */
         private final String albumArtist;
+        /** 该 Release 的发行地区代码（如 "JP", "US"）；未知时为 null */
+        private final String releaseCountry;
+        /** 该 Release 的发行日期（ISO 格式，如 "2020-04-20"）；未知时为 null */
+        private final String releaseDate;
         
         public AlbumDurationResult(List<Integer> durations, String releaseId) {
             this(durations, releaseId, null, durations != null ? durations.size() : 0, null);
@@ -513,6 +705,13 @@ public class MusicBrainzClient {
 
         public AlbumDurationResult(List<Integer> durations, String releaseId, String releaseTitle, int trackCount,
                                    String mediaFormat, String releaseType, boolean compilation, String albumArtist) {
+            this(durations, releaseId, releaseTitle, trackCount, mediaFormat, releaseType, compilation,
+                albumArtist, null, null);
+        }
+
+        public AlbumDurationResult(List<Integer> durations, String releaseId, String releaseTitle, int trackCount,
+                                   String mediaFormat, String releaseType, boolean compilation, String albumArtist,
+                                   String releaseCountry, String releaseDate) {
             this.albumArtist = albumArtist;
             this.durations = durations;
             this.releaseId = releaseId;
@@ -521,6 +720,8 @@ public class MusicBrainzClient {
             this.mediaFormat = mediaFormat;
             this.releaseType = releaseType;
             this.compilation = compilation;
+            this.releaseCountry = releaseCountry;
+            this.releaseDate = releaseDate;
         }
     }
     
@@ -606,27 +807,7 @@ public class MusicBrainzClient {
      * 优先选择 CD 或 Digital 格式
      */
     private int scoreReleaseForDuration(JsonNode release) {
-        int score = 0;
-
-        JsonNode media = release.path("media");
-        if (media.isArray() && media.size() > 0) {
-            String format = media.get(0).path("format").asText("").toLowerCase();
-
-            // 如果是视频格式，给予负分以排除
-            if (isVideoFormat(format)) {
-                return -100;
-            }
-
-            if (format.contains("cd")) {
-                score = 100;
-            } else if (format.contains("digital")) {
-                score = 90;
-            } else if (!format.isEmpty()) {
-                score = 50;
-            }
-        }
-
-        return score;
+        return MusicBrainzReleasePriority.mediaFormatScore(release);
     }
 
     /**
@@ -635,21 +816,7 @@ public class MusicBrainzClient {
      * @return 如果是视频格式返回true
      */
     private boolean isVideoFormat(String format) {
-        if (format == null || format.isEmpty()) {
-            return false;
-        }
-        // 常见的视频格式
-        return format.contains("dvd") ||
-               format.contains("blu-ray") ||
-               format.contains("bluray") ||
-               format.contains("hd dvd") ||
-               format.contains("hd-dvd") ||
-               format.contains("vhs") ||
-               format.contains("laserdisc") ||
-               format.contains("vcd") ||
-               format.contains("svcd") ||
-               format.contains("umd") ||
-               format.contains("video");
+        return MusicBrainzReleasePriority.isVideoFormat(format);
     }
     
     /**
@@ -658,15 +825,7 @@ public class MusicBrainzClient {
      * @return 媒体格式字符串（如 "CD", "Digital Media"），如果无法确定返回 null
      */
     private String extractMediaFormat(JsonNode release) {
-        JsonNode media = release.path("media");
-        if (media.isArray() && media.size() > 0) {
-            // 获取第一个 media 的格式
-            String format = media.get(0).path("format").asText("");
-            if (!format.isEmpty()) {
-                return format;
-            }
-        }
-        return null;
+        return MusicBrainzReleasePriority.extractPrimaryAudioFormat(release);
     }
 
     /**
@@ -1460,26 +1619,20 @@ public class MusicBrainzClient {
         return bundle;
     }
 
-    static String resolveCreditedArtistText(JsonNode credits) {
-        StringBuilder value = new StringBuilder();
-        if (credits != null && credits.isArray()) {
-            for (int i = 0; i < credits.size(); i++) {
-                JsonNode credit = credits.get(i);
-                String name = credit.path("name").asText("");
-                if (name.isEmpty()) name = credit.path("artist").path("name").asText("");
-                value.append(name);
-                if (i < credits.size() - 1) {
-                    value.append(credit.path("joinphrase").isTextual() ? credit.path("joinphrase").asText() : ", ");
-                } else if (credit.path("joinphrase").isTextual()) {
-                    value.append(credit.path("joinphrase").asText(""));
-                }
-            }
-        }
-        return value.toString();
+    private boolean isPreferNativeArtistName() {
+        return config == null || config.isPreferNativeArtistName();
     }
 
-    private static void applyRecordingArtistCredit(MusicMetadata metadata, JsonNode credits) {
-        String display = resolveCreditedArtistText(credits).trim();
+    static String resolveCreditedArtistText(JsonNode credits) {
+        return resolveCreditedArtistText(credits, true);
+    }
+
+    static String resolveCreditedArtistText(JsonNode credits, boolean preferNativeName) {
+        return ArtistCreditNameResolver.resolveCreditedArtistText(credits, preferNativeName);
+    }
+
+    private void applyRecordingArtistCredit(MusicMetadata metadata, JsonNode credits) {
+        String display = resolveCreditedArtistText(credits, isPreferNativeArtistName()).trim();
         if (!display.isEmpty()) {
             metadata.setArtist(display);
             metadata.setArtists(artistNames(credits));
@@ -1573,16 +1726,34 @@ public class MusicBrainzClient {
             log.warn("Recording's releases 中未找到匹配的 Release ID: {}，继续尝试匹配 Release Group ID", preferredReleaseId);
         }
 
-        // --- Stage 1: 匹配 Release Group ID ---
+        boolean trackCountUsable = musicFilesCountReliable
+            && musicFilesInFolder >= MIN_FILES_FOR_TRACK_COUNT_GATE;
+
+        // --- Stage 1: 匹配 Release Group ID（排除纯视频后按曲目数接近度 > 地区优先级 > 媒体格式 > 更早日期择优）---
         if (preferredReleaseGroupId != null && !preferredReleaseGroupId.isEmpty()) {
+            List<JsonNode> candidates = new ArrayList<>();
+            boolean foundAnyInGroup = false;
             for (JsonNode release : releases) {
                 String currentReleaseGroupId = release.path("release-group").path("id").asText("");
                 if (preferredReleaseGroupId.equals(currentReleaseGroupId)) {
-                    log.info("找到并选择与锁定的 Release Group ID {} 匹配的专辑: {}", preferredReleaseGroupId, release.path("title").asText());
-                    return release; // Found the exact one, this is our best choice.
+                    foundAnyInGroup = true;
+                    if (scoreReleaseForDuration(release) >= 0) {
+                        candidates.add(release);
+                    }
                 }
             }
-            log.warn("Recording's releases did not contain the preferred Release Group ID: {}. Falling back to best match logic.", preferredReleaseGroupId);
+            if (!candidates.isEmpty()) {
+                List<String> countryPriority = releaseCountryPriority();
+                JsonNode chosen = selectBestCandidateInGroup(candidates, musicFilesInFolder, trackCountUsable, countryPriority);
+                log.info("找到并选择与锁定的 Release Group ID {} 匹配的专辑: {} (地区: {})",
+                    preferredReleaseGroupId, chosen.path("title").asText(), chosen.path("country").asText("Unknown"));
+                return chosen;
+            }
+            if (foundAnyInGroup) {
+                log.warn("锁定的 Release Group ID {} 仅包含纯视频发行版，已排除", preferredReleaseGroupId);
+            } else {
+                log.warn("Recording's releases did not contain the preferred Release Group ID: {}. Falling back to best match logic.", preferredReleaseGroupId);
+            }
         }
         // --- End of new logic ---
 
@@ -1599,12 +1770,6 @@ public class MusicBrainzClient {
         JsonNode bestRelease = null;
         double bestScore = Double.NEGATIVE_INFINITY;
 
-        // 曲目数只有在「输入可靠」且「确实是一个专辑规模的目录」时才能约束候选。
-        // 监控目录根部的散落单文件（本分支唯一的调用场景）里，musicFilesInFolder 表示的是
-        // 根目录下有多少个互不相关的文件，用它做门槛会把所有候选全部否掉，等于关闭随缘模式。
-        boolean trackCountUsable = musicFilesCountReliable
-            && musicFilesInFolder >= MIN_FILES_FOR_TRACK_COUNT_GATE;
-
         if (trackCountUsable) {
             log.info("开始选择最佳专辑版本（文件夹内{}个文件），曲目数作为加权评分与可信度门槛", musicFilesInFolder);
         } else {
@@ -1613,6 +1778,9 @@ public class MusicBrainzClient {
         }
 
         for (JsonNode release : releases) {
+            if (scoreReleaseForDuration(release) < 0) {
+                continue;
+            }
             int trackCount = calculateTrackCount(release);
             if (trackCountUsable && !isTrackCountPlausible(trackCount, musicFilesInFolder)) {
                 int trackCountDiff = trackCount > 0 ? Math.abs(trackCount - musicFilesInFolder) : -1;
@@ -1644,6 +1812,9 @@ public class MusicBrainzClient {
         if (bestRelease == null && trackCountUsable) {
             log.warn("没有候选通过曲目数可信度门槛，降级为仅按发行类型/媒体格式重新选择");
             for (JsonNode release : releases) {
+                if (scoreReleaseForDuration(release) < 0) {
+                    continue;
+                }
                 double currentScore = calculateReleaseScore(release, musicFilesInFolder, false);
                 if (currentScore > bestScore + SCORE_EPSILON) {
                     bestRelease = release;
@@ -1653,41 +1824,43 @@ public class MusicBrainzClient {
         }
 
         if (bestRelease != null) {
-            // --- 地区优先级选择：在同一个 Release Group 中选择优先地区的版本 ---
-            List<String> countryPriority = config.getReleaseCountryPriority();
-            if (countryPriority != null && !countryPriority.isEmpty()) {
-                String bestReleaseGroupId = bestRelease.path("release-group").path("id").asText("");
+            // --- 地区优先级选择：仅在具备非空 Release Group ID 时，在同组同曲目数非视频版本中按统一规则择优 ---
+            List<String> countryPriority = releaseCountryPriority();
+            String bestReleaseGroupId = bestRelease.path("release-group").path("id").asText("").trim();
+            if (!countryPriority.isEmpty() && !bestReleaseGroupId.isEmpty()) {
                 int bestTrackCount = calculateTrackCount(bestRelease);
 
-                // 收集同一 Release Group 且曲目数相同的所有版本
+                // 收集同一 Release Group、曲目数相同且非视频的所有版本
                 List<JsonNode> sameGroupReleases = new ArrayList<>();
                 for (JsonNode release : releases) {
-                    String groupId = release.path("release-group").path("id").asText("");
+                    if (scoreReleaseForDuration(release) < 0) {
+                        continue;
+                    }
+                    String groupId = release.path("release-group").path("id").asText("").trim();
                     int trackCount = calculateTrackCount(release);
                     if (bestReleaseGroupId.equals(groupId) && trackCount == bestTrackCount) {
                         sameGroupReleases.add(release);
                     }
                 }
 
-                // 按地区优先级选择
+                // 只有存在命中优先地区的版本时才替换原选择，并在同地区内按媒体格式与更早发行日期决胜
                 if (sameGroupReleases.size() > 1) {
-                    boolean foundPreferredCountry = false;
-                    for (String preferredCountry : countryPriority) {
-                        for (JsonNode release : sameGroupReleases) {
-                            String country = release.path("country").asText("");
-                            if (preferredCountry.equalsIgnoreCase(country)) {
-                                log.info("在同一专辑的{}个版本中，按地区优先级选择{}版本",
-                                    sameGroupReleases.size(), preferredCountry);
-                                bestRelease = release;
-                                foundPreferredCountry = true;
-                                break;
-                            }
+                    JsonNode preferred = null;
+                    for (JsonNode release : sameGroupReleases) {
+                        String country = release.path("country").asText("");
+                        if (MusicBrainzReleasePriority.countryRank(country, countryPriority) == Integer.MAX_VALUE) {
+                            continue;
                         }
-                        if (foundPreferredCountry) {
-                            break;
+                        if (preferred == null
+                                || MusicBrainzReleasePriority.compareReleaseJson(release, preferred, countryPriority) < 0) {
+                            preferred = release;
                         }
                     }
-                    if (!foundPreferredCountry) {
+                    if (preferred != null) {
+                        log.info("在同一专辑的{}个版本中，按地区优先级选择{}版本",
+                            sameGroupReleases.size(), preferred.path("country").asText(""));
+                        bestRelease = preferred;
+                    } else {
                         log.debug("同一专辑的{}个版本中未找到优先地区{}的版本，保持原选择",
                             sameGroupReleases.size(), countryPriority);
                     }
@@ -2273,64 +2446,49 @@ public class MusicBrainzClient {
                 releaseGroupId, releases.size(),
                 trackCountUsable ? "选择曲目数最接近 " + musicFilesInFolder + " 的版本" : "仅按媒体格式选版");
 
-            // 2. 选择最佳的 Release
-            JsonNode bestRelease = null;
-            int bestTrackCountDiff = Integer.MAX_VALUE;
-            int bestScore = -1;
-
+            // 2. 排除纯视频格式后按（曲目数接近度 > 地区优先级 > 媒体格式 > 更早日期）排序候选，
+            // 并在首选版本未找到目标曲目时顺延探查后续候选（最多 3 个），避免首选地区版本缺该录音时丢失精确命中。
+            List<JsonNode> audioReleases = new ArrayList<>();
             for (JsonNode release : releases) {
-                int score = scoreReleaseForDuration(release);
-
-                // 跳过视频格式
-                if (score < 0) {
-                    continue;
-                }
-
-                if (!trackCountUsable) {
-                    if (score > bestScore) {
-                        bestRelease = release;
-                        bestScore = score;
-                    }
-                    continue;
-                }
-
-                int trackCount = calculateTrackCount(release);
-                int trackCountDiff = Math.abs(trackCount - musicFilesInFolder);
-
-                // 优先选择曲目数最接近的
-                if (trackCountDiff < bestTrackCountDiff) {
-                    bestRelease = release;
-                    bestTrackCountDiff = trackCountDiff;
-                    bestScore = score;
-                } else if (trackCountDiff == bestTrackCountDiff && score > bestScore) {
-                    // 曲目数相同时，选择格式评分更高的
-                    bestRelease = release;
-                    bestScore = score;
+                if (scoreReleaseForDuration(release) >= 0) {
+                    audioReleases.add(release);
                 }
             }
-            
-            if (bestRelease == null) {
+            if (audioReleases.isEmpty()) {
                 log.warn("未找到合适的 Release");
                 return new TrackMatch(TrackMatchType.UNAVAILABLE, null);
             }
-            
-            String bestReleaseId = bestRelease.path("id").asText();
-            String bestReleaseTitle = bestRelease.path("title").asText();
-            int bestTrackCount = calculateTrackCount(bestRelease);
-            
-            log.info("选择 Release: {} (ID: {}, {} 首曲目)",
-                bestReleaseTitle, bestReleaseId, bestTrackCount);
-            
-            // 3. 在选定的 Release 中按分级规则查找曲目
-            TrackMatch match = matchTrackInRelease(bestReleaseId, releaseGroupId, recordingId, recordingTitle,
-                fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist);
-            MusicMetadata metadata = match.getMetadata();
-            if (metadata != null) {
-                applyReleaseGroupMetadata(metadata, rgRoot);
-                metadata.setReleaseGroupId(releaseGroupId);
-                metadata.setReleaseId(bestReleaseId);
+            List<String> countryPriority = releaseCountryPriority();
+            audioReleases.sort((a, b) -> compareCandidatesInGroup(a, b, musicFilesInFolder, trackCountUsable, countryPriority));
+
+            int probeLimit = Math.min(3, audioReleases.size());
+            TrackMatch fallbackUnmatched = null;
+            for (int i = 0; i < probeLimit; i++) {
+                JsonNode candidate = audioReleases.get(i);
+                String candidateReleaseId = candidate.path("id").asText();
+                String candidateTitle = candidate.path("title").asText();
+                int candidateTrackCount = calculateTrackCount(candidate);
+
+                log.info("探查候选 Release ({}/{}): {} (ID: {}, 地区: {}, {} 首曲目)",
+                    i + 1, probeLimit, candidateTitle, candidateReleaseId,
+                    candidate.path("country").asText("Unknown"), candidateTrackCount);
+
+                TrackMatch match = matchTrackInRelease(candidateReleaseId, releaseGroupId, recordingId, recordingTitle,
+                    fileDurationSeconds, lockedAlbumTitle, lockedAlbumArtist);
+                if (match.isFound()) {
+                    MusicMetadata metadata = match.getMetadata();
+                    applyReleaseGroupMetadata(metadata, rgRoot);
+                    metadata.setReleaseGroupId(releaseGroupId);
+                    metadata.setReleaseId(candidateReleaseId);
+                    return match;
+                }
+                if (fallbackUnmatched == null
+                        || (fallbackUnmatched.getType() == TrackMatchType.UNAVAILABLE
+                            && match.getType() == TrackMatchType.NOT_FOUND)) {
+                    fallbackUnmatched = match;
+                }
             }
-            return match;
+            return fallbackUnmatched != null ? fallbackUnmatched : new TrackMatch(TrackMatchType.NOT_FOUND, null);
             
         } catch (ParseException e) {
             log.error("解析 Release Group 响应失败", e);
@@ -2338,6 +2496,31 @@ public class MusicBrainzClient {
         }
     }
     
+    private int compareCandidatesInGroup(JsonNode a, JsonNode b, int musicFilesInFolder,
+                                         boolean trackCountUsable, List<String> countryPriority) {
+        if (trackCountUsable) {
+            int diffA = Math.abs(calculateTrackCount(a) - musicFilesInFolder);
+            int diffB = Math.abs(calculateTrackCount(b) - musicFilesInFolder);
+            int diffCmp = Integer.compare(diffA, diffB);
+            if (diffCmp != 0) {
+                return diffCmp;
+            }
+        }
+        return MusicBrainzReleasePriority.compareReleaseJson(a, b, countryPriority);
+    }
+
+    private JsonNode selectBestCandidateInGroup(List<JsonNode> candidates, int musicFilesInFolder,
+                                                boolean trackCountUsable, List<String> countryPriority) {
+        JsonNode bestRelease = null;
+        for (JsonNode release : candidates) {
+            if (bestRelease == null
+                    || compareCandidatesInGroup(release, bestRelease, musicFilesInFolder, trackCountUsable, countryPriority) < 0) {
+                bestRelease = release;
+            }
+        }
+        return bestRelease;
+    }
+
     /**
      * 关闭客户端
      */

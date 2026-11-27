@@ -1,9 +1,11 @@
 package com.lux032.musicautotagger.service;
 
+import com.lux032.musicautotagger.config.MusicConfig;
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
@@ -29,6 +31,24 @@ public class DurationSequenceService {
     // 最佳与「异专辑次佳」差距过小时视为歧义，不自动决定。
     // 注意：只跨 Release Group 比较，同一张专辑的不同发行版本不算歧义。
     private static final double MIN_BEST_MATCH_MARGIN = 0.05;
+    // 同一 Release Group 内判定音频时长匹配等价的 DTW 容差
+    private static final double SAME_GROUP_DTW_TIE_EPSILON = 0.01;
+    private static final double SCORE_TIE_EPSILON = 1e-9;
+
+    private final MusicConfig config;
+
+    public DurationSequenceService() {
+        this(null);
+    }
+
+    public DurationSequenceService(MusicConfig config) {
+        this.config = config;
+    }
+
+    private List<String> releaseCountryPriority() {
+        return config != null && config.getReleaseCountryPriority() != null
+            ? config.getReleaseCountryPriority() : Collections.emptyList();
+    }
     
     /** 一对一覆盖检查的时长容差（秒），与 DTW 容差一致 */
     public static final int COVERAGE_TOLERANCE_SECONDS = DURATION_TOLERANCE;
@@ -323,9 +343,13 @@ public class DurationSequenceService {
 
         List<ScoredCandidate> scores = new ArrayList<>();
         for (AlbumDurationInfo candidate : candidates) {
+            if (MusicBrainzReleasePriority.mediaFormatScore(candidate.getMediaFormat()) < 0) {
+                log.debug("跳过纯视频格式候选: {} ({})", candidate.getAlbumTitle(), candidate.getMediaFormat());
+                continue;
+            }
             // 使用DTW算法计算相似度(对额外曲目更宽容)
             double similarity = calculateSimilarityDTW(folderDurations, candidate.getDurations());
-            scores.add(new ScoredCandidate(candidate, similarity));
+            scores.add(new ScoredCandidate(candidate, similarity, similarity));
 
             log.info("候选专辑: {} - {} ({}首曲目)", 
                 candidate.getAlbumTitle(), 
@@ -347,10 +371,12 @@ public class DurationSequenceService {
         // 检查原始 DTW 硬门槛和候选区分度
         if (bestMatch != null && bestSimilarity >= MIN_DURATION_SIMILARITY &&
             margin >= MIN_BEST_MATCH_MARGIN) {
-            log.info("✓ 选择最佳匹配: {} - {} (相似度: {})",
+            bestMatch = refineWithinWinningReleaseGroup(folderDurations, scores, bestMatch);
+            log.info("✓ 选择最佳匹配: {} - {} (相似度: {}, 地区: {})",
                 bestMatch.getAlbumInfo().getAlbumTitle(),
                 bestMatch.getAlbumInfo().getAlbumArtist(),
-                String.format("%.2f", bestSimilarity));
+                String.format("%.2f", bestMatch.getDurationSimilarity()),
+                bestMatch.getAlbumInfo().getReleaseCountry());
             return bestMatch;
         } else {
             log.warn("未找到可信的匹配专辑 (最佳DTW: {}, 异专辑次佳DTW: {}, margin: {}, 硬门槛: {}, 最小margin: {})",
@@ -396,11 +422,112 @@ public class DurationSequenceService {
     private static final class ScoredCandidate {
         private final AlbumDurationInfo candidate;
         private final double score;
+        private final double durationSimilarity;
 
-        ScoredCandidate(AlbumDurationInfo candidate, double score) {
+        ScoredCandidate(AlbumDurationInfo candidate, double score, double durationSimilarity) {
             this.candidate = candidate;
             this.score = score;
+            this.durationSimilarity = durationSimilarity;
         }
+    }
+
+    /**
+     * Stage 2：在已通过跨专辑门槛与 margin 校验的胜出 Release Group 内，
+     * 对音频时长与曲目数匹配等价的发行版按 {@code release.countryPriority} 择优。
+     * 不影响不同 Release Group 之间的比较与歧义判定。
+     */
+    private AlbumMatchResult refineWithinWinningReleaseGroup(List<Integer> folderDurations,
+                                                             List<ScoredCandidate> scoredCandidates,
+                                                             AlbumMatchResult stage1Winner) {
+        if (stage1Winner == null || stage1Winner.getAlbumInfo() == null) {
+            return stage1Winner;
+        }
+        List<String> countryPriority = releaseCountryPriority();
+        if (countryPriority.isEmpty()) {
+            return stage1Winner;
+        }
+        String winningGroupId = stage1Winner.getAlbumInfo().getReleaseGroupId();
+        if (winningGroupId == null || winningGroupId.isBlank()) {
+            return stage1Winner;
+        }
+
+        List<ScoredCandidate> sameGroup = new ArrayList<>();
+        double groupBestDtw = Double.NEGATIVE_INFINITY;
+        for (ScoredCandidate sc : scoredCandidates) {
+            if (sc.durationSimilarity < MIN_DURATION_SIMILARITY) {
+                continue;
+            }
+            if (MusicBrainzReleasePriority.mediaFormatScore(sc.candidate.getMediaFormat()) < 0) {
+                continue;
+            }
+            if (winningGroupId.equals(sc.candidate.getReleaseGroupId())) {
+                sameGroup.add(sc);
+                if (sc.durationSimilarity > groupBestDtw) {
+                    groupBestDtw = sc.durationSimilarity;
+                }
+            }
+        }
+        if (sameGroup.size() <= 1) {
+            return stage1Winner;
+        }
+
+        int folderTrackCount = folderDurations.size();
+        List<ScoredCandidate> dtwTied = new ArrayList<>();
+        int bestTrackDiff = Integer.MAX_VALUE;
+        for (ScoredCandidate sc : sameGroup) {
+            if (sc.durationSimilarity + SCORE_TIE_EPSILON >= groupBestDtw - SAME_GROUP_DTW_TIE_EPSILON) {
+                dtwTied.add(sc);
+                int diff = Math.abs(sc.candidate.effectiveTrackCount() - folderTrackCount);
+                if (diff < bestTrackDiff) {
+                    bestTrackDiff = diff;
+                }
+            }
+        }
+
+        ScoredCandidate best = null;
+        for (ScoredCandidate sc : dtwTied) {
+            int diff = Math.abs(sc.candidate.effectiveTrackCount() - folderTrackCount);
+            if (diff != bestTrackDiff) {
+                continue;
+            }
+            if (best == null || isPreferredSameGroupCandidate(sc, best, countryPriority)) {
+                best = sc;
+            }
+        }
+
+        if (best == null || best.candidate == stage1Winner.getAlbumInfo()) {
+            return stage1Winner;
+        }
+        log.info("同一 Release Group {} 内按地区优先级 {} 将版本从 {}({}) 细化为 {}({})",
+            winningGroupId, countryPriority,
+            stage1Winner.getAlbumInfo().getReleaseId(), stage1Winner.getAlbumInfo().getReleaseCountry(),
+            best.candidate.getReleaseId(), best.candidate.getReleaseCountry());
+        return new AlbumMatchResult(best.candidate, best.score, best.durationSimilarity);
+    }
+
+    private static boolean isPreferredSameGroupCandidate(ScoredCandidate candidate,
+                                                         ScoredCandidate currentBest,
+                                                         List<String> countryPriority) {
+        int rankCmp = Integer.compare(
+            MusicBrainzReleasePriority.countryRank(candidate.candidate.getReleaseCountry(), countryPriority),
+            MusicBrainzReleasePriority.countryRank(currentBest.candidate.getReleaseCountry(), countryPriority));
+        if (rankCmp != 0) {
+            return rankCmp < 0;
+        }
+        if (candidate.score > currentBest.score + SCORE_TIE_EPSILON) {
+            return true;
+        }
+        if (currentBest.score > candidate.score + SCORE_TIE_EPSILON) {
+            return false;
+        }
+        int formatCmp = Integer.compare(
+            MusicBrainzReleasePriority.mediaFormatScore(currentBest.candidate.getMediaFormat()),
+            MusicBrainzReleasePriority.mediaFormatScore(candidate.candidate.getMediaFormat()));
+        if (formatCmp != 0) {
+            return formatCmp < 0;
+        }
+        return MusicBrainzReleasePriority.compareReleaseDate(
+            candidate.candidate.getReleaseDate(), currentBest.candidate.getReleaseDate()) < 0;
     }
     
     /**
@@ -443,6 +570,10 @@ public class DurationSequenceService {
         }
 
         for (AlbumDurationInfo candidate : candidates) {
+            if (MusicBrainzReleasePriority.mediaFormatScore(candidate.getMediaFormat()) < 0) {
+                log.debug("跳过纯视频格式候选: {} ({})", candidate.getAlbumTitle(), candidate.getMediaFormat());
+                continue;
+            }
             // 1. 计算时长序列相似度（使用DTW算法）
             double durationSimilarity = calculateSimilarityDTW(folderDurations, candidate.getDurations());
 
@@ -503,7 +634,7 @@ public class DurationSequenceService {
                 continue;
             }
 
-            eligibleScores.add(new ScoredCandidate(candidate, combinedScore));
+            eligibleScores.add(new ScoredCandidate(candidate, combinedScore, durationSimilarity));
 
             if (combinedScore > bestCombinedScore) {
                 bestCombinedScore = combinedScore;
@@ -521,11 +652,13 @@ public class DurationSequenceService {
         // 名称/格式只负责排序；是否可自动决定只看原始 DTW 与异专辑 margin。
         if (bestMatch != null && bestMatch.getDurationSimilarity() >= MIN_DURATION_SIMILARITY &&
             margin >= MIN_BEST_MATCH_MARGIN) {
-            log.info("✓ 选择最佳匹配: {} - {} (综合得分: {}, 原始时长相似度: {}, 格式: {})",
+            bestMatch = refineWithinWinningReleaseGroup(folderDurations, eligibleScores, bestMatch);
+            log.info("✓ 选择最佳匹配: {} - {} (综合得分: {}, 原始时长相似度: {}, 地区: {}, 格式: {})",
                 bestMatch.getAlbumInfo().getAlbumTitle(),
                 bestMatch.getAlbumInfo().getAlbumArtist(),
-                String.format("%.2f", bestCombinedScore),
+                String.format("%.2f", bestMatch.getSimilarity()),
                 String.format("%.2f", bestMatch.getDurationSimilarity()),
+                bestMatch.getAlbumInfo().getReleaseCountry(),
                 bestMatch.getAlbumInfo().getMediaFormat());
             return bestMatch;
         } else {
@@ -790,6 +923,10 @@ public class DurationSequenceService {
         private boolean compilation;
         /** 版本真实曲目数（含缺时长的曲目）；0 = 未知 */
         private int releaseTrackCount;
+        /** 发行地区代码（如 "JP", "US"）；未知时为 null */
+        private String releaseCountry;
+        /** 发行日期（ISO 格式，如 "2020-04-20"）；未知时为 null */
+        private String releaseDate;
 
         /** 展示 / 判定用的曲目数：优先真实曲目数 */
         public int effectiveTrackCount() {
