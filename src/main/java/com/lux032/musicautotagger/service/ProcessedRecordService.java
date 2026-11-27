@@ -338,13 +338,19 @@ public class ProcessedRecordService {
     public Map<String, Object> preview(List<ProcessedRecord> targets) {
         FolderResolver resolver = new FolderResolver();
         int requeueable = 0, missing = 0, outside = 0, success = 0, failed = 0, other = 0;
-        int recoverableFromTarget = 0, reviewBlockedCount = 0;
+        int recoverableFromTarget = 0, reviewBlockedCount = 0, nonMbConfirmedCount = 0;
         Set<String> albums = new LinkedHashSet<>();
         Set<String> folderKeys = new HashSet<>();
         for (ProcessedRecord r : targets) {
             enrich(r, resolver.monitorRoot);
             folderKeys.add(normalizeFolderKey(resolver.resolve(r.filePath).folderPath));
-            if (r.status == ProcessedRecord.Status.SUCCESS) success++;
+            if (r.status == ProcessedRecord.Status.SUCCESS) {
+                success++;
+                String recId = r.recordingId == null ? "" : r.recordingId.trim();
+                if ("ONLINE_SEARCH".equals(recId) || "LOCAL_TAGS".equals(recId)) {
+                    nonMbConfirmedCount++;
+                }
+            }
             else if (r.status == ProcessedRecord.Status.FAILED) failed++;
             else other++;
             boolean hasSource = Boolean.TRUE.equals(r.sourceExists);
@@ -370,6 +376,7 @@ public class ProcessedRecordService {
         result.put("requeueable", requeueable);
         result.put("recoverableFromTarget", recoverableFromTarget);
         result.put("reviewBlockedCount", reviewBlockedCount);
+        result.put("nonMbConfirmedCount", nonMbConfirmedCount);
         result.put("sourceMissing", missing);
         result.put("outsideMonitor", outside);
         result.put("successCount", success);

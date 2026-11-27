@@ -139,6 +139,8 @@ public class ReviewItem {
     private RecoveryCommitState recoveryCommitState;
     /** 已提交到输出目录的顶层路径，供启动收尾核对 */
     private List<String> committedOutputPaths = new CopyOnWriteArrayList<>();
+    /** 提交阶段持久化的逐曲处理记录回写清单，供崩溃重启后幂等重放回写再回收隔离副本 */
+    private List<CommittedTrackRecord> committedTrackRecords = new CopyOnWriteArrayList<>();
     /** 本地证据摘要；文件发生变化时旧联网候选会过期 */
     private String evidenceHash;
     private boolean onlineEvidenceStale;
@@ -187,6 +189,10 @@ public class ReviewItem {
         this.committedOutputPaths = copyOnWrite(committedOutputPaths);
     }
 
+    public void setCommittedTrackRecords(List<CommittedTrackRecord> committedTrackRecords) {
+        this.committedTrackRecords = copyOnWrite(committedTrackRecords);
+    }
+
     public void setOnlineCandidates(List<OnlineCandidate> onlineCandidates) {
         this.onlineCandidates = copyOnWrite(onlineCandidates);
     }
@@ -205,6 +211,7 @@ public class ReviewItem {
         this.candidates = copyOnWrite(this.candidates);
         this.files = copyOnWrite(this.files);
         this.committedOutputPaths = copyOnWrite(this.committedOutputPaths);
+        this.committedTrackRecords = copyOnWrite(this.committedTrackRecords);
         this.onlineCandidates = copyOnWrite(this.onlineCandidates);
         this.onlineClues = copyOnWrite(this.onlineClues);
         for (CandidateSnapshot c : this.candidates) {
@@ -255,6 +262,23 @@ public class ReviewItem {
     private String resolvedReleaseType;
     private boolean resolvedCompilation;
     private int resolvedTrackCount;
+
+    /** 人工确认提交后持久化保存的逐曲回写意图，用于崩溃恢复时在回收隔离副本前幂等补齐处理记录。 */
+    @Data
+    public static class CommittedTrackRecord {
+        private String isolatedPath;
+        private String fallbackIsolatedPath;
+        private String sourceType;
+        private String originPath;
+        private String outputPath;
+        private String recordingId;
+        private String artist;
+        private String title;
+        private String album;
+        private String releaseGroupId;
+        private boolean recoverySource;
+        private boolean reprocessSource;
+    }
 
     /**
      * 缺曲详情：最接近的版本 + 本地对不上的曲目

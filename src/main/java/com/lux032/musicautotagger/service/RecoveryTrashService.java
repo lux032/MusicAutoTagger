@@ -46,6 +46,7 @@ public class RecoveryTrashService {
     private final ItemResolver itemResolver;
     private final Function<File, List<File>> audioFilesCollector;
     private final Runnable onMutation;
+    private final RecoveryOriginRegistry originRegistry;
 
     public RecoveryTrashService(MusicConfig config,
                                 FileSystemUtils fileSystemUtils,
@@ -53,12 +54,24 @@ public class RecoveryTrashService {
                                 ItemResolver itemResolver,
                                 Function<File, List<File>> audioFilesCollector,
                                 Runnable onMutation) {
+        this(config, fileSystemUtils, gson, itemResolver, audioFilesCollector, onMutation,
+            RecoveryOriginRegistry.forReviewQueuePath(config == null ? null : config.getReviewQueuePath()));
+    }
+
+    public RecoveryTrashService(MusicConfig config,
+                                FileSystemUtils fileSystemUtils,
+                                Gson gson,
+                                ItemResolver itemResolver,
+                                Function<File, List<File>> audioFilesCollector,
+                                Runnable onMutation,
+                                RecoveryOriginRegistry originRegistry) {
         this.config = config;
         this.fileSystemUtils = fileSystemUtils;
         this.gson = gson;
         this.itemResolver = itemResolver;
         this.audioFilesCollector = audioFilesCollector;
         this.onMutation = onMutation;
+        this.originRegistry = originRegistry;
     }
 
     public Path trashRoot() {
@@ -192,6 +205,7 @@ public class RecoveryTrashService {
 
         String sourceType;
         String relativePath;
+        JsonObject originsObj = null;
         try {
             JsonObject json = gson.fromJson(Files.readString(manifest), JsonObject.class);
             if (json.has("kind") && TRASH_KIND_OUTPUT.equals(json.get("kind").getAsString())) {
@@ -200,14 +214,42 @@ public class RecoveryTrashService {
             }
             sourceType = json.get("sourceType").getAsString();
             relativePath = json.get("relativePath").getAsString();
+            if (json.has("origins") && json.get("origins").isJsonObject()) {
+                originsObj = json.getAsJsonObject("origins");
+            }
         } catch (Exception e) {
             throw new IOException("trash.manifest.invalid", e);
         }
 
         File target = itemResolver.resolve(RecoveryService.SourceType.valueOf(sourceType), relativePath);
         if (target.exists()) throw new IOException("trash.restore.target.exists");
+        Path restoredBase = target.toPath().toAbsolutePath().normalize();
+        Map<String, String> restoredOrigins = new LinkedHashMap<>();
+        if (originRegistry != null && originsObj != null && !originsObj.isEmpty()) {
+            for (var item : originsObj.entrySet()) {
+                if (item.getValue() == null || !item.getValue().isJsonPrimitive()) continue;
+                String originPath = item.getValue().getAsString();
+                if (originPath == null || originPath.isBlank()) continue;
+                String relKey = item.getKey();
+                Path restoredFile = (relKey == null || relKey.isBlank() || ".".equals(relKey))
+                    ? restoredBase : restoredBase.resolve(relKey).normalize();
+                if (restoredFile.equals(restoredBase) || restoredFile.startsWith(restoredBase)) {
+                    restoredOrigins.put(restoredFile.toString(), originPath);
+                }
+            }
+        }
         Files.createDirectories(target.toPath().getParent());
         moveAcrossDevices(entry, target.toPath());
+        if (originRegistry != null && !restoredOrigins.isEmpty()
+                && !originRegistry.recordAllChecked(restoredOrigins)) {
+            // 血缘写回失败时回滚音频还原并保留 manifest，避免丢失血缘后静默删除清单
+            try {
+                moveAcrossDevices(target.toPath(), entry);
+            } catch (IOException rollbackErr) {
+                log.error("血缘恢复失败且回滚还原受阻，保留回收站清单供人工核对: {}", manifest, rollbackErr);
+            }
+            throw new IOException("recovery.origin.restore.failed");
+        }
         Files.deleteIfExists(manifest);
         notifyMutation();
         LogCollector.addLog("SUCCESS", "已从回收站恢复: " + relativePath + " → " + sourceType);
@@ -249,9 +291,16 @@ public class RecoveryTrashService {
 
     public void moveToTrash(File source, String jobId, RecoveryService.SourceType sourceType,
                             String relativePath) throws IOException {
+        Path sourceNorm = source.toPath().toAbsolutePath().normalize();
+        Path sourceCanon = canonicalOrNormalized(sourceNorm);
+        Map<Path, Path> origins = originRegistry == null ? Map.of() : originRegistry.findOriginsUnder(sourceNorm);
+
         int retention = config.getRecoveryTrashRetentionDays();
         if (retention == 0) {
             deleteRecursively(source.toPath());
+            if (originRegistry != null && !origins.isEmpty()) {
+                originRegistry.removeMatching(origins);
+            }
             notifyMutation();
             return;
         }
@@ -266,8 +315,56 @@ public class RecoveryTrashService {
         manifest.addProperty("sourceType", String.valueOf(sourceType));
         manifest.addProperty("relativePath", relativePath);
         manifest.addProperty("trashedAt", trashedAt);
+        if (!origins.isEmpty()) {
+            JsonObject originsObj = new JsonObject();
+            for (Map.Entry<Path, Path> item : origins.entrySet()) {
+                String relKey = relativeKeyUnder(item.getKey(), sourceNorm, sourceCanon);
+                if (relKey != null) {
+                    originsObj.addProperty(relKey, item.getValue().toString());
+                }
+            }
+            if (!originsObj.isEmpty()) {
+                manifest.add("origins", originsObj);
+            }
+        }
         Files.writeString(target.resolveSibling(target.getFileName() + ".json"), gson.toJson(manifest));
+        if (originRegistry != null && !origins.isEmpty()) {
+            originRegistry.removeMatching(origins);
+        }
         notifyMutation();
+    }
+
+    private static Path canonicalOrNormalized(Path path) {
+        try {
+            return path.toFile().getCanonicalFile().toPath().normalize();
+        } catch (IOException e) {
+            return path.toAbsolutePath().normalize();
+        }
+    }
+
+    private static String relativeKeyUnder(Path candidate, Path baseNorm, Path baseCanon) {
+        Path norm = candidate.toAbsolutePath().normalize();
+        Path canon = canonicalOrNormalized(norm);
+        if (norm.equals(baseNorm) || norm.equals(baseCanon) || canon.equals(baseCanon)) {
+            return ".";
+        }
+        Path rel = null;
+        if (norm.startsWith(baseNorm)) {
+            rel = baseNorm.relativize(norm);
+        } else if (norm.startsWith(baseCanon)) {
+            rel = baseCanon.relativize(norm);
+        } else if (canon.startsWith(baseCanon)) {
+            rel = baseCanon.relativize(canon);
+        }
+        if (rel == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Path part : rel) {
+            if (sb.length() > 0) sb.append('/');
+            sb.append(part.toString());
+        }
+        return sb.toString();
     }
 
     /**

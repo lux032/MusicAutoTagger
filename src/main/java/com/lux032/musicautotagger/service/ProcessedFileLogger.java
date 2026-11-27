@@ -495,74 +495,266 @@ public class ProcessedFileLogger {
      */
     public void markFileAsProcessed(File file, String recordingId, String artist, String title,
                                     String album, String releaseGroupId, String targetFilePath) {
-        writeProcessedRecord(file, recordingId, artist, title, album, releaseGroupId, targetFilePath, false);
+        writeProcessedRecord(file, recordingId, artist, title, album, releaseGroupId, targetFilePath, null, false);
+    }
+
+    /**
+     * 记录文件已处理并指定既有处理时间（供历史分裂记录对账合并保留原归档时间使用）。
+     * {@code processedTime} 为 null 时回退为当前时间；兼容 SQLite、MySQL 与文件日志三种模式。
+     */
+    public void markFileAsProcessed(File file, String recordingId, String artist, String title,
+                                    String album, String releaseGroupId, String targetFilePath,
+                                    LocalDateTime processedTime) {
+        writeProcessedRecord(file, recordingId, artist, title, album, releaseGroupId, targetFilePath, processedTime, false);
+    }
+
+    /** 解析 {@link ProcessedRecord#processedTime}（格式 yyyy-MM-dd HH:mm:ss），非法或为空时返回 null。 */
+    public LocalDateTime parseProcessedTime(String processedTime) {
+        if (processedTime == null || processedTime.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDateTime.parse(processedTime.trim(), dateFormatter);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     /** Consumer failure records must report persistence failure to their caller. */
     public void markFailureAsProcessed(File file, String reason) {
-        writeProcessedRecord(file, "FAILED", reason, file.getName(), "Unknown Album", null, null, true);
+        markFailureAsProcessed(file, reason, null);
     }
 
-    private void writeProcessedRecord(File file, String recordingId, String artist, String title,
-                                     String album, String releaseGroupId, String targetFilePath, boolean strict) {
+    /** Consumer failure records with optional preserved archive target path. */
+    public void markFailureAsProcessed(File file, String reason, String targetFilePath) {
+        writeProcessedRecord(file, "FAILED", reason, file.getName(), "Unknown Album", null, targetFilePath, null, true);
+    }
+
+    /**
+     * 单条原子记录迁移指令：在一次事务/原子重写中完成目标行 UPSERT，以及无条件/仅限 FAILED 的冗余行清理。
+     */
+    public record RecordMigration(File upsertFile,
+                                  String recordingId,
+                                  String artist,
+                                  String title,
+                                  String album,
+                                  String releaseGroupId,
+                                  String targetFilePath,
+                                  LocalDateTime processedTime,
+                                  Collection<String> deletePathsUnconditional,
+                                  Collection<String> deletePathsIfFailed) { }
+
+    /**
+     * 在单事务（SQLite/MySQL）或单次写锁原子重写（文件模式）中提交一批处理记录迁移。
+     * 仅当全部写入与清理均持久化成功时返回 {@code true}；失败时回滚并返回 {@code false}。
+     */
+    public boolean applyRecordMigrationsAtomically(List<RecordMigration> migrations) {
+        if (migrations == null || migrations.isEmpty()) {
+            return true;
+        }
+        if (isDbMode) {
+            try (Connection conn = databaseService.getConnection()) {
+                boolean autoCommit = conn.getAutoCommit();
+                conn.setAutoCommit(false);
+                try {
+                    for (RecordMigration m : migrations) {
+                        if (m == null) continue;
+                        if (m.upsertFile() != null) {
+                            executeDbUpsert(conn, m.upsertFile(), m.recordingId(), m.artist(), m.title(),
+                                m.album(), m.releaseGroupId(), m.targetFilePath(),
+                                m.processedTime() != null ? m.processedTime() : LocalDateTime.now());
+                        }
+                        if (m.deletePathsUnconditional() != null && !m.deletePathsUnconditional().isEmpty()) {
+                            String delSql = "DELETE FROM processed_files WHERE file_path = ?";
+                            try (PreparedStatement del = conn.prepareStatement(delSql)) {
+                                for (String path : dedupe(m.deletePathsUnconditional())) {
+                                    del.setString(1, path);
+                                    del.executeUpdate();
+                                }
+                            }
+                        }
+                        if (m.deletePathsIfFailed() != null && !m.deletePathsIfFailed().isEmpty()) {
+                            String delFailedSql = "DELETE FROM processed_files WHERE file_path = ? AND " + FAILED_SQL;
+                            try (PreparedStatement del = conn.prepareStatement(delFailedSql)) {
+                                for (String path : dedupe(m.deletePathsIfFailed())) {
+                                    del.setString(1, path);
+                                    del.executeUpdate();
+                                }
+                            }
+                        }
+                    }
+                    conn.commit();
+                    return true;
+                } catch (IOException | SQLException e) {
+                    try {
+                        conn.rollback();
+                    } catch (SQLException rollbackErr) {
+                        e.addSuppressed(rollbackErr);
+                    }
+                    log.error("原子迁移处理记录事务失败，已回滚: {}", e.getMessage(), e);
+                    return false;
+                } finally {
+                    try {
+                        conn.setAutoCommit(autoCommit);
+                    } catch (SQLException ignored) {
+                    }
+                }
+            } catch (SQLException e) {
+                log.error("获取数据库连接执行原子迁移失败: {}", e.getMessage(), e);
+                return false;
+            }
+        }
+
+        // 文件模式：写锁下一次性读取 -> 内存应用全部 upsert / 条件删除 -> 独占临时文件原子替换
+        fileLock.writeLock().lock();
+        try {
+            Path logPath = Path.of(config.getProcessedFileLogPath()).toAbsolutePath().normalize();
+            Path parent = logPath.getParent();
+            if (parent != null) Files.createDirectories(parent);
+
+            Map<String, String[]> byPath = new LinkedHashMap<>();
+            if (Files.isRegularFile(logPath)) {
+                try (BufferedReader reader = Files.newBufferedReader(logPath, StandardCharsets.UTF_8)) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        String[] parts = splitLogLine(line);
+                        if (parts.length >= 6) {
+                            byPath.remove(parts[0]);
+                            byPath.put(parts[0], parts);
+                        }
+                    }
+                }
+            }
+
+            for (RecordMigration m : migrations) {
+                if (m == null) continue;
+                if (m.upsertFile() != null) {
+                    String fp = m.upsertFile().getAbsolutePath();
+                    String absTarget = m.targetFilePath() == null || m.targetFilePath().isBlank()
+                        ? "" : new File(m.targetFilePath()).getAbsolutePath();
+                    String[] existing = byPath.get(fp);
+                    if (absTarget.isEmpty() && existing != null && existing.length >= 8) {
+                        absTarget = existing[7];
+                    }
+                    LocalDateTime ts = m.processedTime() != null ? m.processedTime() : LocalDateTime.now();
+                    String[] row = new String[] {
+                        fp, nullToEmpty(m.recordingId()), nullToEmpty(m.artist()),
+                        nullToEmpty(m.title()), nullToEmpty(m.album()),
+                        ts.format(dateFormatter), nullToEmpty(m.releaseGroupId()), absTarget
+                    };
+                    byPath.remove(fp);
+                    byPath.put(fp, row);
+                }
+                if (m.deletePathsUnconditional() != null) {
+                    for (String path : dedupe(m.deletePathsUnconditional())) {
+                        byPath.remove(path);
+                    }
+                }
+                if (m.deletePathsIfFailed() != null) {
+                    for (String path : dedupe(m.deletePathsIfFailed())) {
+                        String[] existing = byPath.get(path);
+                        if (existing != null && existing.length >= 2
+                                && ProcessedRecord.classify(existing[1]) == ProcessedRecord.Status.FAILED) {
+                            byPath.remove(path);
+                        }
+                    }
+                }
+            }
+
+            Path temp = Files.createTempFile(parent != null ? parent : Path.of("."), ".processed-migrate-", ".tmp");
+            try {
+                try (BufferedWriter writer = Files.newBufferedWriter(temp, StandardCharsets.UTF_8)) {
+                    for (String[] parts : byPath.values()) {
+                        writer.write(formatLogLine(parts));
+                        writer.newLine();
+                    }
+                }
+                moveReplaceAtomic(temp, logPath);
+                return true;
+            } finally {
+                Files.deleteIfExists(temp);
+            }
+        } catch (IOException e) {
+            log.error("文件模式原子迁移处理记录失败: {}", e.getMessage(), e);
+            return false;
+        } finally {
+            fileLock.writeLock().unlock();
+        }
+    }
+
+    private void executeDbUpsert(Connection conn, File file, String recordingId, String artist, String title,
+                                 String album, String releaseGroupId, String targetFilePath,
+                                 LocalDateTime effectiveTime) throws IOException, SQLException {
         String filePath = file.getAbsolutePath();
         String absoluteTargetPath = targetFilePath == null || targetFilePath.isBlank()
             ? null : new File(targetFilePath).getAbsolutePath();
-        LocalDateTime now = LocalDateTime.now();
+        boolean sourceReadable = file.isFile();
+        String fileHash = sourceReadable ? calculateFileHash(file) : "";
+        long fileSize = sourceReadable ? file.length() : 0L;
+        boolean withRgid = releaseGroupIdColumnAvailable;
+        boolean withTarget = targetFilePathColumnAvailable;
+        boolean withFolder = folderPathColumnAvailable;
+        String folderPath = withFolder ? computeFolderPath(filePath, config) : null;
+        List<String> columns = new ArrayList<>(Arrays.asList(
+            "file_hash", "file_name", "file_path", "file_size", "processed_time",
+            "recording_id", "artist", "title", "album"));
+        if (withRgid) columns.add("release_group_id");
+        if (withTarget) columns.add("target_file_path");
+        if (withFolder) columns.add("folder_path");
+        String values = String.join(", ", java.util.Collections.nCopies(columns.size(), "?"));
+        // MySQL: VALUES(col)；SQLite: excluded.col
+        java.util.function.UnaryOperator<String> newVal = isSqlite
+            ? c -> "excluded." + c
+            : c -> "VALUES(" + c + ")";
+        // 离线更新（源文件不可读）时不覆盖已有的 file_hash / file_size，保留原监控源度量值
+        List<String> updateCols = sourceReadable
+            ? List.of("file_hash", "file_name", "file_size", "processed_time", "recording_id", "artist", "title", "album")
+            : List.of("file_name", "processed_time", "recording_id", "artist", "title", "album");
+        StringBuilder update = new StringBuilder();
+        for (String c : updateCols) {
+            if (update.length() > 0) update.append(", ");
+            update.append(c).append(" = ").append(newVal.apply(c));
+        }
+        if (withRgid) update.append(", release_group_id = ").append(newVal.apply("release_group_id"));
+        if (withTarget) update.append(", target_file_path = COALESCE(")
+            .append(newVal.apply("target_file_path")).append(", target_file_path)");
+        if (withFolder) update.append(", folder_path = ").append(newVal.apply("folder_path"));
+        if (isSqlite) update.append(", updated_at = CURRENT_TIMESTAMP");
+        String sql = "INSERT INTO processed_files (" + String.join(", ", columns) + ") VALUES ("
+            + values + ")"
+            + (isSqlite ? " ON CONFLICT(file_path) DO UPDATE SET " : " ON DUPLICATE KEY UPDATE ")
+            + update;
+
+        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, fileHash);
+            pstmt.setString(2, file.getName());
+            pstmt.setString(3, filePath);
+            pstmt.setLong(4, fileSize);
+            pstmt.setTimestamp(5, Timestamp.valueOf(effectiveTime));
+            pstmt.setString(6, recordingId);
+            pstmt.setString(7, artist);
+            pstmt.setString(8, title);
+            pstmt.setString(9, album);
+            int index = 10;
+            if (withRgid) pstmt.setString(index++, releaseGroupId);
+            if (withTarget) pstmt.setString(index++, absoluteTargetPath);
+            if (withFolder) pstmt.setString(index, folderPath);
+            pstmt.executeUpdate();
+        }
+    }
+
+    private void writeProcessedRecord(File file, String recordingId, String artist, String title,
+                                     String album, String releaseGroupId, String targetFilePath,
+                                     LocalDateTime processedTime, boolean strict) {
+        String filePath = file.getAbsolutePath();
+        String absoluteTargetPath = targetFilePath == null || targetFilePath.isBlank()
+            ? null : new File(targetFilePath).getAbsolutePath();
+        LocalDateTime effectiveTime = processedTime != null ? processedTime : LocalDateTime.now();
 
         if (isDbMode) {
-            try {
-                String fileHash = calculateFileHash(file);
-                boolean withRgid = releaseGroupIdColumnAvailable;
-                boolean withTarget = targetFilePathColumnAvailable;
-                boolean withFolder = folderPathColumnAvailable;
-                String folderPath = withFolder ? computeFolderPath(filePath, config) : null;
-                List<String> columns = new ArrayList<>(Arrays.asList(
-                    "file_hash", "file_name", "file_path", "file_size", "processed_time",
-                    "recording_id", "artist", "title", "album"));
-                if (withRgid) columns.add("release_group_id");
-                if (withTarget) columns.add("target_file_path");
-                if (withFolder) columns.add("folder_path");
-                String values = String.join(", ", java.util.Collections.nCopies(columns.size(), "?"));
-                // MySQL: VALUES(col)；SQLite: excluded.col
-                java.util.function.UnaryOperator<String> newVal = isSqlite
-                    ? c -> "excluded." + c
-                    : c -> "VALUES(" + c + ")";
-                StringBuilder update = new StringBuilder();
-                for (String c : List.of("file_hash", "file_name", "file_size", "processed_time",
-                        "recording_id", "artist", "title", "album")) {
-                    if (update.length() > 0) update.append(", ");
-                    update.append(c).append(" = ").append(newVal.apply(c));
-                }
-                if (withRgid) update.append(", release_group_id = ").append(newVal.apply("release_group_id"));
-                if (withTarget) update.append(", target_file_path = COALESCE(")
-                    .append(newVal.apply("target_file_path")).append(", target_file_path)");
-                if (withFolder) update.append(", folder_path = ").append(newVal.apply("folder_path"));
-                if (isSqlite) update.append(", updated_at = CURRENT_TIMESTAMP");
-                String sql = "INSERT INTO processed_files (" + String.join(", ", columns) + ") VALUES ("
-                    + values + ")"
-                    + (isSqlite ? " ON CONFLICT(file_path) DO UPDATE SET " : " ON DUPLICATE KEY UPDATE ")
-                    + update;
-
-                try (Connection conn = databaseService.getConnection();
-                     PreparedStatement pstmt = conn.prepareStatement(sql)) {
-
-                    pstmt.setString(1, fileHash);
-                    pstmt.setString(2, file.getName());
-                    pstmt.setString(3, filePath);
-                    pstmt.setLong(4, file.length());
-                    pstmt.setTimestamp(5, Timestamp.valueOf(now));
-                    pstmt.setString(6, recordingId);
-                    pstmt.setString(7, artist);
-                    pstmt.setString(8, title);
-                    pstmt.setString(9, album);
-                    int index = 10;
-                    if (withRgid) pstmt.setString(index++, releaseGroupId);
-                    if (withTarget) pstmt.setString(index++, absoluteTargetPath);
-                    if (withFolder) pstmt.setString(index, folderPath);
-
-                    pstmt.executeUpdate();
-                }
+            try (Connection conn = databaseService.getConnection()) {
+                executeDbUpsert(conn, file, recordingId, artist, title, album,
+                    releaseGroupId, absoluteTargetPath, effectiveTime);
             } catch (IOException | SQLException e) {
                 if (strict) throw new IllegalStateException("FAILED record persistence failed", e);
                 log.error(I18nUtil.getMessage("logger.db.record.failed"), e);
@@ -577,7 +769,7 @@ public class ProcessedFileLogger {
                 try (BufferedWriter writer = Files.newBufferedWriter(
                         logPath, StandardCharsets.UTF_8,
                         StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
-                    String timeStr = now.format(dateFormatter);
+                    String timeStr = effectiveTime.format(dateFormatter);
                     // 格式: filePath|recordingId|artist|title|album|time|releaseGroupId|targetFilePath
                     // 第 7、8 列均为后加字段，读取方按长度向后兼容。
                     String line = formatLogLine(filePath, nullToEmpty(recordingId), nullToEmpty(artist),

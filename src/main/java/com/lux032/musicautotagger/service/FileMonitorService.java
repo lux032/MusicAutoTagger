@@ -877,7 +877,9 @@ public class FileMonitorService {
         unrecordedFailures.put(file, failure);
         try {
             if (processedLogger == null) throw new IllegalStateException("No processed file logger");
-            processedLogger.markFailureAsProcessed(file, failure.getClass().getSimpleName());
+            String oldTarget = ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath())
+                .findOldTarget(file).map(Path::toString).orElse(null);
+            processedLogger.markFailureAsProcessed(file, failure.getClass().getSimpleName(), oldTarget);
             unrecordedFailures.remove(file);
         } catch (RuntimeException recordingFailure) {
             try {
@@ -978,10 +980,12 @@ public class FileMonitorService {
      * - 结果：/failed_files/Artist - Album/Disc 1/03 song.flac
      */
     private void moveToFailedDirectory(File file) {
-        // 记录到数据库，标记为处理失败（无论是否配置失败目录，都必须记录）
+        // 记录到数据库，标记为处理失败（无论是否配置失败目录，都必须记录；若属于重识别失败，保留原归档路径）
         if (processedLogger != null) {
             try {
-                processedLogger.markFailureAsProcessed(file, "重试失败");
+                String oldTarget = ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath())
+                    .findOldTarget(file).map(Path::toString).orElse(null);
+                processedLogger.markFailureAsProcessed(file, "重试失败", oldTarget);
                 log.info(I18nUtil.getMessage("monitor.failed.file.recorded"), file.getName());
             } catch (RuntimeException e) {
                 recordFileFailure(file, e);
@@ -1027,6 +1031,10 @@ public class FileMonitorService {
             Files.copy(sourcePath, targetPath);
             ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath())
                 .recordAlias(sourcePath, targetPath);
+            String monitorDir = config.getMonitorDirectory();
+            Path monitorRoot = (monitorDir == null || monitorDir.isBlank()) ? null : Paths.get(monitorDir.trim());
+            RecoveryOriginRegistry.forReviewQueuePath(config.getReviewQueuePath())
+                .recordFromMonitor(targetPath, sourcePath, monitorRoot);
             log.info("✓ 失败文件已复制到: {} (保留原文件)", targetPath);
             LogCollector.addLog("ERROR", "重试达到上限，已移入失败记录: " + file.getName());
 

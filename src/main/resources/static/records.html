@@ -1207,6 +1207,7 @@
         if (kind === 'reidentify') {
             if (preview.requeueable) lines.push(['', TF('records.confirm.requeue', preview.requeueable)]);
             if (preview.recoverableFromTarget) lines.push(['', TF('records.confirm.requeue.archived', preview.recoverableFromTarget)]);
+            if (preview.nonMbConfirmedCount && (preview.requeueable || preview.recoverableFromTarget)) lines.push(['warn', TF('records.confirm.non.mb.note', preview.nonMbConfirmedCount)]);
             if (preview.reviewBlockedCount) lines.push(['warn', TF('records.confirm.review.blocked', preview.reviewBlockedCount)]);
             if (preview.sourceMissing) lines.push(['warn', TF('records.confirm.missing', preview.sourceMissing)]);
             if (preview.outsideMonitor) lines.push(['warn', TF('records.confirm.outside', preview.outsideMonitor)]);

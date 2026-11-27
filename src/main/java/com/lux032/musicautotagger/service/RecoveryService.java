@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.model.ProcessResult;
+import com.lux032.musicautotagger.model.ProcessedRecord;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
@@ -33,7 +34,9 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -76,6 +79,7 @@ public class RecoveryService implements AutoCloseable {
     private final CoverCandidateService coverCandidateService;
     private final AutoArchiveRegistry autoArchiveRegistry;
     private final ReidentifyReplacementRegistry replacementRegistry;
+    private final RecoveryOriginRegistry originRegistry;
     private final ArchiveDuplicateDetector duplicateDetector;
     private final AlbumArtistPolicy albumArtistPolicy;
     private final LlmArtistSplitter artistSplitter;
@@ -148,12 +152,14 @@ public class RecoveryService implements AutoCloseable {
         this.coverCandidateService = coverCandidateService;
         this.autoArchiveRegistry = AutoArchiveRegistry.forReviewQueuePath(config.getReviewQueuePath());
         this.replacementRegistry = ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath());
+        this.originRegistry = RecoveryOriginRegistry.forReviewQueuePath(config.getReviewQueuePath());
         this.duplicateDetector = new ArchiveDuplicateDetector(fileSystemUtils::isMusicFile);
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
         this.artistSplitter = artistSplitter;
         this.localArchiveDraft = new LocalArchiveDraft(new LlmClient(config));
         this.trashService = new RecoveryTrashService(
-            config, fileSystemUtils, gson, this::resolveItem, this::collectAudioFiles, this::invalidateSummaryCache);
+            config, fileSystemUtils, gson, this::resolveItem, this::collectAudioFiles, this::invalidateSummaryCache,
+            this.originRegistry);
         this.onlineIdentificationService = onlineIdentificationOverride != null
             ? onlineIdentificationOverride
             : new OnlineIdentificationService(config, reviewQueue, tagWriter, fingerprintService, artistSplitter);
@@ -242,18 +248,12 @@ public class RecoveryService implements AutoCloseable {
     }
 
     /**
-     * 提交后的收尾：隔离副本入回收站 + 条目定稿。
-     * 可重入：源目录已不在时直接跳过移动。
+     * 提交后的收尾：先幂等重放持久化的逐曲处理记录回写，再把隔离副本移入回收站并定稿条目。
+     * 可重入：任一步失败（如 DB 故障或回收站不可用）时中断，保留未完成的回收步骤待下次启动补齐。
      */
     private void finishCommittedRecovery(ReviewItem item) throws IOException {
-        File source = item.getRecoverySourcePath() == null ? null : new File(item.getRecoverySourcePath());
-        if (source != null && source.exists() && item.getRecoverySourceType() != null) {
-            RecoveryJob trashJob = new RecoveryJob();
-            trashJob.id = item.getId();
-            trashJob.sourceType = SourceType.valueOf(item.getRecoverySourceType());
-            trashJob.relativePath = recoverySourceRelativePath(trashJob.sourceType, source);
-            moveToTrash(source, trashJob);
-        }
+        replayCommittedTrackRecords(item);
+        retireRecoveryCopyOnly(item);
         boolean local = item.getVerificationSource() == ReviewItem.VerificationSource.LOCAL_TAGS;
         if (item.getRecoverySourceType() == null && local) {
             folderAlbumCache.clearFolderUnresolved(item.getFolderPath());
@@ -271,6 +271,38 @@ public class RecoveryService implements AutoCloseable {
         reviewQueue.markResolved(item, ReviewItem.Status.CONFIRMED,
             (local ? "人工确认本地入库: " : "人工确认联网候选: ")
                 + (item.getResolvedAlbumTitle() == null ? "" : item.getResolvedAlbumTitle()));
+    }
+
+    private void replayCommittedTrackRecords(ReviewItem item) throws IOException {
+        if (processedLogger == null || item == null
+                || item.getCommittedTrackRecords() == null || item.getCommittedTrackRecords().isEmpty()) {
+            return;
+        }
+        List<ProcessedFileLogger.RecordMigration> migrations = new ArrayList<>();
+        for (ReviewItem.CommittedTrackRecord tr : item.getCommittedTrackRecords()) {
+            if (tr == null || !meaningful(tr.getOutputPath())) continue;
+            File output = new File(tr.getOutputPath());
+            File isolated = meaningful(tr.getIsolatedPath()) ? new File(tr.getIsolatedPath()) : null;
+            File fallback = meaningful(tr.getFallbackIsolatedPath()) ? new File(tr.getFallbackIsolatedPath()) : null;
+            if (tr.isRecoverySource()) {
+                Path preOrigin = meaningful(tr.getOriginPath()) ? Path.of(tr.getOriginPath()) : null;
+                migrations.add(buildRecoveryRecordMigration(
+                    isolated, fallback, parseSourceType(tr.getSourceType()), preOrigin, output,
+                    tr.getRecordingId(), tr.getArtist(), tr.getTitle(), tr.getAlbum(), tr.getReleaseGroupId()));
+            } else if (tr.isReprocessSource()) {
+                List<String> delTemp = (isolated != null && !sameNormalizedPath(isolated, output))
+                    ? List.of(isolated.getAbsolutePath()) : List.of();
+                migrations.add(new ProcessedFileLogger.RecordMigration(
+                    output, tr.getRecordingId(), tr.getArtist(), tr.getTitle(), tr.getAlbum(),
+                    tr.getReleaseGroupId(), output.getAbsolutePath(), null, delTemp, List.of()));
+            } else if (isolated != null) {
+                processedLogger.markFileAsProcessed(isolated, tr.getRecordingId(), tr.getArtist(),
+                    tr.getTitle(), tr.getAlbum(), tr.getReleaseGroupId(), output.getAbsolutePath());
+            }
+        }
+        if (!migrations.isEmpty() && !processedLogger.applyRecordMigrationsAtomically(migrations)) {
+            throw new IOException("recovery.record.persist.failed");
+        }
     }
 
     public List<Map<String, Object>> listItems() {
@@ -807,22 +839,42 @@ public class RecoveryService implements AutoCloseable {
             }
         }
 
+        boolean recoverySource = isRecoverySourceItem(item);
+        boolean reprocessSource = !recoverySource && isReprocessSourceItem(item);
+        SourceType recoverySourceType = parseSourceType(item.getRecoverySourceType());
+        File fallbackIsolated = recoverySource && snapshot.files().size() == 1
+            && meaningful(item.getRecoverySourcePath()) ? new File(item.getRecoverySourcePath()) : null;
+        List<ReviewItem.CommittedTrackRecord> plannedRecords = new ArrayList<>(snapshot.files().size());
+        for (var entry : snapshot.files().entrySet()) {
+            File file = entry.getValue().toFile();
+            File output = Path.of(config.getOutputDirectory()).resolve(albumUnit).resolve(entry.getKey()).toFile();
+            ReviewItem.CommittedTrackRecord tr = new ReviewItem.CommittedTrackRecord();
+            tr.setIsolatedPath(file.getAbsolutePath());
+            tr.setFallbackIsolatedPath(fallbackIsolated == null ? null : fallbackIsolated.getAbsolutePath());
+            tr.setSourceType(item.getRecoverySourceType());
+            if (recoverySource) {
+                resolveOriginForRecovery(file, fallbackIsolated, recoverySourceType)
+                    .ifPresent(origin -> tr.setOriginPath(origin.toString()));
+            }
+            tr.setOutputPath(output.getAbsolutePath());
+            tr.setRecordingId("LOCAL_TAGS");
+            tr.setArtist(artist);
+            tr.setTitle(file.getName());
+            tr.setAlbum(album);
+            tr.setRecoverySource(recoverySource);
+            tr.setReprocessSource(reprocessSource);
+            plannedRecords.add(tr);
+        }
+
         item.setVerificationSource(ReviewItem.VerificationSource.LOCAL_TAGS);
         item.setResolvedAlbumTitle(album);
         item.setResolvedAlbumArtist(artist);
         item.setResolvedTrackCount(snapshot.files().size());
         item.setRecoveryCommitState(ReviewItem.RecoveryCommitState.COMMITTED);
         item.setCommittedOutputPaths(committed.stream().map(Path::toString).toList());
+        item.setCommittedTrackRecords(plannedRecords);
         reviewQueue.update(item);
 
-        boolean temporarySource = isTemporarySourceItem(item);
-        for (var entry : snapshot.files().entrySet()) {
-            File file = entry.getValue().toFile();
-            File output = Path.of(config.getOutputDirectory()).resolve(albumUnit).resolve(entry.getKey()).toFile();
-            File recordSource = temporarySource ? output : file;
-            processedLogger.markFileAsProcessed(recordSource, "LOCAL_TAGS", artist, file.getName(), album,
-                null, output.getAbsolutePath());
-        }
         finishCommittedRecovery(item);
         return item;
     }
@@ -1237,7 +1289,37 @@ public class RecoveryService implements AutoCloseable {
             throw e;
         }
 
-        // 输出已落地，立即落盘提交阶段；之后任一步失败都能在启动时接着收尾，而不会重写输出。
+        boolean recoverySource = isRecoverySourceItem(item);
+        boolean reprocessSource = !recoverySource && isReprocessSourceItem(item);
+        SourceType recoverySourceType = parseSourceType(item.getRecoverySourceType());
+        File fallbackIsolated = recoverySource && originalFiles.size() == 1
+            && meaningful(item.getRecoverySourcePath()) ? new File(item.getRecoverySourcePath()) : null;
+        List<ReviewItem.CommittedTrackRecord> plannedRecords = new ArrayList<>(originalFiles.size());
+        for (File file : originalFiles) {
+            Path relative = outputByOriginalPath.get(file.getAbsolutePath());
+            File output = Path.of(config.getOutputDirectory()).resolve(relative).toFile();
+            ReviewItem.OnlineTrack matchedTrack = trackByFile.get(file.getAbsolutePath());
+            String trackTitle = matchedTrack != null && meaningful(matchedTrack.getTitle())
+                ? matchedTrack.getTitle() : file.getName();
+            ReviewItem.CommittedTrackRecord tr = new ReviewItem.CommittedTrackRecord();
+            tr.setIsolatedPath(file.getAbsolutePath());
+            tr.setFallbackIsolatedPath(fallbackIsolated == null ? null : fallbackIsolated.getAbsolutePath());
+            tr.setSourceType(item.getRecoverySourceType());
+            if (recoverySource) {
+                resolveOriginForRecovery(file, fallbackIsolated, recoverySourceType)
+                    .ifPresent(origin -> tr.setOriginPath(origin.toString()));
+            }
+            tr.setOutputPath(output.getAbsolutePath());
+            tr.setRecordingId("ONLINE_SEARCH");
+            tr.setArtist(finalArtist);
+            tr.setTitle(trackTitle);
+            tr.setAlbum(finalAlbum);
+            tr.setRecoverySource(recoverySource);
+            tr.setReprocessSource(reprocessSource);
+            plannedRecords.add(tr);
+        }
+
+        // 输出已落地，立即连同逐曲回写清单落盘提交阶段；之后任一步崩溃都能在启动时幂等重放回写再收尾。
         item.setVerificationSource(ReviewItem.VerificationSource.ONLINE_SEARCH);
         item.setResolvedAlbumTitle(finalAlbum);
         item.setResolvedAlbumArtist(finalArtist);
@@ -1245,22 +1327,8 @@ public class RecoveryService implements AutoCloseable {
         item.setResolvedTrackCount(files.size());
         item.setRecoveryCommitState(ReviewItem.RecoveryCommitState.COMMITTED);
         item.setCommittedOutputPaths(committed.stream().map(Path::toString).toList());
+        item.setCommittedTrackRecords(plannedRecords);
         reviewQueue.update(item);
-
-        boolean temporarySource = isTemporarySourceItem(item);
-        for (File file : originalFiles) {
-            Path relative = outputByOriginalPath.get(file.getAbsolutePath());
-            String targetPath = Path.of(config.getOutputDirectory()).resolve(relative)
-                .toFile().getAbsolutePath();
-            ReviewItem.OnlineTrack matchedTrack = trackByFile.get(file.getAbsolutePath());
-            String trackTitle = matchedTrack != null && meaningful(matchedTrack.getTitle())
-                ? matchedTrack.getTitle() : file.getName();
-            // 仅当源文件来自可清理的临时暂存（reprocess-*）或隔离目录时，才记录最终归档路径；
-            // 普通监控目录条目虽有 stagingDir，但原文件留在监控目录，必须记录监控源路径防止下一轮扫描死循环重刮。
-            File recordSource = temporarySource ? new File(targetPath) : file;
-            processedLogger.markFileAsProcessed(recordSource, "ONLINE_SEARCH", finalArtist,
-                trackTitle, finalAlbum, null, targetPath);
-        }
 
         if (selectedCover != null) {
             coverCandidateService.promoteIfMusicBrainz(selectedCover);
@@ -1340,19 +1408,529 @@ public class RecoveryService implements AutoCloseable {
     }
 
     private boolean isTemporarySourceItem(ReviewItem item) {
-        if (item == null) {
-            return false;
-        }
-        return (reviewQueue != null && reviewQueue.findReprocessRoot(item) != null)
-            || (meaningful(item.getRecoverySourceType()) && meaningful(item.getRecoverySourcePath()));
+        return isRecoverySourceItem(item) || isReprocessSourceItem(item);
     }
 
-    /** 供「缺少封面」服务在提交完来自 recovery 目录的条目后统一回收隔离副本。 */
+    private boolean isRecoverySourceItem(ReviewItem item) {
+        return item != null && meaningful(item.getRecoverySourceType()) && meaningful(item.getRecoverySourcePath());
+    }
+
+    private boolean isReprocessSourceItem(ReviewItem item) {
+        return item != null && reviewQueue != null && reviewQueue.findReprocessRoot(item) != null;
+    }
+
+    public static SourceType parseSourceType(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return SourceType.valueOf(raw.trim());
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /** 供「缺少封面」服务在提交完来自 recovery 目录的条目后统一回收隔离副本（兼容旧调用）。 */
     public void retireRecoveryCopyIfNeeded(ReviewItem item) throws IOException {
         if (item == null || item.getRecoverySourceType() == null || item.getRecoverySourcePath() == null) {
             return;
         }
         finishCommittedRecovery(item);
+    }
+
+    /**
+     * 仅回收关联隔离副本（含另一隔离目录经同源核验的历史副本与 single-&lt;jobId&gt; 临时目录），
+     * 不改动 ReviewItem 的状态与 resolutionNote，供 ReviewResolutionService 与 CoverMissingService 复用。
+     */
+    public void retireRecoveryCopyOnly(ReviewItem item) throws IOException {
+        if (item == null) {
+            return;
+        }
+        if (meaningful(item.getRecoverySourceType()) && meaningful(item.getRecoverySourcePath())) {
+            SourceType sourceType = parseSourceType(item.getRecoverySourceType());
+            File source = new File(item.getRecoverySourcePath());
+            if (sourceType != null) {
+                String relativePath = recoverySourceRelativePath(sourceType, source);
+                CounterpartEvidence evidence = captureCounterpartEvidence(source);
+                if (source.exists()) {
+                    moveToTrash(source, item.getId(), sourceType, relativePath);
+                } else {
+                    originRegistry.removeUnder(source.toPath());
+                }
+                cleanupAssociatedRecoveryCopy(item.getId(), sourceType, relativePath, evidence);
+            }
+        }
+        cleanupSingleFileWorkspaceIfNeeded(item);
+    }
+
+    private void cleanupSingleFileWorkspaceIfNeeded(ReviewItem item) {
+        if (item == null || !meaningful(item.getFolderPath())) {
+            return;
+        }
+        Path workRoot = resolveWorkRoot().toAbsolutePath().normalize();
+        Path folder = Path.of(item.getFolderPath()).toAbsolutePath().normalize();
+        if (folder.getParent() != null
+                && folder.getParent().equals(workRoot)
+                && folder.getFileName() != null
+                && folder.getFileName().toString().startsWith("single-")
+                && !Files.isSymbolicLink(folder)) {
+            originRegistry.removeUnder(folder);
+            try {
+                deleteRecursively(folder);
+            } catch (IOException e) {
+                log.warn("清理单文件恢复工作目录失败: {} - {}", folder, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 全恢复出口统一的隔离副本处理记录回写协作者。
+     *
+     * <p>分支策略：
+     * <ol>
+     *   <li>监控根目录可访问且原监控文件仍在磁盘 -> 以原监控文件路径原位 UPSERT 升级为 SUCCESS</li>
+     *   <li>监控根目录可访问且原监控文件已删除 -> 删除原监控旧 FAILED 行，并以最终归档路径写 SUCCESS</li>
+     *   <li>监控根目录暂不可访问（如 NAS 离线）-> 保留以原监控路径写回 SUCCESS，防止重新挂载后重复扫描</li>
+     *   <li>无法解析出监控源血缘 -> 以最终归档路径写单条 SUCCESS</li>
+     * </ol>
+     */
+    public void recordRecoveredArchiveFile(File isolatedFile,
+                                           File fallbackIsolatedFile,
+                                           SourceType sourceType,
+                                           Path preResolvedOrigin,
+                                           File finalOutputFile,
+                                           String recordingId,
+                                           String artist,
+                                           String title,
+                                           String album,
+                                           String releaseGroupId) {
+        if (processedLogger == null || finalOutputFile == null) {
+            return;
+        }
+        ProcessedFileLogger.RecordMigration migration = buildRecoveryRecordMigration(
+            isolatedFile, fallbackIsolatedFile, sourceType, preResolvedOrigin, finalOutputFile,
+            recordingId, artist, title, album, releaseGroupId);
+        if (!processedLogger.applyRecordMigrationsAtomically(List.of(migration))) {
+            throw new IllegalStateException("Failed to persist recovered archive record for " + finalOutputFile);
+        }
+    }
+
+    private ProcessedFileLogger.RecordMigration buildRecoveryRecordMigration(File isolatedFile,
+                                                                             File fallbackIsolatedFile,
+                                                                             SourceType sourceType,
+                                                                             Path preResolvedOrigin,
+                                                                             File finalOutputFile,
+                                                                             String recordingId,
+                                                                             String artist,
+                                                                             String title,
+                                                                             String album,
+                                                                             String releaseGroupId) {
+        Path origin = preResolvedOrigin != null
+            ? preResolvedOrigin
+            : resolveOriginForRecovery(isolatedFile, fallbackIsolatedFile, sourceType).orElse(null);
+
+        Set<String> unconditionalDeletes = new LinkedHashSet<>();
+        Set<String> failedOnlyDeletes = new LinkedHashSet<>();
+        String finalTargetPath = finalOutputFile.getAbsolutePath();
+
+        File upsertFile;
+        if (origin == null) {
+            upsertFile = finalOutputFile;
+        } else {
+            Path monitorRoot = configuredMonitorRoot();
+            boolean monitorAccessible = isMonitorRootAccessible(monitorRoot);
+            if (monitorAccessible) {
+                if (Files.isRegularFile(origin)) {
+                    // Branch 1: 监控源文件仍在 -> 原位 UPSERT 升级原监控行
+                    upsertFile = origin.toFile();
+                    if (!sameNormalizedPath(finalOutputFile, upsertFile)) {
+                        // 若此前曾分裂写入过输出路径行，一并清理避免双行残留
+                        unconditionalDeletes.add(finalOutputFile.getAbsolutePath());
+                    }
+                } else if (Files.notExists(origin)) {
+                    // Branch 2: 监控根目录可读且确认源文件不存在 -> 写入最终输出路径，仅当原监控行仍为 FAILED 时清理
+                    upsertFile = finalOutputFile;
+                    collectOriginDeleteCandidates(origin, failedOnlyDeletes);
+                } else {
+                    // 无法确认不存在（如权限错误 / IO 异常）-> 按不可访问保守保留监控路径键
+                    upsertFile = origin.toFile();
+                }
+            } else {
+                // Branch 3: 监控根目录暂不可访问 -> 保留监控路径键防重新挂载后重扫
+                upsertFile = origin.toFile();
+            }
+        }
+
+        if (isolatedFile != null && !sameNormalizedPath(isolatedFile, upsertFile)) {
+            unconditionalDeletes.add(isolatedFile.getAbsolutePath());
+        }
+        if (fallbackIsolatedFile != null
+                && !sameNormalizedPath(fallbackIsolatedFile, upsertFile)) {
+            unconditionalDeletes.add(fallbackIsolatedFile.getAbsolutePath());
+        }
+        // 避免误删本次正要写入的 upsert 目标行
+        String upsertKey = upsertFile.getAbsolutePath();
+        unconditionalDeletes.remove(upsertKey);
+        failedOnlyDeletes.remove(upsertKey);
+
+        return new ProcessedFileLogger.RecordMigration(
+            upsertFile, recordingId, artist, title, album, releaseGroupId,
+            finalTargetPath, null, unconditionalDeletes, failedOnlyDeletes);
+    }
+
+    private void collectOriginDeleteCandidates(Path origin, Set<String> out) {
+        if (origin == null) return;
+        out.add(origin.toFile().getAbsolutePath());
+        Path parent = origin.getParent();
+        if (parent != null && origin.getFileName() != null) {
+            Path canonParent = canonicalPathOrNull(parent);
+            if (canonParent != null) {
+                out.add(canonParent.resolve(origin.getFileName()).toFile().getAbsolutePath());
+            }
+        }
+    }
+
+    private static boolean isMonitorRootAccessible(Path monitorRoot) {
+        if (monitorRoot == null || !Files.isDirectory(monitorRoot) || !Files.isReadable(monitorRoot)) {
+            return false;
+        }
+        try (var stream = Files.list(monitorRoot)) {
+            stream.findFirst();
+            return true;
+        } catch (IOException | SecurityException e) {
+            return false;
+        }
+    }
+
+    Optional<Path> resolveOriginForRecovery(File isolatedFile, File fallbackIsolatedFile, SourceType sourceType) {
+        if (isolatedFile != null) {
+            Optional<Path> tracked = originRegistry.findOrigin(isolatedFile);
+            if (tracked.isPresent()) {
+                return tracked;
+            }
+        }
+        if (fallbackIsolatedFile != null && !sameNormalizedPath(fallbackIsolatedFile, isolatedFile)) {
+            Optional<Path> trackedFallback = originRegistry.findOrigin(fallbackIsolatedFile);
+            if (trackedFallback.isPresent()) {
+                return trackedFallback;
+            }
+        }
+        if (isolatedFile != null) {
+            Optional<Path> legacy = inferLegacyOrigin(isolatedFile, sourceType);
+            if (legacy.isPresent()) {
+                return legacy;
+            }
+        }
+        if (fallbackIsolatedFile != null && !sameNormalizedPath(fallbackIsolatedFile, isolatedFile)) {
+            return inferLegacyOrigin(fallbackIsolatedFile, sourceType);
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * 存量隔离副本（升级前已进入 failed/partial、未登记于 recovery-origins.json）的保守兜底反推。
+     * 仅在监控根目录可读、唯一匹配且通过音频内容校验时绑定；任何歧义均返回 empty。
+     */
+    Optional<Path> inferLegacyOrigin(File isolatedFile, SourceType sourceType) {
+        if (isolatedFile == null || sourceType == null) {
+            return Optional.empty();
+        }
+        Path monitorRoot = configuredMonitorRoot();
+        if (monitorRoot == null || !Files.isDirectory(monitorRoot)) {
+            return Optional.empty();
+        }
+        Path isolatedPath = isolatedFile.toPath().toAbsolutePath().normalize();
+        if (sourceType == SourceType.FAILED) {
+            return inferLegacyFailedOrigin(isolatedPath, monitorRoot);
+        }
+        if (sourceType == SourceType.PARTIAL) {
+            return inferLegacyPartialOrigin(isolatedPath, monitorRoot);
+        }
+        return Optional.empty();
+    }
+
+    private Optional<Path> inferLegacyFailedOrigin(Path isolatedPath, Path monitorRoot) {
+        Path failedRoot = configuredDirPath(config.getFailedDirectory());
+        if (failedRoot == null) {
+            return Optional.empty();
+        }
+        Path rel = relativizeStrictlyInside(isolatedPath, failedRoot);
+        if (rel == null) {
+            return Optional.empty();
+        }
+        Path candidate = monitorRoot.resolve(rel).toAbsolutePath().normalize();
+        if (!candidate.startsWith(monitorRoot) || candidate.equals(monitorRoot)) {
+            return Optional.empty();
+        }
+        if (Files.isRegularFile(candidate)) {
+            if (!verifyFailedLegacyMatch(isolatedPath, candidate)) {
+                return Optional.empty();
+            }
+            return Optional.of(findExistingRecordPath(candidate).orElse(candidate));
+        }
+        Optional<Path> failedRecordPath = findFailedRecordPath(candidate);
+        return failedRecordPath;
+    }
+
+    private Optional<Path> inferLegacyPartialOrigin(Path isolatedPath, Path monitorRoot) {
+        if (processedLogger == null) {
+            return Optional.empty();
+        }
+        Path partialRoot = configuredDirPath(config.getPartialDirectory());
+        if (partialRoot == null) {
+            return Optional.empty();
+        }
+        Path rel = relativizeStrictlyInside(isolatedPath, partialRoot);
+        if (rel == null) {
+            return Optional.empty();
+        }
+        List<ProcessedRecord> monitorFailed = loadMonitorFailedRecords(monitorRoot);
+        if (monitorFailed.isEmpty()) {
+            return Optional.empty();
+        }
+
+        // 同时收集「直接相对路径」与「扁平专辑目录名」全部候选，统一判重避免直接路径掩盖同名目录歧义
+        Set<Path> allCandidates = new LinkedHashSet<>();
+
+        Path directRelParent = rel.getParent();
+        String isoName = rel.getFileName().toString();
+        for (ProcessedRecord rec : monitorFailed) {
+            Path recPath = Path.of(rec.filePath).toAbsolutePath().normalize();
+            Path recRel = relativizeStrictlyInside(recPath, monitorRoot);
+            if (recRel == null) continue;
+            if (java.util.Objects.equals(directRelParent, recRel.getParent())
+                    && isoName.equals(recRel.getFileName().toString())) {
+                allCandidates.add(recPath);
+            }
+        }
+
+        if (rel.getNameCount() >= 2) {
+            String topFolderName = rel.getName(0).toString();
+            Path insideRel = rel.subpath(1, rel.getNameCount());
+            Map<Path, List<ProcessedRecord>> byFolder = new LinkedHashMap<>();
+            for (ProcessedRecord rec : monitorFailed) {
+                String folderStr = ProcessedFileLogger.computeFolderPath(rec.filePath, config);
+                if (!meaningful(folderStr)) continue;
+                Path folder = Path.of(folderStr).toAbsolutePath().normalize();
+                if (folder.getFileName() != null && topFolderName.equals(folder.getFileName().toString())) {
+                    byFolder.computeIfAbsent(folder, k -> new ArrayList<>()).add(rec);
+                }
+            }
+            if (byFolder.size() > 1) {
+                return Optional.empty();
+            }
+            if (byFolder.size() == 1) {
+                Map.Entry<Path, List<ProcessedRecord>> uniqueFolder = byFolder.entrySet().iterator().next();
+                Path matchedFolder = uniqueFolder.getKey();
+                Path insideParent = insideRel.getParent();
+                String insideName = insideRel.getFileName().toString();
+                for (ProcessedRecord rec : uniqueFolder.getValue()) {
+                    Path recPath = Path.of(rec.filePath).toAbsolutePath().normalize();
+                    Path recInside = relativizeStrictlyInside(recPath, matchedFolder);
+                    if (recInside == null) continue;
+                    if (java.util.Objects.equals(insideParent, recInside.getParent())
+                            && insideName.equals(recInside.getFileName().toString())) {
+                        allCandidates.add(recPath);
+                    }
+                }
+            }
+        }
+
+        if (allCandidates.size() != 1) {
+            return Optional.empty();
+        }
+        Path candidate = allCandidates.iterator().next();
+        if (Files.isRegularFile(candidate) && !verifyPartialLegacyMatch(isolatedPath, candidate)) {
+            return Optional.empty();
+        }
+        return Optional.of(candidate);
+    }
+
+    private List<ProcessedRecord> loadMonitorFailedRecords(Path monitorRoot) {
+        ProcessedRecordQuery q = new ProcessedRecordQuery();
+        q.status = ProcessedRecord.Status.FAILED;
+        List<ProcessedRecord> allFailed = processedLogger.findRecords(q, Integer.MAX_VALUE);
+        if (allFailed == null || allFailed.isEmpty()) {
+            return List.of();
+        }
+        Path canonicalMonitor = canonicalPathOrNull(monitorRoot);
+        List<ProcessedRecord> result = new ArrayList<>();
+        for (ProcessedRecord rec : allFailed) {
+            if (rec == null || !meaningful(rec.filePath)) continue;
+            try {
+                Path recPath = Path.of(rec.filePath).toAbsolutePath().normalize();
+                if (isStrictlyInside(recPath, monitorRoot)
+                        || (canonicalMonitor != null && isStrictlyInside(recPath, canonicalMonitor))) {
+                    result.add(rec);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return result;
+    }
+
+    private Optional<Path> findExistingRecordPath(Path candidate) {
+        if (processedLogger == null || candidate == null) {
+            return Optional.empty();
+        }
+        Set<String> lookup = new LinkedHashSet<>();
+        lookup.add(candidate.toAbsolutePath().normalize().toString());
+        Path canonical = canonicalPathOrNull(candidate);
+        if (canonical != null) {
+            lookup.add(canonical.toString());
+        }
+        List<ProcessedRecord> found = processedLogger.findRecordsByPaths(lookup);
+        if (found != null && !found.isEmpty() && meaningful(found.get(0).filePath)) {
+            return Optional.of(Path.of(found.get(0).filePath));
+        }
+        return Optional.empty();
+    }
+
+    private Optional<Path> findFailedRecordPath(Path candidate) {
+        if (processedLogger == null || candidate == null) {
+            return Optional.empty();
+        }
+        Set<String> lookup = new LinkedHashSet<>();
+        lookup.add(candidate.toAbsolutePath().normalize().toString());
+        Path parent = candidate.getParent();
+        if (parent != null && candidate.getFileName() != null) {
+            Path canonicalParent = canonicalPathOrNull(parent);
+            if (canonicalParent != null) {
+                lookup.add(canonicalParent.resolve(candidate.getFileName()).toString());
+            }
+        }
+        List<ProcessedRecord> found = processedLogger.findRecordsByPaths(lookup);
+        if (found != null) {
+            for (ProcessedRecord rec : found) {
+                if (rec != null && rec.status == ProcessedRecord.Status.FAILED && meaningful(rec.filePath)) {
+                    return Optional.of(Path.of(rec.filePath));
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private boolean verifyFailedLegacyMatch(Path isolatedPath, Path candidate) {
+        if (!Files.isRegularFile(isolatedPath) || !Files.isRegularFile(candidate)) {
+            return false;
+        }
+        Optional<String> isoMd5 = ArchiveDuplicateDetector.flacAudioMd5(isolatedPath);
+        Optional<String> candMd5 = ArchiveDuplicateDetector.flacAudioMd5(candidate);
+        if (isoMd5.isPresent() && candMd5.isPresent()) {
+            return isoMd5.get().equals(candMd5.get());
+        }
+        if (isoMd5.isPresent() != candMd5.isPresent()) {
+            return false;
+        }
+        try {
+            return Files.size(isolatedPath) == Files.size(candidate);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private boolean verifyPartialLegacyMatch(Path isolatedPath, Path candidate) {
+        if (!Files.isRegularFile(isolatedPath) || !Files.isRegularFile(candidate)) {
+            return false;
+        }
+        Optional<String> isoMd5 = ArchiveDuplicateDetector.flacAudioMd5(isolatedPath);
+        Optional<String> candMd5 = ArchiveDuplicateDetector.flacAudioMd5(candidate);
+        if (isoMd5.isPresent() && candMd5.isPresent()) {
+            return isoMd5.get().equals(candMd5.get());
+        }
+        if (isoMd5.isPresent() != candMd5.isPresent()) {
+            return false;
+        }
+        String isoExt = fileExtensionLower(isolatedPath);
+        String candExt = fileExtensionLower(candidate);
+        if (!isoExt.equals(candExt)) {
+            // 存量无显式血缘时，绝不仅凭跨格式扩展名（如 .wav -> .flac）盲绑，避免误绑无关音频
+            return false;
+        }
+        try {
+            return Files.size(isolatedPath) == Files.size(candidate);
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static String fileExtensionLower(Path path) {
+        if (path == null || path.getFileName() == null) return "";
+        String name = path.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        return dot >= 0 ? name.substring(dot).toLowerCase(Locale.ROOT) : "";
+    }
+
+    private static String fileStem(String fileName) {
+        if (fileName == null) return "";
+        int dot = fileName.lastIndexOf('.');
+        return dot > 0 ? fileName.substring(0, dot) : fileName;
+    }
+
+    private Path configuredMonitorRoot() {
+        return configuredDirPath(config == null ? null : config.getMonitorDirectory());
+    }
+
+    private Path configuredDirPath(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        return Path.of(raw.trim()).toAbsolutePath().normalize();
+    }
+
+    private static Path canonicalPathOrNull(Path path) {
+        if (path == null) return null;
+        try {
+            return path.toFile().getCanonicalFile().toPath().normalize();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static boolean isStrictlyInside(Path child, Path root) {
+        return child != null && root != null && child.startsWith(root) && !child.equals(root);
+    }
+
+    private static Path relativizeStrictlyInside(Path child, Path root) {
+        if (child == null || root == null) return null;
+        Path normChild = child.toAbsolutePath().normalize();
+        Path normRoot = root.toAbsolutePath().normalize();
+        if (isStrictlyInside(normChild, normRoot)) {
+            return normRoot.relativize(normChild);
+        }
+        Path canonChild = canonicalPathOrNull(normChild);
+        Path canonRoot = canonicalPathOrNull(normRoot);
+        if (isStrictlyInside(canonChild, canonRoot)) {
+            return canonRoot.relativize(canonChild);
+        }
+        return null;
+    }
+
+    private static boolean sameNormalizedPath(File a, File b) {
+        if (a == null || b == null) return false;
+        return a.toPath().toAbsolutePath().normalize().equals(b.toPath().toAbsolutePath().normalize());
+    }
+
+    private void removeProcessedRecordIfExists(File file) {
+        if (processedLogger == null || file == null) return;
+        if (processedLogger.isFileProcessed(file)) {
+            processedLogger.removeProcessedRecord(file);
+        }
+    }
+
+    private void removeOriginRecordIfExists(Path origin) {
+        if (processedLogger == null || origin == null) return;
+        removeProcessedRecordIfExists(origin.toFile());
+        Path parent = origin.getParent();
+        if (parent != null && origin.getFileName() != null) {
+            Path canonParent = canonicalPathOrNull(parent);
+            if (canonParent != null) {
+                File canonFile = canonParent.resolve(origin.getFileName()).toFile();
+                if (!sameNormalizedPath(canonFile, origin.toFile())) {
+                    removeProcessedRecordIfExists(canonFile);
+                }
+            }
+        }
     }
 
     private byte[] compressCoverBytes(byte[] raw) {
@@ -1814,9 +2392,33 @@ public class RecoveryService implements AutoCloseable {
     }
 
     private Path findReplacedTarget(File source) {
+        return findReplacedTarget(source, null);
+    }
+
+    private Path findReplacedTarget(File source, Path knownOrigin) {
         Path tracked = replacementRegistry.findOldTarget(source).orElse(null);
-        if (tracked != null || processedLogger == null) {
+        if (tracked != null) {
             return tracked;
+        }
+        Path origin = knownOrigin != null ? knownOrigin : originRegistry.findOrigin(source).orElse(null);
+        if (origin != null) {
+            tracked = replacementRegistry.findOldTarget(origin.toFile()).orElse(null);
+            if (tracked != null) {
+                return tracked;
+            }
+            if (processedLogger != null) {
+                List<ProcessedRecord> originRecs = processedLogger.findRecordsByPaths(List.of(origin.toString()));
+                if (originRecs != null && !originRecs.isEmpty() && meaningful(originRecs.get(0).targetFilePath)) {
+                    Path savedTarget = Path.of(originRecs.get(0).targetFilePath).toAbsolutePath().normalize();
+                    Path outputRoot = configuredDirPath(config == null ? null : config.getOutputDirectory());
+                    if (outputRoot != null && isStrictlyInside(savedTarget, outputRoot) && Files.isRegularFile(savedTarget)) {
+                        return savedTarget;
+                    }
+                }
+            }
+        }
+        if (processedLogger == null) {
+            return null;
         }
         String existing = processedLogger.findTargetPath(source);
         return meaningful(existing) ? Path.of(existing) : null;
@@ -2053,10 +2655,53 @@ public class RecoveryService implements AutoCloseable {
                 return;
             }
             if (job.mode == RecoveryMode.LOCAL_ARTIST_MATCH) {
-                boolean matched = failedFileHandler.retryPartialWithLlm(target);
-                if (matched) {
-                    // 主副本已经被匹配流程移动到输出目录，只需清理另一隔离目录里的历史重复副本。
-                    cleanupAssociatedRecoveryCopy(job);
+                // 必须在 retryPartialWithLlmDetailed 删除 partial 目录前快照血缘、对侧核验证据与待替换旧归档路径
+                CounterpartEvidence counterpartEvidence = captureCounterpartEvidence(target);
+                List<File> partialAudioFiles = collectAudioFiles(target);
+                Map<Path, Path> preResolvedOrigins = new LinkedHashMap<>();
+                Map<Path, Path> preResolvedOldTargets = new LinkedHashMap<>();
+                for (File partialFile : partialAudioFiles) {
+                    Path key = partialFile.toPath().toAbsolutePath().normalize();
+                    Path origin = resolveOriginForRecovery(partialFile, null, SourceType.PARTIAL).orElse(null);
+                    if (origin != null) {
+                        preResolvedOrigins.put(key, origin);
+                    }
+                    Path oldTarget = findReplacedTarget(partialFile, origin);
+                    if (oldTarget != null) {
+                        preResolvedOldTargets.put(key, oldTarget);
+                    }
+                }
+                List<FailedFileHandler.MovedArchiveFile> moved = failedFileHandler.retryPartialWithLlmDetailed(target);
+                if (!moved.isEmpty()) {
+                    Path outputRoot = config.getOutputDirectory() == null || config.getOutputDirectory().isBlank()
+                        ? null : Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
+                    List<ProcessedFileLogger.RecordMigration> migrations = new ArrayList<>(moved.size());
+                    for (FailedFileHandler.MovedArchiveFile mf : moved) {
+                        Path partialKey = mf.partialFile().toAbsolutePath().normalize();
+                        Path origin = preResolvedOrigins.get(partialKey);
+                        migrations.add(buildRecoveryRecordMigration(
+                            mf.partialFile().toFile(), null, SourceType.PARTIAL, origin,
+                            mf.finalFile().toFile(), "LOCAL_TAGS", mf.artist(), mf.title(), mf.album(), null));
+                    }
+                    if (processedLogger != null && !processedLogger.applyRecordMigrationsAtomically(migrations)) {
+                        throw new IOException("recovery.record.persist.failed");
+                    }
+                    for (FailedFileHandler.MovedArchiveFile mf : moved) {
+                        Path partialKey = mf.partialFile().toAbsolutePath().normalize();
+                        Path origin = preResolvedOrigins.get(partialKey);
+                        Path oldTarget = preResolvedOldTargets.get(partialKey);
+                        if (oldTarget != null && outputRoot != null) {
+                            ReidentifyReplacementRegistry.deleteReplacedFileAndEmptyParents(
+                                oldTarget, mf.finalFile(), outputRoot, config.isExportLyricsToFile());
+                            replacementRegistry.remove(mf.partialFile().toFile());
+                            if (origin != null) {
+                                replacementRegistry.remove(origin.toFile());
+                            }
+                        }
+                    }
+                    originRegistry.removeUnder(target.toPath());
+                    // 主副本已经被匹配流程移动到输出目录，只需清理另一隔离目录里经同源核验的历史重复副本。
+                    cleanupAssociatedRecoveryCopy(job.id, job.sourceType, job.relativePath, counterpartEvidence);
                     complete(job, JobStatus.SUCCEEDED, "本地艺术家目录匹配成功，已移动到输出目录；关联隔离副本已清理");
                 } else {
                     complete(job, JobStatus.FAILED, "LLM 未找到可靠的现有艺术家目录，文件保持不变");
@@ -2073,6 +2718,7 @@ public class RecoveryService implements AutoCloseable {
                 processingTarget = new File(singleFileWorkspace, target.getName());
                 Files.copy(target.toPath(), processingTarget.toPath());
                 recordReplacementAlias(processingTarget.toPath(), findReplacedTarget(target));
+                originRegistry.recordAlias(target.toPath(), processingTarget.toPath());
             }
 
             List<File> audioFiles = collectAudioFiles(processingTarget);
@@ -2140,20 +2786,23 @@ public class RecoveryService implements AutoCloseable {
                     commitReplacingDuplicates(reidentifyWorkRoot.toPath(), audioFiles.size(), job.id,
                         job.sourceType == SourceType.FAILED ? job.relativePath : null,
                         DuplicatePolicy.ASK, replacedTargetPaths);
-                    clearReplacementEntries(audioFiles);
                 } catch (IOException commitError) {
                     deleteRecursively(reidentifyWorkRoot.toPath());
                     throw commitError;
                 }
+                // 必须在清理替换映射与 retireRecoveryCopies（移入回收站并清理活态血缘）之前原子回写处理记录
+                finalizeCommittedRecoveryRecords(tempTargets, audioFiles, target, job.sourceType);
+                clearReplacementEntries(audioFiles);
                 retireRecoveryCopies(target, job);
-                finalizeCommittedRecords(tempTargets, audioFiles);
                 if (singleFileWorkspace != null) {
+                    originRegistry.removeUnder(singleFileWorkspace.toPath());
                     deleteRecursively(singleFileWorkspace.toPath());
                 }
                 complete(job, JobStatus.SUCCEEDED, "重新识别成功，整张专辑已原子提交，关联隔离副本已清理");
             } else {
                 deleteRecursively(reidentifyWorkRoot.toPath());
                 if (singleFileWorkspace != null) {
+                    originRegistry.removeUnder(singleFileWorkspace.toPath());
                     deleteRecursively(singleFileWorkspace.toPath());
                 }
                 complete(job, JobStatus.FAILED,
@@ -2168,6 +2817,7 @@ public class RecoveryService implements AutoCloseable {
             if (singleFileWorkspace != null && (reviewQueue == null
                 || !reviewQueue.isFolderUnderReview(singleFileWorkspace.getAbsolutePath()))) {
                 try {
+                    originRegistry.removeUnder(singleFileWorkspace.toPath());
                     deleteRecursively(singleFileWorkspace.toPath());
                 } catch (IOException cleanupError) {
                     log.debug("清理恢复工作目录失败: {}", cleanupError.getMessage());
@@ -2336,27 +2986,91 @@ public class RecoveryService implements AutoCloseable {
      * 两份内容可能并不相同（部分识别副本可能经过转码/补标签），因此都遵守回收站策略，
      * 不能把关联副本直接永久删除。
      */
-    private void retireRecoveryCopies(File source, RecoveryJob job) throws IOException {
-        moveToTrash(source, job);
-        cleanupAssociatedRecoveryCopy(job);
+    private record CounterpartEvidence(Set<Path> originPaths, Set<String> flacMd5s, Set<String> nonFlacNameSizes) { }
+
+    private CounterpartEvidence captureCounterpartEvidence(File source) {
+        Set<Path> originPaths = new LinkedHashSet<>();
+        Set<String> flacMd5s = new LinkedHashSet<>();
+        Set<String> nonFlacNameSizes = new LinkedHashSet<>();
+        if (source == null) {
+            return new CounterpartEvidence(originPaths, flacMd5s, nonFlacNameSizes);
+        }
+        originPaths.addAll(originRegistry.findOriginsUnder(source.toPath()).values());
+        for (File f : collectAudioFiles(source)) {
+            Path p = f.toPath();
+            Optional<String> md5 = ArchiveDuplicateDetector.flacAudioMd5(p);
+            if (md5.isPresent()) {
+                flacMd5s.add(md5.get());
+            } else {
+                try {
+                    if (Files.isRegularFile(p)) {
+                        nonFlacNameSizes.add(f.getName() + ":" + Files.size(p));
+                    }
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        return new CounterpartEvidence(originPaths, flacMd5s, nonFlacNameSizes);
     }
 
-    private void cleanupAssociatedRecoveryCopy(RecoveryJob job) {
-        SourceType siblingType = job.sourceType == SourceType.PARTIAL ? SourceType.FAILED : SourceType.PARTIAL;
+    private boolean isConfirmedCounterpart(CounterpartEvidence sourceEvidence, File sibling) {
+        if (sourceEvidence == null || sibling == null || !sibling.exists()) {
+            return false;
+        }
+        Map<Path, Path> siblingOrigins = originRegistry.findOriginsUnder(sibling.toPath());
+        if (!sourceEvidence.originPaths().isEmpty() && !siblingOrigins.isEmpty()) {
+            return !java.util.Collections.disjoint(sourceEvidence.originPaths(), siblingOrigins.values());
+        }
+        // 任一侧缺少显式血缘时，必须通过音频指纹或同尺寸文件名核验，绝不仅凭同名目录误删无关专辑
+        for (File f : collectAudioFiles(sibling)) {
+            Path p = f.toPath();
+            Optional<String> md5 = ArchiveDuplicateDetector.flacAudioMd5(p);
+            if (md5.isPresent()) {
+                if (sourceEvidence.flacMd5s().contains(md5.get())) {
+                    return true;
+                }
+            } else {
+                try {
+                    if (Files.isRegularFile(p) && sourceEvidence.nonFlacNameSizes().contains(f.getName() + ":" + Files.size(p))) {
+                        return true;
+                    }
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        return false;
+    }
+
+    private void retireRecoveryCopies(File source, RecoveryJob job) throws IOException {
+        CounterpartEvidence evidence = captureCounterpartEvidence(source);
+        moveToTrash(source, job);
+        cleanupAssociatedRecoveryCopy(job.id, job.sourceType, job.relativePath, evidence);
+    }
+
+    private void cleanupAssociatedRecoveryCopy(String jobId, SourceType sourceType, String relativePath,
+                                               CounterpartEvidence sourceEvidence) {
+        if (sourceType == null || !meaningful(relativePath)) {
+            return;
+        }
+        SourceType siblingType = sourceType == SourceType.PARTIAL ? SourceType.FAILED : SourceType.PARTIAL;
         String siblingRoot = siblingType == SourceType.PARTIAL
             ? config.getPartialDirectory() : config.getFailedDirectory();
         if (siblingRoot == null || siblingRoot.isBlank()) return;
 
         try {
-            File sibling = resolveItem(siblingType, job.relativePath);
+            File sibling = resolveItem(siblingType, relativePath);
             if (sibling.exists()) {
-                moveToTrash(sibling, job.id, siblingType, job.relativePath);
+                if (!isConfirmedCounterpart(sourceEvidence, sibling)) {
+                    log.info("跳过清理对侧同名隔离副本（无法确认属于同一专辑，避免误删）: {}", sibling.getAbsolutePath());
+                    return;
+                }
+                moveToTrash(sibling, jobId, siblingType, relativePath);
                 log.info("关联的历史隔离副本已移入回收站: {}", sibling.getAbsolutePath());
             }
         } catch (IOException e) {
             // 输出已经成功提交时，清理历史重复副本失败不应把整个恢复任务反转成失败。
             log.warn("处理关联隔离副本失败，将保留给用户手动处理: {} / {} - {}",
-                siblingType, job.relativePath, e.getMessage());
+                siblingType, relativePath, e.getMessage());
         }
     }
 
@@ -2410,6 +3124,41 @@ public class RecoveryService implements AutoCloseable {
             }
         }
         return relativeBySource;
+    }
+
+    private void finalizeCommittedRecoveryRecords(Map<String, Path> relativeBySource,
+                                                  List<File> sourceFiles,
+                                                  File recoveryTarget,
+                                                  SourceType sourceType) throws IOException {
+        if (processedLogger == null || relativeBySource == null || relativeBySource.isEmpty()
+                || config.getOutputDirectory() == null || config.getOutputDirectory().isBlank()) {
+            return;
+        }
+        Path outputRoot = Path.of(config.getOutputDirectory()).toAbsolutePath().normalize();
+        File fallbackIsolated = recoveryTarget != null && recoveryTarget.isFile() ? recoveryTarget : null;
+        List<ProcessedFileLogger.RecordMigration> migrations = new ArrayList<>(sourceFiles.size());
+        for (File source : sourceFiles) {
+            Path relative = relativeBySource.get(source.getAbsolutePath());
+            if (relative == null) {
+                throw new IOException("recovery.record.missing.target:" + source.getName());
+            }
+            File finalTarget = outputRoot.resolve(relative).normalize().toFile();
+            if (!finalTarget.isFile()) {
+                throw new IOException("recovery.record.missing.output:" + finalTarget.getName());
+            }
+            List<ProcessedRecord> recs =
+                processedLogger.findRecordsByPaths(List.of(source.getAbsolutePath()));
+            if (recs.isEmpty()) {
+                throw new IOException("recovery.record.missing.intermediate:" + source.getName());
+            }
+            ProcessedRecord rec = recs.get(0);
+            migrations.add(buildRecoveryRecordMigration(
+                source, fallbackIsolated, sourceType, null, finalTarget,
+                rec.recordingId, rec.artist, rec.title, rec.album, rec.releaseGroupId));
+        }
+        if (!migrations.isEmpty() && !processedLogger.applyRecordMigrationsAtomically(migrations)) {
+            throw new IOException("recovery.record.persist.failed");
+        }
     }
 
     private void finalizeCommittedRecords(Map<String, Path> relativeBySource, List<File> sourceFiles) {

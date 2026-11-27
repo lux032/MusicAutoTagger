@@ -61,6 +61,7 @@ public class FailedFileHandler {
     private final AlbumArtistPolicy albumArtistPolicy;
     private final AutoArchiveRegistry autoArchiveRegistry;
     private final ReidentifyReplacementRegistry replacementRegistry;
+    private final RecoveryOriginRegistry originRegistry;
     private final LlmArtistSplitter artistSplitter;
     
     public FailedFileHandler(MusicConfig config, TagWriterService tagWriter,
@@ -84,7 +85,13 @@ public class FailedFileHandler {
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
         this.autoArchiveRegistry = AutoArchiveRegistry.forReviewQueuePath(config.getReviewQueuePath());
         this.replacementRegistry = ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath());
+        this.originRegistry = RecoveryOriginRegistry.forReviewQueuePath(config.getReviewQueuePath());
         this.artistSplitter = artistSplitter;
+    }
+
+    private Path monitorRootPath() {
+        String dir = config == null ? null : config.getMonitorDirectory();
+        return (dir == null || dir.isBlank()) ? null : Path.of(dir.trim());
     }
 
     /**
@@ -170,6 +177,7 @@ public class FailedFileHandler {
             LogCollector.addLog("INFO", "  -> " + I18nUtil.getMessage("main.partial.recognition.copying") + ": " + relativePath);
             Files.copy(sourceFile.toPath(), targetFile.toPath());
             replacementRegistry.recordAlias(audioFile.toPath(), targetFile.toPath());
+            originRegistry.recordFromMonitor(targetFile.toPath(), audioFile.toPath(), monitorRootPath());
             
             // 如果使用了转码文件，尽量保留原始标签
             if (sourceFile != audioFile) {
@@ -326,6 +334,7 @@ public class FailedFileHandler {
 
             // 遍历源文件并定位目标文件（必要时转码，并恢复标签/封面）
             Path albumRootPath = albumRootDir.toPath();
+            java.util.Map<Path, Path> originBatch = new java.util.LinkedHashMap<>();
             for (File audioFile : audioFiles) {
                 Path relative = albumRootPath.relativize(audioFile.toPath());
                 File targetAudioFile = new File(targetFolder, relative.toString());
@@ -355,6 +364,7 @@ public class FailedFileHandler {
                 }
 
                 replacementRegistry.recordAlias(audioFile.toPath(), targetAudioFile.toPath());
+                originBatch.put(targetAudioFile.toPath(), audioFile.toPath());
 
                 byte[] coverToEmbed = null;
                 if (hasFolderCover) {
@@ -376,6 +386,7 @@ public class FailedFileHandler {
                     }
                 }
             }
+            originRegistry.recordAllFromMonitor(originBatch, monitorRootPath());
 
             if (normalizedCount > 0) {
                 log.info("部分识别专辑已转码 {} 个文件", normalizedCount);
@@ -520,24 +531,98 @@ public class FailedFileHandler {
         return null;
     }
 
-    /**
-     * 尝试使用 LLM 匹配艺术家并移动文件到 outputDirectory
-     * @return true 如果匹配成功并移动，false 否则
-     */
+    /** LLM 艺术家匹配成功移动后的单个文件结果（供恢复服务统一回写处理记录）。 */
+    public record MovedArchiveFile(Path partialFile, Path finalFile, String artist, String title, String album) { }
+
     /**
      * 对部分识别目录中的现有文件/文件夹手动执行一次 LLM 艺术家辅助匹配。
      * 与自动流程共用同一套封闭候选匹配逻辑，不允许模型自由编造艺术家目录。
      */
     public boolean retryPartialWithLlm(File partialItem) {
+        return !retryPartialWithLlmDetailed(partialItem).isEmpty();
+    }
+
+    /**
+     * 对部分识别目录中的现有文件/文件夹手动执行 LLM 艺术家辅助匹配，返回移动后的逐曲路径与元数据映射。
+     */
+    public List<MovedArchiveFile> retryPartialWithLlmDetailed(File partialItem) {
         if (partialItem == null || !partialItem.exists()) {
-            return false;
+            return List.of();
         }
         if (partialItem.isFile()) {
-            return tryLLMMatchAndMove(partialItem, partialItem) != null;
+            Path partialPath = partialItem.toPath().toAbsolutePath().normalize();
+            Path finalFile = tryLLMMatchAndMove(partialItem, partialItem);
+            if (finalFile == null) {
+                return List.of();
+            }
+            return List.of(buildMovedArchiveFile(partialPath, finalFile.toAbsolutePath().normalize(),
+                finalFile.getParent() != null && finalFile.getParent().getParent() != null
+                    ? finalFile.getParent().getParent().getFileName().toString() : "Unknown Artist",
+                finalFile.getParent() != null ? finalFile.getParent().getFileName().toString() : "Unknown Album"));
         }
         List<File> audioFiles = new ArrayList<>();
         collectAudioFiles(partialItem, audioFiles);
-        return !audioFiles.isEmpty() && tryLLMMatchAndMoveAlbum(audioFiles.get(0), partialItem) != null;
+        if (audioFiles.isEmpty()) {
+            return List.of();
+        }
+        Path partialRoot = partialItem.toPath().toAbsolutePath().normalize();
+        List<Path> relativePaths = audioFiles.stream()
+            .map(f -> partialRoot.relativize(f.toPath().toAbsolutePath().normalize()))
+            .sorted()
+            .toList();
+        Path finalFolder = tryLLMMatchAndMoveAlbum(audioFiles.get(0), partialItem);
+        if (finalFolder == null) {
+            return List.of();
+        }
+        Path normalizedFinalFolder = finalFolder.toAbsolutePath().normalize();
+        String fallbackArtist = normalizedFinalFolder.getParent() != null && normalizedFinalFolder.getParent().getFileName() != null
+            ? normalizedFinalFolder.getParent().getFileName().toString() : "Unknown Artist";
+        String fallbackAlbum = normalizedFinalFolder.getFileName() != null
+            ? normalizedFinalFolder.getFileName().toString() : "Unknown Album";
+        List<MovedArchiveFile> moved = new ArrayList<>(relativePaths.size());
+        for (Path rel : relativePaths) {
+            Path origPartial = partialRoot.resolve(rel).toAbsolutePath().normalize();
+            Path movedFile = normalizedFinalFolder.resolve(rel).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(movedFile)) {
+                continue;
+            }
+            moved.add(buildMovedArchiveFile(origPartial, movedFile, fallbackArtist, fallbackAlbum));
+        }
+        return moved;
+    }
+
+    private MovedArchiveFile buildMovedArchiveFile(Path partialFile, Path finalFile,
+                                                   String fallbackArtist, String fallbackAlbum) {
+        com.lux032.musicautotagger.model.MusicMetadata md = null;
+        try {
+            if (tagWriter != null && Files.isRegularFile(finalFile)) {
+                md = tagWriter.readTags(finalFile.toFile());
+            }
+        } catch (Exception e) {
+            log.debug("读取 LLM 移动后文件标签失败: {} - {}", finalFile, e.getMessage());
+        }
+        String artist = firstNonBlank(
+            md == null ? null : md.getArtist(),
+            md == null ? null : md.getAlbumArtist(),
+            fallbackArtist,
+            "Unknown Artist");
+        String title = firstNonBlank(
+            md == null ? null : md.getTitle(),
+            finalFile.getFileName() != null ? finalFile.getFileName().toString() : "Unknown Title");
+        String album = firstNonBlank(
+            md == null ? null : md.getAlbum(),
+            fallbackAlbum,
+            "Unknown Album");
+        return new MovedArchiveFile(partialFile, finalFile, artist, title, album);
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String v : values) {
+            if (v != null && !v.isBlank()) {
+                return v.trim();
+            }
+        }
+        return "";
     }
 
     /** @return 归档后的文件路径；未匹配或无法安全归档时返回 null，文件保持原位 */
@@ -942,6 +1027,7 @@ public class FailedFileHandler {
             }
             Files.copy(audioFile.toPath(), targetFile.toPath());
             replacementRegistry.recordAlias(audioFile.toPath(), targetFile.toPath());
+            originRegistry.recordFromMonitor(targetFile.toPath(), audioFile.toPath(), monitorRootPath());
             log.info("文件复制完成: {}", targetFile.getAbsolutePath());
         } catch (IOException e) {
             log.error("复制文件失败: {} - {}", relativePath, e.getMessage());
@@ -979,8 +1065,15 @@ public class FailedFileHandler {
         // 递归复制整个专辑根目录（包括所有子文件夹）
         Files.createDirectories(targetFolder.toPath().toAbsolutePath().getParent());
         Files.createDirectory(targetFolder.toPath());
+        java.util.Map<Path, Path> originBatch = new java.util.LinkedHashMap<>();
         int[] counts = fileSystemUtils.copyDirectoryRecursively(albumRootFolder.toPath(), targetFolder.toPath(),
-            replacementRegistry::recordAlias);
+            (source, copy) -> {
+                replacementRegistry.recordAlias(source, copy);
+                if (isAudioFile(source.toFile())) {
+                    originBatch.put(copy, source);
+                }
+            });
+        originRegistry.recordAllFromMonitor(originBatch, monitorRootPath());
         int copiedCount = counts[0];
         int skippedCount = counts[1];
         
@@ -1007,15 +1100,19 @@ public class FailedFileHandler {
             List<File> audioFiles = new ArrayList<>();
             fileSystemUtils.collectAudioFilesForMarking(albumRootDir, audioFiles);
             
-            // 标记所有音频文件为已处理
+            // 标记所有音频文件为已处理（若属于重新识别失败，保留原归档 target_file_path）
             for (File audioFile : audioFiles) {
                 try {
+                    String oldTarget = replacementRegistry == null ? null
+                        : replacementRegistry.findOldTarget(audioFile).map(Path::toString).orElse(null);
                     processedLogger.markFileAsProcessed(
                         audioFile,
                         "UNKNOWN",
                         reason,
                         audioFile.getName(),
-                        "Unknown Album"
+                        "Unknown Album",
+                        null,
+                        oldTarget
                     );
                     markedCount++;
                 } catch (Exception e) {
@@ -1062,12 +1159,16 @@ public class FailedFileHandler {
             }
         }
         
+        String oldTarget = replacementRegistry == null ? null
+            : replacementRegistry.findOldTarget(audioFile).map(Path::toString).orElse(null);
         processedLogger.markFileAsProcessed(
             audioFile,
             "UNKNOWN",
             "识别失败 - 散落文件",
             audioFile.getName(),
-            "Unknown Album"
+            "Unknown Album",
+            null,
+            oldTarget
         );
     }
     

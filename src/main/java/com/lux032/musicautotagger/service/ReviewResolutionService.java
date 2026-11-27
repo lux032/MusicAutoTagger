@@ -39,6 +39,7 @@ public class ReviewResolutionService {
     private final ProcessedFileLogger processedLogger;
     /** 阶段七 #22：封闭式 LLM 判定（默认关闭，由 llm.album.judge.enabled 控制） */
     private final LlmAlbumJudge llmAlbumJudge;
+    private RecoveryService recoveryService;
 
     public ReviewResolutionService(MusicConfig config,
                                    ReviewQueueService reviewQueue,
@@ -58,6 +59,10 @@ public class ReviewResolutionService {
         this.durationSequenceService = durationSequenceService;
         this.processedLogger = processedLogger;
         this.llmAlbumJudge = new LlmAlbumJudge(new LlmClient(config));
+    }
+
+    public void setRecoveryService(RecoveryService recoveryService) {
+        this.recoveryService = recoveryService;
     }
 
     private Object itemLock(String id) {
@@ -426,7 +431,12 @@ public class ReviewResolutionService {
     private void finish(ReviewItem item, AlbumBatchProcessor.BatchProcessResult result,
                         ReviewItem.Status successStatus, String note) {
         if (result != null && result.isFullySuccessful()) {
-            finalizeReprocessSourceRecords(item);
+            if (!finalizeTemporarySourceRecords(item)) {
+                item.setResolutionNote("归档已落盘，但处理记录回写未完成，条目保持待确认待重试");
+                reviewQueue.update(item);
+                return;
+            }
+            retireRecoveryCopyIfNeeded(item);
             reviewQueue.markResolved(item, successStatus, note);
             return;
         }
@@ -781,25 +791,75 @@ public class ReviewResolutionService {
         return item;
     }
 
-    private void finalizeReprocessSourceRecords(ReviewItem item) {
-        if (processedLogger == null || item == null || item.getFiles() == null
-                || reviewQueue.findReprocessRoot(item) == null) {
-            return;
+    private boolean finalizeTemporarySourceRecords(ReviewItem item) {
+        if (processedLogger == null || item == null || item.getFiles() == null) {
+            return true;
         }
-        for (ReviewItem.FileEntry entry : item.getFiles()) {
-            if (entry == null || entry.getOriginalPath() == null || entry.getOriginalPath().isBlank()) continue;
-            File source = new File(entry.getOriginalPath());
-            List<com.lux032.musicautotagger.model.ProcessedRecord> recs =
-                processedLogger.findRecordsByPaths(List.of(source.getAbsolutePath()));
-            if (recs == null || recs.isEmpty()) continue;
-            com.lux032.musicautotagger.model.ProcessedRecord rec = recs.get(0);
-            if (rec.targetFilePath == null || rec.targetFilePath.isBlank()) continue;
-            File target = new File(rec.targetFilePath);
-            if (!target.isFile()) continue;
-            processedLogger.removeProcessedRecord(source);
-            processedLogger.markFileAsProcessed(
-                target, rec.recordingId, rec.artist, rec.title, rec.album, rec.releaseGroupId,
-                target.getAbsolutePath());
+        boolean recoverySource = item.getRecoverySourceType() != null && !item.getRecoverySourceType().isBlank()
+            && item.getRecoverySourcePath() != null && !item.getRecoverySourcePath().isBlank();
+        boolean reprocessSource = reviewQueue.findReprocessRoot(item) != null;
+        if (!recoverySource && !reprocessSource) {
+            return true;
+        }
+        File fallbackIsolated = recoverySource && item.getFiles().size() == 1
+            ? new File(item.getRecoverySourcePath()) : null;
+        RecoveryService.SourceType sourceType = recoverySource
+            ? RecoveryService.parseSourceType(item.getRecoverySourceType()) : null;
+        List<ProcessedFileLogger.RecordMigration> reprocessMigrations = new ArrayList<>();
+        try {
+            for (ReviewItem.FileEntry entry : item.getFiles()) {
+                if (entry == null || entry.getOriginalPath() == null || entry.getOriginalPath().isBlank()) continue;
+                File source = new File(entry.getOriginalPath());
+                List<com.lux032.musicautotagger.model.ProcessedRecord> recs =
+                    processedLogger.findRecordsByPaths(List.of(source.getAbsolutePath()));
+                if (recs == null || recs.isEmpty()) {
+                    log.error("待确认条目回写处理记录缺失临时记录，暂停回收隔离副本: {}", source.getAbsolutePath());
+                    return false;
+                }
+                com.lux032.musicautotagger.model.ProcessedRecord rec = recs.get(0);
+                if (rec.targetFilePath == null || rec.targetFilePath.isBlank()) {
+                    log.error("待确认条目回写处理记录缺少目标路径，暂停回收隔离副本: {}", source.getAbsolutePath());
+                    return false;
+                }
+                File target = new File(rec.targetFilePath);
+                if (!target.isFile()) {
+                    log.error("待确认条目回写处理记录目标文件不存在，暂停回收隔离副本: {}", target.getAbsolutePath());
+                    return false;
+                }
+                if (recoverySource && recoveryService != null) {
+                    recoveryService.recordRecoveredArchiveFile(
+                        source, fallbackIsolated, sourceType, null, target,
+                        rec.recordingId, rec.artist, rec.title, rec.album, rec.releaseGroupId);
+                } else {
+                    List<String> del = source.toPath().toAbsolutePath().normalize()
+                        .equals(target.toPath().toAbsolutePath().normalize())
+                        ? List.of() : List.of(source.getAbsolutePath());
+                    reprocessMigrations.add(new ProcessedFileLogger.RecordMigration(
+                        target, rec.recordingId, rec.artist, rec.title, rec.album, rec.releaseGroupId,
+                        target.getAbsolutePath(), null, del, List.of()));
+                }
+            }
+            if (!reprocessMigrations.isEmpty() && !processedLogger.applyRecordMigrationsAtomically(reprocessMigrations)) {
+                log.error("暂存重识别原子迁移处理记录失败: {}", item.getFolderName());
+                return false;
+            }
+            return true;
+        } catch (RuntimeException e) {
+            log.error("待确认条目回写处理记录失败，暂停回收隔离副本 ({}): {}", item.getFolderName(), e.getMessage(), e);
+            return false;
+        }
+    }
+
+    private void retireRecoveryCopyIfNeeded(ReviewItem item) {
+        if (recoveryService != null
+                && item != null
+                && item.getRecoverySourceType() != null && !item.getRecoverySourceType().isBlank()
+                && item.getRecoverySourcePath() != null && !item.getRecoverySourcePath().isBlank()) {
+            try {
+                recoveryService.retireRecoveryCopyOnly(item);
+            } catch (Exception e) {
+                log.warn("回收待确认关联隔离副本失败（输出已成功落盘）: {}", e.getMessage());
+            }
         }
     }
 

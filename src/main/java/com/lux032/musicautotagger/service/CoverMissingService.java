@@ -495,37 +495,58 @@ public class CoverMissingService implements AutoCloseable {
      * 注意：普通监控目录条目虽然也有转码 stagingDir（review-staging/<itemId>），但其原始文件留在监控目录内，
      * 绝不能删除其监控路径上的处理记录，否则下一轮扫描会重复刮削甚至死循环入队。
      */
-    private void finalizeTemporarySourceRecords(ReviewItem item) {
+    private void finalizeTemporarySourceRecords(ReviewItem item) throws IOException {
         if (processedLogger == null || item == null || item.getFiles() == null) {
             return;
         }
+        boolean recoverySource = meaningful(item.getRecoverySourceType()) && meaningful(item.getRecoverySourcePath());
         Path reprocessRoot = reviewQueue.findReprocessRoot(item);
-        boolean temporarySource = reprocessRoot != null
-            || (meaningful(item.getRecoverySourceType()) && meaningful(item.getRecoverySourcePath()));
-        if (!temporarySource) {
+        if (!recoverySource && reprocessRoot == null) {
             return;
         }
+        File fallbackIsolated = recoverySource && item.getFiles().size() == 1
+            ? new File(item.getRecoverySourcePath()) : null;
+        RecoveryService.SourceType sourceType = recoverySource
+            ? RecoveryService.parseSourceType(item.getRecoverySourceType()) : null;
+        List<ProcessedFileLogger.RecordMigration> reprocessMigrations = new ArrayList<>();
         for (ReviewItem.FileEntry entry : item.getFiles()) {
             if (entry == null || !meaningful(entry.getOriginalPath())) continue;
             File source = new File(entry.getOriginalPath());
             List<com.lux032.musicautotagger.model.ProcessedRecord> recs =
                 processedLogger.findRecordsByPaths(List.of(source.getAbsolutePath()));
-            if (recs == null || recs.isEmpty()) continue;
+            if (recs == null || recs.isEmpty()) {
+                throw new IOException("cover.record.migration.missing:" + source.getName());
+            }
             com.lux032.musicautotagger.model.ProcessedRecord rec = recs.get(0);
-            if (!meaningful(rec.targetFilePath)) continue;
+            if (!meaningful(rec.targetFilePath)) {
+                throw new IOException("cover.record.migration.missing.target:" + source.getName());
+            }
             File target = new File(rec.targetFilePath);
-            if (!target.isFile()) continue;
-            processedLogger.removeProcessedRecord(source);
-            processedLogger.markFileAsProcessed(
-                target, rec.recordingId, rec.artist, rec.title, rec.album, rec.releaseGroupId,
-                target.getAbsolutePath());
+            if (!target.isFile()) {
+                throw new IOException("cover.record.migration.missing.output:" + target.getName());
+            }
+            if (recoverySource && recoveryService != null) {
+                recoveryService.recordRecoveredArchiveFile(
+                    source, fallbackIsolated, sourceType, null, target,
+                    rec.recordingId, rec.artist, rec.title, rec.album, rec.releaseGroupId);
+            } else {
+                List<String> del = source.toPath().toAbsolutePath().normalize()
+                    .equals(target.toPath().toAbsolutePath().normalize())
+                    ? List.of() : List.of(source.getAbsolutePath());
+                reprocessMigrations.add(new ProcessedFileLogger.RecordMigration(
+                    target, rec.recordingId, rec.artist, rec.title, rec.album, rec.releaseGroupId,
+                    target.getAbsolutePath(), null, del, List.of()));
+            }
+        }
+        if (!reprocessMigrations.isEmpty() && !processedLogger.applyRecordMigrationsAtomically(reprocessMigrations)) {
+            throw new IOException("cover.record.migration.persist.failed");
         }
     }
 
     private void retireRecoveryAndCleanupStaging(ReviewItem item) {
-        if (recoveryService != null && item.getRecoverySourceType() != null && item.getRecoverySourcePath() != null) {
+        if (recoveryService != null && meaningful(item.getRecoverySourceType()) && meaningful(item.getRecoverySourcePath())) {
             try {
-                recoveryService.retireRecoveryCopyIfNeeded(item);
+                recoveryService.retireRecoveryCopyOnly(item);
             } catch (Exception e) {
                 log.warn("回收关联隔离副本失败（输出已成功落盘）: {}", e.getMessage());
             }

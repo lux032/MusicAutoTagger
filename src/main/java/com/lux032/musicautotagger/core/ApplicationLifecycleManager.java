@@ -222,6 +222,14 @@ public class ApplicationLifecycleManager {
         recoveryService = new RecoveryService(
             config, audioFileProcessorService, processedLogger, reviewQueueService, folderAlbumCache,
             failedFileHandler, fileSystemUtils, tagWriter, fingerprintService, coverCandidateService);
+        reviewResolutionService.setRecoveryService(recoveryService);
+
+        // 启动期历史分裂处理记录幂等对账（必须在文件监控扫描启动前执行，任何异常仅告警不阻断启动）
+        try {
+            new RecoveryRecordReconciler(config, processedLogger, reviewQueueService).reconcile();
+        } catch (Exception e) {
+            log.warn("启动期历史分裂记录对账失败（不影响正常启动）: {}", e.getMessage());
+        }
 
         // 「缺少封面」多源搜图 + 处置 + 手动库扫描服务
         coverSearchService = new CoverSearchService(config, reviewQueueService, coverCandidateService);
