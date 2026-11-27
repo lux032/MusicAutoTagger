@@ -52,6 +52,10 @@ public class LlmProviderServlet extends HttpServlet {
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        respondJson(resp, HttpServletResponse.SC_OK, Map.of("providers", maskedProviders()));
+    }
+
+    List<Map<String, Object>> maskedProviders() {
         List<Map<String, Object>> masked = new ArrayList<>();
         for (LlmProviderConfig provider : safeProviders()) {
             Map<String, Object> item = new LinkedHashMap<>();
@@ -65,24 +69,17 @@ public class LlmProviderServlet extends HttpServlet {
             item.put("models", provider.getModels());
             masked.add(item);
         }
-        respondJson(resp, HttpServletResponse.SC_OK, Map.of("providers", masked));
+        return masked;
     }
 
-    @Override
-    protected void doPut(HttpServletRequest req, HttpServletResponse resp) throws IOException {
-        if (!isCsrfValid(req)) {
-            respondJson(resp, HttpServletResponse.SC_FORBIDDEN, Map.of("error", "csrf.invalid"));
-            return;
-        }
-
+    /** 校验并规范化供应商列表（含防改 URL 盗用掩码密钥），不落盘，供 SetupServlet 预校验与 doPut 复用。 */
+    List<LlmProviderConfig> prepareProviders(Object rawProviders) throws ConfigServlet.ValidationException {
         List<LlmProviderConfig> incoming;
-        try (BufferedReader reader = req.getReader()) {
-            Map<String, Object> body = gson.fromJson(reader, Map.class);
-            Object providers = body == null ? null : body.get("providers");
-            incoming = gson.fromJson(gson.toJson(providers), PROVIDER_LIST_TYPE);
+        try {
+            incoming = rawProviders == null ? new ArrayList<>()
+                : gson.fromJson(gson.toJson(rawProviders), PROVIDER_LIST_TYPE);
         } catch (Exception e) {
-            respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "body.invalid"));
-            return;
+            throw new ConfigServlet.ValidationException("body.invalid", "providers");
         }
         if (incoming == null) {
             incoming = new ArrayList<>();
@@ -115,9 +112,7 @@ public class LlmProviderServlet extends HttpServlet {
                 if (existing != null && isSet(existing.getApiKey())) {
                     if (!com.lux032.musicautotagger.util.OutboundUrlValidator.sameOrigin(
                             existing.getApiUrl(), provider.getApiUrl())) {
-                        respondJson(resp, HttpServletResponse.SC_BAD_REQUEST,
-                            Map.of("error", "api.key.required.on.url.change"));
-                        return;
+                        throw new ConfigServlet.ValidationException("api.key.required.on.url.change", "apiKey");
                     }
                     provider.setApiKey(existing.getApiKey());
                 } else {
@@ -130,13 +125,47 @@ public class LlmProviderServlet extends HttpServlet {
             }
             normalized.add(provider);
         }
+        return normalized;
+    }
 
+    void commitPreparedProviders(List<LlmProviderConfig> normalized) throws IOException {
         List<LlmProviderConfig> previous = config.getLlmProviders();
         try {
             config.setLlmProviders(normalized);
             config.saveLlmProviders();
         } catch (IOException e) {
             config.setLlmProviders(previous);
+            throw e;
+        }
+    }
+
+    @Override
+    protected void doPut(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+        if (!isCsrfValid(req)) {
+            respondJson(resp, HttpServletResponse.SC_FORBIDDEN, Map.of("error", "csrf.invalid"));
+            return;
+        }
+
+        Object providers;
+        try (BufferedReader reader = req.getReader()) {
+            Map<String, Object> body = gson.fromJson(reader, Map.class);
+            providers = body == null ? null : body.get("providers");
+        } catch (Exception e) {
+            respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "body.invalid"));
+            return;
+        }
+
+        List<LlmProviderConfig> normalized;
+        try {
+            normalized = prepareProviders(providers);
+        } catch (ConfigServlet.ValidationException e) {
+            respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", e.error));
+            return;
+        }
+
+        try {
+            commitPreparedProviders(normalized);
+        } catch (IOException e) {
             log.error("保存 LLM 供应商配置失败", e);
             respondJson(resp, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, Map.of("error", "save.failed"));
             return;
@@ -188,8 +217,18 @@ public class LlmProviderServlet extends HttpServlet {
             }
         }
 
+        MusicConfig proxyOverride = null;
+        if (body.get("proxy") instanceof Map<?, ?> proxyMap) {
+            try {
+                proxyOverride = SetupServlet.buildTransientProxyConfig(proxyMap, config);
+            } catch (ConfigServlet.ValidationException e) {
+                respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", e.error));
+                return;
+            }
+        }
+
         try {
-            LlmModelCatalog.Result result = catalog.fetch(apiUrl, apiKey, format);
+            LlmModelCatalog.Result result = catalog.fetch(apiUrl, apiKey, format, proxyOverride);
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("models", result.models);
             payload.put("modelsUrl", result.modelsUrl);

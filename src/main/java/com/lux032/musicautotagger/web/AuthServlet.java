@@ -6,12 +6,20 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
+import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.util.AdminCredentialsStore;
+import com.lux032.musicautotagger.util.I18nUtil;
+import com.lux032.musicautotagger.util.SetupStateStore;
 import org.mindrot.jbcrypt.BCrypt;
 
 import java.io.BufferedReader;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayDeque;
@@ -19,6 +27,8 @@ import java.util.Base64;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class AuthServlet extends HttpServlet {
@@ -29,18 +39,32 @@ public class AuthServlet extends HttpServlet {
     private static final int MAX_LOGIN_FAILURES = 10;
     private static final long LOGIN_WINDOW_MILLIS = 15L * 60 * 1000;
     private static final int MAX_TRACKED_CLIENTS = 1024;
+    private static final Set<String> ALLOWED_LANGUAGES = Set.of("zh_CN", "en_US");
     /** 用户名不存在时执行的虚拟 BCrypt 校验，消除用户名时序枚举侧信道 */
     private static final String DUMMY_BCRYPT_HASH =
         "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW";
 
     private final AdminCredentialsStore credentialsStore;
+    private final SetupStateStore setupStateStore;
+    private final MusicConfig config;
+    private final Path configPath;
     private final Gson gson;
     private final SecureRandom random;
     private final Map<String, Deque<Long>> loginFailuresByClient = new ConcurrentHashMap<>();
     private final Object setupLock = new Object();
 
     public AuthServlet(AdminCredentialsStore credentialsStore) {
+        this(credentialsStore, null, null, null);
+    }
+
+    public AuthServlet(AdminCredentialsStore credentialsStore,
+                       SetupStateStore setupStateStore,
+                       MusicConfig config,
+                       Path configPath) {
         this.credentialsStore = credentialsStore;
+        this.setupStateStore = setupStateStore;
+        this.config = config;
+        this.configPath = configPath;
         this.gson = new GsonBuilder().setPrettyPrinting().create();
         this.random = new SecureRandom();
     }
@@ -93,6 +117,10 @@ public class AuthServlet extends HttpServlet {
             hasAdmin = false;
         }
         payload.put("needsSetup", !hasAdmin);
+        boolean setupCompleted = setupStateStore == null
+            ? hasAdmin
+            : setupStateStore.isCompleted(credentialsStore);
+        payload.put("setupCompleted", setupCompleted);
         if (hasAdmin && session != null && session.getAttribute(SESSION_USER_KEY) != null) {
             payload.put("authenticated", true);
             payload.put("username", session.getAttribute(SESSION_USER_KEY));
@@ -167,6 +195,7 @@ public class AuthServlet extends HttpServlet {
         }
         String username = body.get("username");
         String password = body.get("password");
+        String language = body.get("language");
 
         if (username == null || username.trim().isEmpty() || password == null) {
             respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "missing.credentials"));
@@ -184,10 +213,15 @@ public class AuthServlet extends HttpServlet {
                 respondJson(resp, HttpServletResponse.SC_CONFLICT, Map.of("error", "admin.already.setup"));
                 return;
             }
+            // 先写 completed=false 再写 admin.json，避免建号中途中断导致下次重启误判为老用户已完成
+            if (setupStateStore != null) {
+                setupStateStore.markInProgressIfAbsent();
+            }
             String hash = BCrypt.hashpw(password, BCrypt.gensalt(12));
             AdminCredentialsStore.AdminCredentials creds = new AdminCredentialsStore.AdminCredentials(
                 normalizedUser, hash, java.time.Instant.now().toString());
             credentialsStore.save(creds);
+            applySetupLanguageIfValid(language);
         }
 
         HttpSession session = createSession(req, normalizedUser);
@@ -195,7 +229,43 @@ public class AuthServlet extends HttpServlet {
         payload.put("authenticated", true);
         payload.put("username", normalizedUser);
         payload.put("csrfToken", session.getAttribute(SESSION_CSRF_KEY));
+        payload.put("setupCompleted", setupStateStore != null && setupStateStore.isCompleted(credentialsStore));
         respondJson(resp, HttpServletResponse.SC_OK, payload);
+    }
+
+    private void applySetupLanguageIfValid(String language) {
+        if (language == null) {
+            return;
+        }
+        String trimmed = language.trim();
+        if (!ALLOWED_LANGUAGES.contains(trimmed)) {
+            return;
+        }
+        I18nUtil.init(trimmed);
+        if (config != null) {
+            config.setLanguage(trimmed);
+        }
+        if (configPath != null) {
+            try {
+                Properties props = new Properties();
+                if (Files.exists(configPath)) {
+                    try (InputStreamReader reader = new InputStreamReader(
+                            new FileInputStream(configPath.toFile()), StandardCharsets.UTF_8)) {
+                        props.load(reader);
+                    }
+                }
+                props.setProperty("i18n.language", trimmed);
+                Path parent = configPath.toAbsolutePath().normalize().getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+                try (FileOutputStream fos = new FileOutputStream(configPath.toFile())) {
+                    props.store(fos, "Updated by setup wizard");
+                }
+                com.lux032.musicautotagger.util.OutboundUrlValidator.setOwnerOnlyPermissions(configPath);
+            } catch (IOException ignored) {
+            }
+        }
     }
 
     private void handlePasswordChange(HttpServletRequest req, HttpServletResponse resp) throws IOException {

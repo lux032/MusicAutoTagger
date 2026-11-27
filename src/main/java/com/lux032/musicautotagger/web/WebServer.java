@@ -23,22 +23,51 @@ import com.lux032.musicautotagger.service.ReviewResolutionService;
 import com.lux032.musicautotagger.service.RecoveryService;
 import com.lux032.musicautotagger.util.I18nUtil;
 import com.lux032.musicautotagger.util.AdminCredentialsStore;
+import com.lux032.musicautotagger.util.SetupStateStore;
 import com.lux032.musicautotagger.core.ApplicationLifecycleManager;
 
 import jakarta.servlet.DispatcherType;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.EnumSet;
 
 /**
  * 嵌入式 Web 服务器
- * 提供监控面板和统计接口
+ * 提供监控面板、统计接口与首次启动初始化引导（支持待初始化模式与进程内热装配业务路由）
  */
 @Slf4j
 public class WebServer {
-    
+
     private Server server;
+    private ServerConnector connector;
     private final int port;
     private ProcessedRecordService processedRecordService;
-    
+    private Path configPath = Paths.get("config.properties");
+    private AdminCredentialsStore adminCredentialsStore = AdminCredentialsStore.defaultStore();
+    private SetupStateStore setupStateStore = SetupStateStore.defaultStore();
+
+    // 可热装配业务路由槽位：在待初始化模式下返回 503 setup.required，激活后原子切换为真实 Servlet
+    private final SwappableServlet dashboardSlot = new SwappableServlet();
+    private final SwappableServlet coverSlot = new SwappableServlet();
+    private final SwappableServlet controlSlot = new SwappableServlet();
+    private final SwappableServlet reviewSlot = new SwappableServlet();
+    private final SwappableServlet coversSlot = new SwappableServlet();
+    private final SwappableServlet lyricsBackfillSlot = new SwappableServlet();
+    private final SwappableServlet albumArtistRefreshSlot = new SwappableServlet();
+    private final SwappableServlet backfillSlot = new SwappableServlet();
+    private final SwappableServlet recoverySlot = new SwappableServlet();
+    private final SwappableServlet searchQueueSlot = new SwappableServlet();
+    private final SwappableServlet recordsSlot = new SwappableServlet();
+    private final SwappableServlet setupSlot = new SwappableServlet();
+
+    private ConfigServlet configServlet;
+    private LlmProviderServlet llmProviderServlet;
+
     public WebServer(int port) {
         this.port = port;
     }
@@ -47,7 +76,58 @@ public class WebServer {
     public void setProcessedRecordService(ProcessedRecordService processedRecordService) {
         this.processedRecordService = processedRecordService;
     }
-    
+
+    public void setConfigPath(Path configPath) {
+        if (configPath != null) {
+            this.configPath = configPath;
+        }
+    }
+
+    public void setAdminCredentialsStore(AdminCredentialsStore adminCredentialsStore) {
+        if (adminCredentialsStore != null) {
+            this.adminCredentialsStore = adminCredentialsStore;
+        }
+    }
+
+    public void setSetupStateStore(SetupStateStore setupStateStore) {
+        if (setupStateStore != null) {
+            this.setupStateStore = setupStateStore;
+        }
+    }
+
+    /** 注册或替换初始化引导 Servlet（供测试或启动装配使用）。 */
+    public void setSetupServlet(HttpServlet setupServlet) {
+        this.setupSlot.setDelegate(setupServlet);
+    }
+
+    public ConfigServlet getConfigServlet() {
+        return configServlet;
+    }
+
+    public LlmProviderServlet getLlmProviderServlet() {
+        return llmProviderServlet;
+    }
+
+    /** 返回实际绑定端口（当构造传入 0 时可获取随机分配的本地端口）。 */
+    public int getLocalPort() {
+        return connector != null ? connector.getLocalPort() : port;
+    }
+
+    /**
+     * 以「待初始化模式」启动 Web 服务器：仅挂载认证、国际化、配置、LLM 供应商与初始化路由，
+     * 业务接口统一返回 503 setup.required，待引导完成后通过 {@link #activateBusinessServices} 进程内热装配。
+     */
+    public void startInSetupMode(MusicConfig config,
+                                 Path configPath,
+                                 ApplicationLifecycleManager lifecycleManager,
+                                 AdminCredentialsStore adminStore,
+                                 SetupStateStore stateStore) throws Exception {
+        setConfigPath(configPath);
+        setAdminCredentialsStore(adminStore);
+        setSetupStateStore(stateStore);
+        startJettySkeleton(config, lifecycleManager);
+    }
+
     /**
      * 启动 Web 服务器
      */
@@ -88,14 +168,93 @@ public class WebServer {
                      RecoveryService recoveryService,
                      CoverBackfillService coverBackfillService,
                      CoverCandidateService coverCandidateService) throws Exception {
-        
+        activateBusinessServices(
+            processedLogger, coverArtCache, folderAlbumCache, config, databaseService, lifecycleManager,
+            reviewQueueService, reviewResolutionService, recoveryService, coverBackfillService,
+            coverCandidateService, processedRecordService);
+        startJettySkeleton(config, lifecycleManager);
+    }
+
+    /**
+     * 进程内热装配全部业务 Servlet（可在待初始化模式下由激活流程调用，无需重启 Jetty）。
+     */
+    public void activateBusinessServices(ProcessedFileLogger processedLogger,
+                                         CoverArtCache coverArtCache,
+                                         FolderAlbumCache folderAlbumCache,
+                                         MusicConfig config,
+                                         DatabaseService databaseService,
+                                         ApplicationLifecycleManager lifecycleManager,
+                                         ReviewQueueService reviewQueueService,
+                                         ReviewResolutionService reviewResolutionService,
+                                         RecoveryService recoveryService,
+                                         CoverBackfillService coverBackfillService,
+                                         CoverCandidateService coverCandidateService,
+                                         ProcessedRecordService recordService) {
+        dashboardSlot.setDelegate(new DashboardServlet(
+            processedLogger, coverArtCache, folderAlbumCache, config, databaseService));
+        coverSlot.setDelegate(new CoverServlet(config));
+        controlSlot.setDelegate(new ControlServlet(lifecycleManager));
+
+        if (reviewQueueService != null && reviewResolutionService != null) {
+            reviewSlot.setDelegate(new ReviewServlet(reviewQueueService, reviewResolutionService,
+                recoveryService, coverCandidateService));
+        } else {
+            reviewSlot.setDelegate(new NotAvailableServlet());
+        }
+
+        if (lifecycleManager != null && lifecycleManager.getCoverMissingService() != null && reviewQueueService != null) {
+            coversSlot.setDelegate(new CoverMissingServlet(
+                config,
+                reviewQueueService,
+                lifecycleManager.getCoverMissingService(),
+                recoveryService == null ? null : recoveryService.getSearchQueueService()));
+        } else {
+            coversSlot.setDelegate(new NotAvailableServlet());
+        }
+
+        if (lifecycleManager != null && lifecycleManager.getLyricsBackfillService() != null) {
+            lyricsBackfillSlot.setDelegate(new LyricsBackfillServlet(lifecycleManager.getLyricsBackfillService()));
+        } else {
+            lyricsBackfillSlot.setDelegate(new NotAvailableServlet());
+        }
+
+        if (lifecycleManager != null && lifecycleManager.getAlbumArtistRefreshService() != null) {
+            albumArtistRefreshSlot.setDelegate(
+                new AlbumArtistRefreshServlet(lifecycleManager.getAlbumArtistRefreshService()));
+        } else {
+            albumArtistRefreshSlot.setDelegate(new NotAvailableServlet());
+        }
+
+        if (coverBackfillService != null) {
+            backfillSlot.setDelegate(new BackfillServlet(coverBackfillService));
+        } else {
+            backfillSlot.setDelegate(new NotAvailableServlet());
+        }
+
+        if (recoveryService != null) {
+            recoverySlot.setDelegate(new RecoveryServlet(recoveryService));
+            searchQueueSlot.setDelegate(new SearchQueueServlet(
+                recoveryService.getSearchQueueService(), recoveryService));
+        } else {
+            recoverySlot.setDelegate(new NotAvailableServlet());
+            searchQueueSlot.setDelegate(new NotAvailableServlet());
+        }
+
+        if (recordService != null) {
+            recordsSlot.setDelegate(new RecordsServlet(recordService, config));
+        } else {
+            recordsSlot.setDelegate(new NotAvailableServlet());
+        }
+    }
+
+    private void startJettySkeleton(MusicConfig config, ApplicationLifecycleManager lifecycleManager) throws Exception {
         server = new Server();
-        
+
         // 配置 HTTP 连接，支持反向代理头信息
         HttpConfiguration httpConfig = new HttpConfiguration();
         httpConfig.setSendServerVersion(false);
         httpConfig.setSendDateHeader(false);
-        
+
         // 添加受信任内网代理限定版 ForwardedRequestCustomizer：
         // 仅当直连对端位于回环/私网地址（如本机或 Docker 反代）时才采信 X-Forwarded-* 头，避免公网直连伪造
         ForwardedRequestCustomizer forwardedCustomizer = new ForwardedRequestCustomizer() {
@@ -113,98 +272,51 @@ public class WebServer {
             }
         };
         httpConfig.addCustomizer(forwardedCustomizer);
-        
+
         // 创建 HTTP 连接器
-        ServerConnector connector = new ServerConnector(server, new HttpConnectionFactory(httpConfig));
+        connector = new ServerConnector(server, new HttpConnectionFactory(httpConfig));
         connector.setPort(port);
         connector.setHost("0.0.0.0");  // 监听所有网络接口
         server.addConnector(connector);
-        
+
         // 创建 Servlet 上下文处理器
         ServletContextHandler servletHandler = new ServletContextHandler(ServletContextHandler.SESSIONS);
         servletHandler.setContextPath("/");
         servletHandler.getSessionHandler().getSessionCookieConfig().setHttpOnly(true);
         servletHandler.getSessionHandler().getSessionCookieConfig().setName("MAT_SESSION");
         servletHandler.getSessionHandler().setSameSite(org.eclipse.jetty.http.HttpCookie.SameSite.LAX);
-        
-        // 注册 Dashboard API
-        DashboardServlet dashboardServlet = new DashboardServlet(
-            processedLogger, coverArtCache, folderAlbumCache, config, databaseService);
-        servletHandler.addServlet(new ServletHolder(dashboardServlet), "/api/dashboard");
-        
-        // 注册封面缩略图 API（仪表板「最近处理的文件」用）
-        servletHandler.addServlet(new ServletHolder(new CoverServlet(config)), "/api/cover");
 
-        // 注册日志 API
-        LogServlet logServlet = new LogServlet();
-        servletHandler.addServlet(new ServletHolder(logServlet), "/api/logs");
+        // 基础常驻 API（待初始化模式与运行态均可用）
+        servletHandler.addServlet(new ServletHolder(new LogServlet()), "/api/logs");
+        servletHandler.addServlet(new ServletHolder(new I18nServlet()), "/api/i18n");
+        servletHandler.addServlet(new ServletHolder(
+            new AuthServlet(adminCredentialsStore, setupStateStore, config, configPath)), "/api/auth/*");
 
-        // 注册国际化 API
-        I18nServlet i18nServlet = new I18nServlet();
-        servletHandler.addServlet(new ServletHolder(i18nServlet), "/api/i18n");
-
-        // 注册认证 API
-        AuthServlet authServlet = new AuthServlet(AdminCredentialsStore.defaultStore());
-        servletHandler.addServlet(new ServletHolder(authServlet), "/api/auth/*");
-
-        // 注册配置 API
-        ConfigServlet configServlet = new ConfigServlet(config);
+        configServlet = new ConfigServlet(config, configPath);
         servletHandler.addServlet(new ServletHolder(configServlet), "/api/config");
 
-        // 注册 LLM 供应商 API（供应商 CRUD + 从供应商拉取模型列表）
-        servletHandler.addServlet(new ServletHolder(new LlmProviderServlet(config)), "/api/llm/providers/*");
+        llmProviderServlet = new LlmProviderServlet(config);
+        servletHandler.addServlet(new ServletHolder(llmProviderServlet), "/api/llm/providers/*");
 
-        // 注册控制 API (暂停/恢复/重启)
-        ControlServlet controlServlet = new ControlServlet(lifecycleManager);
-        servletHandler.addServlet(new ServletHolder(controlServlet), "/api/control/*");
-
-        // 注册待人工确认 API（写入型，会触发文件写入与移动）
-        if (reviewQueueService != null && reviewResolutionService != null) {
-            ReviewServlet reviewServlet = new ReviewServlet(reviewQueueService, reviewResolutionService,
-                recoveryService, coverCandidateService);
-            servletHandler.addServlet(new ServletHolder(reviewServlet), "/api/review/*");
+        if (setupSlot.getDelegate() == null) {
+            setupSlot.setDelegate(new SetupServlet(
+                config, lifecycleManager, adminCredentialsStore, setupStateStore,
+                configServlet, llmProviderServlet));
         }
+        servletHandler.addServlet(new ServletHolder(setupSlot), "/api/setup/*");
 
-        // 注册「缺少封面」专用 API（补图 / 上传 / AI+iTunes 搜索 / 确认无封面 / 手动库扫描）
-        if (lifecycleManager != null && lifecycleManager.getCoverMissingService() != null && reviewQueueService != null) {
-            servletHandler.addServlet(
-                new ServletHolder(new CoverMissingServlet(
-                    config,
-                    reviewQueueService,
-                    lifecycleManager.getCoverMissingService(),
-                    recoveryService == null ? null : recoveryService.getSearchQueueService())),
-                "/api/covers/*");
-        }
-
-        if (lifecycleManager != null && lifecycleManager.getLyricsBackfillService() != null) {
-            servletHandler.addServlet(new ServletHolder(new LyricsBackfillServlet(lifecycleManager.getLyricsBackfillService())),
-                "/api/lyrics-backfill/*");
-        }
-
-        if (lifecycleManager != null && lifecycleManager.getAlbumArtistRefreshService() != null) {
-            servletHandler.addServlet(new ServletHolder(new AlbumArtistRefreshServlet(lifecycleManager.getAlbumArtistRefreshService())),
-                "/api/album-artist-refresh/*");
-        }
-
-        // 注册历史封面回填 API
-        if (coverBackfillService != null) {
-            servletHandler.addServlet(new ServletHolder(new BackfillServlet(coverBackfillService)),
-                "/api/backfill/*");
-        }
-
-        // 注册部分识别 / 识别失败恢复 API
-        if (recoveryService != null) {
-            servletHandler.addServlet(new ServletHolder(new RecoveryServlet(recoveryService)), "/api/recovery/*");
-            servletHandler.addServlet(
-                new ServletHolder(new SearchQueueServlet(recoveryService.getSearchQueueService(), recoveryService)),
-                "/api/search-queue/*");
-        }
-
-        // 注册处理记录管理 API（搜索 / 删除记录 / 重新识别 / 导出）
-        if (processedRecordService != null) {
-            servletHandler.addServlet(new ServletHolder(new RecordsServlet(processedRecordService, config)),
-                "/api/records/*");
-        }
+        // 可热装配业务 API（未激活时返回 503 setup.required）
+        servletHandler.addServlet(new ServletHolder(dashboardSlot), "/api/dashboard");
+        servletHandler.addServlet(new ServletHolder(coverSlot), "/api/cover");
+        servletHandler.addServlet(new ServletHolder(controlSlot), "/api/control/*");
+        servletHandler.addServlet(new ServletHolder(reviewSlot), "/api/review/*");
+        servletHandler.addServlet(new ServletHolder(coversSlot), "/api/covers/*");
+        servletHandler.addServlet(new ServletHolder(lyricsBackfillSlot), "/api/lyrics-backfill/*");
+        servletHandler.addServlet(new ServletHolder(albumArtistRefreshSlot), "/api/album-artist-refresh/*");
+        servletHandler.addServlet(new ServletHolder(backfillSlot), "/api/backfill/*");
+        servletHandler.addServlet(new ServletHolder(recoverySlot), "/api/recovery/*");
+        servletHandler.addServlet(new ServletHolder(searchQueueSlot), "/api/search-queue/*");
+        servletHandler.addServlet(new ServletHolder(recordsSlot), "/api/records/*");
 
         // 安全响应头与 API 认证/CSRF 过滤器
         servletHandler.addFilter(SecurityHeadersFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
@@ -216,25 +328,26 @@ public class WebServer {
         resourceHandler.setWelcomeFiles(new String[]{"index.html"});
         resourceHandler.setCacheControl("no-cache");
         resourceHandler.setEtags(true);
-        
+
         // 从 classpath 加载静态资源
         resourceHandler.setResourceBase(
             WebServer.class.getClassLoader().getResource("static").toExternalForm());
-        
+
         // 组合处理器
         HandlerList handlers = new HandlerList();
         handlers.addHandler(resourceHandler);
         handlers.addHandler(servletHandler);
-        
+
         server.setHandler(handlers);
         server.start();
-        
+
+        int boundPort = getLocalPort();
         log.info(I18nUtil.getMessage("web.server.separator"));
         log.info(I18nUtil.getMessage("web.server.started"));
-        log.info(I18nUtil.getMessage("web.server.url") + port);
+        log.info(I18nUtil.getMessage("web.server.url") + boundPort);
         log.info(I18nUtil.getMessage("web.server.separator"));
     }
-    
+
     /**
      * 停止 Web 服务器
      */
@@ -244,12 +357,50 @@ public class WebServer {
             log.info(I18nUtil.getMessage("web.server.stopped"));
         }
     }
-    
+
     /**
      * 检查服务器是否正在运行
      */
     public boolean isRunning() {
         return server != null && server.isRunning();
+    }
+
+    /** 可在进程内热切换委托目标的薄包装 Servlet；未装配时返回 503 setup.required。 */
+    private static class SwappableServlet extends HttpServlet {
+        private volatile HttpServlet delegate;
+
+        void setDelegate(HttpServlet delegate) {
+            this.delegate = delegate;
+        }
+
+        HttpServlet getDelegate() {
+            return delegate;
+        }
+
+        @Override
+        protected void service(HttpServletRequest req, HttpServletResponse resp)
+                throws ServletException, IOException {
+            HttpServlet current = this.delegate;
+            if (current == null) {
+                resp.setContentType("application/json; charset=UTF-8");
+                resp.setCharacterEncoding("UTF-8");
+                resp.setStatus(HttpServletResponse.SC_SERVICE_UNAVAILABLE);
+                resp.getWriter().write("{\"error\":\"setup.required\"}");
+                return;
+            }
+            current.service(req, resp);
+        }
+    }
+
+    /** 已激活但某可选模块未启用时的 404 占位 Servlet。 */
+    private static class NotAvailableServlet extends HttpServlet {
+        @Override
+        protected void service(HttpServletRequest req, HttpServletResponse resp) throws IOException {
+            resp.setContentType("application/json; charset=UTF-8");
+            resp.setCharacterEncoding("UTF-8");
+            resp.setStatus(HttpServletResponse.SC_NOT_FOUND);
+            resp.getWriter().write("{\"error\":\"service.unavailable\"}");
+        }
     }
 
     /** 统一追加基础安全响应头 */
@@ -268,4 +419,3 @@ public class WebServer {
         }
     }
 }
-

@@ -318,6 +318,20 @@ public class MusicConfig {
     }
     
     /**
+     * 构造仅携带代理参数的轻量临时配置实例（供初始化引导连通性测试与模型拉取透传代理使用）。
+     */
+    public static MusicConfig forProxyOverride(boolean enabled, String host, int port,
+                                               String username, String password) {
+        MusicConfig temp = new MusicConfig();
+        temp.setProxyEnabled(enabled);
+        temp.setProxyHost(host);
+        temp.setProxyPort(port);
+        temp.setProxyUsername(username);
+        temp.setProxyPassword(password);
+        return temp;
+    }
+
+    /**
      * 动画版封面关键词默认值
      */
     public static List<String> defaultAnimeCoverKeywords() {

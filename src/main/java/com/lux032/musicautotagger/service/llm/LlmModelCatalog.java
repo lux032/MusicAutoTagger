@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.lux032.musicautotagger.config.MusicConfig;
+import com.lux032.musicautotagger.util.HttpClientFactory;
 import com.lux032.musicautotagger.util.OutboundUrlValidator;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.hc.client5.http.DnsResolver;
@@ -130,6 +131,15 @@ public class LlmModelCatalog implements AutoCloseable {
      * @param format openai | anthropic
      */
     public Result fetch(String apiUrl, String apiKey, String format) throws CatalogException {
+        return fetch(apiUrl, apiKey, format, null);
+    }
+
+    /**
+     * 支持传入初始化向导中尚未落盘的临时代理配置（proxyOverride）。
+     * 安全开关 llmAllowPrivateEndpoints 仍强制读取主配置，不受临时覆盖影响。
+     */
+    public Result fetch(String apiUrl, String apiKey, String format, MusicConfig proxyOverride)
+            throws CatalogException {
         if (apiUrl == null || apiUrl.isBlank()) {
             throw new CatalogException("llm.models.url.required");
         }
@@ -142,7 +152,7 @@ public class LlmModelCatalog implements AutoCloseable {
         for (String modelsUrl : candidateModelsUrls(apiUrl)) {
             OutboundUrlValidator.ValidatedTarget target = assertOutboundAllowed(modelsUrl);
             try {
-                List<String> models = request(target, modelsUrl, apiKey, anthropic);
+                List<String> models = request(target, modelsUrl, apiKey, anthropic, proxyOverride);
                 return new Result(models, modelsUrl, toApiUrl(modelsUrl, anthropic));
             } catch (CatalogException e) {
                 attempts.add(e.getMessage());
@@ -153,11 +163,13 @@ public class LlmModelCatalog implements AutoCloseable {
     }
 
     private List<String> request(OutboundUrlValidator.ValidatedTarget target,
-                                 String modelsUrl, String apiKey, boolean anthropic) throws CatalogException {
+                                 String modelsUrl, String apiKey, boolean anthropic,
+                                 MusicConfig proxyOverride) throws CatalogException {
         int statusCode;
         String responseBody;
-        boolean usePinned = !config.isLlmAllowPrivateEndpoints()
-            && !(config.isProxyEnabled() && config.getProxyHost() != null && !config.getProxyHost().isBlank());
+        MusicConfig effectiveProxyConfig = proxyOverride != null ? proxyOverride : config;
+        boolean hasProxy = HttpClientFactory.isProxyConfigured(effectiveProxyConfig);
+        boolean usePinned = !config.isLlmAllowPrivateEndpoints() && !hasProxy;
         if (usePinned) {
             requestPins.set(Map.of(target.normalizedHost(), target.addresses()));
             try {
@@ -193,7 +205,10 @@ public class LlmModelCatalog implements AutoCloseable {
                 builder.header("Authorization", "Bearer " + apiKey);
             }
             try {
-                HttpResponse<InputStream> response = proxyHttpClient().send(
+                HttpClient client = proxyOverride != null
+                    ? HttpClientFactory.jdkHttpClientBuilder(proxyOverride, Duration.ofSeconds(10)).build()
+                    : proxyHttpClient();
+                HttpResponse<InputStream> response = client.send(
                     builder.build(), HttpResponse.BodyHandlers.ofInputStream());
                 statusCode = response.statusCode();
                 try (InputStream in = response.body()) {

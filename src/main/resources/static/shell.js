@@ -36,6 +36,7 @@
         try {
             const resp = await fetch('/api/review/stats', { credentials: 'same-origin' });
             if (resp.status === 401) { handleUnauthorized(); return; }
+            if (resp.status === 503) { location.replace('setup.html'); return; }
             if (!resp.ok) throw new Error('review stats unavailable');
             const data = await resp.json();
             const pending = Number(data.pending) || 0;
@@ -58,6 +59,7 @@
         try {
             const resp = await fetch('/api/recovery/summary', { credentials: 'same-origin' });
             if (resp.status === 401) { handleUnauthorized(); return; }
+            if (resp.status === 503) { location.replace('setup.html'); return; }
             if (!resp.ok) throw new Error('recovery summary unavailable');
             const data = await resp.json();
             const failed = Number(data.failed) || 0;
@@ -79,6 +81,7 @@
         try {
             const resp = await fetch('/api/covers/stats', { credentials: 'same-origin' });
             if (resp.status === 401) { handleUnauthorized(); return; }
+            if (resp.status === 503) { location.replace('setup.html'); return; }
             if (!resp.ok) throw new Error('covers stats unavailable');
             const data = await resp.json();
             const pending = Number(data.pending) || 0;

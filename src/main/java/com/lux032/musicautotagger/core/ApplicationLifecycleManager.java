@@ -4,11 +4,18 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.config.MusicConfig;
 import com.lux032.musicautotagger.service.*;
+import com.lux032.musicautotagger.util.AdminCredentialsStore;
 import com.lux032.musicautotagger.util.FileSystemUtils;
 import com.lux032.musicautotagger.util.I18nUtil;
+import com.lux032.musicautotagger.util.ProcessRunner;
+import com.lux032.musicautotagger.util.SetupStateStore;
 import com.lux032.musicautotagger.web.WebServer;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -20,7 +27,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class ApplicationLifecycleManager {
     
     private final MusicConfig config;
+    private final Path configPath;
+    private final AdminCredentialsStore adminCredentialsStore;
+    private final SetupStateStore setupStateStore;
     private final AtomicBoolean shutdownCalled = new AtomicBoolean(false);
+    private final Object activationLock = new Object();
+    private volatile boolean servicesInitialized = false;
+    private int webPortOverride = -1;
 
     // 基础服务实例
     private DatabaseService databaseService;
@@ -56,7 +69,33 @@ public class ApplicationLifecycleManager {
     private ProcessedRecordService processedRecordService;
     
     public ApplicationLifecycleManager(MusicConfig config) {
+        this(config, Paths.get("config.properties"),
+            AdminCredentialsStore.defaultStore(), SetupStateStore.defaultStore());
+    }
+
+    public ApplicationLifecycleManager(MusicConfig config,
+                                       Path configPath,
+                                       AdminCredentialsStore adminCredentialsStore,
+                                       SetupStateStore setupStateStore) {
         this.config = config;
+        this.configPath = configPath != null ? configPath : Paths.get("config.properties");
+        this.adminCredentialsStore = adminCredentialsStore != null
+            ? adminCredentialsStore : AdminCredentialsStore.defaultStore();
+        this.setupStateStore = setupStateStore != null
+            ? setupStateStore : SetupStateStore.defaultStore();
+    }
+
+    /** 供测试指定临时端口（含 0 表示随机可用端口）。 */
+    public void setWebPortOverride(int webPortOverride) {
+        this.webPortOverride = webPortOverride;
+    }
+
+    public boolean isSetupCompleted() {
+        return setupStateStore.isCompleted(adminCredentialsStore);
+    }
+
+    public boolean isActive() {
+        return servicesInitialized;
     }
     
     /**
@@ -226,7 +265,112 @@ public class ApplicationLifecycleManager {
             scheduleMissingCoverSearch(pendingCover);
         }
         
+        servicesInitialized = true;
         log.info(I18nUtil.getMessage("app.all.services.ready"));
+    }
+
+    private int resolveWebPort() {
+        if (webPortOverride >= 0) {
+            return webPortOverride;
+        }
+        return config != null && config.getWebPort() >= 1 && config.getWebPort() <= 65535
+            ? config.getWebPort() : 8080;
+    }
+
+    /**
+     * 以待初始化模式启动 Web 监控面板（不初始化数据库、核心服务与文件监控）。
+     */
+    public void startWebServerInSetupMode() throws Exception {
+        int port = resolveWebPort();
+        webServer = new WebServer(port);
+        webServer.startInSetupMode(config, configPath, this, adminCredentialsStore, setupStateStore);
+    }
+
+    /**
+     * 引导完成后的进程内免重启激活：校验关键目录 -> 初始化核心服务 -> 绑定业务路由 -> 启动监控。
+     * 失败时清理半初始化资源并保持待命状态，允许用户修正后重试。
+     */
+    public void activateAfterSetup() throws IOException {
+        synchronized (activationLock) {
+            if (servicesInitialized) {
+                return;
+            }
+            if (config == null || config.getMonitorDirectory() == null || config.getMonitorDirectory().isBlank()) {
+                throw new IOException("setup.monitor.directory.missing");
+            }
+            Path monitorPath = Paths.get(config.getMonitorDirectory().trim()).normalize();
+            if (!Files.isDirectory(monitorPath) || !Files.isReadable(monitorPath)) {
+                throw new IOException("setup.monitor.directory.missing");
+            }
+            if (config.getOutputDirectory() == null || config.getOutputDirectory().isBlank()) {
+                throw new IOException("setup.output.directory.missing");
+            }
+            Path outputPath = Paths.get(config.getOutputDirectory().trim()).normalize();
+            if (!Files.exists(outputPath)) {
+                Files.createDirectories(outputPath);
+            }
+            if (!Files.isDirectory(outputPath) || !Files.isWritable(outputPath)) {
+                throw new IOException("setup.output.directory.unwritable");
+            }
+
+            try {
+                initializeServices();
+                if (webServer != null) {
+                    webServer.activateBusinessServices(
+                        processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this,
+                        reviewQueueService, reviewResolutionService, recoveryService, coverBackfillService,
+                        coverCandidateService, processedRecordService);
+                }
+                startMonitoring();
+            } catch (IOException | RuntimeException e) {
+                cleanupPartialInitialization();
+                throw e;
+            }
+        }
+    }
+
+    private void cleanupPartialInitialization() {
+        servicesInitialized = false;
+        closeQuietly("文件监控服务", () -> { if (fileMonitor != null) fileMonitor.stop(); });
+        closeQuietly("封面回填服务", () -> { if (coverBackfillService != null) coverBackfillService.shutdown(); });
+        closeQuietly("缺封面服务", () -> { if (coverMissingService != null) coverMissingService.close(); });
+        closeQuietly("恢复与在线搜索服务", () -> { if (recoveryService != null) recoveryService.close(); });
+        closeQuietly("专辑艺人刷新服务", () -> { if (albumArtistRefreshService != null) albumArtistRefreshService.close(); });
+        closeQuietly("歌词回填服务", () -> { if (lyricsBackfillService != null) lyricsBackfillService.close(); });
+        closeQuietly("歌词服务", () -> { if (lyricsService != null) lyricsService.close(); });
+        closeQuietly("指纹服务", () -> { if (fingerprintService != null) fingerprintService.close(); });
+        closeQuietly("封面候选服务", () -> { if (coverCandidateService != null) coverCandidateService.close(); });
+        closeQuietly("MusicBrainz 客户端", () -> { if (musicBrainzClient != null) musicBrainzClient.close(); });
+        closeQuietly("封面缓存", () -> { if (coverArtCache != null) coverArtCache.close(); });
+        closeQuietly("处理记录日志", () -> { if (processedLogger != null) processedLogger.close(); });
+        closeQuietly("数据库连接池", () -> { if (databaseService != null) databaseService.close(); });
+
+        fileMonitor = null;
+        coverBackfillService = null;
+        coverMissingService = null;
+        coverSearchService = null;
+        recoveryService = null;
+        albumArtistRefreshService = null;
+        lyricsBackfillService = null;
+        lyricsService = null;
+        fingerprintService = null;
+        coverCandidateService = null;
+        musicBrainzClient = null;
+        coverArtService = null;
+        coverArtCache = null;
+        folderAlbumCache = null;
+        quickScanService = null;
+        durationSequenceService = null;
+        tagWriter = null;
+        fileSystemUtils = null;
+        failedFileHandler = null;
+        albumBatchProcessor = null;
+        audioFileProcessorService = null;
+        reviewQueueService = null;
+        reviewResolutionService = null;
+        processedRecordService = null;
+        processedLogger = null;
+        databaseService = null;
     }
     
     /**
@@ -234,9 +378,11 @@ public class ApplicationLifecycleManager {
      */
     public void startWebServer() {
         try {
-            int port = config != null && config.getWebPort() >= 1 && config.getWebPort() <= 65535
-                ? config.getWebPort() : 8080;
+            int port = resolveWebPort();
             webServer = new WebServer(port);
+            webServer.setConfigPath(configPath);
+            webServer.setAdminCredentialsStore(adminCredentialsStore);
+            webServer.setSetupStateStore(setupStateStore);
             webServer.setProcessedRecordService(processedRecordService);
             webServer.start(processedLogger, coverArtCache, folderAlbumCache, config, databaseService, this,
                 reviewQueueService, reviewResolutionService, recoveryService, coverBackfillService,
@@ -292,10 +438,35 @@ public class ApplicationLifecycleManager {
     }
     
     /**
-     * 检查 fpcalc 工具是否可用
+     * 检查 fpcalc 工具是否可用（支持在待初始化模式下直接探测）
      */
     public boolean isFpcalcAvailable() {
-        return fingerprintService.isFpcalcAvailable();
+        if (fingerprintService != null) {
+            return fingerprintService.isFpcalcAvailable();
+        }
+        return probeExecutable("fpcalc", "-version");
+    }
+
+    /**
+     * 检查 ffmpeg 工具是否可用
+     */
+    public boolean isFfmpegAvailable() {
+        String ffmpeg = config != null && config.getAudioNormalizeFfmpegPath() != null
+            && !config.getAudioNormalizeFfmpegPath().isBlank()
+            ? config.getAudioNormalizeFfmpegPath().trim()
+            : "ffmpeg";
+        return probeExecutable(ffmpeg, "-version");
+    }
+
+    private boolean probeExecutable(String executable, String versionArg) {
+        try {
+            return ProcessRunner.execute(List.of(executable, versionArg), 5).isSuccess();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
     }
     
     /**

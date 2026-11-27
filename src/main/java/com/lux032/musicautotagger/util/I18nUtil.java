@@ -156,5 +156,33 @@ public class I18nUtil {
     public static Properties getAllMessages() {
         return ensureMessages();
     }
+
+    /**
+     * 按指定语言只读加载消息表，不修改当前全局语言状态（供未登录初始化引导实时预览切换语言）。
+     * 仅允许已知白名单语言代码；非法值返回 null。
+     */
+    public static Properties loadMessagesForLanguage(String language) {
+        if (language == null) {
+            return null;
+        }
+        String normalized = language.trim();
+        if (!"zh_CN".equals(normalized) && !"en_US".equals(normalized)) {
+            return null;
+        }
+        String resourceFile = "/messages_" + normalized + ".properties";
+        try (InputStream is = I18nUtil.class.getResourceAsStream(resourceFile)) {
+            if (is == null) {
+                return null;
+            }
+            Properties loaded = new Properties();
+            try (InputStreamReader reader = new InputStreamReader(is, StandardCharsets.UTF_8)) {
+                loaded.load(reader);
+            }
+            return loaded;
+        } catch (IOException e) {
+            log.warn("按需加载语言资源失败 {}: {}", normalized, e.getMessage());
+            return null;
+        }
+    }
 }
 

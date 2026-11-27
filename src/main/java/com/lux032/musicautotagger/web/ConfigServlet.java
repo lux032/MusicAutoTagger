@@ -209,89 +209,132 @@ public class ConfigServlet extends HttpServlet {
         }
 
         Map<String, Object> body = readBodyAsMap(req);
+        try {
+            ApplyResult result = applyConfigMap(body, false, false);
+            if (!result.updated()) {
+                respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "no.updates"));
+                return;
+            }
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("config", currentConfig());
+            payload.put("updated", true);
+            payload.put("requiresRestart", result.requiresRestart());
+            payload.put("pendingRestartFields", result.pendingRestartFields());
+            respondJson(resp, HttpServletResponse.SC_OK, payload);
+        } catch (IOException e) {
+            if (e instanceof ValidationException) {
+                throw e;
+            }
+            log.error("Failed to save config", e);
+            Map<String, Object> error = new HashMap<>();
+            error.put("error", "save.failed");
+            if (isConfigDebugEnabled()) {
+                error.put("detail", e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
+            respondJson(resp, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, error);
+        }
+    }
+
+    /** 供 SetupServlet 复用的配置更新结果。 */
+    record ApplyResult(boolean updated, boolean requiresRestart, List<String> pendingRestartFields) {
+    }
+
+    synchronized Map<String, Object> snapshotConfig() {
+        return currentConfig();
+    }
+
+    synchronized List<String> getPendingRestartFields() {
+        return new ArrayList<>(pendingRestartValues.keySet());
+    }
+
+    /**
+     * 统一的配置校验、落盘与应用入口（供 PUT /api/config 与 SetupServlet 共享）。
+     *
+     * @param body             提交字段
+     * @param allowEmptyUpdate 为 true 时无字段变更也返回成功（引导仅保留默认值场景）
+     * @param directHotApply   为 true 时（仅首次待初始化模式，业务服务尚未启动）直接应用全部字段到活态 MusicConfig
+     */
+    synchronized ApplyResult applyConfigMap(Map<String, Object> body,
+                                            boolean allowEmptyUpdate,
+                                            boolean directHotApply) throws IOException {
+        Map<String, Object> safeBody = body == null ? Map.of() : body;
         Map<String, Object> updates = new LinkedHashMap<>();
         Map<String, String> propertyUpdates = new LinkedHashMap<>();
 
-        handleString(body, updates, propertyUpdates, "monitorDirectory", true);
-        handleString(body, updates, propertyUpdates, "outputDirectory", true);
-        handleInteger(body, updates, propertyUpdates, "scanIntervalSeconds");
-        handleString(body, updates, propertyUpdates, "musicBrainzApiUrl", false);
-        handleString(body, updates, propertyUpdates, "coverArtApiUrl", false);
-        handleString(body, updates, propertyUpdates, "userAgent", false);
-        handleString(body, updates, propertyUpdates, "acoustIdApiKey", false);
-        handleString(body, updates, propertyUpdates, "acoustIdApiUrl", false);
-        handleString(body, updates, propertyUpdates, "supportedFormats", false);
-        handleBoolean(body, updates, propertyUpdates, "autoRename");
-        handleBoolean(body, updates, propertyUpdates, "createBackup");
-        handleBoolean(body, updates, propertyUpdates, "collapseAlbumArtistToVariousArtists");
-        handleString(body, updates, propertyUpdates, "failedDirectory", false);
-        handleString(body, updates, propertyUpdates, "partialDirectory", false);
-        handleInteger(body, updates, propertyUpdates, "maxRetries");
-        handleBoolean(body, updates, propertyUpdates, "enableDetailedLogging");
-        handleString(body, updates, propertyUpdates, "processedFileLogPath", false);
-        handleString(body, updates, propertyUpdates, "coverArtCacheDirectory", false);
-        handleBoolean(body, updates, propertyUpdates, "preferAnimeCover");
-        handleString(body, updates, propertyUpdates, "animeCoverKeywords", false);
-        handleIntegerInRange(body, updates, propertyUpdates, "animeCoverMaxCandidates", 1, 20);
-        handleString(body, updates, propertyUpdates, "dbType", false);
+        handleString(safeBody, updates, propertyUpdates, "monitorDirectory", true);
+        handleString(safeBody, updates, propertyUpdates, "outputDirectory", true);
+        handleInteger(safeBody, updates, propertyUpdates, "scanIntervalSeconds");
+        handleString(safeBody, updates, propertyUpdates, "musicBrainzApiUrl", false);
+        handleString(safeBody, updates, propertyUpdates, "coverArtApiUrl", false);
+        handleString(safeBody, updates, propertyUpdates, "userAgent", false);
+        handleString(safeBody, updates, propertyUpdates, "acoustIdApiKey", false);
+        handleString(safeBody, updates, propertyUpdates, "acoustIdApiUrl", false);
+        handleString(safeBody, updates, propertyUpdates, "supportedFormats", false);
+        handleBoolean(safeBody, updates, propertyUpdates, "autoRename");
+        handleBoolean(safeBody, updates, propertyUpdates, "createBackup");
+        handleBoolean(safeBody, updates, propertyUpdates, "collapseAlbumArtistToVariousArtists");
+        handleString(safeBody, updates, propertyUpdates, "failedDirectory", false);
+        handleString(safeBody, updates, propertyUpdates, "partialDirectory", false);
+        handleInteger(safeBody, updates, propertyUpdates, "maxRetries");
+        handleBoolean(safeBody, updates, propertyUpdates, "enableDetailedLogging");
+        handleString(safeBody, updates, propertyUpdates, "processedFileLogPath", false);
+        handleString(safeBody, updates, propertyUpdates, "coverArtCacheDirectory", false);
+        handleBoolean(safeBody, updates, propertyUpdates, "preferAnimeCover");
+        handleString(safeBody, updates, propertyUpdates, "animeCoverKeywords", false);
+        handleIntegerInRange(safeBody, updates, propertyUpdates, "animeCoverMaxCandidates", 1, 20);
+        handleString(safeBody, updates, propertyUpdates, "dbType", false);
         // SQLite 数据库文件路径、队列与工作/回收站目录改为只读：防止会话劫持后指向敏感目录触发覆盖或递归删除
-        rejectIfChanged(body, "dbSqlitePath", config.getDbSqlitePath());
-        handleString(body, updates, propertyUpdates, "dbHost", false);
-        handleInteger(body, updates, propertyUpdates, "dbPort");
-        handleString(body, updates, propertyUpdates, "dbDatabase", false);
-        handleString(body, updates, propertyUpdates, "dbUsername", false);
-        handleString(body, updates, propertyUpdates, "dbPassword", false);
-        handleInteger(body, updates, propertyUpdates, "dbMaxPoolSize");
-        handleInteger(body, updates, propertyUpdates, "dbMinIdle");
-        handleLong(body, updates, propertyUpdates, "dbConnectionTimeout");
-        handleBoolean(body, updates, propertyUpdates, "proxyEnabled");
-        handleString(body, updates, propertyUpdates, "proxyHost", false);
-        handleInteger(body, updates, propertyUpdates, "proxyPort");
-        handleString(body, updates, propertyUpdates, "proxyUsername", false);
-        handleString(body, updates, propertyUpdates, "proxyPassword", false);
-        handleString(body, updates, propertyUpdates, "language", false);
-        handleBoolean(body, updates, propertyUpdates, "exportLyricsToFile");
-        handleBoolean(body, updates, propertyUpdates, "audioNormalizeEnabled");
-        // audioNormalizeFfmpegPath 会被直接当作可执行文件启动
-        // (见 AudioFormatNormalizer.runFfmpeg 与 CueSplitService.splitTracks),
-        // 若允许从 Web 修改,等于把「拿到一个会话」直接升级成「以容器身份任意命令执行」。
-        // 该项改为只读: 仅能通过 config.properties 修改,改完需重启。
-        rejectIfChanged(body, "audioNormalizeFfmpegPath", config.getAudioNormalizeFfmpegPath());
-        handleBoolean(body, updates, propertyUpdates, "cueSplitEnabled");
-        handleString(body, updates, propertyUpdates, "cueSplitOutputDir", false);
-        handleString(body, updates, propertyUpdates, "releaseCountryPriority", false);
-        // 阶段六：待人工确认开关（队列路径 / 暂存目录 / 工作目录 / 回收站目录均为只读，只能改 config.properties）
-        handleBoolean(body, updates, propertyUpdates, "reviewEnabled");
-        handleBoolean(body, updates, propertyUpdates, "reviewMissingTracksAutoOnlineSearch");
-        handleBoolean(body, updates, propertyUpdates, "coverMissingRequireReview");
-        handleBoolean(body, updates, propertyUpdates, "coverMissingAutoOnlineSearch");
-        handleBoolean(body, updates, propertyUpdates, "enableLLMMatching");
-        // 允许内网出站端点开关同样只读：防止被劫持会话直接打开 SSRF 通道
-        rejectIfBooleanChanged(body, "llmAllowPrivateEndpoints", config.isLlmAllowPrivateEndpoints());
-        handleInteger(body, updates, propertyUpdates, "llmMaxTokens");
-        handleDouble(body, updates, propertyUpdates, "llmTemperature");
-        handleInteger(body, updates, propertyUpdates, "llmTimeoutSeconds");
-        handleInteger(body, updates, propertyUpdates, "llmMaxRetries");
-        handleInteger(body, updates, propertyUpdates, "llmWebSearchMaxTokens");
-        handleInteger(body, updates, propertyUpdates, "llmWebSearchTimeoutSeconds");
-        handleIntegerInRange(body, updates, propertyUpdates, "llmWebSearchMaxConcurrency", 1, 3);
-        handleString(body, updates, propertyUpdates, "webSearchProvider", false);
-        handleString(body, updates, propertyUpdates, "tavilyApiKey", false);
-        handleString(body, updates, propertyUpdates, "tavilyApiUrl", false);
-        handleString(body, updates, propertyUpdates, "tavilySearchDepth", false);
-        handleInteger(body, updates, propertyUpdates, "tavilyMaxResults");
-        handleInteger(body, updates, propertyUpdates, "tavilyTimeoutSeconds");
-        handleString(body, updates, propertyUpdates, "tavilyIncludeDomains", false);
-        handleBoolean(body, updates, propertyUpdates, "llmAlbumJudgeEnabled");
-        handleBoolean(body, updates, propertyUpdates, "llmAlbumAutoApply");
-        handleDouble(body, updates, propertyUpdates, "llmAlbumAutoApplyMinConfidence");
-        handleBoolean(body, updates, propertyUpdates, "partialRequireReadableTags");
-        handleDouble(body, updates, propertyUpdates, "partialMinTagCoverage");
-        rejectIfChanged(body, "reviewQueuePath", config.getReviewQueuePath());
-        rejectIfChanged(body, "reviewStagingDirectory", config.getReviewStagingDirectory());
-        rejectIfChanged(body, "recoveryWorkDirectory", config.getRecoveryWorkDirectory());
-        rejectIfChanged(body, "recoveryTrashDirectory", config.getRecoveryTrashDirectory());
-        handleInteger(body, updates, propertyUpdates, "recoveryTrashRetentionDays");
+        rejectIfChanged(safeBody, "dbSqlitePath", config.getDbSqlitePath());
+        handleString(safeBody, updates, propertyUpdates, "dbHost", false);
+        handleInteger(safeBody, updates, propertyUpdates, "dbPort");
+        handleString(safeBody, updates, propertyUpdates, "dbDatabase", false);
+        handleString(safeBody, updates, propertyUpdates, "dbUsername", false);
+        handleString(safeBody, updates, propertyUpdates, "dbPassword", false);
+        handleInteger(safeBody, updates, propertyUpdates, "dbMaxPoolSize");
+        handleInteger(safeBody, updates, propertyUpdates, "dbMinIdle");
+        handleLong(safeBody, updates, propertyUpdates, "dbConnectionTimeout");
+        handleBoolean(safeBody, updates, propertyUpdates, "proxyEnabled");
+        handleString(safeBody, updates, propertyUpdates, "proxyHost", false);
+        handleInteger(safeBody, updates, propertyUpdates, "proxyPort");
+        handleString(safeBody, updates, propertyUpdates, "proxyUsername", false);
+        handleString(safeBody, updates, propertyUpdates, "proxyPassword", false);
+        handleString(safeBody, updates, propertyUpdates, "language", false);
+        handleBoolean(safeBody, updates, propertyUpdates, "exportLyricsToFile");
+        handleBoolean(safeBody, updates, propertyUpdates, "audioNormalizeEnabled");
+        rejectIfChanged(safeBody, "audioNormalizeFfmpegPath", config.getAudioNormalizeFfmpegPath());
+        handleBoolean(safeBody, updates, propertyUpdates, "cueSplitEnabled");
+        handleString(safeBody, updates, propertyUpdates, "cueSplitOutputDir", false);
+        handleString(safeBody, updates, propertyUpdates, "releaseCountryPriority", false);
+        handleBoolean(safeBody, updates, propertyUpdates, "reviewEnabled");
+        handleBoolean(safeBody, updates, propertyUpdates, "reviewMissingTracksAutoOnlineSearch");
+        handleBoolean(safeBody, updates, propertyUpdates, "coverMissingRequireReview");
+        handleBoolean(safeBody, updates, propertyUpdates, "coverMissingAutoOnlineSearch");
+        handleBoolean(safeBody, updates, propertyUpdates, "enableLLMMatching");
+        rejectIfBooleanChanged(safeBody, "llmAllowPrivateEndpoints", config.isLlmAllowPrivateEndpoints());
+        handleInteger(safeBody, updates, propertyUpdates, "llmMaxTokens");
+        handleDouble(safeBody, updates, propertyUpdates, "llmTemperature");
+        handleInteger(safeBody, updates, propertyUpdates, "llmTimeoutSeconds");
+        handleInteger(safeBody, updates, propertyUpdates, "llmMaxRetries");
+        handleInteger(safeBody, updates, propertyUpdates, "llmWebSearchMaxTokens");
+        handleInteger(safeBody, updates, propertyUpdates, "llmWebSearchTimeoutSeconds");
+        handleIntegerInRange(safeBody, updates, propertyUpdates, "llmWebSearchMaxConcurrency", 1, 3);
+        handleString(safeBody, updates, propertyUpdates, "webSearchProvider", false);
+        handleString(safeBody, updates, propertyUpdates, "tavilyApiKey", false);
+        handleString(safeBody, updates, propertyUpdates, "tavilyApiUrl", false);
+        handleString(safeBody, updates, propertyUpdates, "tavilySearchDepth", false);
+        handleInteger(safeBody, updates, propertyUpdates, "tavilyMaxResults");
+        handleInteger(safeBody, updates, propertyUpdates, "tavilyTimeoutSeconds");
+        handleString(safeBody, updates, propertyUpdates, "tavilyIncludeDomains", false);
+        handleBoolean(safeBody, updates, propertyUpdates, "llmAlbumJudgeEnabled");
+        handleBoolean(safeBody, updates, propertyUpdates, "llmAlbumAutoApply");
+        handleDouble(safeBody, updates, propertyUpdates, "llmAlbumAutoApplyMinConfidence");
+        handleBoolean(safeBody, updates, propertyUpdates, "partialRequireReadableTags");
+        handleDouble(safeBody, updates, propertyUpdates, "partialMinTagCoverage");
+        rejectIfChanged(safeBody, "reviewQueuePath", config.getReviewQueuePath());
+        rejectIfChanged(safeBody, "reviewStagingDirectory", config.getReviewStagingDirectory());
+        rejectIfChanged(safeBody, "recoveryWorkDirectory", config.getRecoveryWorkDirectory());
+        rejectIfChanged(safeBody, "recoveryTrashDirectory", config.getRecoveryTrashDirectory());
+        handleInteger(safeBody, updates, propertyUpdates, "recoveryTrashRetentionDays");
 
         // 防掩码密钥外泄：若修改了目标端点 URL / Host / Port 且当前已存有配对密钥，则不允许继续沿用掩码密钥
         enforceSecretReentryOnUrlChange(updates, "acoustIdApiUrl", config.getAcoustIdApiUrl(),
@@ -306,30 +349,20 @@ public class ConfigServlet extends HttpServlet {
             "dbPassword", effectiveString("dbPassword", config.getDbPassword()));
 
         if (updates.isEmpty()) {
-            respondJson(resp, HttpServletResponse.SC_BAD_REQUEST, Map.of("error", "no.updates"));
-            return;
+            return new ApplyResult(allowEmptyUpdate, !pendingRestartValues.isEmpty(),
+                new ArrayList<>(pendingRestartValues.keySet()));
         }
 
-        try {
-            persistUpdates(propertyUpdates);
+        persistUpdates(propertyUpdates);
+        if (directHotApply) {
+            applyUpdates(updates);
+            pendingRestartValues.clear();
+        } else {
             applyUpdatesSeparatingRestartFields(updates);
-        } catch (IOException e) {
-            log.error("Failed to save config", e);
-            Map<String, Object> error = new HashMap<>();
-            error.put("error", "save.failed");
-            if (isConfigDebugEnabled()) {
-                error.put("detail", e.getClass().getSimpleName() + ": " + e.getMessage());
-            }
-            respondJson(resp, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, error);
-            return;
         }
 
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("config", currentConfig());
-        payload.put("updated", true);
-        payload.put("requiresRestart", !pendingRestartValues.isEmpty());
-        payload.put("pendingRestartFields", new ArrayList<>(pendingRestartValues.keySet()));
-        respondJson(resp, HttpServletResponse.SC_OK, payload);
+        return new ApplyResult(true, !pendingRestartValues.isEmpty(),
+            new ArrayList<>(pendingRestartValues.keySet()));
     }
 
     private Map<String, Object> currentConfig() {
@@ -690,7 +723,11 @@ public class ConfigServlet extends HttpServlet {
             config.setProxyPassword((String) updates.get("proxyPassword"));
         }
         if (updates.containsKey("language")) {
-            config.setLanguage((String) updates.get("language"));
+            String lang = (String) updates.get("language");
+            config.setLanguage(lang);
+            if (lang != null && !lang.isBlank()) {
+                com.lux032.musicautotagger.util.I18nUtil.init(lang);
+            }
         }
         if (updates.containsKey("exportLyricsToFile")) {
             config.setExportLyricsToFile((Boolean) updates.get("exportLyricsToFile"));
@@ -1194,11 +1231,11 @@ public class ConfigServlet extends HttpServlet {
         }
     }
 
-    private static class ValidationException extends IOException {
-        private final String error;
-        private final String field;
+    static class ValidationException extends IOException {
+        final String error;
+        final String field;
 
-        private ValidationException(String error, String field) {
+        ValidationException(String error, String field) {
             this.error = error;
             this.field = field;
         }

@@ -31,8 +31,21 @@ public class I18nServlet extends HttpServlet {
         resp.setCharacterEncoding("UTF-8");
 
         try {
-            // 获取所有国际化消息
-            Properties messages = I18nUtil.getAllMessages();
+            // 可选只读预览语言（白名单：zh_CN / en_US），不改动服务端全局语言状态
+            String requestedLang = req.getParameter("lang");
+            Properties messages = null;
+            String effectiveLanguage = I18nUtil.getCurrentLanguage();
+            if (requestedLang != null && !requestedLang.isBlank()) {
+                String normalized = requestedLang.trim();
+                Properties preview = I18nUtil.loadMessagesForLanguage(normalized);
+                if (preview != null) {
+                    messages = preview;
+                    effectiveLanguage = normalized;
+                }
+            }
+            if (messages == null) {
+                messages = I18nUtil.getAllMessages();
+            }
 
             // 转换为Map
             Map<String, String> messageMap = new HashMap<>();
@@ -42,7 +55,7 @@ public class I18nServlet extends HttpServlet {
 
             // 添加当前语言信息
             Map<String, Object> data = new HashMap<>();
-            data.put("language", I18nUtil.getCurrentLanguage());
+            data.put("language", effectiveLanguage);
             data.put("messages", messageMap);
 
             resp.setStatus(HttpServletResponse.SC_OK);

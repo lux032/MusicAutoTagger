@@ -58,7 +58,17 @@
         'unsafe.output.root': 'covers.err.unsafe.root',
         'missing.id': 'covers.err.missing.id',
         // 处理记录页
-        'records.no.target': 'records.error.no.target'
+        'records.no.target': 'records.error.no.target',
+        // 初始化引导
+        'setup.required': 'setup.error.required',
+        'setup.monitor.directory.missing': 'setup.error.monitor.missing',
+        'setup.output.directory.missing': 'setup.error.output.missing',
+        'setup.output.directory.unwritable': 'setup.error.output.unwritable',
+        'setup.activation.failed': 'setup.error.activation.failed',
+        'field.readonly': 'setup.error.readonly',
+        'secret.required.on.endpoint.change': 'setup.error.secret.reentry',
+        'api.key.required.on.url.change': 'setup.error.secret.reentry',
+        'proxy.invalid': 'setup.s2.proxy.needHost'
     });
 
     function humanError(code, overrides) {

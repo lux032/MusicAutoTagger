@@ -294,6 +294,36 @@
         }
         .llm-warn code { background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px; }
 
+        /* 概览页 AcoustID 缺失轻提示横幅（1px 细线白卡 + 琥珀状态图标，不阻塞正常操作） */
+        .acoustid-banner {
+            background: var(--surface);
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-sm);
+            padding: 12px 16px;
+            margin-bottom: 18px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .acoustid-banner-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: var(--warn-soft);
+            color: var(--warn);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+        }
+        .acoustid-banner-icon svg { width: 17px; height: 17px; }
+        .acoustid-banner-text { flex: 1 1 280px; min-width: 0; }
+        .acoustid-banner-title { font-size: 13.5px; font-weight: 700; color: var(--text); }
+        .acoustid-banner-desc { font-size: 12.5px; color: var(--text-soft); margin-top: 1px; }
+        .acoustid-banner-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+
         #dashView, #settingsOverlay { animation: view-in .22s cubic-bezier(.2, .8, .2, 1); }
     </style>
 </head>
@@ -495,6 +525,19 @@
                 <div id="error" style="display: none;" class="alert"></div>
 
                 <div id="content" style="display: none;">
+                    <div class="acoustid-banner" id="acoustIdBanner" style="display: none;">
+                        <span class="acoustid-banner-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                        </span>
+                        <div class="acoustid-banner-text">
+                            <div class="acoustid-banner-title" data-i18n="setup.banner.acoustid.title">尚未配置 AcoustID API Key，音频指纹识别当前不可用</div>
+                            <div class="acoustid-banner-desc" data-i18n="setup.banner.acoustid.desc">补填后无需重启即可立即用于音频指纹识别；在此之前仅有标签或时长序列匹配的目录可尝试识别。</div>
+                        </div>
+                        <div class="acoustid-banner-actions">
+                            <button type="button" class="btn ghost sm" onclick="openSettings('tab-apis', 'cfgAcoustIdApiKey')" data-i18n="setup.banner.acoustid.fix">补全配置</button>
+                            <button type="button" class="btn plain sm" id="dismissAcoustIdBtn" onclick="dismissAcoustIdWarning()" data-i18n="setup.banner.acoustid.dismiss">忽略</button>
+                        </div>
+                    </div>
                     <section class="card health">
                         <div class="health-cell monitor-cell" id="monitorCard" style="display: none;">
                             <div class="monitor-top">
@@ -590,6 +633,12 @@
                 <div class="page-head">
                     <div>
                         <h1 class="page-title" data-i18n="settings.title">设置</h1>
+                    </div>
+                    <div class="page-actions">
+                        <a class="btn ghost" href="setup.html?mode=rerun">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path></svg>
+                            <span data-i18n="setup.rerun.btn">重新运行初始化引导</span>
+                        </a>
                     </div>
                 </div>
                 <div class="settings-layout">
@@ -1664,18 +1713,55 @@
             }
         }
 
+        async function refreshSetupStatusBanner() {
+            const banner = document.getElementById('acoustIdBanner');
+            if (!banner || !authState.authenticated) return;
+            try {
+                const resp = await fetch('/api/setup/status', { credentials: 'same-origin' });
+                if (!resp.ok) return;
+                const status = await resp.json();
+                const show = !!status.acoustIdMissing && !status.dismissedAcoustIdWarning;
+                banner.style.display = show ? 'flex' : 'none';
+            } catch (e) {
+                // ignore banner errors
+            }
+        }
+
+        async function dismissAcoustIdWarning() {
+            return withButtonLock('dismissAcoustIdWarning', 'dismissAcoustIdBtn', async () => {
+                try {
+                    const resp = await authFetch('/api/setup/dismiss-acoustid-warning', { method: 'POST' });
+                    if (resp.ok) {
+                        const banner = document.getElementById('acoustIdBanner');
+                        if (banner) banner.style.display = 'none';
+                    }
+                } catch (e) {
+                    showToast(t('web.operation.failed'), true);
+                }
+            });
+        }
+
         async function checkAuth() {
             try {
-                const response = await fetch('/api/auth/status');
+                const [response, setupResp] = await Promise.all([
+                    fetch('/api/auth/status', { credentials: 'same-origin' }),
+                    fetch('/api/setup/status', { credentials: 'same-origin' }).catch(() => null)
+                ]);
                 if (!response.ok) throw new Error('auth status failed');
                 const data = await response.json();
+                const setupStatus = setupResp && setupResp.ok ? await setupResp.json() : null;
+
+                // 首次全新启动尚未创建管理员，或已建号登录但尚未完成初始化：跳转至 5 步初始化引导页
+                if (setupStatus && setupStatus.setupCompleted === false) {
+                    if (setupStatus.needsAdmin || data.authenticated) {
+                        location.replace('setup.html');
+                        return false;
+                    }
+                }
+
                 setAuthState(data);
                 if (data.needsSetup) {
-                    setAuthOverlayMode('setup');
-                    showLoginOverlay(true);
-                    document.getElementById('loading').style.display = 'none';
-                    document.getElementById('content').style.display = 'none';
-                    closeSettings(true);
+                    location.replace('setup.html');
                     return false;
                 }
                 if (!data.authenticated) {
@@ -1687,6 +1773,12 @@
                 }
                 if (data.authenticated) {
                     showLoginOverlay(false);
+                    if (setupStatus) {
+                        const banner = document.getElementById('acoustIdBanner');
+                        if (banner) {
+                            banner.style.display = (setupStatus.acoustIdMissing && !setupStatus.dismissedAcoustIdWarning) ? 'flex' : 'none';
+                        }
+                    }
                 }
                 return data.authenticated;
             } catch (err) {
@@ -1727,8 +1819,24 @@
                     setAuthState(data);
                     showLoginOverlay(false);
                     document.getElementById('loginPassword').value = '';
+                    const nextParam = new URLSearchParams(location.search).get('next');
+                    if (nextParam === 'setup-rerun') {
+                        location.replace('setup.html?mode=rerun');
+                        return;
+                    }
+                    if (nextParam === 'setup') {
+                        location.replace('setup.html');
+                        return;
+                    }
+                    const setupCheck = await fetch('/api/setup/status', { credentials: 'same-origin' })
+                        .then(r => r.ok ? r.json() : null).catch(() => null);
+                    if (setupCheck && setupCheck.setupCompleted === false) {
+                        location.replace('setup.html');
+                        return;
+                    }
                     loadData();
                     loadLogs();
+                    refreshSetupStatusBanner();
                     if (location.hash === '#settings') openSettings(); else loadConfig();
                 } catch (err) {
                     errorEl.textContent = t('web.login.failed');
@@ -2525,6 +2633,7 @@
                         return;
                     }
                     updateConfigStatus(t('config.save.success.restart'), false);
+                    refreshSetupStatusBanner();
                 } catch (err) {
                     updateConfigStatus(t('config.save.failed'), true);
                 }
@@ -2561,7 +2670,7 @@
             document.getElementById('navSettings').classList.toggle('active', view === 'settings');
         }
 
-        function openSettings() {
+        function openSettings(targetTab, focusId) {
             if (!authState.authenticated) {
                 return;
             }
@@ -2571,8 +2680,16 @@
             document.getElementById('settingsOverlay').style.display = 'block';
             setActiveNav('settings');
             window.scrollTo(0, 0);
-            switchTab('tab-basic');
-            loadConfig();
+            switchTab(targetTab || 'tab-basic');
+            loadConfig().then(() => {
+                if (focusId) {
+                    const targetEl = document.getElementById(focusId);
+                    if (targetEl) {
+                        targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        targetEl.focus();
+                    }
+                }
+            });
             loadBackfillStatus();
             loadLyricsBackfillStatus();
             loadAlbumArtistRefreshStatus();
@@ -2985,8 +3102,14 @@
                 }
             });
             if (authed) {
+                const params = new URLSearchParams(location.search);
+                if (params.get('setup') === 'done') {
+                    showToast(t('setup.toast.activated'));
+                    history.replaceState(null, '', location.pathname + location.hash);
+                }
                 loadData();
                 loadLogs();
+                refreshSetupStatusBanner();
                 // 直接打开 #settings 时由 openSettings 加载配置，避免重复请求
                 if (location.hash === '#settings') openSettings(); else loadConfig();
             }

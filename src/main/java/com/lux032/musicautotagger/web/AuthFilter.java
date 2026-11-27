@@ -53,7 +53,9 @@ public class AuthFilter implements Filter {
             return;
         }
 
-        if (path.startsWith("/api/i18n") || path.startsWith("/api/auth/")) {
+        String method = req.getMethod() == null ? "GET" : req.getMethod().toUpperCase(Locale.ROOT);
+        if (path.startsWith("/api/i18n") || path.startsWith("/api/auth/")
+            || ("GET".equals(method) && "/api/setup/status".equals(path))) {
             chain.doFilter(request, response);
             return;
         }
@@ -64,7 +66,6 @@ public class AuthFilter implements Filter {
             return;
         }
 
-        String method = req.getMethod() == null ? "GET" : req.getMethod().toUpperCase(Locale.ROOT);
         if (!"GET".equals(method) && !"HEAD".equals(method) && !"OPTIONS".equals(method)) {
             if (!isCsrfValid(req, session)) {
                 writeError(resp, HttpServletResponse.SC_FORBIDDEN, "csrf.invalid");

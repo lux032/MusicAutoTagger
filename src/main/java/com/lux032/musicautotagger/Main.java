@@ -37,35 +37,41 @@ public class Main {
             System.out.println(I18nUtil.getMessage("main.title"));
             System.out.println(I18nUtil.getMessage("main.title.separator"));
             
-            if (!config.isValid()) {
-                log.error(I18nUtil.getMessage("app.config.invalid"));
-                System.exit(1);
-                return;
-            }
-            
-            log.info(I18nUtil.getMessage("app.config.loaded"));
-            log.info(I18nUtil.getMessage("app.monitor.directory"), config.getMonitorDirectory());
-            log.info(I18nUtil.getMessage("app.output.directory"), config.getOutputDirectory());
-            log.info(I18nUtil.getMessage("app.scan.interval"), config.getScanIntervalSeconds());
-            
-            // 4. 创建并初始化生命周期管理器
+            // 4. 创建生命周期管理器，判断是进入首次初始化待命模式还是正常启动
             lifecycleManager = new ApplicationLifecycleManager(config);
-            lifecycleManager.initializeServices();
-            
-            // 5. 检查依赖工具
-            if (!lifecycleManager.isFpcalcAvailable()) {
-                log.warn(I18nUtil.getMessage("main.title.separator"));
-                log.warn(I18nUtil.getMessage("main.fpcalc.warning.line"));
-                log.warn(I18nUtil.getMessage("main.fpcalc.feature.disabled"));
-                log.warn(I18nUtil.getMessage("main.fpcalc.install.guide"));
-                log.warn(I18nUtil.getMessage("main.title.separator"));
+
+            if (!lifecycleManager.isSetupCompleted()) {
+                log.info("First-run setup not completed; starting Web panel in standby mode (file monitoring paused until setup finishes).");
+                lifecycleManager.startWebServerInSetupMode();
+            } else {
+                if (!config.isValid()) {
+                    log.error(I18nUtil.getMessage("app.config.invalid"));
+                    System.exit(1);
+                    return;
+                }
+
+                log.info(I18nUtil.getMessage("app.config.loaded"));
+                log.info(I18nUtil.getMessage("app.monitor.directory"), config.getMonitorDirectory());
+                log.info(I18nUtil.getMessage("app.output.directory"), config.getOutputDirectory());
+                log.info(I18nUtil.getMessage("app.scan.interval"), config.getScanIntervalSeconds());
+
+                lifecycleManager.initializeServices();
+
+                // 5. 检查依赖工具
+                if (!lifecycleManager.isFpcalcAvailable()) {
+                    log.warn(I18nUtil.getMessage("main.title.separator"));
+                    log.warn(I18nUtil.getMessage("main.fpcalc.warning.line"));
+                    log.warn(I18nUtil.getMessage("main.fpcalc.feature.disabled"));
+                    log.warn(I18nUtil.getMessage("main.fpcalc.install.guide"));
+                    log.warn(I18nUtil.getMessage("main.title.separator"));
+                }
+
+                // 6. 启动 Web 监控面板
+                lifecycleManager.startWebServer();
+
+                // 7. 启动文件监控
+                lifecycleManager.startMonitoring();
             }
-            
-            // 6. 启动 Web 监控面板
-            lifecycleManager.startWebServer();
-            
-            // 7. 启动文件监控
-            lifecycleManager.startMonitoring();
             
             // 8. 注册 Shutdown Hook，处理 SIGTERM/SIGINT 信号（Docker stop 等场景）
             CountDownLatch shutdownLatch = new CountDownLatch(1);

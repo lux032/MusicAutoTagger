@@ -1,0 +1,2049 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Auto Tagger — 初始化引导</title>
+    <link rel="icon" href="logo.png" type="image/png">
+    <link rel="stylesheet" href="app.css?v=11">
+    <script src="ui.js?v=1"></script>
+    <script src="errors.js?v=1"></script>
+    <script src="api.js?v=1"></script>
+    <style>
+        /* ============================================================
+           初始化引导页（遵循 DESIGN.md：冷灰底 / 居中白卡片 / 1px 细线 / 单一信号蓝）
+           ============================================================ */
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .wizard-page {
+            flex: 1;
+            width: 100%;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 28px 20px 44px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .wizard-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            flex-wrap: wrap;
+        }
+        .wizard-brand {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            min-width: 0;
+        }
+        .wizard-brand img {
+            width: 36px;
+            height: 36px;
+            border-radius: var(--radius-sm);
+            flex: 0 0 auto;
+            border: 1px solid var(--border);
+            background: var(--surface);
+        }
+        .wizard-brand-name {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1.3;
+        }
+        .wizard-brand-sub {
+            font-size: 12px;
+            color: var(--text-mute);
+            line-height: 1.35;
+        }
+        .wizard-top-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* 5 步线性进度栏 */
+        .stepper-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-sm);
+            padding: 12px 16px;
+        }
+        .stepper {
+            list-style: none;
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 6px;
+        }
+        .step-item { position: relative; min-width: 0; }
+        .step-btn {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 8px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--text-mute);
+            font: inherit;
+            text-align: left;
+            cursor: default;
+            transition: background .15s ease, border-color .15s ease, color .15s ease;
+        }
+        .step-btn.clickable { cursor: pointer; }
+        .step-btn.clickable:hover { background: var(--bg-soft); color: var(--text); }
+        .step-btn.active {
+            background: var(--primary-soft);
+            border-color: var(--primary-line);
+            color: var(--primary-dark);
+        }
+        .step-btn.done { color: var(--text); }
+        .step-btn.disabled-step { opacity: .5; }
+        .step-num {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            flex: 0 0 22px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            background: var(--bg-soft);
+            border: 1px solid var(--border-strong);
+            color: var(--text-mute);
+        }
+        .step-btn.active .step-num {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: #fff;
+        }
+        .step-btn.done .step-num {
+            background: var(--success-soft);
+            border-color: var(--border);
+            color: var(--success);
+        }
+        .step-btn.done .step-num svg { width: 13px; height: 13px; }
+        .step-label {
+            min-width: 0;
+            font-size: 12.5px;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* 主步骤卡片 */
+        .wizard-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-sm);
+            overflow: hidden;
+        }
+        .wizard-body {
+            padding: 26px 28px 24px;
+            animation: step-fade .2s cubic-bezier(.16, 1, .3, 1);
+        }
+        @keyframes step-fade {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: none; }
+        }
+        .step-title {
+            font-size: 21px;
+            font-weight: 700;
+            line-height: 1.3;
+            color: var(--text);
+        }
+        .step-desc {
+            font-size: 13.5px;
+            color: var(--text-soft);
+            margin-top: 6px;
+            max-width: 68ch;
+        }
+
+        .sub-panel {
+            margin-top: 20px;
+            padding: 16px;
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            display: grid;
+            gap: 14px;
+        }
+        .sub-panel.white { background: var(--surface); }
+        .sub-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .sub-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text);
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .section-heading {
+            margin-top: 24px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .env-strip {
+            margin-top: 18px;
+            padding: 12px 14px;
+            background: var(--bg-soft);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            display: flex;
+            align-items: center;
+            gap: 10px 14px;
+            flex-wrap: wrap;
+        }
+        .env-strip-label { font-size: 12.5px; font-weight: 600; color: var(--text-soft); }
+        .env-items { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 2px 9px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text-soft);
+            white-space: nowrap;
+        }
+        .pill svg { width: 13px; height: 13px; flex: 0 0 auto; }
+        .pill.ok { background: var(--success-soft); color: var(--success); border-color: transparent; }
+        .pill.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+        .pill.err { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+        .pill.info { background: var(--primary-soft); color: var(--primary-dark); border-color: var(--primary-line); }
+
+        .notice {
+            padding: 11px 13px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--bg-soft);
+            color: var(--text-soft);
+            font-size: 12.5px;
+            line-height: 1.55;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+        .notice svg { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 2px; }
+        .notice.warn { background: var(--warn-soft); border-color: var(--border-strong); color: var(--warn); }
+        .notice.err { background: var(--danger-soft); border-color: var(--border-strong); color: var(--danger); }
+        .notice.info { background: var(--primary-soft); border-color: var(--primary-line); color: var(--primary-dark); }
+        .notice.ok { background: var(--success-soft); border-color: var(--border); color: var(--success); }
+        .notice-body { flex: 1; min-width: 0; }
+        .notice-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+
+        .two-col {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+        }
+        .field-label-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .mono-input { font-family: var(--mono) !important; font-size: 13px !important; }
+        .mono-code {
+            font-family: var(--mono);
+            font-size: 12.5px;
+            padding: 2px 6px;
+            border-radius: 5px;
+            background: rgba(18, 26, 38, .06);
+            color: var(--text);
+            word-break: break-all;
+        }
+        .input-group { position: relative; display: flex; align-items: center; }
+        .input-group input { padding-right: 40px; }
+        .eye-btn {
+            position: absolute;
+            right: 4px;
+            width: 30px;
+            height: 28px;
+            border: 0;
+            background: transparent;
+            color: var(--text-mute);
+            border-radius: 5px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .eye-btn:hover { background: var(--bg-soft); color: var(--text); }
+        .eye-btn svg { width: 15px; height: 15px; }
+
+        .inline-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .ext-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            margin-left: 4px;
+            font-weight: 600;
+        }
+        .ext-link svg { width: 12px; height: 12px; flex: 0 0 auto; }
+        .check-result-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            font-size: 12.5px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .provider-box {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 14px;
+            display: grid;
+            gap: 12px;
+        }
+        .model-picker {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-soft);
+            padding: 10px;
+            display: grid;
+            gap: 8px;
+        }
+        .model-picker-list {
+            max-height: 168px;
+            overflow-y: auto;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 6px;
+            display: grid;
+            gap: 2px;
+        }
+        .model-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 6px;
+            border-radius: 5px;
+            font-size: 13px;
+            font-family: var(--mono);
+            cursor: pointer;
+        }
+        .model-option:hover { background: var(--bg-soft); }
+        .model-option input { width: 15px; height: 15px; cursor: pointer; }
+        .selected-models { display: grid; border-top: 1px solid var(--border); }
+        .selected-model-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+            flex-wrap: wrap;
+            font-size: 13px;
+        }
+        .selected-model-row:last-child { border-bottom: 0; padding-bottom: 0; }
+        .selected-model-name { font-family: var(--mono); font-weight: 600; color: var(--text); }
+        .inline-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12.5px;
+            color: var(--text-soft);
+            cursor: pointer;
+        }
+        .inline-check input { width: 15px; height: 15px; cursor: pointer; }
+        .selected-model-row .spacer { margin-left: auto; }
+
+        .choice-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+        .choice-card {
+            position: relative;
+            display: grid;
+            gap: 6px;
+            padding: 14px 15px;
+            background: var(--surface);
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: border-color .15s ease, background .15s ease;
+        }
+        .choice-card:hover { background: var(--bg-soft); }
+        .choice-card.selected { background: var(--primary-soft); border-color: var(--primary); }
+        .choice-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13.5px;
+            font-weight: 700;
+            color: var(--text);
+        }
+        .choice-card.selected .choice-head { color: var(--primary-dark); }
+        .choice-radio {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid var(--border-strong);
+            flex: 0 0 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--surface);
+        }
+        .choice-card.selected .choice-radio { border-color: var(--primary); }
+        .choice-card.selected .choice-radio::after {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--primary);
+        }
+        .choice-desc {
+            font-size: 12.5px;
+            color: var(--text-soft);
+            line-height: 1.5;
+            padding-left: 24px;
+        }
+        .choice-card.selected .choice-desc { color: var(--primary-dark); }
+
+        .chip-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+        .chip-btn {
+            border: 1px solid var(--border-strong);
+            background: var(--surface);
+            color: var(--text-soft);
+            font: inherit;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 3px 9px;
+            border-radius: 999px;
+            cursor: pointer;
+            transition: background .14s ease, border-color .14s ease, color .14s ease;
+        }
+        .chip-btn:hover { background: var(--primary-soft); border-color: var(--primary-line); color: var(--primary-dark); }
+
+        .summary-list {
+            display: grid;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        .summary-row {
+            display: grid;
+            grid-template-columns: 140px minmax(0, 1fr) auto;
+            gap: 12px;
+            align-items: center;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+        .summary-row:last-child { border-bottom: 0; }
+        .summary-k { color: var(--text-mute); font-weight: 600; }
+        .summary-v { color: var(--text); font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .summary-v.mono { font-family: var(--mono); font-size: 12.5px; }
+
+        .wizard-foot {
+            padding: 14px 28px;
+            border-top: 1px solid var(--border);
+            background: var(--surface);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .wizard-foot-left { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-mute); }
+        .wizard-foot-right { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+
+        @media (max-width: 720px) {
+            .wizard-page { padding: 16px 12px 28px; gap: 14px; }
+            .wizard-body { padding: 20px 16px 18px; }
+            .wizard-foot { padding: 12px 16px; }
+            .step-title { font-size: 19px; }
+            .two-col, .choice-grid { grid-template-columns: minmax(0, 1fr); }
+            .stepper { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+            .step-btn { justify-content: center; padding: 6px 4px; }
+            .step-label { display: none; }
+            .summary-row { grid-template-columns: 110px minmax(0, 1fr); gap: 6px 10px; }
+            .summary-row > :last-child { grid-column: 1 / -1; justify-self: start; }
+        }
+    </style>
+</head>
+<body>
+    <div id="loadingView" class="page-loading">
+        <div class="spinner"></div>
+    </div>
+
+    <div id="wizardView" class="wizard-page" style="display: none;">
+        <header class="wizard-top">
+            <div class="wizard-brand">
+                <img src="logo.png" alt="Music Auto Tagger">
+                <div>
+                    <div class="wizard-brand-name" id="brandName">Music Auto Tagger</div>
+                    <div class="wizard-brand-sub" id="brandSub"></div>
+                </div>
+            </div>
+            <div class="wizard-top-right">
+                <span class="pill info" id="standbyPill"></span>
+                <div class="seg" role="group" aria-label="Language">
+                    <button type="button" id="langBtnZh" onclick="setLang('zh_CN')">中文</button>
+                    <button type="button" id="langBtnEn" onclick="setLang('en_US')">English</button>
+                </div>
+            </div>
+        </header>
+
+        <nav class="stepper-card" aria-label="Setup Steps">
+            <ol class="stepper" id="stepper"></ol>
+        </nav>
+
+        <main class="wizard-card">
+            <div class="wizard-body" id="stepContent"></div>
+            <footer class="wizard-foot" id="stepFooter"></footer>
+        </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script>
+        const DRAFT_KEY = 'mat_setup_wizard_draft_v1';
+        const SECRET_MASK = '********';
+        const esc = text => AppUI.escapeHtml(text);
+
+        let i18nMessages = {};
+        function t(key, fallback) {
+            return i18nMessages[key] !== undefined ? i18nMessages[key] : (fallback !== undefined ? fallback : key);
+        }
+        function tf(key, ...args) {
+            let msg = t(key, key);
+            args.forEach((arg, idx) => {
+                msg = msg.replaceAll('{' + idx + '}', String(arg == null ? '' : arg));
+            });
+            return msg;
+        }
+        window.I18n = { t, tf };
+
+        function showToast(msg, isError = false) {
+            AppUI.toast(msg, { duration: 3800, isError });
+        }
+
+        const SVG = {
+            check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>',
+            ok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="8.5 12.5 11 15 15.5 9.5"></polyline></svg>',
+            warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>',
+            err: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>',
+            info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>',
+            eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>',
+            eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.77 21.77 0 0 1 5.06-5.94"></path><path d="M9.9 4.24A9.12 9.12 0 0 1 12 5c7 0 11 7 11 7a21.8 21.8 0 0 1-3.16 4.19"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>',
+            arrowR: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>',
+            arrowL: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>',
+            ext: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>'
+        };
+
+        const state = {
+            lang: 'zh_CN',
+            csrfToken: null,
+            authenticated: false,
+            isRerun: false,
+            active: false,
+            step: 1,
+            maxUnlocked: 1,
+            env: { fpcalcAvailable: true, ffmpegAvailable: true, dbType: 'sqlite' },
+
+            // Step 1
+            adminCreated: false,
+            username: 'admin',
+            password: '',
+            password2: '',
+            s1Error: '',
+            s1Busy: false,
+
+            // Step 2
+            monitorDirectory: '/music',
+            outputDirectory: '/app/tagged_music',
+            initialMonitorDirectory: '/music',
+            initialOutputDirectory: '/app/tagged_music',
+            dirStatus: { monitor: null, output: null },
+            dirChecking: false,
+            proxyEnabled: false,
+            initialProxySig: 'DIRECT',
+            proxyHost: '127.0.0.1',
+            proxyPort: 7890,
+            proxyUsername: '',
+            proxyPassword: '',
+            proxyTest: null,
+
+            // Step 3
+            acoustIdWasPlaceholder: false,
+            acoustIdApiKey: '',
+            acoustIdSkipped: false,
+            skipConfirmOpen: false,
+            mbEmail: '',
+            mbCustomMode: false,
+            userAgent: 'MusicAutoTagger/1.0 ( contact@example.com )',
+            sourceTest: null,
+
+            // Step 4
+            llmProviders: [],
+            providersDirty: false,
+            webSearchProvider: 'tavily',
+            tavilyApiKey: '',
+            tavilyTest: null,
+            llmAlbumJudgeEnabled: true,
+            enableLLMMatching: false,
+
+            // Step 5
+            reviewEnabled: true,
+            coverMissingRequireReview: true,
+            preferAnimeCover: false,
+            exportLyricsToFile: false,
+            releaseCountryPriority: '',
+            activating: false,
+            completeError: '',
+            rerunSavedNeedsRestart: null
+        };
+
+        function blankProvider() {
+            return {
+                id: '', name: '', format: 'openai', apiUrl: '', apiKey: '', enabled: true, models: [],
+                fetchStatus: null, suggestedUrl: null, pickerModels: null, pickerFilter: ''
+            };
+        }
+
+        function currentProxyPayload() {
+            return {
+                enabled: !!state.proxyEnabled,
+                host: (state.proxyHost || '').trim(),
+                port: Number(state.proxyPort) || 0,
+                username: (state.proxyUsername || '').trim(),
+                password: state.proxyPassword || ''
+            };
+        }
+
+        function currentProxySig() {
+            if (!state.proxyEnabled) return 'DIRECT';
+            return `${(state.proxyHost || '').trim()}:${Number(state.proxyPort) || 0}:${(state.proxyUsername || '').trim()}:${state.proxyPassword || ''}`;
+        }
+
+        function computedUserAgent() {
+            if (state.mbCustomMode) return (state.userAgent || '').trim() || 'MusicAutoTagger/1.0 ( contact@example.com )';
+            const mail = (state.mbEmail || '').trim();
+            return mail ? `MusicAutoTagger/1.0 ( ${mail} )` : 'MusicAutoTagger/1.0 ( contact@example.com )';
+        }
+
+        function isAcoustIdConfigured() {
+            const v = (state.acoustIdApiKey || '').trim();
+            return v.length > 0 && v.toUpperCase() !== 'YOUR_API_KEY_HERE';
+        }
+
+        function activeModelCount() {
+            let count = 0;
+            state.llmProviders.forEach(p => {
+                if (p.enabled !== false && (p.apiUrl || '').trim() && (p.apiKey || '').trim()) {
+                    (p.models || []).forEach(m => { if (m.enabled !== false && m.id) count++; });
+                }
+            });
+            return count;
+        }
+
+        function getRerunRestartFields() {
+            const changed = [];
+            if ((state.monitorDirectory || '').trim() !== state.initialMonitorDirectory) changed.push('monitorDirectory');
+            if ((state.outputDirectory || '').trim() !== state.initialOutputDirectory) changed.push('outputDirectory');
+            if (currentProxySig() !== state.initialProxySig) changed.push('proxy');
+            return changed;
+        }
+
+        /* 仅保存非敏感草稿到 sessionStorage（绝不写入任何密码或 API Key） */
+        function saveDraft() {
+            if (state.isRerun) return;
+            try {
+                sessionStorage.setItem(DRAFT_KEY, JSON.stringify({
+                    lang: state.lang,
+                    step: state.step,
+                    monitorDirectory: state.monitorDirectory,
+                    outputDirectory: state.outputDirectory,
+                    proxyEnabled: state.proxyEnabled,
+                    proxyHost: state.proxyHost,
+                    proxyPort: state.proxyPort,
+                    proxyUsername: state.proxyUsername,
+                    mbEmail: state.mbEmail,
+                    mbCustomMode: state.mbCustomMode,
+                    userAgent: state.userAgent,
+                    webSearchProvider: state.webSearchProvider,
+                    llmAlbumJudgeEnabled: state.llmAlbumJudgeEnabled,
+                    enableLLMMatching: state.enableLLMMatching,
+                    reviewEnabled: state.reviewEnabled,
+                    coverMissingRequireReview: state.coverMissingRequireReview,
+                    preferAnimeCover: state.preferAnimeCover,
+                    exportLyricsToFile: state.exportLyricsToFile,
+                    releaseCountryPriority: state.releaseCountryPriority
+                }));
+            } catch (e) { /* ignore storage errors */ }
+        }
+
+        function restoreDraft() {
+            if (state.isRerun) return;
+            try {
+                const raw = sessionStorage.getItem(DRAFT_KEY);
+                if (!raw) return;
+                const d = JSON.parse(raw);
+                if (!d || typeof d !== 'object') return;
+                if (typeof d.monitorDirectory === 'string' && d.monitorDirectory) state.monitorDirectory = d.monitorDirectory;
+                if (typeof d.outputDirectory === 'string' && d.outputDirectory) state.outputDirectory = d.outputDirectory;
+                if (typeof d.proxyEnabled === 'boolean') state.proxyEnabled = d.proxyEnabled;
+                if (typeof d.proxyHost === 'string') state.proxyHost = d.proxyHost;
+                if (typeof d.proxyPort === 'number' && d.proxyPort > 0) state.proxyPort = d.proxyPort;
+                if (typeof d.proxyUsername === 'string') state.proxyUsername = d.proxyUsername;
+                if (typeof d.mbEmail === 'string') state.mbEmail = d.mbEmail;
+                if (typeof d.mbCustomMode === 'boolean') state.mbCustomMode = d.mbCustomMode;
+                if (typeof d.userAgent === 'string' && d.userAgent) state.userAgent = d.userAgent;
+                if (d.webSearchProvider === 'tavily' || d.webSearchProvider === 'native') state.webSearchProvider = d.webSearchProvider;
+                if (typeof d.llmAlbumJudgeEnabled === 'boolean') state.llmAlbumJudgeEnabled = d.llmAlbumJudgeEnabled;
+                if (typeof d.enableLLMMatching === 'boolean') state.enableLLMMatching = d.enableLLMMatching;
+                if (typeof d.reviewEnabled === 'boolean') state.reviewEnabled = d.reviewEnabled;
+                if (typeof d.coverMissingRequireReview === 'boolean') state.coverMissingRequireReview = d.coverMissingRequireReview;
+                if (typeof d.preferAnimeCover === 'boolean') state.preferAnimeCover = d.preferAnimeCover;
+                if (typeof d.exportLyricsToFile === 'boolean') state.exportLyricsToFile = d.exportLyricsToFile;
+                if (typeof d.releaseCountryPriority === 'string') state.releaseCountryPriority = d.releaseCountryPriority;
+            } catch (e) { /* ignore */ }
+        }
+
+        function clearDraft() {
+            try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) { /* ignore */ }
+        }
+
+        async function apiJson(url, options = {}) {
+            return AppApi.request(url, {
+                ...options,
+                getCsrf: () => state.csrfToken,
+                redirectOn401: state.isRerun ? 'index.html?next=setup-rerun' : 'index.html?next=setup',
+                mapError: code => AppErrors.humanError(code)
+            });
+        }
+
+        async function loadI18n(lang) {
+            const url = lang ? ('/api/i18n?lang=' + encodeURIComponent(lang)) : '/api/i18n';
+            const resp = await fetch(url, { credentials: 'same-origin' });
+            if (!resp.ok) throw new Error('i18n unavailable');
+            const data = await resp.json();
+            i18nMessages = data.messages || {};
+            state.lang = data.language || 'en_US';
+            document.documentElement.lang = state.lang === 'zh_CN' ? 'zh-CN' : 'en';
+            document.title = t('setup.page.title');
+            document.getElementById('langBtnZh').classList.toggle('active', state.lang === 'zh_CN');
+            document.getElementById('langBtnEn').classList.toggle('active', state.lang === 'en_US');
+        }
+
+        async function setLang(lang) {
+            if (lang !== 'zh_CN' && lang !== 'en_US') return;
+            try {
+                await loadI18n(lang);
+                saveDraft();
+                renderWizard();
+            } catch (e) {
+                showToast(e.message, true);
+            }
+        }
+
+        function parseUserAgentFromConfig(ua) {
+            const trimmed = (ua || '').trim();
+            if (!trimmed) {
+                state.mbEmail = '';
+                state.mbCustomMode = false;
+                state.userAgent = 'MusicAutoTagger/1.0 ( contact@example.com )';
+                return;
+            }
+            const m = /^(?:MusicAutoTagger|MusicDemo)\/[\d.]+\s*\(\s*([^)]+)\s*\)$/i.exec(trimmed);
+            if (m) {
+                const inside = m[1].trim();
+                const lower = inside.toLowerCase();
+                if (lower === 'your-email@example.com' || lower === 'contact@example.com') {
+                    state.mbEmail = '';
+                    state.mbCustomMode = false;
+                } else {
+                    state.mbEmail = inside;
+                    state.mbCustomMode = false;
+                }
+                state.userAgent = trimmed;
+            } else {
+                state.mbCustomMode = true;
+                state.userAgent = trimmed;
+            }
+        }
+
+        async function loadBootstrap() {
+            const data = await apiJson('/api/setup/bootstrap');
+            state.active = !!data.active;
+            state.isRerun = !!data.isRerun || (new URLSearchParams(location.search).get('mode') === 'rerun');
+            if (data.environment) state.env = data.environment;
+
+            const cfg = data.config || {};
+            state.monitorDirectory = cfg.monitorDirectory || '/music';
+            state.outputDirectory = cfg.outputDirectory || '/app/tagged_music';
+            state.initialMonitorDirectory = state.monitorDirectory;
+            state.initialOutputDirectory = state.outputDirectory;
+
+            state.proxyEnabled = !!cfg.proxyEnabled;
+            state.proxyHost = cfg.proxyHost || '127.0.0.1';
+            state.proxyPort = cfg.proxyPort > 0 ? cfg.proxyPort : 7890;
+            state.proxyUsername = cfg.proxyUsername || '';
+            state.proxyPassword = cfg.proxyPassword || '';
+            state.initialProxySig = currentProxySig();
+
+            state.acoustIdWasPlaceholder = !!cfg.acoustIdApiKeyPlaceholder;
+            state.acoustIdApiKey = cfg.acoustIdApiKey || '';
+            parseUserAgentFromConfig(cfg.userAgent);
+
+            state.webSearchProvider = cfg.webSearchProvider === 'native' && !state.isRerun
+                ? 'tavily' : (cfg.webSearchProvider || 'tavily');
+            if (state.isRerun && cfg.webSearchProvider) {
+                state.webSearchProvider = cfg.webSearchProvider;
+            }
+            state.tavilyApiKey = cfg.tavilyApiKey || '';
+            state.llmAlbumJudgeEnabled = state.isRerun ? !!cfg.llmAlbumJudgeEnabled : true;
+            state.enableLLMMatching = !!cfg.enableLLMMatching;
+
+            state.reviewEnabled = state.isRerun ? !!cfg.reviewEnabled : true;
+            state.coverMissingRequireReview = cfg.coverMissingRequireReview !== false;
+            state.preferAnimeCover = !!cfg.preferAnimeCover;
+            state.exportLyricsToFile = !!cfg.exportLyricsToFile;
+            state.releaseCountryPriority = cfg.releaseCountryPriority || '';
+
+            const loadedProviders = Array.isArray(data.providers) ? data.providers : [];
+            if (loadedProviders.length > 0) {
+                state.llmProviders = loadedProviders.map(p => ({
+                    id: p.id || '',
+                    name: p.name || '',
+                    format: p.format === 'anthropic' ? 'anthropic' : 'openai',
+                    apiUrl: p.apiUrl || '',
+                    apiKey: p.apiKey || '',
+                    enabled: p.enabled !== false,
+                    models: Array.isArray(p.models) ? p.models.map(m => ({
+                        id: m.id || '', enabled: m.enabled !== false, webSearch: !!m.webSearch
+                    })) : [],
+                    fetchStatus: null, suggestedUrl: null, pickerModels: null, pickerFilter: ''
+                }));
+            } else {
+                state.llmProviders = [blankProvider()];
+            }
+            state.providersDirty = false;
+            restoreDraft();
+        }
+
+        /* ==================== 主渲染 ==================== */
+        function renderWizard() {
+            document.getElementById('brandName').textContent = t('web.brand', 'Music Auto Tagger');
+            document.getElementById('brandSub').textContent = t(state.isRerun ? 'setup.brand.sub.rerun' : 'setup.brand.sub.fresh');
+            const pill = document.getElementById('standbyPill');
+            pill.textContent = t(state.active ? 'setup.pill.running' : 'setup.pill.standby');
+            pill.className = 'pill ' + (state.active ? 'ok' : 'info');
+
+            renderStepper();
+            renderStepBody();
+            renderStepFooter();
+        }
+
+        function renderStepper() {
+            const ol = document.getElementById('stepper');
+            ol.innerHTML = [1, 2, 3, 4, 5].map(n => {
+                const isActive = state.step === n;
+                const isDone = (n === 1 && state.adminCreated) || (n < state.step && !(n === 1 && state.isRerun));
+                const disabled = (n === 1 && state.adminCreated) || (n > state.maxUnlocked);
+                const clickable = !disabled && !isActive;
+                const cls = ['step-btn'];
+                if (isActive) cls.push('active');
+                else if (isDone) cls.push('done');
+                if (clickable) cls.push('clickable');
+                if (n === 1 && state.isRerun) cls.push('disabled-step');
+
+                return `
+                    <li class="step-item">
+                        <button type="button" class="${cls.join(' ')}" ${clickable ? `onclick="goToStep(${n})"` : 'disabled'} aria-current="${isActive ? 'step' : 'false'}">
+                            <span class="step-num">${isDone && !isActive ? SVG.check : n}</span>
+                            <span class="step-label">${esc(t('setup.step.' + n))}</span>
+                        </button>
+                    </li>`;
+            }).join('');
+        }
+
+        function renderStepBody() {
+            const container = document.getElementById('stepContent');
+            if (state.step === 1) container.innerHTML = tplStep1();
+            else if (state.step === 2) container.innerHTML = tplStep2();
+            else if (state.step === 3) container.innerHTML = tplStep3();
+            else if (state.step === 4) container.innerHTML = tplStep4();
+            else container.innerHTML = tplStep5();
+        }
+
+        function renderStepFooter() {
+            const foot = document.getElementById('stepFooter');
+            if (state.step === 1) {
+                foot.innerHTML = `
+                    <div class="wizard-foot-left">${esc(t('setup.s1.foot.hint'))}</div>
+                    <div class="wizard-foot-right">
+                        <button type="button" class="btn primary" id="btnStep1Next" onclick="submitStep1()" ${state.s1Busy ? 'disabled' : ''}>
+                            ${state.s1Busy ? '<span class="sq-spinner" style="border-color:rgba(255,255,255,.35);border-top-color:#fff;"></span>' : ''}
+                            <span>${esc(t(state.s1Busy ? 'setup.btn.creating' : 'setup.btn.createNext'))}</span>
+                            ${state.s1Busy ? '' : SVG.arrowR}
+                        </button>
+                    </div>`;
+            } else if (state.step === 2) {
+                const leftText = state.isRerun
+                    ? t('setup.s2.foot.rerun')
+                    : tf('setup.s2.foot.fresh', state.username);
+                foot.innerHTML = `
+                    <div class="wizard-foot-left">${esc(leftText)}</div>
+                    <div class="wizard-foot-right">
+                        ${state.isRerun ? `<a class="btn plain" href="index.html#settings">${esc(t('setup.btn.backSettings'))}</a>` : ''}
+                        <button type="button" class="btn primary" onclick="advanceFromStep2()">
+                            <span>${esc(t('setup.btn.next'))}: ${esc(t('setup.step.3'))}</span>
+                            ${SVG.arrowR}
+                        </button>
+                    </div>`;
+            } else if (state.step === 3) {
+                foot.innerHTML = `
+                    <div class="wizard-foot-left">
+                        <button type="button" class="btn ghost" onclick="goToStep(2)">${SVG.arrowL}<span>${esc(t('setup.btn.prev'))}</span></button>
+                    </div>
+                    <div class="wizard-foot-right">
+                        <button type="button" class="btn plain" onclick="requestSkipStep3()">${esc(t('setup.btn.skipLater'))}</button>
+                        <button type="button" class="btn primary" onclick="advanceFromStep3()">
+                            <span>${esc(t('setup.btn.next'))}: ${esc(t('setup.step.4'))}</span>
+                            ${SVG.arrowR}
+                        </button>
+                    </div>`;
+            } else if (state.step === 4) {
+                foot.innerHTML = `
+                    <div class="wizard-foot-left">
+                        <button type="button" class="btn ghost" onclick="goToStep(3)">${SVG.arrowL}<span>${esc(t('setup.btn.prev'))}</span></button>
+                    </div>
+                    <div class="wizard-foot-right">
+                        <button type="button" class="btn plain" onclick="goToStep(5)">${esc(t('setup.btn.skip'))}</button>
+                        <button type="button" class="btn primary" onclick="goToStep(5)">
+                            <span>${esc(t('setup.btn.next'))}: ${esc(t('setup.step.5'))}</span>
+                            ${SVG.arrowR}
+                        </button>
+                    </div>`;
+            } else {
+                const finishLabel = state.activating
+                    ? t('setup.btn.activating')
+                    : t(state.isRerun ? 'setup.btn.finishRerun' : 'setup.btn.finishFresh');
+                foot.innerHTML = `
+                    <div class="wizard-foot-left">
+                        <button type="button" class="btn ghost" onclick="goToStep(4)" ${state.activating ? 'disabled' : ''}>${SVG.arrowL}<span>${esc(t('setup.btn.prev'))}</span></button>
+                    </div>
+                    <div class="wizard-foot-right">
+                        <button type="button" class="btn primary" id="btnFinish" onclick="finishSetup()" ${state.activating ? 'disabled' : ''}>
+                            ${state.activating ? '<span class="sq-spinner" style="border-color:rgba(255,255,255,.35);border-top-color:#fff;"></span>' : ''}
+                            <span>${esc(finishLabel)}</span>
+                        </button>
+                    </div>`;
+            }
+        }
+
+        /* ==================== Step 1 ==================== */
+        function tplStep1() {
+            const fpOk = !!state.env.fpcalcAvailable;
+            const ffOk = !!state.env.ffmpegAvailable;
+            const dbType = (state.env.dbType || 'sqlite').toLowerCase();
+            const dbLabel = dbType === 'sqlite' ? t('setup.s1.env.db.ok') : tf('setup.s1.env.db.custom', dbType.toUpperCase());
+
+            return `
+                <h1 class="step-title">${esc(t('setup.s1.title'))}</h1>
+                <p class="step-desc">${esc(t('setup.s1.desc'))}</p>
+
+                <div class="env-strip">
+                    <span class="env-strip-label">${esc(t('setup.s1.env.label'))}</span>
+                    <div class="env-items">
+                        <span class="pill ${fpOk ? 'ok' : 'warn'}">${fpOk ? SVG.ok : SVG.warn}${esc(t(fpOk ? 'setup.s1.env.fpcalc.ok' : 'setup.s1.env.fpcalc.miss'))}</span>
+                        <span class="pill ${ffOk ? 'ok' : 'warn'}">${ffOk ? SVG.ok : SVG.warn}${esc(t(ffOk ? 'setup.s1.env.ffmpeg.ok' : 'setup.s1.env.ffmpeg.miss'))}</span>
+                        <span class="pill ok">${SVG.ok}${esc(dbLabel)}</span>
+                    </div>
+                </div>
+                ${!fpOk ? `<div class="notice warn" style="margin-top:12px;">${SVG.warn}<div class="notice-body">${esc(t('setup.s1.env.fpcalc.warn'))}</div></div>` : ''}
+                ${state.s1Error ? `<div class="notice err" style="margin-top:16px;">${SVG.err}<div class="notice-body">${esc(state.s1Error)}</div></div>` : ''}
+
+                <div class="sub-panel white">
+                    <div class="form-row">
+                        <label>${esc(t('setup.s1.lang.label'))}</label>
+                        <div>
+                            <div class="seg" role="group">
+                                <button type="button" class="${state.lang === 'zh_CN' ? 'active' : ''}" onclick="setLang('zh_CN')">简体中文</button>
+                                <button type="button" class="${state.lang === 'en_US' ? 'active' : ''}" onclick="setLang('en_US')">English</button>
+                            </div>
+                        </div>
+                        <div class="form-hint">${esc(t('setup.s1.lang.hint'))}</div>
+                    </div>
+
+                    <div class="form-row">
+                        <label for="inUser">${esc(t('setup.s1.user.label'))}</label>
+                        <input id="inUser" type="text" autocomplete="username" value="${esc(state.username)}" oninput="state.username = this.value">
+                    </div>
+
+                    <div class="two-col">
+                        <div class="form-row">
+                            <label for="inPass">${esc(t('setup.s1.pass.label'))}</label>
+                            <div class="input-group">
+                                <input id="inPass" type="password" autocomplete="new-password" value="${esc(state.password)}" oninput="state.password = this.value">
+                                <button type="button" class="eye-btn" onclick="toggleEye('inPass', this)" aria-label="toggle password">${SVG.eye}</button>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <label for="inPass2">${esc(t('setup.s1.pass2.label'))}</label>
+                            <div class="input-group">
+                                <input id="inPass2" type="password" autocomplete="new-password" value="${esc(state.password2)}"
+                                    oninput="state.password2 = this.value"
+                                    onkeydown="if(event.key==='Enter') submitStep1()">
+                                <button type="button" class="eye-btn" onclick="toggleEye('inPass2', this)" aria-label="toggle password">${SVG.eye}</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function submitStep1() {
+            if (state.s1Busy) return;
+            const username = (state.username || '').trim();
+            if (!username) { state.s1Error = t('setup.s1.err.user'); renderStepBody(); return; }
+            if ((state.password || '').length < 8) { state.s1Error = t('web.setup.password.short'); renderStepBody(); return; }
+            if (state.password !== state.password2) { state.s1Error = t('web.setup.password.mismatch'); renderStepBody(); return; }
+
+            state.s1Error = '';
+            state.s1Busy = true;
+            renderStepFooter();
+
+            try {
+                const resp = await fetch('/api/auth/setup', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password: state.password, language: state.lang })
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok) {
+                    if (data.error === 'admin.already.setup') {
+                        location.href = 'index.html?next=setup';
+                        return;
+                    }
+                    state.s1Error = data.error === 'password.too.short'
+                        ? t('web.setup.password.short')
+                        : t('web.setup.failed');
+                    state.s1Busy = false;
+                    renderWizard();
+                    return;
+                }
+                state.authenticated = true;
+                state.adminCreated = true;
+                state.username = data.username || username;
+                state.csrfToken = data.csrfToken || null;
+                state.password = '';
+                state.password2 = '';
+                state.s1Busy = false;
+
+                await loadBootstrap();
+                state.step = 2;
+                state.maxUnlocked = Math.max(state.maxUnlocked, 2);
+                saveDraft();
+                renderWizard();
+                checkDirs();
+            } catch (err) {
+                state.s1Error = t('web.setup.failed');
+                state.s1Busy = false;
+                renderWizard();
+            }
+        }
+
+        /* ==================== Step 2 ==================== */
+        function dirBadgeHtml(info, isOutput) {
+            if (state.dirChecking) return `<span class="pill info"><span class="sq-spinner"></span>${esc(t('setup.s2.dir.checking'))}</span>`;
+            if (!info) return '';
+            if (info.status === 'ok') return `<span class="pill ok">${SVG.ok}${esc(t(isOutput ? 'setup.s2.dir.ok.write' : 'setup.s2.dir.ok.read'))}</span>`;
+            if (info.status === 'willCreate') return `<span class="pill warn">${SVG.info}${esc(t('setup.s2.dir.willCreate'))}</span>`;
+            if (info.status === 'invalid') return `<span class="pill err">${SVG.err}${esc(t('setup.s2.dir.absRequired'))}</span>`;
+            return `<span class="pill err">${SVG.err}${esc(t('setup.s2.dir.missing'))}</span>`;
+        }
+
+        function tplStep2() {
+            let proxyResultHtml = '';
+            if (state.proxyTest) {
+                if (state.proxyTest.state === 'loading') {
+                    proxyResultHtml = `<span class="pill info"><span class="sq-spinner"></span>${esc(t('setup.s2.proxy.testing'))}</span>`;
+                } else if (state.proxyTest.state === 'ok') {
+                    proxyResultHtml = `<span class="pill ok">${SVG.ok}${esc(state.proxyTest.msg)}</span>`;
+                } else {
+                    proxyResultHtml = `<span class="pill err">${SVG.err}${esc(state.proxyTest.msg)}</span>`;
+                }
+            }
+
+            return `
+                <h1 class="step-title">${esc(t('setup.s2.title'))}</h1>
+                <p class="step-desc">${esc(t('setup.s2.desc'))}</p>
+
+                <div class="sub-panel">
+                    <div class="sub-head">
+                        <span class="sub-title">${esc(t('setup.s2.dir.head'))}</span>
+                        <button type="button" class="btn ghost sm" onclick="checkDirs()" ${state.dirChecking ? 'disabled' : ''}>${esc(t('setup.s2.dir.recheck'))}</button>
+                    </div>
+                    <div class="form-row">
+                        <div class="field-label-row">
+                            <label for="inMonDir">${esc(t('setup.s2.dir.monitor'))}</label>
+                            ${dirBadgeHtml(state.dirStatus.monitor, false)}
+                        </div>
+                        <input id="inMonDir" type="text" class="mono-input" value="${esc(state.monitorDirectory)}" oninput="state.monitorDirectory = this.value; saveDraft()">
+                        <div class="form-hint">${esc(t('setup.s2.dir.monitor.hint'))}</div>
+                    </div>
+                    <div class="form-row">
+                        <div class="field-label-row">
+                            <label for="inOutDir">${esc(t('setup.s2.dir.output'))}</label>
+                            ${dirBadgeHtml(state.dirStatus.output, true)}
+                        </div>
+                        <input id="inOutDir" type="text" class="mono-input" value="${esc(state.outputDirectory)}" oninput="state.outputDirectory = this.value; saveDraft()">
+                    </div>
+                </div>
+
+                <div class="section-heading"><span>${esc(t('setup.s2.proxy.head'))}</span></div>
+                <div class="checkbox-row">
+                    <input id="chkProxy" type="checkbox" ${state.proxyEnabled ? 'checked' : ''}
+                        onchange="state.proxyEnabled = this.checked; state.proxyTest = null; saveDraft(); renderStepBody()">
+                    <label for="chkProxy">${esc(t('setup.s2.proxy.enable'))}</label>
+                </div>
+
+                ${state.proxyEnabled ? `
+                <div class="sub-panel" style="margin-top: 10px;">
+                    <div class="two-col">
+                        <div class="form-row">
+                            <label for="inProxyHost">${esc(t('setup.s2.proxy.host'))}</label>
+                            <input id="inProxyHost" type="text" class="mono-input" value="${esc(state.proxyHost)}"
+                                oninput="state.proxyHost = this.value; state.proxyTest = null; saveDraft()">
+                        </div>
+                        <div class="form-row">
+                            <label for="inProxyPort">${esc(t('setup.s2.proxy.port'))}</label>
+                            <input id="inProxyPort" type="number" min="1" max="65535" class="mono-input" value="${esc(state.proxyPort)}"
+                                oninput="state.proxyPort = Number(this.value) || 0; state.proxyTest = null; saveDraft()">
+                        </div>
+                        <div class="form-row">
+                            <label for="inProxyUser">${esc(t('setup.s2.proxy.user'))}</label>
+                            <input id="inProxyUser" type="text" value="${esc(state.proxyUsername)}"
+                                oninput="state.proxyUsername = this.value; saveDraft()">
+                        </div>
+                        <div class="form-row">
+                            <label for="inProxyPass">${esc(t('setup.s2.proxy.pass'))}</label>
+                            <div class="input-group">
+                                <input id="inProxyPass" type="password" value="${esc(state.proxyPassword)}"
+                                    oninput="state.proxyPassword = this.value">
+                                <button type="button" class="eye-btn" onclick="toggleEye('inProxyPass', this)" aria-label="toggle password">${SVG.eye}</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="inline-actions">
+                        <button type="button" class="btn ghost sm" onclick="testProxy()">${esc(t('setup.s2.proxy.test'))}</button>
+                        <div class="check-result-row">${proxyResultHtml}</div>
+                    </div>
+                </div>` : ''}
+
+                <div class="notice" style="margin-top: 16px;">
+                    ${SVG.info}
+                    <div class="notice-body">${esc(t('setup.s2.db.note'))}</div>
+                </div>
+            `;
+        }
+
+        async function checkDirs() {
+            state.dirChecking = true;
+            if (state.step === 2) renderStepBody();
+            try {
+                const data = await apiJson('/api/setup/check-directories', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        monitorDirectory: (state.monitorDirectory || '').trim(),
+                        outputDirectory: (state.outputDirectory || '').trim()
+                    })
+                });
+                state.dirStatus = { monitor: data.monitor || null, output: data.output || null };
+            } catch (e) {
+                showToast(e.message, true);
+            } finally {
+                state.dirChecking = false;
+                if (state.step === 2) renderStepBody();
+            }
+        }
+
+        async function testProxy() {
+            const host = (state.proxyHost || '').trim();
+            const port = Number(state.proxyPort);
+            if (!host || !port || port < 1 || port > 65535) {
+                state.proxyTest = { state: 'err', msg: t('setup.s2.proxy.needHost') };
+                renderStepBody();
+                return;
+            }
+            state.proxyTest = { state: 'loading', msg: '' };
+            renderStepBody();
+            try {
+                const data = await apiJson('/api/setup/test-proxy', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        proxy: currentProxyPayload(),
+                        userAgent: computedUserAgent()
+                    })
+                });
+                if (data.ok) {
+                    state.proxyTest = { state: 'ok', msg: tf('setup.s2.proxy.ok', data.latencyMs ?? 0) };
+                } else if (data.error === 'proxy.auth.failed') {
+                    state.proxyTest = { state: 'err', msg: t('setup.s2.proxy.authFail') };
+                } else {
+                    state.proxyTest = { state: 'err', msg: tf('setup.s2.proxy.fail', data.detail || data.error || '') };
+                }
+            } catch (e) {
+                state.proxyTest = { state: 'err', msg: e.message };
+            }
+            renderStepBody();
+        }
+
+        async function advanceFromStep2() {
+            await checkDirs();
+            if ((state.dirStatus.monitor && state.dirStatus.monitor.status === 'invalid')
+                || (state.dirStatus.output && state.dirStatus.output.status === 'invalid')) {
+                showToast(t('setup.s2.dir.absRequired'), true);
+                return;
+            }
+            state.step = 3;
+            state.maxUnlocked = Math.max(state.maxUnlocked, 3);
+            saveDraft();
+            renderWizard();
+        }
+
+        /* ==================== Step 3 ==================== */
+        function tplStep3() {
+            const routeText = state.proxyEnabled && (state.proxyHost || '').trim()
+                ? tf('setup.s3.test.routeProxy', state.proxyHost.trim(), state.proxyPort)
+                : t('setup.s3.test.routeDirect');
+
+            let testHtml = '';
+            if (state.sourceTest) {
+                if (state.sourceTest.loading) {
+                    testHtml = `<span class="pill info"><span class="sq-spinner"></span>${esc(t('setup.s3.test.testing'))}</span>`;
+                } else {
+                    const a = state.sourceTest.acoustid || {};
+                    const m = state.sourceTest.musicbrainz || {};
+                    const aCls = a.ok ? 'ok' : (a.status === 'empty' ? 'warn' : 'err');
+                    const aIcon = a.ok ? SVG.ok : (a.status === 'empty' ? SVG.warn : SVG.err);
+                    const aMsg = a.ok
+                        ? tf('setup.s3.test.acoustid.ok', a.latencyMs ?? 0)
+                        : (a.status === 'empty' ? t('setup.s3.test.acoustid.empty')
+                            : (a.error === 'acoustid.key.invalid' ? t('setup.s3.test.acoustid.invalid')
+                                : tf('setup.s3.test.acoustid.fail', a.detail || a.error || '')));
+                    const mCls = m.ok ? 'ok' : 'err';
+                    const mIcon = m.ok ? SVG.ok : SVG.err;
+                    const mMsg = m.ok
+                        ? tf('setup.s3.test.mb.ok', m.latencyMs ?? 0)
+                        : tf('setup.s3.test.mb.fail', m.detail || m.error || '');
+                    testHtml = `
+                        <span class="pill ${aCls}">${aIcon}${esc(aMsg)}</span>
+                        <span class="pill ${mCls}">${mIcon}${esc(mMsg)}</span>`;
+                }
+            }
+
+            return `
+                <h1 class="step-title">${esc(t('setup.s3.title'))}</h1>
+                <p class="step-desc">${esc(t('setup.s3.desc'))}</p>
+
+                <div class="sub-panel">
+                    <div class="sub-head">
+                        <span class="sub-title">${esc(t('setup.s3.acoustid.title'))}</span>
+                        <span class="pill info">${esc(t('setup.s3.acoustid.req'))}</span>
+                    </div>
+                    ${state.acoustIdWasPlaceholder && !isAcoustIdConfigured() ? `
+                        <div class="notice warn">
+                            ${SVG.warn}
+                            <div class="notice-body">${esc(t('setup.s3.acoustid.detectedPh'))}</div>
+                        </div>` : ''}
+                    <div class="form-row">
+                        <div class="input-group">
+                            <input id="inAcoustId" type="password" class="mono-input" autocomplete="off"
+                                placeholder="${esc(t('setup.s3.acoustid.placeholder'))}"
+                                value="${esc(state.acoustIdApiKey)}"
+                                oninput="state.acoustIdApiKey = this.value; state.acoustIdSkipped = false; state.skipConfirmOpen = false; state.sourceTest = null">
+                            <button type="button" class="eye-btn" onclick="toggleEye('inAcoustId', this)" aria-label="toggle key">${SVG.eye}</button>
+                        </div>
+                        <div class="form-hint">
+                            ${esc(t('setup.s3.acoustid.hint'))}
+                            <a class="ext-link" href="https://acoustid.org/new-application" target="_blank" rel="noopener noreferrer">acoustid.org ${SVG.ext}</a>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sub-panel">
+                    <div class="sub-head">
+                        <span class="sub-title">${esc(t('setup.s3.mb.title'))}</span>
+                        <span class="pill">${esc(t('setup.s3.mb.rec'))}</span>
+                    </div>
+
+                    ${!state.mbCustomMode ? `
+                        <div class="form-row">
+                            <label for="inMbEmail">${esc(t('setup.s3.mb.email'))}</label>
+                            <input id="inMbEmail" type="text" placeholder="${esc(t('setup.s3.mb.email.ph'))}"
+                                value="${esc(state.mbEmail)}"
+                                oninput="state.mbEmail = this.value; updateUaPreview(); saveDraft()">
+                        </div>
+                        <div class="form-hint" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+                            <span>${esc(t('setup.s3.mb.preview'))}<code class="mono-code" id="uaPreviewCode">${esc(computedUserAgent())}</code></span>
+                            <button type="button" class="btn plain sm" onclick="toggleMbCustom(true)">${esc(t('setup.s3.mb.customToggle'))}</button>
+                        </div>
+                    ` : `
+                        <div class="form-row">
+                            <div class="field-label-row">
+                                <label for="inMbUa">User-Agent</label>
+                                <button type="button" class="btn plain sm" onclick="toggleMbCustom(false)">${esc(t('setup.s3.mb.email'))}</button>
+                            </div>
+                            <input id="inMbUa" type="text" class="mono-input" value="${esc(state.userAgent)}"
+                                oninput="state.userAgent = this.value; saveDraft()">
+                        </div>
+                    `}
+                    <div class="form-hint">${esc(t('setup.s3.mb.hint'))}</div>
+                </div>
+
+                <div class="inline-actions" style="margin-top: 16px;">
+                    <button type="button" class="btn ghost" onclick="testSources()">${esc(t('setup.s3.test.btn'))}</button>
+                    <span class="pill">${esc(routeText)}</span>
+                    <div class="check-result-row">${testHtml}</div>
+                </div>
+
+                ${state.skipConfirmOpen ? `
+                    <div class="notice warn" style="margin-top: 16px;">
+                        ${SVG.warn}
+                        <div class="notice-body">
+                            <div>${esc(t('setup.s3.skip.warn'))}</div>
+                            <div class="notice-actions">
+                                <button type="button" class="btn ghost sm" onclick="confirmSkipStep3()">${esc(t('setup.s3.skip.confirm'))}</button>
+                                <button type="button" class="btn plain sm" onclick="state.skipConfirmOpen = false; renderStepBody()">${esc(t('setup.s3.skip.cancel'))}</button>
+                            </div>
+                        </div>
+                    </div>` : ''}
+            `;
+        }
+
+        function updateUaPreview() {
+            const el = document.getElementById('uaPreviewCode');
+            if (el) el.textContent = computedUserAgent();
+        }
+
+        function toggleMbCustom(custom) {
+            if (custom) state.userAgent = computedUserAgent();
+            state.mbCustomMode = custom;
+            saveDraft();
+            renderStepBody();
+        }
+
+        async function testSources() {
+            state.sourceTest = { loading: true };
+            renderStepBody();
+            try {
+                const data = await apiJson('/api/setup/test-sources', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        acoustIdApiKey: (state.acoustIdApiKey || '').trim(),
+                        userAgent: computedUserAgent(),
+                        proxy: currentProxyPayload()
+                    })
+                });
+                state.sourceTest = { loading: false, acoustid: data.acoustid, musicbrainz: data.musicbrainz };
+            } catch (e) {
+                state.sourceTest = {
+                    loading: false,
+                    acoustid: { ok: false, error: e.message },
+                    musicbrainz: { ok: false, error: e.message }
+                };
+            }
+            renderStepBody();
+        }
+
+        function requestSkipStep3() {
+            if (isAcoustIdConfigured()) {
+                goToStep(4);
+                return;
+            }
+            state.skipConfirmOpen = true;
+            renderStepBody();
+        }
+
+        function confirmSkipStep3() {
+            state.acoustIdSkipped = true;
+            state.skipConfirmOpen = false;
+            state.step = 4;
+            state.maxUnlocked = Math.max(state.maxUnlocked, 4);
+            saveDraft();
+            renderWizard();
+        }
+
+        function advanceFromStep3() {
+            if (!isAcoustIdConfigured()) {
+                state.skipConfirmOpen = true;
+                renderStepBody();
+                showToast(t('setup.s3.err.needKey'), true);
+                return;
+            }
+            state.acoustIdSkipped = false;
+            state.skipConfirmOpen = false;
+            state.step = 4;
+            state.maxUnlocked = Math.max(state.maxUnlocked, 4);
+            saveDraft();
+            renderWizard();
+        }
+
+        /* ==================== Step 4 ==================== */
+        function tplStep4() {
+            const providersHtml = state.llmProviders.map((p, idx) => {
+                let statusPill = '';
+                if (p.fetchStatus) {
+                    if (p.fetchStatus.type === 'loading') statusPill = `<span class="pill info"><span class="sq-spinner"></span>${esc(t('setup.s4.llm.fetching'))}</span>`;
+                    else if (p.fetchStatus.type === 'ok') statusPill = `<span class="pill ok">${SVG.ok}${esc(p.fetchStatus.msg)}</span>`;
+                    else statusPill = `<span class="pill err">${SVG.err}${esc(p.fetchStatus.msg)}</span>`;
+                }
+
+                const suggestionHtml = p.suggestedUrl ? `
+                    <div class="notice warn">
+                        ${SVG.warn}
+                        <div class="notice-body">
+                            <div>${esc(t('setup.s4.llm.urlSuggest'))} <code class="mono-code">${esc(p.suggestedUrl)}</code></div>
+                            <div class="notice-actions">
+                                <button type="button" class="btn ghost sm" onclick="applySuggestedUrl(${idx})">${esc(t('setup.s4.llm.urlApply'))}</button>
+                            </div>
+                        </div>
+                    </div>` : '';
+
+                let pickerHtml = '';
+                if (p.pickerModels) {
+                    const selectedSet = new Set((p.models || []).map(m => m.id));
+                    const kw = (p.pickerFilter || '').toLowerCase();
+                    const list = p.pickerModels.filter(m => m.toLowerCase().includes(kw));
+                    pickerHtml = `
+                        <div class="model-picker">
+                            <input type="text" class="input" placeholder="${esc(t('setup.s4.llm.filterPh'))}"
+                                value="${esc(p.pickerFilter || '')}"
+                                oninput="state.llmProviders[${idx}].pickerFilter = this.value; renderStepBody()">
+                            <div class="model-picker-list" id="pickerList${idx}">
+                                ${list.map(id => `
+                                    <label class="model-option">
+                                        <input type="checkbox" value="${esc(id)}" ${selectedSet.has(id) ? 'checked' : ''}>
+                                        <span>${esc(id)}</span>
+                                    </label>`).join('')}
+                            </div>
+                            <div>
+                                <button type="button" class="btn ghost sm" onclick="applyPickedModels(${idx})">${esc(t('setup.s4.llm.useSelected'))}</button>
+                            </div>
+                        </div>`;
+                }
+
+                const modelsHtml = (p.models || []).length === 0
+                    ? `<div class="form-hint">${esc(t('setup.s4.llm.noModels'))}</div>`
+                    : `<div class="selected-models">${p.models.map((m, mi) => `
+                        <div class="selected-model-row">
+                            <label class="inline-check">
+                                <input type="checkbox" ${m.enabled !== false ? 'checked' : ''}
+                                    onchange="state.llmProviders[${idx}].models[${mi}].enabled = this.checked; state.providersDirty = true">
+                                <span class="selected-model-name">${esc(m.id)}</span>
+                            </label>
+                            <label class="inline-check" style="${state.webSearchProvider === 'native' ? 'color:var(--primary-dark);font-weight:600;' : ''}">
+                                <input type="checkbox" ${m.webSearch ? 'checked' : ''}
+                                    onchange="state.llmProviders[${idx}].models[${mi}].webSearch = this.checked; state.providersDirty = true">
+                                <span>${esc(t('setup.s4.llm.webSearch'))}</span>
+                            </label>
+                            <button type="button" class="btn plain sm spacer" onclick="removeModel(${idx}, ${mi})">${esc(t('setup.s4.llm.remove'))}</button>
+                        </div>`).join('')}</div>`;
+
+                return `
+                    <div class="provider-box">
+                        <div class="sub-head">
+                            <span class="sub-title">${esc(tf('setup.s4.llm.providerN', idx + 1))}</span>
+                            ${state.llmProviders.length > 1 ? `<button type="button" class="btn danger-soft sm" onclick="removeProvider(${idx})">${esc(t('setup.s4.llm.remove'))}</button>` : ''}
+                        </div>
+                        <div class="two-col">
+                            <div class="form-row">
+                                <label>${esc(t('setup.s4.llm.name'))}</label>
+                                <input type="text" placeholder="${esc(t('setup.s4.llm.name.ph'))}" value="${esc(p.name)}"
+                                    oninput="state.llmProviders[${idx}].name = this.value; state.providersDirty = true">
+                            </div>
+                            <div class="form-row">
+                                <label>${esc(t('setup.s4.llm.format'))}</label>
+                                <select onchange="state.llmProviders[${idx}].format = this.value; state.providersDirty = true">
+                                    <option value="openai" ${p.format !== 'anthropic' ? 'selected' : ''}>${esc(t('setup.s4.llm.fmt.openai'))}</option>
+                                    <option value="anthropic" ${p.format === 'anthropic' ? 'selected' : ''}>${esc(t('setup.s4.llm.fmt.anthropic'))}</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <label>${esc(t('setup.s4.llm.url'))}</label>
+                            <input type="text" class="mono-input" placeholder="${esc(t('setup.s4.llm.url.ph'))}" value="${esc(p.apiUrl)}"
+                                oninput="state.llmProviders[${idx}].apiUrl = this.value; state.llmProviders[${idx}].suggestedUrl = null; state.providersDirty = true">
+                        </div>
+                        <div class="form-row">
+                            <label>${esc(t('setup.s4.llm.key'))}</label>
+                            <div class="input-group">
+                                <input id="llmKey${idx}" type="password" class="mono-input" autocomplete="off" placeholder="sk-..." value="${esc(p.apiKey)}"
+                                    oninput="state.llmProviders[${idx}].apiKey = this.value; state.providersDirty = true">
+                                <button type="button" class="eye-btn" onclick="toggleEye('llmKey${idx}', this)" aria-label="toggle key">${SVG.eye}</button>
+                            </div>
+                        </div>
+                        <div class="inline-actions">
+                            <button type="button" class="btn ghost sm" onclick="fetchModels(${idx})">${esc(t('setup.s4.llm.fetch'))}</button>
+                            <button type="button" class="btn plain sm" onclick="addManualModel(${idx})">${esc(t('setup.s4.llm.addManual'))}</button>
+                            ${statusPill}
+                        </div>
+                        ${suggestionHtml}
+                        ${pickerHtml}
+                        ${modelsHtml}
+                    </div>`;
+            }).join('');
+
+            let tavilyPill = '';
+            if (state.tavilyTest) {
+                if (state.tavilyTest.state === 'loading') tavilyPill = `<span class="pill info"><span class="sq-spinner"></span>${esc(t('setup.s4.tavily.testing'))}</span>`;
+                else if (state.tavilyTest.state === 'ok') tavilyPill = `<span class="pill ok">${SVG.ok}${esc(state.tavilyTest.msg)}</span>`;
+                else tavilyPill = `<span class="pill err">${SVG.err}${esc(state.tavilyTest.msg)}</span>`;
+            }
+
+            return `
+                <h1 class="step-title">${esc(t('setup.s4.title'))}</h1>
+                <p class="step-desc">${esc(t('setup.s4.desc'))}</p>
+
+                <div class="sub-panel">
+                    <div class="sub-head">
+                        <span class="sub-title">${esc(t('setup.s4.llm.head'))}</span>
+                        <span class="pill">${esc(t('setup.s4.llm.opt'))}</span>
+                    </div>
+                    ${providersHtml}
+                    <div>
+                        <button type="button" class="btn plain sm" onclick="addProvider()">${esc(t('setup.s4.llm.addProvider'))}</button>
+                    </div>
+                </div>
+
+                <div class="sub-panel">
+                    <div class="sub-head">
+                        <span class="sub-title">${esc(t('setup.s4.search.head'))}</span>
+                        <div class="seg" role="group">
+                            <button type="button" class="${state.webSearchProvider === 'tavily' ? 'active' : ''}"
+                                onclick="state.webSearchProvider = 'tavily'; saveDraft(); renderStepBody()">${esc(t('setup.s4.search.tavily'))}</button>
+                            <button type="button" class="${state.webSearchProvider === 'native' ? 'active' : ''}"
+                                onclick="state.webSearchProvider = 'native'; saveDraft(); renderStepBody()">${esc(t('setup.s4.search.native'))}</button>
+                        </div>
+                    </div>
+                    <div class="form-hint">${esc(t(state.webSearchProvider === 'tavily' ? 'setup.s4.search.tavilyDesc' : 'setup.s4.search.nativeDesc'))}</div>
+
+                    ${state.webSearchProvider === 'tavily' ? `
+                        <div class="form-row">
+                            <label for="inTavilyKey">${esc(t('setup.s4.tavily.key'))}</label>
+                            <div class="input-group">
+                                <input id="inTavilyKey" type="password" class="mono-input" autocomplete="off" placeholder="tvly-..." value="${esc(state.tavilyApiKey)}"
+                                    oninput="state.tavilyApiKey = this.value; state.tavilyTest = null">
+                                <button type="button" class="eye-btn" onclick="toggleEye('inTavilyKey', this)" aria-label="toggle key">${SVG.eye}</button>
+                            </div>
+                            <div class="form-hint">
+                                ${esc(t('setup.s4.tavily.hint'))}
+                                <a class="ext-link" href="https://app.tavily.com" target="_blank" rel="noopener noreferrer">app.tavily.com ${SVG.ext}</a>
+                            </div>
+                        </div>
+                        <div class="inline-actions">
+                            <button type="button" class="btn ghost sm" onclick="testTavily()">${esc(t('setup.s4.tavily.test'))}</button>
+                            ${tavilyPill}
+                        </div>
+                    ` : ''}
+                </div>
+
+                <div class="section-heading"><span>${esc(t('setup.s4.switches.head'))}</span></div>
+                <div style="display:grid;gap:10px;">
+                    <div class="checkbox-row">
+                        <input id="chkJudge" type="checkbox" ${state.llmAlbumJudgeEnabled ? 'checked' : ''}
+                            onchange="state.llmAlbumJudgeEnabled = this.checked; saveDraft()">
+                        <label for="chkJudge">${esc(t('setup.s4.sw.judge'))}</label>
+                    </div>
+                    <div class="checkbox-row">
+                        <input id="chkMatch" type="checkbox" ${state.enableLLMMatching ? 'checked' : ''}
+                            onchange="state.enableLLMMatching = this.checked; saveDraft()">
+                        <label for="chkMatch">${esc(t('setup.s4.sw.artist'))}</label>
+                    </div>
+                </div>
+            `;
+        }
+
+        function addProvider() {
+            state.llmProviders.push(blankProvider());
+            state.providersDirty = true;
+            renderStepBody();
+        }
+        function removeProvider(idx) {
+            state.llmProviders.splice(idx, 1);
+            if (state.llmProviders.length === 0) state.llmProviders.push(blankProvider());
+            state.providersDirty = true;
+            renderStepBody();
+        }
+        function removeModel(pIdx, mIdx) {
+            state.llmProviders[pIdx].models.splice(mIdx, 1);
+            state.providersDirty = true;
+            renderStepBody();
+        }
+        function addManualModel(pIdx) {
+            const name = prompt(t('llm.model.name.prompt'));
+            if (!name || !name.trim()) return;
+            state.llmProviders[pIdx].models.push({ id: name.trim(), enabled: true, webSearch: false });
+            state.providersDirty = true;
+            renderStepBody();
+        }
+
+        async function fetchModels(idx) {
+            const p = state.llmProviders[idx];
+            if (!(p.apiUrl || '').trim() || !(p.apiKey || '').trim()) {
+                p.fetchStatus = { type: 'err', msg: t('setup.s4.llm.needUrlKey') };
+                renderStepBody();
+                return;
+            }
+            p.fetchStatus = { type: 'loading', msg: '' };
+            p.suggestedUrl = null;
+            renderStepBody();
+            try {
+                const data = await apiJson('/api/llm/providers/models', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        id: p.id,
+                        apiUrl: p.apiUrl.trim(),
+                        apiKey: p.apiKey.trim(),
+                        format: p.format,
+                        proxy: currentProxyPayload()
+                    })
+                });
+                const models = data.models || [];
+                p.pickerModels = models;
+                p.fetchStatus = { type: 'ok', msg: tf('setup.s4.llm.fetched', models.length) };
+                if (data.suggestedApiUrl && data.suggestedApiUrl !== p.apiUrl.trim()) {
+                    p.suggestedUrl = data.suggestedApiUrl;
+                }
+            } catch (e) {
+                const detail = (e.data && e.data.detail) ? e.data.detail : e.message;
+                p.fetchStatus = { type: 'err', msg: detail };
+                p.pickerModels = null;
+            }
+            renderStepBody();
+        }
+
+        function applySuggestedUrl(idx) {
+            const p = state.llmProviders[idx];
+            if (p && p.suggestedUrl) {
+                p.apiUrl = p.suggestedUrl;
+                p.suggestedUrl = null;
+                state.providersDirty = true;
+                renderStepBody();
+            }
+        }
+
+        function applyPickedModels(idx) {
+            const checked = Array.from(document.querySelectorAll(`#pickerList${idx} input[type="checkbox"]:checked`)).map(el => el.value);
+            const prev = new Map((state.llmProviders[idx].models || []).map(m => [m.id, m]));
+            state.llmProviders[idx].models = checked.map(id => prev.get(id) || { id, enabled: true, webSearch: false });
+            state.llmProviders[idx].pickerModels = null;
+            state.providersDirty = true;
+            renderStepBody();
+        }
+
+        async function testTavily() {
+            const key = (state.tavilyApiKey || '').trim();
+            if (!key) {
+                state.tavilyTest = { state: 'err', msg: t('setup.s4.tavily.needKey') };
+                renderStepBody();
+                return;
+            }
+            state.tavilyTest = { state: 'loading', msg: '' };
+            renderStepBody();
+            try {
+                const data = await apiJson('/api/setup/test-tavily', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        tavilyApiKey: key,
+                        proxy: currentProxyPayload()
+                    })
+                });
+                if (data.ok) {
+                    state.tavilyTest = { state: 'ok', msg: tf('setup.s4.tavily.ok', data.latencyMs ?? 0) };
+                } else if (data.error === 'tavily.key.invalid') {
+                    state.tavilyTest = { state: 'err', msg: t('setup.s4.tavily.invalid') };
+                } else {
+                    state.tavilyTest = { state: 'err', msg: tf('setup.s4.tavily.fail', data.detail || data.error || '') };
+                }
+            } catch (e) {
+                state.tavilyTest = { state: 'err', msg: e.message };
+            }
+            renderStepBody();
+        }
+
+        /* ==================== Step 5 ==================== */
+        function buildSummaryRowsHtml() {
+            const hasAcoust = isAcoustIdConfigured();
+            const acoustVerified = state.sourceTest && !state.sourceTest.loading && state.sourceTest.acoustid && state.sourceTest.acoustid.ok;
+            const models = activeModelCount();
+            const hasTavily = (state.tavilyApiKey || '').trim().length > 0;
+
+            const sourcesVal = (hasAcoust ? 'AcoustID · ' : '') + computedUserAgent();
+            const sourcesBadge = acoustVerified
+                ? `<span class="pill ok">${SVG.ok}${esc(t('setup.s5.tag.verified'))}</span>`
+                : (hasAcoust
+                    ? `<span class="pill ok">${SVG.ok}${esc(t('setup.s5.tag.configured'))}</span>`
+                    : `<span class="pill warn">${SVG.warn}${esc(t('setup.s5.tag.skipped'))}</span>`);
+
+            let aiVal = t('setup.s5.tag.notSet');
+            let aiBadge = `<span class="pill">${esc(t('setup.s5.tag.skipped'))}</span>`;
+            if (models > 0 || (state.webSearchProvider === 'tavily' && hasTavily)) {
+                const parts = [];
+                if (models > 0) parts.push(`${models} LLM`);
+                if (state.webSearchProvider === 'tavily' && hasTavily) parts.push('Tavily');
+                else if (state.webSearchProvider === 'native' && models > 0) parts.push('Native Search');
+                aiVal = parts.join(' · ');
+                aiBadge = `<span class="pill ok">${SVG.ok}${esc(t('setup.s5.tag.configured'))}</span>`;
+            }
+
+            const policyParts = [
+                state.reviewEnabled ? t('setup.s5.policy.review.title') : t('setup.s5.policy.auto.title')
+            ];
+            if ((state.releaseCountryPriority || '').trim()) policyParts.push(state.releaseCountryPriority.trim());
+
+            const monOk = !state.dirStatus.monitor || state.dirStatus.monitor.status === 'ok';
+
+            return `
+                <div class="summary-row">
+                    <div class="summary-k">${esc(t('setup.s5.sum.admin'))}</div>
+                    <div class="summary-v mono">${esc(state.username)}</div>
+                    <span class="pill ok">${SVG.ok}${esc(t(state.isRerun ? 'setup.s5.tag.existing' : 'setup.s5.tag.created'))}</span>
+                </div>
+                <div class="summary-row">
+                    <div class="summary-k">${esc(t('setup.s5.sum.dirs'))}</div>
+                    <div class="summary-v mono" title="${esc(state.monitorDirectory + ' -> ' + state.outputDirectory)}">${esc(state.monitorDirectory)} → ${esc(state.outputDirectory)}</div>
+                    <span class="pill ${monOk ? 'ok' : 'warn'}">${monOk ? SVG.ok : SVG.warn}${esc(t('setup.s5.tag.ready'))}</span>
+                </div>
+                <div class="summary-row">
+                    <div class="summary-k">${esc(t('setup.s5.sum.proxy'))}</div>
+                    <div class="summary-v mono">${state.proxyEnabled ? esc(`${state.proxyHost}:${state.proxyPort}`) : esc(t('setup.s5.tag.direct'))}</div>
+                    <span class="pill ${state.proxyEnabled ? 'info' : ''}">${esc(t(state.proxyEnabled ? 'setup.s5.tag.proxyOn' : 'setup.s5.tag.direct'))}</span>
+                </div>
+                <div class="summary-row">
+                    <div class="summary-k">${esc(t('setup.s5.sum.sources'))}</div>
+                    <div class="summary-v mono" title="${esc(sourcesVal)}">${esc(sourcesVal)}</div>
+                    ${sourcesBadge}
+                </div>
+                <div class="summary-row">
+                    <div class="summary-k">${esc(t('setup.s5.sum.ai'))}</div>
+                    <div class="summary-v">${esc(aiVal)}</div>
+                    ${aiBadge}
+                </div>
+                <div class="summary-row">
+                    <div class="summary-k">${esc(t('setup.s5.sum.policy'))}</div>
+                    <div class="summary-v">${esc(policyParts.join(' · '))}</div>
+                    <span class="pill ok">${SVG.ok}${esc(t('setup.s5.tag.ready'))}</span>
+                </div>`;
+        }
+
+        function tplStep5() {
+            const restartFields = state.isRerun ? getRerunRestartFields() : [];
+            return `
+                <h1 class="step-title">${esc(t('setup.s5.title'))}</h1>
+                <p class="step-desc">${esc(t('setup.s5.desc'))}</p>
+
+                ${state.completeError ? `<div class="notice err" style="margin-top:16px;">${SVG.err}<div class="notice-body">${esc(state.completeError)}</div></div>` : ''}
+
+                <div class="section-heading"><span>${esc(t('setup.s5.policy.head'))}</span></div>
+                <div class="choice-grid" role="radiogroup">
+                    <div class="choice-card ${state.reviewEnabled ? 'selected' : ''}" role="radio" tabindex="0"
+                        aria-checked="${state.reviewEnabled}"
+                        onclick="state.reviewEnabled = true; saveDraft(); renderStepBody()"
+                        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();state.reviewEnabled=true;saveDraft();renderStepBody();}">
+                        <div class="choice-head">
+                            <span class="choice-radio"></span>
+                            <span>${esc(t('setup.s5.policy.review.title'))}</span>
+                        </div>
+                        <div class="choice-desc">${esc(t('setup.s5.policy.review.desc'))}</div>
+                    </div>
+                    <div class="choice-card ${!state.reviewEnabled ? 'selected' : ''}" role="radio" tabindex="0"
+                        aria-checked="${!state.reviewEnabled}"
+                        onclick="state.reviewEnabled = false; saveDraft(); renderStepBody()"
+                        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();state.reviewEnabled=false;saveDraft();renderStepBody();}">
+                        <div class="choice-head">
+                            <span class="choice-radio"></span>
+                            <span>${esc(t('setup.s5.policy.auto.title'))}</span>
+                        </div>
+                        <div class="choice-desc">${esc(t('setup.s5.policy.auto.desc'))}</div>
+                    </div>
+                </div>
+
+                <div class="section-heading"><span>${esc(t('setup.s5.opts.head'))}</span></div>
+                <div style="display:grid;gap:10px;">
+                    <div class="checkbox-row">
+                        <input id="chkCovRev" type="checkbox" ${state.coverMissingRequireReview ? 'checked' : ''}
+                            onchange="state.coverMissingRequireReview = this.checked; saveDraft()">
+                        <label for="chkCovRev">${esc(t('setup.s5.opt.coverReview'))}</label>
+                    </div>
+                    <div class="checkbox-row">
+                        <input id="chkAnime" type="checkbox" ${state.preferAnimeCover ? 'checked' : ''}
+                            onchange="state.preferAnimeCover = this.checked; saveDraft()">
+                        <label for="chkAnime">${esc(t('setup.s5.opt.animeCover'))}</label>
+                    </div>
+                    <div class="checkbox-row">
+                        <input id="chkLrc" type="checkbox" ${state.exportLyricsToFile ? 'checked' : ''}
+                            onchange="state.exportLyricsToFile = this.checked; saveDraft()">
+                        <label for="chkLrc">${esc(t('setup.s5.opt.lrc'))}</label>
+                    </div>
+                </div>
+
+                <div class="form-row" style="margin-top: 14px;">
+                    <label for="inRegion">${esc(t('setup.s5.region.label'))}</label>
+                    <input id="inRegion" type="text" class="mono-input" placeholder="${esc(t('setup.s5.region.ph'))}"
+                        value="${esc(state.releaseCountryPriority)}"
+                        oninput="state.releaseCountryPriority = this.value; saveDraft()">
+                    <div class="chip-row">
+                        <button type="button" class="chip-btn" onclick="setRegion('JP,US,GB')">JP,US,GB</button>
+                        <button type="button" class="chip-btn" onclick="setRegion('US,GB,XW')">US,GB,XW</button>
+                        <button type="button" class="chip-btn" onclick="setRegion('CN,TW,HK')">CN,TW,HK</button>
+                        <button type="button" class="chip-btn" onclick="setRegion('')">${esc(t('setup.s5.region.clear'))}</button>
+                    </div>
+                </div>
+
+                <div class="section-heading"><span>${esc(t('setup.s5.summary.head'))}</span></div>
+                <div class="summary-list">${buildSummaryRowsHtml()}</div>
+
+                ${!state.active ? `
+                    <div class="notice info" style="margin-top: 16px;">
+                        ${SVG.info}
+                        <div class="notice-body">${esc(t('setup.s5.freshHint'))}</div>
+                    </div>` : ''}
+
+                ${state.rerunSavedNeedsRestart && state.rerunSavedNeedsRestart.length > 0 ? `
+                    <div class="notice warn" style="margin-top: 16px;">
+                        ${SVG.warn}
+                        <div class="notice-body">
+                            <div>${esc(tf('setup.s5.rerunRestartWarn', state.rerunSavedNeedsRestart.join(', ')))}</div>
+                            <div class="notice-actions">
+                                <button type="button" class="btn ghost sm" onclick="restartServiceNow()">${esc(t('setup.btn.restartNow'))}</button>
+                                <a class="btn plain sm" href="index.html#settings">${esc(t('setup.btn.backSettings'))}</a>
+                            </div>
+                        </div>
+                    </div>` : (restartFields.length > 0 ? `
+                    <div class="notice warn" style="margin-top: 16px;">
+                        ${SVG.warn}
+                        <div class="notice-body">${esc(tf('setup.s5.rerunRestartWarn', restartFields.join(', ')))}</div>
+                    </div>` : '')}
+            `;
+        }
+
+        function setRegion(val) {
+            state.releaseCountryPriority = val;
+            saveDraft();
+            renderStepBody();
+        }
+
+        async function finishSetup() {
+            if (state.activating) return;
+            state.activating = true;
+            state.completeError = '';
+            renderStepFooter();
+
+            const configPayload = {
+                language: state.lang,
+                monitorDirectory: (state.monitorDirectory || '').trim(),
+                outputDirectory: (state.outputDirectory || '').trim(),
+                proxyEnabled: !!state.proxyEnabled,
+                acoustIdApiKey: (state.acoustIdApiKey || '').trim(),
+                userAgent: computedUserAgent(),
+                webSearchProvider: state.webSearchProvider,
+                tavilyApiKey: (state.tavilyApiKey || '').trim(),
+                llmAlbumJudgeEnabled: !!state.llmAlbumJudgeEnabled,
+                enableLLMMatching: !!state.enableLLMMatching,
+                reviewEnabled: !!state.reviewEnabled,
+                coverMissingRequireReview: !!state.coverMissingRequireReview,
+                preferAnimeCover: !!state.preferAnimeCover,
+                exportLyricsToFile: !!state.exportLyricsToFile,
+                releaseCountryPriority: (state.releaseCountryPriority || '').trim()
+            };
+            if (state.proxyEnabled) {
+                configPayload.proxyHost = (state.proxyHost || '').trim();
+                configPayload.proxyPort = Number(state.proxyPort) || 0;
+                configPayload.proxyUsername = (state.proxyUsername || '').trim();
+                configPayload.proxyPassword = state.proxyPassword || '';
+            }
+
+            const body = { config: configPayload };
+            if (state.providersDirty) {
+                body.providers = state.llmProviders
+                    .filter(p => (p.apiUrl || '').trim() || (p.apiKey || '').trim() || (p.models && p.models.length > 0))
+                    .map(p => ({
+                        id: p.id || '',
+                        name: (p.name || '').trim(),
+                        format: p.format === 'anthropic' ? 'anthropic' : 'openai',
+                        apiUrl: (p.apiUrl || '').trim(),
+                        apiKey: (p.apiKey || '').trim(),
+                        enabled: p.enabled !== false,
+                        models: (p.models || []).map(m => ({
+                            id: (m.id || '').trim(),
+                            enabled: m.enabled !== false,
+                            webSearch: !!m.webSearch
+                        })).filter(m => m.id)
+                    }));
+            }
+
+            try {
+                const data = await apiJson('/api/setup/complete', {
+                    method: 'POST',
+                    body: JSON.stringify(body)
+                });
+                clearDraft();
+                state.activating = false;
+                if (data.requiresRestart && Array.isArray(data.pendingRestartFields) && data.pendingRestartFields.length > 0) {
+                    state.rerunSavedNeedsRestart = data.pendingRestartFields;
+                    showToast(t('setup.toast.rerunSaved'));
+                    renderWizard();
+                    return;
+                }
+                location.href = state.isRerun ? 'index.html#settings' : 'index.html?setup=done';
+            } catch (err) {
+                state.activating = false;
+                state.completeError = err.message || t('setup.error.activation.failed');
+                renderWizard();
+            }
+        }
+
+        async function restartServiceNow() {
+            if (!confirm(t('control.restart.confirm'))) return;
+            try {
+                await apiJson('/api/control/restart', { method: 'POST' });
+                showToast(t('control.restart.success'));
+            } catch (err) {
+                showToast(err.message, true);
+            }
+        }
+
+        function goToStep(n) {
+            if (n === 1 && state.adminCreated) return;
+            state.step = n;
+            state.maxUnlocked = Math.max(state.maxUnlocked, n);
+            state.skipConfirmOpen = false;
+            saveDraft();
+            renderWizard();
+            if (n === 2 && !state.dirStatus.monitor) checkDirs();
+        }
+
+        function toggleEye(inputId, btn) {
+            const el = document.getElementById(inputId);
+            if (!el) return;
+            const show = el.type === 'password';
+            el.type = show ? 'text' : 'password';
+            btn.innerHTML = show ? SVG.eyeOff : SVG.eye;
+        }
+
+        /* ==================== 启动初始化 ==================== */
+        window.addEventListener('load', async () => {
+            try {
+                const params = new URLSearchParams(location.search);
+                const wantRerun = params.get('mode') === 'rerun';
+
+                const [statusResp, authResp] = await Promise.all([
+                    fetch('/api/setup/status', { credentials: 'same-origin' }),
+                    fetch('/api/auth/status', { credentials: 'same-origin' })
+                ]);
+                const statusData = statusResp.ok ? await statusResp.json() : {};
+                const authData = authResp.ok ? await authResp.json() : {};
+
+                let preferredLang = statusData.language || 'zh_CN';
+                try {
+                    const draft = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || 'null');
+                    if (draft && (draft.lang === 'zh_CN' || draft.lang === 'en_US')) preferredLang = draft.lang;
+                } catch (e) { /* ignore */ }
+                await loadI18n(preferredLang);
+
+                if (statusData.environment) state.env = statusData.environment;
+                state.active = !!statusData.active;
+                state.authenticated = !!authData.authenticated;
+                state.csrfToken = authData.csrfToken || null;
+                state.username = authData.username || 'admin';
+
+                if (statusData.setupCompleted) {
+                    if (!wantRerun) {
+                        location.replace('index.html');
+                        return;
+                    }
+                    if (!state.authenticated) {
+                        location.replace('index.html?next=setup-rerun');
+                        return;
+                    }
+                    state.isRerun = true;
+                    state.adminCreated = true;
+                    await loadBootstrap();
+                    state.step = 2;
+                    state.maxUnlocked = 5;
+                    document.getElementById('loadingView').style.display = 'none';
+                    document.getElementById('wizardView').style.display = 'flex';
+                    renderWizard();
+                    checkDirs();
+                    return;
+                }
+
+                // 未完成初始化
+                if (statusData.needsAdmin) {
+                    state.adminCreated = false;
+                    state.step = 1;
+                    state.maxUnlocked = 1;
+                    document.getElementById('loadingView').style.display = 'none';
+                    document.getElementById('wizardView').style.display = 'flex';
+                    renderWizard();
+                    return;
+                }
+
+                // 已建号但未完成初始化：未登录先去登录，已登录直接续配第 2 步
+                if (!state.authenticated) {
+                    location.replace('index.html?next=setup');
+                    return;
+                }
+
+                state.adminCreated = true;
+                await loadBootstrap();
+                state.step = Math.max(2, Math.min(5, Number(state.step) || 2));
+                state.maxUnlocked = Math.max(2, state.step);
+                document.getElementById('loadingView').style.display = 'none';
+                document.getElementById('wizardView').style.display = 'flex';
+                renderWizard();
+                checkDirs();
+            } catch (e) {
+                document.getElementById('loadingView').textContent = e.message || 'Failed to load setup wizard';
+            }
+        });
+    </script>
+</body>
+</html>
