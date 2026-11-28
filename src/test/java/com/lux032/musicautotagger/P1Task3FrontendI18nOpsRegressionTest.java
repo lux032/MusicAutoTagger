@@ -362,6 +362,8 @@ class P1Task3FrontendI18nOpsRegressionTest {
         // MusicBrainz 回馈闭环前端资产、导航与中英文 i18n 对称校验
         String contribHtml = Files.readString(PROJECT_ROOT.resolve("src/main/resources/static/contributions.html"), StandardCharsets.UTF_8);
         assertTrue(contribHtml.contains("AppApi.request"), "contributions.html should use shared AppApi.request");
+        assertTrue(contribHtml.contains("I18n.load") && contribHtml.contains("I18n.apply") && !contribHtml.contains("I18n.init"),
+            "contributions.html should initialize i18n via I18n.load() and I18n.apply()");
         assertTrue(contribHtml.contains("AppErrors.humanError"), "contributions.html should use shared AppErrors.humanError");
         assertTrue(contribHtml.contains("listSeq:") && contribHtml.contains("itemSeq:"), "contributions.html should guard against out-of-order responses");
         assertTrue(contribHtml.contains("multipart/form-data") && contribHtml.contains("https://musicbrainz.org/release/add"),

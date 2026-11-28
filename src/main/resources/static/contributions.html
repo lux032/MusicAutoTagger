@@ -1138,8 +1138,11 @@
     }
 
     async function init() {
-        if (window.I18n && typeof I18n.init === 'function') {
-            await I18n.init();
+        if (window.I18n && typeof I18n.load === 'function') {
+            await I18n.load();
+            if (typeof I18n.apply === 'function') {
+                I18n.apply();
+            }
         }
         try {
             const resp = await fetch('/api/auth/status', { credentials: 'same-origin' });
