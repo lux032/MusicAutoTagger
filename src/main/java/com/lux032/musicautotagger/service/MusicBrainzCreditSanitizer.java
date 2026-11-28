@@ -51,6 +51,7 @@ public final class MusicBrainzCreditSanitizer {
         int trackNo,
         String title,
         String recordingId,
+        String lyricsLanguage,
         List<SanitizedCreditPerson> composers,
         List<SanitizedCreditPerson> lyricists,
         List<SanitizedCreditPerson> arrangers,
@@ -212,8 +213,9 @@ public final class MusicBrainzCreditSanitizer {
                 List<String> urls = List.copyOf(urlSet);
                 List<String> quotes = List.copyOf(quoteSet);
                 String note = buildTrackEditNote(composers, lyricists, arrangers, urls, quotes);
+                String lyricsLanguage = MusicBrainzSeedBuilder.inferTrackLyricsLanguage(tr);
                 guides.add(new TrackWorksGuide(
-                    disc, pos, tr.getTitle(), recId, composers, lyricists, arrangers, urls, quotes, note));
+                    disc, pos, tr.getTitle(), recId, lyricsLanguage, composers, lyricists, arrangers, urls, quotes, note));
             }
         }
         return new WorksGuide(releaseId, editUrl, List.copyOf(guides), anyCredits);
@@ -313,12 +315,15 @@ public final class MusicBrainzCreditSanitizer {
         String publicHiRes = MusicBrainzSeedBuilder.canonicalSafePublicHttpUrl(upgraded);
 
         String originPage = cover == null ? null : MusicBrainzSeedBuilder.canonicalSafePublicHttpUrl(cover.getOriginPageUrl());
+        if (originPage != null && MusicBrainzSeedBuilder.isTrackOrLyricsOnlyUrl(originPage)) {
+            originPage = null;
+        }
         if (originPage == null && item.getDraft() != null && item.getDraft().getSourceUrls() != null) {
             for (MbContributionItem.SourceUrlEntry s : item.getDraft().getSourceUrls()) {
                 if (s != null && s.isIncluded()
                         && ("HIGH".equalsIgnoreCase(s.getReliability()) || "MEDIUM".equalsIgnoreCase(s.getReliability()))) {
                     String canon = MusicBrainzSeedBuilder.canonicalSafePublicHttpUrl(s.getUrl());
-                    if (canon != null) {
+                    if (canon != null && !MusicBrainzSeedBuilder.isTrackOrLyricsOnlyUrl(canon)) {
                         originPage = canon;
                         break;
                     }
@@ -328,15 +333,13 @@ public final class MusicBrainzCreditSanitizer {
         String comment = buildCoverComment(cover, publicHiRes, originPage);
         String seededUrl = baseUrl;
         if (baseUrl != null && publicHiRes != null) {
+            // 严格遵循 ECAU seeding 规范：types 为数字数组 [1]（Front），来源放 x_seed.origin 而非图片 comment
             StringBuilder q = new StringBuilder(baseUrl).append('?');
             if (originPage != null) {
                 q.append("x_seed.origin=").append(urlEncode(originPage)).append('&');
             }
             q.append("x_seed.image.0.url=").append(urlEncode(publicHiRes));
-            q.append("&x_seed.image.0.types=front");
-            if (comment != null && !comment.isBlank()) {
-                q.append("&x_seed.image.0.comment=").append(urlEncode(comment));
-            }
+            q.append("&x_seed.image.0.types=").append(urlEncode("[1]"));
             seededUrl = q.toString();
         }
         String localUrl = (hasLocalBackup && coverDownloadApiPath != null && item.getId() != null)
@@ -376,14 +379,17 @@ public final class MusicBrainzCreditSanitizer {
     private static String buildCoverComment(MbContributionItem.CoverInfo cover,
                                             String publicHiResUrl,
                                             String originPageUrl) {
+        if (publicHiResUrl == null && cover != null && "EMBEDDED".equalsIgnoreCase(cover.getOrigin())) {
+            if (originPageUrl != null && !MusicBrainzSeedBuilder.isTrackOrLyricsOnlyUrl(originPageUrl)) {
+                return "Official digital release cover from release audio files (ref: " + originPageUrl + ")";
+            }
+            return "Official digital release cover extracted from release audio files";
+        }
         if (originPageUrl != null) {
             return "Front cover from official source: " + originPageUrl;
         }
         if (publicHiResUrl != null) {
             return "Front cover from " + publicHiResUrl;
-        }
-        if (cover != null && "EMBEDDED".equalsIgnoreCase(cover.getOrigin())) {
-            return "Front cover extracted from official digital release audio file";
         }
         return "Front cover from official release";
     }

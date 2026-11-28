@@ -32,9 +32,21 @@ public final class MusicBrainzSeedBuilder {
 
     public static final String RELEASE_ADD_URL = "https://musicbrainz.org/release/add";
     private static final int MAX_SEED_URLS = 10;
+    private static final int MAX_EDIT_NOTE_SOURCES = 25;
     private static final Pattern ISO_DATE = Pattern.compile("^(\\d{4})(?:-(\\d{1,2})(?:-(\\d{1,2}))?)?$");
     private static final Set<String> VALID_PRIMARY_TYPES = Set.of("album", "single", "ep", "broadcast", "other");
     private static final Pattern IPV4_LITERAL = Pattern.compile("^\\d{1,3}(?:\\.\\d{1,3}){3}$");
+    private static final Pattern GENERIC_FORMAT_DISAMBIGUATION = Pattern.compile(
+        "(?i)^(?:(?:japanese|english|korean|chinese|mandarin|cantonese|taiwanese|hong\\s+kong|us|uk|jp|kr|cn|eu|global|worldwide|international|domestic|overseas)\\s+){0,2}"
+            + "(?:(?:digital|web|streaming|download|cd|vinyl|lp|cassette)\\s+){0,2}"
+            + "(?:single|ep|mini[-\\s]?album|album|release|edition)$");
+    private static final Set<String> LYRICS_ONLY_DOMAINS = Set.of(
+        "uta-net.com", "utamap.com", "j-lyric.net", "lyrical-nonsense.com",
+        "kashinavi.com", "petitlyrics.com", "mojim.com", "utaten.com",
+        "musixmatch.com", "azlyrics.com", "lyrics.com", "metrolyrics.com", "songlyrics.com");
+    private static final Pattern COMPOSITE_LABEL_SPLIT = Pattern.compile("\\s+[/|]\\s+");
+    private static final Pattern INSTRUMENTAL_TITLE_PATTERN = Pattern.compile(
+        "(?i)(?:\\b(?:instrumental|inst\\.?|off\\s*vocal|karaoke|minus\\s*one|backing\\s*track)\\b|カラオケ|インスト)");
 
     private MusicBrainzSeedBuilder() { }
 
@@ -86,12 +98,19 @@ public final class MusicBrainzSeedBuilder {
         List<String> warnings = new ArrayList<>();
 
         addField(fields, "name", draft.getTitle());
-        addField(fields, "comment", draft.getComment());
 
         String rgMbid = (item.getCheckCase() == MbContributionItem.CheckCase.MISSING_EDITION
                 && item.isUseExistingReleaseGroup())
             ? MusicBrainzArtistCache.normalizeValidMbid(item.getMatchedReleaseGroupId())
             : null;
+        String seedComment = trimToNull(draft.getComment());
+        // Case B（同组缺版本）即使未自动挂入已有 RG 也保留版本消歧；仅全新独立 RG 隐藏纯格式通用消歧词
+        if (item.getCheckCase() != MbContributionItem.CheckCase.MISSING_EDITION
+                && rgMbid == null
+                && isGenericFormatDisambiguation(seedComment)) {
+            seedComment = null;
+        }
+        addField(fields, "comment", seedComment);
         if (rgMbid != null) {
             addField(fields, "release_group", rgMbid);
         } else {
@@ -109,7 +128,7 @@ public final class MusicBrainzSeedBuilder {
 
         String language = trimToNull(draft.getLanguage());
         String script = trimToNull(draft.getScript());
-        if (language == null && script == null && containsJapaneseKana(draft.getTitle())) {
+        if (language == null && script == null && shouldInferJapaneseReleaseLanguage(draft)) {
             language = "jpn";
             script = "Jpan";
         }
@@ -124,9 +143,18 @@ public final class MusicBrainzSeedBuilder {
         // Release event (date + country)
         appendReleaseEvent(fields, draft.getReleaseDate(), draft.getCountry());
 
-        // Label + catalog number
-        addField(fields, "labels.0.name", draft.getLabel());
-        addField(fields, "labels.0.catalog_number", draft.getCatalogNumber());
+        // Label(s) + catalog number（多厂牌拆分时不盲目把目录号挂给第一家，改为写进 edit_note 供人工确认）
+        List<String> labels = splitCompositeLabels(draft.getLabel());
+        for (int lIdx = 0; lIdx < labels.size(); lIdx++) {
+            addField(fields, "labels." + lIdx + ".name", labels.get(lIdx));
+        }
+        String unattachedCatalogNumber = null;
+        if (labels.size() <= 1) {
+            addField(fields, "labels.0.catalog_number", draft.getCatalogNumber());
+        } else if (trimToNull(draft.getCatalogNumber()) != null) {
+            unattachedCatalogNumber = draft.getCatalogNumber().trim();
+            warnings.add("检测到多厂牌拼接，已拆分厂牌并将目录号放入编辑说明，请在 Release Editor 中挂到对应厂牌。");
+        }
 
         // Release-level artist credit
         List<String> albumArtists = resolveArtistsList(draft.getAlbumArtists(), draft.getAlbumArtist());
@@ -187,16 +215,24 @@ public final class MusicBrainzSeedBuilder {
                 localMatchedCount, tracks.size(), tracks.size()));
         }
 
-        // External authoritative URLs (canonicalized safe public HTTP/HTTPS only; omit link_type for MB auto-detection)
-        List<CanonicalSource> includedSources = collectSafeIncludedSources(draft.getSourceUrls());
-        for (int uIdx = 0; uIdx < includedSources.size(); uIdx++) {
-            addField(fields, "urls." + uIdx + ".url", includedSources.get(uIdx).canonicalUrl());
+        // External authoritative URLs: 独立计配额——先收集全部可信来源供 edit_note，再挑最多 MAX_SEED_URLS 条专辑级链接进 Release urls.*
+        List<CanonicalSource> allSafeSources = collectSafeIncludedSources(draft.getSourceUrls(), MAX_EDIT_NOTE_SOURCES);
+        int uIdx = 0;
+        for (CanonicalSource src : allSafeSources) {
+            if (isTrackOrLyricsOnlyUrl(src.canonicalUrl())) {
+                continue;
+            }
+            addField(fields, "urls." + uIdx + ".url", src.canonicalUrl());
+            uIdx++;
+            if (uIdx >= MAX_SEED_URLS) {
+                break;
+            }
         }
-        if (includedSources.isEmpty()) {
+        if (allSafeSources.isEmpty()) {
             warnings.add("当前没有勾选可公开访问的一手来源链接，建议在 MusicBrainz 编辑说明中补充出处。");
         }
 
-        String editNote = buildEditNote(includedSources, localPreciseDurationCount, tracks.size());
+        String editNote = buildEditNote(allSafeSources, localPreciseDurationCount, tracks.size(), unattachedCatalogNumber);
         addField(fields, "edit_note", editNote);
 
         return new SeedPayload(true, null, RELEASE_ADD_URL, List.copyOf(fields), editNote, List.copyOf(warnings));
@@ -323,9 +359,9 @@ public final class MusicBrainzSeedBuilder {
         return fallback;
     }
 
-    private static List<CanonicalSource> collectSafeIncludedSources(List<MbContributionItem.SourceUrlEntry> raw) {
+    private static List<CanonicalSource> collectSafeIncludedSources(List<MbContributionItem.SourceUrlEntry> raw, int limit) {
         List<CanonicalSource> result = new ArrayList<>();
-        if (raw == null) return result;
+        if (raw == null || limit <= 0) return result;
         Set<String> seen = new LinkedHashSet<>();
         for (MbContributionItem.SourceUrlEntry entry : raw) {
             if (entry == null || !entry.isIncluded() || entry.getUrl() == null || entry.getUrl().isBlank()) {
@@ -339,7 +375,7 @@ public final class MusicBrainzSeedBuilder {
                 continue;
             }
             result.add(new CanonicalSource(canon, trimToNull(entry.getTitle())));
-            if (result.size() >= MAX_SEED_URLS) {
+            if (result.size() >= limit) {
                 break;
             }
         }
@@ -420,7 +456,8 @@ public final class MusicBrainzSeedBuilder {
 
     private static String buildEditNote(List<CanonicalSource> sources,
                                         int localPreciseCount,
-                                        int totalTracks) {
+                                        int totalTracks,
+                                        String unattachedCatalogNumber) {
         StringBuilder sb = new StringBuilder();
         sb.append("Sources:\n");
         if (sources.isEmpty()) {
@@ -433,6 +470,9 @@ public final class MusicBrainzSeedBuilder {
                 }
                 sb.append('\n');
             }
+        }
+        if (unattachedCatalogNumber != null && !unattachedCatalogNumber.isBlank()) {
+            sb.append("\nCatalog number (verify label assignment): ").append(unattachedCatalogNumber).append('\n');
         }
         if (localPreciseCount > 0) {
             sb.append("\nTrack lengths for ").append(localPreciseCount).append('/').append(totalTracks)
@@ -482,6 +522,132 @@ public final class MusicBrainzSeedBuilder {
         if (lower.contains("digital") || lower.equals("web")) return "Digital Media";
         if (lower.equals("cd")) return "CD";
         return t;
+    }
+
+    /** 判断是否为仅描述国家/格式/发行类型的通用消歧词（新建独立 RG 时按 MB 规范应留空）。 */
+    static boolean isGenericFormatDisambiguation(String comment) {
+        String t = trimToNull(comment);
+        return t != null && GENERIC_FORMAT_DISAMBIGUATION.matcher(t).matches();
+    }
+
+    /** 判断 URL 是否为单曲歌词页或单轨商店页（保留在 edit_note 佐证，不塞入 Release 级外部链接）。 */
+    public static boolean isTrackOrLyricsOnlyUrl(String url) {
+        if (url == null || url.isBlank()) return false;
+        URI uri;
+        try {
+            uri = URI.create(url.trim());
+        } catch (Exception e) {
+            return false;
+        }
+        String rawHost = uri.getHost();
+        if (rawHost == null || rawHost.isBlank()) return false;
+        String host = rawHost.toLowerCase(Locale.ROOT);
+        for (String domain : LYRICS_ONLY_DOMAINS) {
+            if (host.equals(domain) || host.endsWith("." + domain)) {
+                return true;
+            }
+        }
+        String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+        String query = uri.getRawQuery() == null ? "" : uri.getRawQuery().toLowerCase(Locale.ROOT);
+        if ((host.equals("genius.com") || host.endsWith(".genius.com")) && path.endsWith("-lyrics")) {
+            return true;
+        }
+        boolean isAppleMusic = host.equals("music.apple.com") || host.endsWith(".music.apple.com");
+        if (isAppleMusic && path.contains("/album/") && hasQueryParam(query, "i")) {
+            return true;
+        }
+        if ((host.equals("open.spotify.com") && path.startsWith("/track/"))
+                || (isAppleMusic && path.contains("/song/"))
+                || ((host.equals("kkbox.com") || host.endsWith(".kkbox.com")) && path.contains("/song/"))) {
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean hasQueryParam(String rawQuery, String name) {
+        if (rawQuery == null || rawQuery.isEmpty()) return false;
+        for (String pair : rawQuery.split("&")) {
+            int eq = pair.indexOf('=');
+            String k = eq >= 0 ? pair.substring(0, eq) : pair;
+            if (k.equals(name) && eq >= 0 && eq < pair.length() - 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 将 "HAO Music / Studio LaRa" 等带空格分隔符的拼接厂牌拆分为多条独立厂牌（最多 5 条）。 */
+    static List<String> splitCompositeLabels(String rawLabel) {
+        String t = trimToNull(rawLabel);
+        if (t == null) return List.of();
+        String[] parts = COMPOSITE_LABEL_SPLIT.split(t);
+        List<String> out = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String part : parts) {
+            String clean = trimToNull(part);
+            if (clean != null && seen.add(clean.toLowerCase(Locale.ROOT))) {
+                out.add(clean);
+                if (out.size() >= 5) break;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 按单曲歌词证据保守推断 Work 歌词语言（仅非纯器乐且有本轨日文歌词证据时返回 {@code jpn}，其余留空避免误写器乐或混语曲目）。
+     */
+    public static String inferTrackLyricsLanguage(MbContributionItem.ContributionTrack track) {
+        if (track == null) return null;
+        String title = track.getTitle() == null ? "" : track.getTitle();
+        if (INSTRUMENTAL_TITLE_PATTERN.matcher(title).find()) {
+            return null;
+        }
+        boolean hasLyricist = track.getLyricists() != null && !track.getLyricists().isEmpty()
+            && MusicBrainzCreditSanitizer.isAdmissibleCreditSource(track.getLyricistSource());
+        if (!hasLyricist) {
+            return null;
+        }
+        if (containsJapaneseKana(title)) {
+            return "jpn";
+        }
+        if (track.getLyricistEvidenceQuotes() != null) {
+            for (String q : track.getLyricistEvidenceQuotes()) {
+                if (containsJapaneseKana(q)) {
+                    return "jpn";
+                }
+            }
+        }
+        if (track.getLyricistEvidenceUrls() != null) {
+            for (String u : track.getLyricistEvidenceUrls()) {
+                if (u != null && (u.contains("uta-net.com") || u.contains("utamap.com")
+                        || u.contains("j-lyric.net") || u.contains("utaten.com") || u.contains("kashinavi.com"))) {
+                    return "jpn";
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Release 级日文语言/文字保守推断：专辑标题含假名，或多数曲目含假名，或 JP 发行且至少一首曲目含假名。 */
+    private static boolean shouldInferJapaneseReleaseLanguage(MbContributionItem.ReleaseDraft draft) {
+        if (draft == null) return false;
+        if (containsJapaneseKana(draft.getTitle())) return true;
+        List<MbContributionItem.ContributionTrack> tracks = draft.getTracks();
+        if (tracks == null || tracks.isEmpty()) return false;
+        int total = 0;
+        int kanaTracks = 0;
+        for (MbContributionItem.ContributionTrack tr : tracks) {
+            if (tr == null || trimToNull(tr.getTitle()) == null) continue;
+            total++;
+            if (containsJapaneseKana(tr.getTitle())) {
+                kanaTracks++;
+            }
+        }
+        if (kanaTracks == 0 || total == 0) return false;
+        if ("JP".equalsIgnoreCase(trimToNull(draft.getCountry()))) {
+            return true;
+        }
+        return kanaTracks * 2 >= total;
     }
 
     private static boolean containsJapaneseKana(String text) {

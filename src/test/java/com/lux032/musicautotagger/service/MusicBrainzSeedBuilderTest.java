@@ -127,13 +127,14 @@ class MusicBrainzSeedBuilderTest {
         assertNull(map.get("urls.1.url"));
         assertTrue(map.get("edit_note").contains("https://music.apple.com/jp/album/beyond/123"));
 
-        // 切换为新建 RG 后应省略 release_group 并携带 type
+        // 切换为新建 RG 后应省略 release_group 并携带 type，且 Case B 仍保留版本消歧
         item.setUseExistingReleaseGroup(false);
         MusicBrainzSeedBuilder.SeedPayload newRgPayload = MusicBrainzSeedBuilder.build(item);
         Map<String, String> newRgMap = new LinkedHashMap<>();
         newRgPayload.fields().forEach(f -> newRgMap.put(f.name(), f.value()));
         assertNull(newRgMap.get("release_group"));
         assertEquals("single", newRgMap.get("type"));
+        assertEquals("Japanese digital single", newRgMap.get("comment"));
 
         // 不可存在日历日期（如 2月31日）与 Case A / 终态拦截
         assertFalse(MusicBrainzSeedBuilder.isValidPartialIsoDate("2026-02-31"));
@@ -144,5 +145,144 @@ class MusicBrainzSeedBuilderTest {
         MusicBrainzSeedBuilder.SeedPayload blockedCaseA = MusicBrainzSeedBuilder.build(item);
         assertFalse(blockedCaseA.seedable());
         assertTrue(blockedCaseA.fields().isEmpty());
+    }
+
+    @Test
+    void filtersLyricsUrlsFromReleaseLinksSplitsCompositeLabelsInfersKanaLanguageAndOmitsGenericCommentOnNewRg() {
+        MbContributionItem item = new MbContributionItem();
+        item.setId("contrib-vampy");
+        item.setStatus(MbContributionItem.Status.READY_TO_SEED);
+        item.setCheckCase(MbContributionItem.CheckCase.MISSING_RELEASE_GROUP);
+
+        MbContributionItem.ReleaseDraft draft = item.getDraft();
+        draft.setOfficialCandidate(true);
+        draft.setTrackCoverage(1.0);
+        draft.setTitle("VAMPY");
+        draft.setComment("Japanese digital EP");
+        draft.setAlbumArtist("HIMEHINA");
+        draft.setAlbumArtists(List.of("HIMEHINA"));
+        draft.setReleaseDate("2026-11-27");
+        draft.setCountry("JP");
+        draft.setReleaseType("EP");
+        draft.setMediaFormat("Digital Media");
+        draft.setLabel("HAO Music / Studio LaRa");
+
+        MbContributionItem.ContributionTrack t1 = new MbContributionItem.ContributionTrack();
+        t1.setDiscNo(1);
+        t1.setTrackNo(1);
+        t1.setTitle("VAMPY");
+        t1.setArtist("HIMEHINA");
+        t1.setDurationMs(216767L);
+        t1.setDurationSource("LOCAL_PRECISE");
+        t1.setLocalFilePath("/Music/HIMEHINA/VAMPY/01.flac");
+        t1.setMatchedConfidence(1.0);
+
+        MbContributionItem.ContributionTrack t2 = new MbContributionItem.ContributionTrack();
+        t2.setDiscNo(1);
+        t2.setTrackNo(2);
+        t2.setTitle("きみキミ血ぅ毒");
+        t2.setArtist("HIMEHINA");
+        t2.setDurationMs(169367L);
+        t2.setDurationSource("LOCAL_PRECISE");
+        t2.setLocalFilePath("/Music/HIMEHINA/VAMPY/02.flac");
+        t2.setMatchedConfidence(1.0);
+        draft.setTracks(List.of(t1, t2));
+
+        MbContributionItem.SourceUrlEntry lyricsSrc = new MbContributionItem.SourceUrlEntry();
+        lyricsSrc.setUrl("https://ftp.uta-net.com/song/402836");
+        lyricsSrc.setReliability("HIGH");
+        MbContributionItem.SourceUrlEntry storeSrc = new MbContributionItem.SourceUrlEntry();
+        storeSrc.setUrl("https://music.amazon.co.jp/albums/B0HR9LNDSZ");
+        storeSrc.setReliability("HIGH");
+        draft.setSourceUrls(List.of(lyricsSrc, storeSrc));
+
+        MusicBrainzSeedBuilder.SeedPayload payload = MusicBrainzSeedBuilder.build(item);
+        assertTrue(payload.seedable());
+        Map<String, String> map = new LinkedHashMap<>();
+        payload.fields().forEach(f -> map.put(f.name(), f.value()));
+
+        // 新建独立 RG 时省略纯格式消歧 "Japanese digital EP"
+        assertNull(map.get("comment"));
+        // 曲目含日文假名时自动补全 jpn / Jpan
+        assertEquals("jpn", map.get("language"));
+        assertEquals("Jpan", map.get("script"));
+        // 拼接厂牌拆分
+        assertEquals("HAO Music", map.get("labels.0.name"));
+        assertEquals("Studio LaRa", map.get("labels.1.name"));
+        // 单曲歌词页仅留在 edit_note，不塞进 Release External Links
+        assertEquals("https://music.amazon.co.jp/albums/B0HR9LNDSZ", map.get("urls.0.url"));
+        assertNull(map.get("urls.1.url"));
+        assertTrue(map.get("edit_note").contains("https://ftp.uta-net.com/song/402836"));
+        assertTrue(map.get("edit_note").contains("https://music.amazon.co.jp/albums/B0HR9LNDSZ"));
+
+        // 有明确版本区分意义的 comment（如 Limited Edition）应保留
+        draft.setComment("Limited Edition");
+        draft.setCatalogNumber("HAO-001");
+        MusicBrainzSeedBuilder.SeedPayload limited = MusicBrainzSeedBuilder.build(item);
+        Map<String, String> limitedMap = new LinkedHashMap<>();
+        limited.fields().forEach(f -> limitedMap.put(f.name(), f.value()));
+        assertEquals("Limited Edition", limitedMap.get("comment"));
+        // 多厂牌拆分时不把目录号盲目挂到第一家，而是写入 edit_note 并提示
+        assertNull(limitedMap.get("labels.0.catalog_number"));
+        assertTrue(limitedMap.get("edit_note").contains("HAO-001"));
+        assertFalse(limited.warnings().isEmpty());
+
+        // 10 条歌词页不能挤掉第 11 条专辑商店链接；Apple Music ?i= 单轨页过滤；YouTube 链接保留
+        java.util.ArrayList<MbContributionItem.SourceUrlEntry> manySources = new java.util.ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            MbContributionItem.SourceUrlEntry s = new MbContributionItem.SourceUrlEntry();
+            s.setUrl("https://www.uta-net.com/song/" + (400000 + i));
+            s.setReliability("HIGH");
+            manySources.add(s);
+        }
+        MbContributionItem.SourceUrlEntry appleTrack = new MbContributionItem.SourceUrlEntry();
+        appleTrack.setUrl("https://music.apple.com/jp/album/vampy/6833337851?i=6833337852");
+        appleTrack.setReliability("HIGH");
+        manySources.add(appleTrack);
+        MbContributionItem.SourceUrlEntry store11 = new MbContributionItem.SourceUrlEntry();
+        store11.setUrl("https://music.amazon.co.jp/albums/B0HR9LNDSZ");
+        store11.setReliability("HIGH");
+        manySources.add(store11);
+        MbContributionItem.SourceUrlEntry yt = new MbContributionItem.SourceUrlEntry();
+        yt.setUrl("https://youtu.be/dQw4w9WgXcQ");
+        yt.setReliability("MEDIUM");
+        manySources.add(yt);
+        draft.setSourceUrls(manySources);
+
+        MusicBrainzSeedBuilder.SeedPayload quotaPayload = MusicBrainzSeedBuilder.build(item);
+        Map<String, String> quotaMap = new LinkedHashMap<>();
+        quotaPayload.fields().forEach(f -> quotaMap.put(f.name(), f.value()));
+        assertEquals("https://music.amazon.co.jp/albums/B0HR9LNDSZ", quotaMap.get("urls.0.url"));
+        assertEquals("https://youtu.be/dQw4w9WgXcQ", quotaMap.get("urls.1.url"));
+        assertNull(quotaMap.get("urls.2.url"));
+        assertTrue(quotaMap.get("edit_note").contains("https://uta-net.com/song/400001"));
+        assertTrue(quotaMap.get("edit_note").contains("https://music.amazon.co.jp/albums/B0HR9LNDSZ"));
+
+        // 单曲歌词语言推断：器乐轨为 null，日文有作词轨为 jpn
+        t2.setLyricists(List.of("tepe"));
+        t2.setLyricistSource("ONLINE_VERIFIED");
+        assertEquals("jpn", MusicBrainzSeedBuilder.inferTrackLyricsLanguage(t2));
+        MbContributionItem.ContributionTrack instTrack = new MbContributionItem.ContributionTrack();
+        instTrack.setTitle("きみキミ血ぅ毒 (Instrumental)");
+        instTrack.setLyricists(List.of("tepe"));
+        instTrack.setLyricistSource("ONLINE_VERIFIED");
+        assertNull(MusicBrainzSeedBuilder.inferTrackLyricsLanguage(instTrack));
+
+        // 非 JP 英文专辑仅 1/3 曲目含假名时不应误判整张专辑为 jpn/Jpan
+        draft.setCountry("US");
+        MbContributionItem.ContributionTrack t3 = new MbContributionItem.ContributionTrack();
+        t3.setDiscNo(1);
+        t3.setTrackNo(3);
+        t3.setTitle("Drain Drain");
+        t3.setArtist("HIMEHINA");
+        t3.setDurationMs(162000L);
+        t3.setLocalFilePath("/Music/HIMEHINA/VAMPY/03.flac");
+        t3.setMatchedConfidence(1.0);
+        draft.setTracks(List.of(t1, t2, t3));
+        MusicBrainzSeedBuilder.SeedPayload usPayload = MusicBrainzSeedBuilder.build(item);
+        Map<String, String> usMap = new LinkedHashMap<>();
+        usPayload.fields().forEach(f -> usMap.put(f.name(), f.value()));
+        assertNull(usMap.get("language"));
+        assertNull(usMap.get("script"));
     }
 }

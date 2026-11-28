@@ -91,8 +91,54 @@ class MusicBrainzCreditSanitizerTest {
             caa.publicHighResUrl());
         assertTrue(caa.addCoverArtSeededUrl().startsWith(
             "https://musicbrainz.org/release/44444444-4444-4444-8444-444444444444/add-cover-art?"));
-        assertTrue(caa.addCoverArtSeededUrl().contains("x_seed.image.0.types=front"));
+        assertTrue(caa.addCoverArtSeededUrl().contains("x_seed.image.0.types=%5B1%5D"));
+        assertFalse(caa.addCoverArtSeededUrl().contains("x_seed.image.0.comment="));
         assertTrue(caa.addCoverArtSeededUrl().contains("3000x3000bb.jpg"));
         assertEquals("/api/mb-contributions/cover?id=c-1", caa.localDownloadUrl());
+
+        // 本地内嵌封面回退来源时应跳过单曲歌词页，优先挑专辑商店链接；单曲按自身歌词证据推断 lyricsLanguage
+        MbContributionItem.ContributionTrack jpTrack = new MbContributionItem.ContributionTrack();
+        jpTrack.setDiscNo(1);
+        jpTrack.setTrackNo(2);
+        jpTrack.setTitle("きみキミ血ぅ毒");
+        jpTrack.setLyricists(List.of("tepe (OTOIRO)"));
+        jpTrack.setLyricistSource("ONLINE_VERIFIED");
+        MbContributionItem.ContributionTrack instTrack = new MbContributionItem.ContributionTrack();
+        instTrack.setDiscNo(1);
+        instTrack.setTrackNo(3);
+        instTrack.setTitle("きみキミ血ぅ毒 (Instrumental)");
+        instTrack.setComposers(List.of("tepe (OTOIRO)"));
+        instTrack.setComposerSource("ONLINE_VERIFIED");
+        item.getDraft().setTracks(List.of(t1, jpTrack, instTrack));
+
+        MbContributionItem.SourceUrlEntry lyricsSrc = new MbContributionItem.SourceUrlEntry();
+        lyricsSrc.setUrl("https://ftp.uta-net.com/song/402836");
+        lyricsSrc.setReliability("HIGH");
+        MbContributionItem.SourceUrlEntry amazonSrc = new MbContributionItem.SourceUrlEntry();
+        amazonSrc.setUrl("https://music.amazon.co.jp/albums/B0HR9LNDSZ");
+        amazonSrc.setReliability("HIGH");
+        item.getDraft().setSourceUrls(List.of(lyricsSrc, amazonSrc));
+
+        MbContributionItem.CoverInfo embeddedCover = new MbContributionItem.CoverInfo();
+        embeddedCover.setOrigin("EMBEDDED");
+        embeddedCover.setOriginPageUrl("https://ftp.uta-net.com/song/402836");
+        item.setCover(embeddedCover);
+        MusicBrainzCreditSanitizer.CoverArtGuide localCaa =
+            MusicBrainzCreditSanitizer.buildCoverGuidance(item, true, "/api/mb-contributions/cover");
+        assertEquals("https://music.amazon.co.jp/albums/B0HR9LNDSZ", localCaa.originPageUrl());
+        assertTrue(localCaa.suggestedComment().contains("https://music.amazon.co.jp/albums/B0HR9LNDSZ"));
+        assertFalse(localCaa.suggestedComment().contains("uta-net.com"));
+
+        // 仅剩歌词页时，CAA originPageUrl 必须留空而不是误把歌词页标成官方封面出处
+        item.getDraft().setSourceUrls(List.of(lyricsSrc));
+        MusicBrainzCreditSanitizer.CoverArtGuide onlyLyricsCaa =
+            MusicBrainzCreditSanitizer.buildCoverGuidance(item, true, "/api/mb-contributions/cover");
+        assertNull(onlyLyricsCaa.originPageUrl());
+        assertFalse(onlyLyricsCaa.suggestedComment().contains("uta-net.com"));
+
+        MusicBrainzCreditSanitizer.WorksGuide jpGuide = MusicBrainzCreditSanitizer.buildWorksGuide(item);
+        assertNull(jpGuide.tracks().get(0).lyricsLanguage());
+        assertEquals("jpn", jpGuide.tracks().get(1).lyricsLanguage());
+        assertNull(jpGuide.tracks().get(2).lyricsLanguage());
     }
 }

@@ -388,9 +388,48 @@ class P1Task3FrontendI18nOpsRegressionTest {
         String zhProps = Files.readString(PROJECT_ROOT.resolve("src/main/resources/messages_zh_CN.properties"), StandardCharsets.UTF_8);
         String enProps = Files.readString(PROJECT_ROOT.resolve("src/main/resources/messages_en_US.properties"), StandardCharsets.UTF_8);
         for (String key : List.of("web.contributions=", "config.acoustid.user.key=", "config.mb.contribution.enabled=",
-                "contrib.page.title=", "contrib.act.seed.open=", "contrib.step3.works.title=", "contrib.err.track.mismatch=")) {
+                "contrib.page.title=", "contrib.act.seed.open=", "contrib.step3.works.title=", "contrib.err.track.mismatch=",
+                "contrib.act.works.prefill=", "contrib.act.works.copy.payload=", "contrib.act.works.install.script=",
+                "contrib.act.copy.url=", "contrib.toast.works.prefill.opened=",
+                "contrib.works.payload.manual.toggle=", "contrib.works.payload.manual.hint=")) {
             assertTrue(zhProps.contains(key), "messages_zh_CN.properties missing " + key);
             assertTrue(enProps.contains(key), "messages_en_US.properties missing " + key);
         }
+
+        // 配套油猴脚本资产安全与集成校验（严禁自动提交）
+        String userScript = Files.readString(PROJECT_ROOT.resolve("src/main/resources/static/mb-works-helper.user.js"), StandardCharsets.UTF_8);
+        assertTrue(userScript.contains("// ==UserScript==") && userScript.contains("@grant        none"),
+            "mb-works-helper.user.js should declare valid userscript metadata with @grant none");
+        assertTrue(userScript.contains("MB.relationshipEditor") && userScript.contains("update-relationship-state")
+                && userScript.contains("accept-batch-create-works-dialog") && userScript.contains("update-edit-note"),
+            "mb-works-helper.user.js should use official MB.relationshipEditor React reducer actions");
+        assertFalse(userScript.contains("requestSubmit") || userScript.contains("/ws/js/edit/create"),
+            "mb-works-helper.user.js must never auto-submit edits without manual confirmation");
+        assertTrue(contribHtml.contains("mb-works-helper.user.js") && contribHtml.contains("#mat-works=")
+                && contribHtml.contains("worksManualPayloadBox") && contribHtml.contains("revealManualWorksPayloadBox"),
+            "contributions.html should link to companion userscript, pass #mat-works payload, and provide manual fallback box");
+    }
+
+    @Test
+    void u4_mbWorksHelperUserscriptBehavioralSuitePassesWhenNodeAvailable() throws Exception {
+        Path testScript = PROJECT_ROOT.resolve("src/test/js/mb-works-helper.test.mjs");
+        assertTrue(Files.isRegularFile(testScript), "Missing behavioral test: " + testScript);
+        Process checkNode;
+        try {
+            checkNode = new ProcessBuilder("node", "--version").start();
+            if (checkNode.waitFor() != 0) {
+                org.junit.jupiter.api.Assumptions.assumeTrue(false, "node unavailable");
+            }
+        } catch (java.io.IOException e) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "node unavailable");
+            return;
+        }
+        Process p = new ProcessBuilder("node", "--test", testScript.toString())
+            .directory(PROJECT_ROOT.toFile())
+            .redirectErrorStream(true)
+            .start();
+        String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        int exit = p.waitFor();
+        assertEquals(0, exit, "mb-works-helper.user.js behavioral test failed:\n" + output);
     }
 }

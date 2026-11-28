@@ -757,7 +757,7 @@
                                 <div class="works-credit-row">
                                     <span class="role-tag">${esc(roleLabel)}</span>
                                     ${artHref
-                                        ? `<a href="${esc(artHref)}" target="_blank" rel="noopener noreferrer"><strong>${esc(cr.canonicalName || cr.cleanName)}</strong></a>`
+                                        ? `<a href="${esc(artHref)}" target="_blank" rel="noopener noreferrer"><strong>${esc(cr.canonicalName || cr.cleanName)}</strong></a><button type="button" class="btn plain sm btn-copy-artist-url" data-url="${esc(artHref)}" style="height:20px;padding:0 6px;font-size:11px;">${esc(t('contrib.act.copy.url'))}</button>`
                                         : `<strong>${esc(cr.cleanName || '')}</strong>`}
                                     ${cr.suggestedCreditedAs ? `<span class="pill">${esc(tf('contrib.step3.works.creditedAs', cr.suggestedCreditedAs))}</span>` : ''}
                                     ${cr.affiliationNote ? `<span class="pill info">${esc(tf('contrib.step3.works.affiliation', cr.affiliationNote))}</span>` : ''}
@@ -819,9 +819,26 @@
                     <div class="sub-panel">
                         <div class="step-head">
                             <h3>${esc(t('contrib.step3.works.title'))}</h3>
-                            ${relEditHref ? `<a class="btn ghost sm" href="${esc(relEditHref)}" target="_blank" rel="noopener noreferrer">${esc(t('contrib.act.works.open'))}</a>` : ''}
+                            <div class="action-row">
+                                ${relEditHref && wg.hasAnyCredits ? `<button type="button" class="btn primary sm" id="btnOpenWorksPrefill">${esc(t('contrib.act.works.prefill'))}</button>` : ''}
+                                ${relEditHref && wg.hasAnyCredits ? `<button type="button" class="btn ghost sm" id="btnCopyWorksPayload">${esc(t('contrib.act.works.copy.payload'))}</button>` : ''}
+                                ${relEditHref ? `<a class="btn plain sm" href="${esc(relEditHref)}" target="_blank" rel="noopener noreferrer">${esc(t('contrib.act.works.open'))}</a>` : ''}
+                                <a class="btn plain sm" href="mb-works-helper.user.js" target="_blank" rel="noopener noreferrer">${esc(t('contrib.act.works.install.script'))}</a>
+                            </div>
                         </div>
                         <div class="hint-text">${esc(t('contrib.step3.works.hint'))}</div>
+                        ${relEditHref && wg.hasAnyCredits ? `
+                            <details class="draft-details" id="worksManualPayloadBox">
+                                <summary>${esc(t('contrib.works.payload.manual.toggle'))}</summary>
+                                <div class="draft-inner">
+                                    <div class="hint-text">${esc(t('contrib.works.payload.manual.hint'))}</div>
+                                    <textarea id="worksManualPayloadText" readonly rows="4" style="width:100%;font-family:var(--mono);font-size:11.5px;padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);box-sizing:border-box;">${esc(JSON.stringify(buildWorksHelperPayload(detail)))}</textarea>
+                                    <div class="action-row">
+                                        <a class="btn primary sm" href="${esc(relEditHref)}" target="_blank" rel="noopener noreferrer">${esc(t('contrib.act.works.open'))}</a>
+                                    </div>
+                                </div>
+                            </details>
+                        ` : ''}
                         ${worksHtml}
                     </div>
                 `}
@@ -925,13 +942,54 @@
         toast(t('contrib.toast.seed.opened'));
     }
 
-    async function copyText(text) {
-        if (!text) return;
+    function encodeBase64UrlUtf8(str) {
+        const bytes = new TextEncoder().encode(String(str));
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) {
+            bin += String.fromCharCode(bytes[i]);
+        }
+        return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function buildWorksHelperPayload(detail) {
+        const item = detail && detail.item ? detail.item : {};
+        const draft = item.draft || {};
+        const wg = detail && detail.worksGuide ? detail.worksGuide : {};
+        const mapRole = (list) => (Array.isArray(list) ? list : []).map(cr => ({
+            mbid: cr.mbid || null,
+            name: cr.canonicalName || cr.cleanName || '',
+            creditedAs: cr.suggestedCreditedAs || '',
+            needsVerification: !!cr.needsVerification
+        }));
+        return {
+            v: 1,
+            source: 'MusicAutoTagger',
+            releaseId: wg.releaseId || item.linkedReleaseId || null,
+            albumTitle: draft.title || item.linkedReleaseTitle || '',
+            tracks: (Array.isArray(wg.tracks) ? wg.tracks : []).map(tr => ({
+                discNo: tr.discNo || 1,
+                trackNo: tr.trackNo || 0,
+                title: tr.title || '',
+                recordingId: tr.recordingId || null,
+                lyricsLanguage: tr.lyricsLanguage || null,
+                composers: mapRole(tr.composers),
+                lyricists: mapRole(tr.lyricists),
+                arrangers: mapRole(tr.arrangers),
+                evidenceUrls: Array.isArray(tr.evidenceUrls) ? tr.evidenceUrls.slice(0, 4) : [],
+                evidenceQuotes: Array.isArray(tr.evidenceQuotes) ? tr.evidenceQuotes.slice(0, 2) : []
+            }))
+        };
+    }
+
+    async function copyText(text, okMsg) {
+        if (!text) return false;
         try {
             await navigator.clipboard.writeText(text);
-            toast(t('contrib.act.copied'));
+            toast(okMsg || t('contrib.act.copied'));
+            return true;
         } catch (e) {
             toast(t('records.copy.failed', 'Copy failed'), true);
+            return false;
         }
     }
 
@@ -1065,6 +1123,57 @@
                 if (tr && tr.suggestedEditNote) copyText(tr.suggestedEditNote);
             });
         });
+
+        document.querySelectorAll('.btn-copy-artist-url').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const url = btn.getAttribute('data-url');
+                if (url) copyText(url);
+            });
+        });
+
+        function revealManualWorksPayloadBox() {
+            const box = document.getElementById('worksManualPayloadBox');
+            const ta = document.getElementById('worksManualPayloadText');
+            if (box) box.open = true;
+            if (ta) {
+                ta.focus();
+                ta.select();
+            }
+        }
+
+        const copyWorksPayloadBtn = document.getElementById('btnCopyWorksPayload');
+        if (copyWorksPayloadBtn) {
+            copyWorksPayloadBtn.addEventListener('click', async () => {
+                const payload = buildWorksHelperPayload(state.detail);
+                if (!payload.releaseId) return;
+                const json = JSON.stringify(payload);
+                const copied = await copyText(json, t('contrib.toast.works.payload.copied'));
+                if (!copied) {
+                    revealManualWorksPayloadBox();
+                }
+            });
+        }
+
+        const prefillWorksBtn = document.getElementById('btnOpenWorksPrefill');
+        if (prefillWorksBtn) {
+            prefillWorksBtn.addEventListener('click', async () => {
+                const relEditHref = safeExternalUrl(state.detail.worksGuide && state.detail.worksGuide.editRelationshipsUrl);
+                const payload = buildWorksHelperPayload(state.detail);
+                if (!relEditHref || !payload.releaseId) return;
+                const json = JSON.stringify(payload);
+                const encoded = encodeBase64UrlUtf8(json);
+                if (encoded.length <= 24000) {
+                    window.open(relEditHref + '#mat-works=' + encoded, '_blank', 'noopener,noreferrer');
+                    toast(t('contrib.toast.works.prefill.opened'));
+                } else {
+                    const copied = await copyText(json, t('contrib.toast.works.prefill.clipboard'));
+                    revealManualWorksPayloadBox();
+                    if (!copied) {
+                        toast(t('contrib.works.payload.manual.hint'), true);
+                    }
+                }
+            });
+        }
 
         const submitFpBtn = document.getElementById('btnSubmitAcoustId');
         if (submitFpBtn) {
