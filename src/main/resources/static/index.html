@@ -458,6 +458,11 @@
                     <span data-i18n="web.recovery">重新识别</span>
                     <span class="nav-count" id="recoveryCount">0</span>
                 </a>
+                <a class="side-link" id="navContributions" href="contributions.html">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path><path d="M5 19h14"></path></svg>
+                    <span data-i18n="web.contributions">回馈 MB</span>
+                    <span class="nav-count" id="contributionsCount">0</span>
+                </a>
                 <div class="side-group" data-i18n="web.nav.group.library">资料</div>
                 <a class="side-link" href="records.html">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg>
@@ -511,7 +516,7 @@
                         <p class="page-desc"><span id="lastUpdate" style="display: none;"></span></p>
                     </div>
                     <div class="page-actions">
-                        <button class="btn plain" onclick="loadData(); loadLogs(); loadReviewStats(); loadCoversStats(); loadRecoveryStats();">
+                        <button class="btn plain" onclick="loadData(); loadLogs(); loadReviewStats(); loadCoversStats(); loadRecoveryStats(); loadContributionsStats();">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                             <span id="refreshStatsText">刷新统计数据</span>
                         </button>
@@ -754,6 +759,19 @@
                                 <div class="form-row">
                                     <label for="cfgAcoustIdApiUrl" data-i18n="config.acoustid.url">AcoustID API</label>
                                     <input id="cfgAcoustIdApiUrl" type="text">
+                                </div>
+                                <div class="form-row">
+                                    <label for="cfgAcoustIdUserApiKey" class="label-with-tip">
+                                        <span data-i18n="config.acoustid.user.key">AcoustID User API Key（声纹提交）</span>
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
+                                            <span class="tip-text" data-i18n="config.acoustid.user.key.hint">可选，用于将已绑定官方 Recording MBID 的本地曲目声纹一键提交回 AcoustID。前往 https://acoustid.org/api-key 获取个人密钥；留空保存可清除。</span>
+                                        </span>
+                                    </label>
+                                    <input id="cfgAcoustIdUserApiKey" type="password">
+                                </div>
+                                <div class="form-row">
+                                    <label for="cfgAcoustIdSubmitApiUrl" data-i18n="config.acoustid.submit.url">AcoustID 提交 API</label>
+                                    <input id="cfgAcoustIdSubmitApiUrl" type="text" placeholder="https://api.acoustid.org/v2/submit">
                                 </div>
                             </div>
 
@@ -1157,6 +1175,24 @@
                                     <input id="cfgCoverMissingAutoOnlineSearch" type="checkbox">
                                     <label for="cfgCoverMissingAutoOnlineSearch" data-i18n="config.cover.missing.auto.search">缺少封面入队后自动在后台搜索候选封面（iTunes + AI 联网）</label>
                                 </div>
+                                <div class="form-row checkbox-row">
+                                    <input id="cfgMbContributionEnabled" type="checkbox">
+                                    <label for="cfgMbContributionEnabled" class="label-with-tip">
+                                        <span data-i18n="config.mb.contribution.enabled">启用 MusicBrainz 缺失专辑回馈闭环</span>
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
+                                            <span class="tip-text" data-i18n="config.mb.contribution.enabled.hint">开启后显示「回馈 MB」工作台，支持联网归档后的存在性预检、Release Editor 预填、官方 MBID 回填、封面与 Works 参考卡及 AcoustID 提交。</span>
+                                        </span>
+                                    </label>
+                                </div>
+                                <div class="form-row checkbox-row">
+                                    <input id="cfgMbContributionAutoCheckAfterArchive" type="checkbox">
+                                    <label for="cfgMbContributionAutoCheckAfterArchive" class="label-with-tip">
+                                        <span data-i18n="config.mb.contribution.auto.check">联网归档完成后自动预检 MusicBrainz 缺失并入队</span>
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
+                                            <span class="tip-text" data-i18n="config.mb.contribution.auto.check.hint">联网确认归档完成（含缺封面补图完成）后，在后台低优先级自动检测 MusicBrainz 是否缺失该发行并加入「回馈 MB」队列。</span>
+                                        </span>
+                                    </label>
+                                </div>
                             </div>
 
                             <div class="form-grid">
@@ -1328,6 +1364,7 @@
                 loadReviewStats();
                 loadCoversStats();
                 loadRecoveryStats();
+                loadContributionsStats();
             } else {
                 authBar.style.display = 'none';
                 navBar.style.display = 'none';
@@ -1532,6 +1569,26 @@
                 badge.classList.remove('show');
             }
             renderAttention(lastReviewStats);
+        }
+
+        async function loadContributionsStats() {
+            if (!authState.authenticated) return;
+            const link = document.getElementById('navContributions');
+            const badge = document.getElementById('contributionsCount');
+            if (!link || !badge) return;
+            try {
+                const response = await authFetch('/api/mb-contributions/stats');
+                if (!response.ok) throw new Error('contributions stats unavailable');
+                const data = await response.json();
+                const actionable = Number(data.actionable) || 0;
+                const visible = data.enabled !== false || actionable > 0;
+                link.style.display = visible ? '' : 'none';
+                badge.textContent = actionable > 99 ? '99+' : String(actionable);
+                badge.classList.toggle('show', actionable > 0);
+            } catch (err) {
+                link.style.display = 'none';
+                badge.classList.remove('show');
+            }
         }
 
         function setAuthState(data) {
@@ -2503,6 +2560,8 @@
                 document.getElementById('cfgUserAgent').value = cfg.userAgent || '';
                 document.getElementById('cfgAcoustIdApiKey').value = cfg.acoustIdApiKey || '';
                 document.getElementById('cfgAcoustIdApiUrl').value = cfg.acoustIdApiUrl || '';
+                document.getElementById('cfgAcoustIdUserApiKey').value = cfg.acoustIdUserApiKey || '';
+                document.getElementById('cfgAcoustIdSubmitApiUrl').value = cfg.acoustIdSubmitApiUrl || '';
                 document.getElementById('cfgEnableLLMMatching').checked = !!cfg.enableLLMMatching;
                 document.getElementById('cfgLlmAllowPrivateEndpoints').checked = !!cfg.llmAllowPrivateEndpoints;
                 // 供应商走独立接口，不在 /api/config 里
@@ -2561,6 +2620,8 @@
                 document.getElementById('cfgReviewMissingTracksAutoOnlineSearch').checked = cfg.reviewMissingTracksAutoOnlineSearch !== false;
                 document.getElementById('cfgCoverMissingRequireReview').checked = cfg.coverMissingRequireReview !== false;
                 document.getElementById('cfgCoverMissingAutoOnlineSearch').checked = cfg.coverMissingAutoOnlineSearch !== false;
+                document.getElementById('cfgMbContributionEnabled').checked = cfg.mbContributionEnabled !== false;
+                document.getElementById('cfgMbContributionAutoCheckAfterArchive').checked = cfg.mbContributionAutoCheckAfterArchive !== false;
                 document.getElementById('cfgReleaseCountryPriority').value = cfg.releaseCountryPriority || '';
                 document.getElementById('loginLanguage').value = cfg.language || 'en_US';
                 document.getElementById('setupLanguage').value = cfg.language || 'en_US';
@@ -2592,6 +2653,8 @@
                     userAgent: getValue('cfgUserAgent'),
                     acoustIdApiKey: getValue('cfgAcoustIdApiKey'),
                     acoustIdApiUrl: getValue('cfgAcoustIdApiUrl'),
+                    acoustIdUserApiKey: getValue('cfgAcoustIdUserApiKey'),
+                    acoustIdSubmitApiUrl: getValue('cfgAcoustIdSubmitApiUrl'),
                     enableLLMMatching: document.getElementById('cfgEnableLLMMatching').checked,
                     llmAllowPrivateEndpoints: document.getElementById('cfgLlmAllowPrivateEndpoints').checked,
                     llmMaxTokens: getNumberValue('cfgLlmMaxTokens'),
@@ -2649,6 +2712,8 @@
                     reviewMissingTracksAutoOnlineSearch: document.getElementById('cfgReviewMissingTracksAutoOnlineSearch').checked,
                     coverMissingRequireReview: document.getElementById('cfgCoverMissingRequireReview').checked,
                     coverMissingAutoOnlineSearch: document.getElementById('cfgCoverMissingAutoOnlineSearch').checked,
+                    mbContributionEnabled: document.getElementById('cfgMbContributionEnabled').checked,
+                    mbContributionAutoCheckAfterArchive: document.getElementById('cfgMbContributionAutoCheckAfterArchive').checked,
                     releaseCountryPriority: getValue('cfgReleaseCountryPriority')
                 };
 
@@ -2671,6 +2736,8 @@
                             updateConfigStatus(t('config.error.db.type'), true);
                         } else if (data.error === 'supported.formats.invalid') {
                             updateConfigStatus(t('config.error.formats'), true);
+                        } else if (data.error === 'secret.required.on.endpoint.change') {
+                            updateConfigStatus(t('setup.error.secret.reentry'), true);
                         } else {
                             updateConfigStatus(t('config.save.failed'), true);
                         }
@@ -2678,6 +2745,8 @@
                     }
                     updateConfigStatus(t('config.save.success.restart'), false);
                     refreshSetupStatusBanner();
+                    loadReviewStats();
+                    loadContributionsStats();
                 } catch (err) {
                     updateConfigStatus(t('config.save.failed'), true);
                 }
@@ -3165,6 +3234,7 @@
         setInterval(() => { if (!document.hidden && authState.authenticated) loadReviewStats(); }, 30000);
         setInterval(() => { if (!document.hidden && authState.authenticated) loadCoversStats(); }, 30000);
         setInterval(() => { if (!document.hidden && authState.authenticated) loadRecoveryStats(); }, 30000);
+        setInterval(() => { if (!document.hidden && authState.authenticated) loadContributionsStats(); }, 30000);
         setInterval(() => { if (!document.hidden && authState.authenticated) loadLogs(); }, 5000);
 
         document.addEventListener('visibilitychange', () => {
@@ -3173,6 +3243,7 @@
                 loadReviewStats();
                 loadCoversStats();
                 loadRecoveryStats();
+                loadContributionsStats();
                 loadLogs();
             }
         });

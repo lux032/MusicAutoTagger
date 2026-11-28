@@ -1,0 +1,1185 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-i18n-title-key="contrib.page.title">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>回馈 MusicBrainz · 音乐自动标签器</title>
+    <link rel="icon" type="image/png" href="logo.png">
+    <link rel="stylesheet" href="app.css?v=11">
+    <script src="i18n.js?v=1"></script>
+    <script src="ui.js?v=1"></script>
+    <script src="errors.js?v=2"></script>
+    <script src="api.js?v=1"></script>
+    <script src="shell.js?v=3"></script>
+    <style>
+        .main { padding-bottom: 28px; }
+        .page-head { margin-bottom: 16px; }
+        .page-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+        .desk {
+            display: grid;
+            grid-template-columns: minmax(290px, 350px) minmax(0, 1fr);
+            gap: 16px;
+            align-items: start;
+        }
+        @media (max-width: 960px) {
+            .desk { grid-template-columns: 1fr; }
+            .desk[data-view="detail"] .queue { display: none; }
+            .desk[data-view="queue"] .detail { display: none; }
+        }
+        .back-btn { display: none; margin-bottom: 10px; }
+        @media (max-width: 960px) { .back-btn { display: inline-flex; } }
+
+        .queue {
+            display: flex; flex-direction: column; overflow: hidden;
+            position: sticky; top: 18px; max-height: calc(100vh - 36px);
+        }
+        @media (max-width: 960px) { .queue { position: static; max-height: none; } }
+        .queue-top { padding: 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+        .queue-search { position: relative; display: flex; align-items: center; }
+        .queue-search svg { position: absolute; left: 10px; width: 15px; height: 15px; color: var(--text-mute); pointer-events: none; }
+        .queue-search input {
+            width: 100%; height: 34px; padding: 0 28px 0 32px;
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            background: var(--bg-soft); color: var(--text); font: inherit; font-size: 13px;
+        }
+        .queue-search input:focus { outline: none; border-color: var(--primary); background: var(--surface); box-shadow: 0 0 0 3px var(--primary-soft); }
+        .search-clear {
+            position: absolute; right: 6px; width: 22px; height: 22px; border: 0; border-radius: 50%;
+            background: transparent; color: var(--text-mute); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+        }
+        .search-clear:hover { background: var(--border); color: var(--text); }
+        .search-clear[hidden] { display: none; }
+
+        .filter-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .chip {
+            display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px;
+            border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+            color: var(--text-soft); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+        }
+        .chip:hover { background: var(--bg-soft); color: var(--text); }
+        .chip .n { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-mute); }
+        .chip.active { background: var(--text); border-color: var(--text); color: #fff; }
+        .chip.active .n { color: rgba(255,255,255,.78); }
+
+        .queue-list { flex: 1 1 auto; overflow-y: auto; }
+        .queue-empty { padding: 36px 20px; text-align: center; color: var(--text-mute); font-size: 13px; }
+        .queue-empty strong { display: block; color: var(--text-soft); font-size: 14px; margin-bottom: 6px; }
+        .q-item {
+            display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left;
+            padding: 11px 14px; border: 0; border-bottom: 1px solid var(--border);
+            background: var(--surface); color: var(--text); font: inherit; cursor: pointer;
+            border-left: 3px solid transparent; transition: background .12s;
+        }
+        .q-item:hover { background: var(--bg-soft); }
+        .q-item.active { background: var(--primary-soft); border-left-color: var(--primary); }
+        .q-title { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .q-sub { font-size: 12px; color: var(--text-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .q-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+
+        .pill {
+            display: inline-flex; align-items: center; border-radius: 999px; padding: 1px 8px;
+            font-size: 11px; font-weight: 600; background: var(--bg-soft); color: var(--text-soft);
+            border: 1px solid var(--border); font-variant-numeric: tabular-nums;
+        }
+        .pill.primary { background: var(--primary-soft); color: var(--primary-dark); border-color: var(--primary-line); }
+        .pill.ok { background: var(--success-soft); color: var(--success); border-color: #b7ebc6; }
+        .pill.warn { background: var(--warn-soft); color: var(--warn); border-color: #fcd39d; }
+        .pill.danger { background: var(--danger-soft); color: var(--danger); border-color: #fecaca; }
+        .pill.info { background: var(--info-soft); color: var(--info); border-color: #bae6fd; }
+
+        .detail { display: flex; flex-direction: column; min-height: 460px; min-width: 0; overflow: visible; }
+        .detail-body { padding: 20px; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+        .detail-empty { padding: 72px 24px; text-align: center; color: var(--text-mute); }
+        .detail-empty strong { display: block; font-size: 15px; color: var(--text); margin-bottom: 6px; }
+
+        .album-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+        .album-title { font-size: 19px; font-weight: 700; margin: 0 0 4px; word-break: break-word; }
+        .album-meta { font-size: 13px; color: var(--text-soft); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .album-path { font-family: var(--mono); font-size: 12px; color: var(--text-mute); word-break: break-all; margin-top: 4px; }
+        .head-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+        .step-card {
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface);
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .step-card.locked { opacity: .72; background: var(--bg-soft); }
+        .step-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .step-title { font-size: 14.5px; font-weight: 700; color: var(--text); }
+
+        .banner-box {
+            padding: 12px 14px; border-radius: var(--radius-sm); font-size: 13px;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .banner-box.primary { background: var(--primary-soft); color: var(--primary-dark); border: 1px solid var(--primary-line); }
+        .banner-box.warn { background: var(--warn-soft); color: var(--warn); border: 1px solid #fcd39d; }
+        .banner-box.info { background: var(--info-soft); color: var(--info); border: 1px solid #bae6fd; }
+        .banner-box.ok { background: var(--success-soft); color: var(--success); border: 1px solid #b7ebc6; }
+        .banner-box.danger { background: var(--danger-soft); color: var(--danger); border: 1px solid #fecaca; }
+        .banner-box strong { font-size: 13.5px; }
+
+        .draft-details { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-soft); }
+        .draft-details summary {
+            padding: 10px 12px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text);
+            user-select: none;
+        }
+        .draft-inner { padding: 0 12px 14px; display: flex; flex-direction: column; gap: 14px; }
+
+        .draft-grid {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px;
+        }
+        .field-cell { display: flex; flex-direction: column; gap: 4px; }
+        .field-cell label { font-size: 12px; font-weight: 600; color: var(--text-soft); }
+        .field-cell input, .field-cell select {
+            height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+            background: var(--surface); color: var(--text); font: inherit; font-size: 13px;
+        }
+        .field-cell input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+
+        .inline-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .inline-form input[type="text"] {
+            flex: 1 1 260px; min-width: 0; height: 36px; padding: 0 10px;
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            background: var(--surface); color: var(--text); font: inherit; font-size: 13px;
+        }
+        .inline-form input[type="text"]:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+
+        .mini-table-wrap { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: auto; background: var(--surface); }
+        .mini-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+        .mini-table th, .mini-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+        .mini-table th { background: var(--bg-soft); color: var(--text-soft); font-weight: 600; white-space: nowrap; }
+        .mini-table tr:last-child td { border-bottom: 0; }
+        .mono { font-family: var(--mono); font-size: 12px; }
+
+        .source-list { display: flex; flex-direction: column; gap: 6px; }
+        .source-row {
+            display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+            font-size: 12.5px;
+        }
+        .source-row a { word-break: break-all; }
+
+        .sub-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+        .sub-panel {
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            background: var(--bg-soft); padding: 14px; display: flex; flex-direction: column; gap: 10px;
+        }
+        .sub-panel h3 { font-size: 13.5px; font-weight: 700; margin: 0; }
+        .hint-text { font-size: 12.5px; color: var(--text-soft); line-height: 1.5; }
+        .code-box {
+            font-family: var(--mono); font-size: 12px; padding: 8px 10px;
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            background: var(--surface); word-break: break-all; white-space: pre-wrap;
+        }
+
+        .works-track {
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            background: var(--surface); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+        }
+        .works-track-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .works-credit-list { display: flex; flex-direction: column; gap: 6px; }
+        .works-credit-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; }
+        .works-evidence { font-size: 12px; color: var(--text-mute); border-top: 1px dashed var(--border); padding-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+        .works-evidence a { word-break: break-all; }
+        .role-tag {
+            font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+            background: var(--bg-soft); color: var(--text-soft); border: 1px solid var(--border);
+        }
+
+        .rg-release-list { margin: 4px 0 0 18px; font-size: 12.5px; }
+        .rg-release-list li { margin: 2px 0; }
+        .checkbox-line { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; cursor: pointer; }
+        .action-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    </style>
+</head>
+<body>
+<div class="shell">
+<aside class="side" id="appSide">
+    <a class="side-brand" href="index.html">
+        <img src="logo.png" alt="Music Auto Tagger">
+        <span>
+            <span class="brand-title" data-i18n="web.brand">音乐自动标签器</span>
+            <span class="brand-subtitle" data-i18n="web.subtitle">实时监控 · 智能整理 · 数据统计</span>
+        </span>
+    </a>
+    <button class="side-toggle" onclick="Shell.toggleNav()" aria-label="menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        <span data-i18n="web.menu">菜单</span>
+    </button>
+    <nav class="side-nav" id="navBar">
+        <a class="side-link" href="index.html">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"></path></svg>
+            <span data-i18n="web.nav.overview">概览</span>
+        </a>
+        <div class="side-group" data-i18n="web.nav.group.work">需要处理</div>
+        <a class="side-link" href="review.html" id="navReview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"></path><path d="M3 13h5l1 3h6l1-3h5"></path></svg>
+            <span data-i18n="web.review">待确认</span>
+            <span class="nav-count" id="reviewCount">0</span>
+        </a>
+        <a class="side-link" href="covers.html" id="navCovers">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+            <span data-i18n="web.covers">缺少封面</span>
+            <span class="nav-count" id="coversCount">0</span>
+        </a>
+        <a class="side-link" href="recovery.html" id="navRecovery">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>
+            <span data-i18n="web.recovery">重新识别</span>
+            <span class="nav-count" id="recoveryCount">0</span>
+        </a>
+        <a class="side-link active" href="contributions.html" aria-current="page" id="navContributions">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path><path d="M5 19h14"></path></svg>
+            <span data-i18n="web.contributions">回馈 MB</span>
+            <span class="nav-count" id="contributionsCount">0</span>
+        </a>
+        <div class="side-group" data-i18n="web.nav.group.library">资料</div>
+        <a class="side-link" href="records.html">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg>
+            <span data-i18n="web.records">处理记录</span>
+        </a>
+        <a class="side-link" href="index.html#settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.61.77 1.03 1.42 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            <span data-i18n="web.settings">设置</span>
+        </a>
+    </nav>
+</aside>
+
+<main class="main">
+    <div class="page-head">
+        <div>
+            <h1 class="page-title" data-i18n="contrib.page.title">回馈 MusicBrainz</h1>
+            <p class="page-desc" data-i18n="contrib.page.subtitle">将联网确认的缺失发行通过官方 Release Editor 预填回馈社区，再一键回填本地官方 MBID 与声纹</p>
+        </div>
+        <div class="page-actions">
+            <button type="button" class="btn plain" id="btnRefresh" data-i18n="contrib.nav.refresh">刷新</button>
+        </div>
+    </div>
+
+    <div class="desk" id="desk" data-view="queue">
+        <section class="card queue">
+            <div class="queue-top">
+                <div class="queue-search">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    <input type="text" id="searchInput" data-i18n-placeholder="contrib.search.placeholder" placeholder="搜索专辑名、艺术家、厂牌、目录号或条码…">
+                    <button type="button" class="search-clear" id="searchClear" hidden aria-label="clear">&times;</button>
+                </div>
+                <div class="filter-chips" id="filterChips"></div>
+            </div>
+            <div class="queue-list" id="queueList"></div>
+        </section>
+
+        <section class="card detail" id="detailPane">
+            <div class="detail-empty">
+                <strong data-i18n="contrib.detail.empty.title">选择左侧专辑开始回馈</strong>
+                <div data-i18n="contrib.detail.empty.hint">支持存在性预检、Release Editor 一键预填、官方 MBID 原位回填、高画质封面引导、合规 Works 参考卡与 AcoustID 声纹提交。</div>
+            </div>
+        </section>
+    </div>
+</main>
+</div>
+
+<div class="toast" id="toast" style="display:none;"></div>
+
+<script>
+(function () {
+    const t = (k, d) => (window.I18n ? I18n.t(k, d) : (d || k));
+    const tf = (k, ...a) => (window.I18n ? I18n.tf(k, ...a) : k);
+    const esc = AppUI.escapeHtml;
+    const toast = (msg, isError) => AppUI.toast(msg, { isError: !!isError, duration: 4500 });
+
+    const FILTERS = ['ACTIONABLE', 'READY_TO_SEED', 'EXISTING_MATCH', 'LINKED', 'COMPLETED', 'DISMISSED', 'ALL'];
+
+    const state = {
+        csrf: null,
+        status: 'ACTIONABLE',
+        query: '',
+        stats: {},
+        items: [],
+        selectedId: null,
+        detail: null,
+        listSeq: 0,
+        itemSeq: 0,
+        searchTimer: null
+    };
+
+    function mapError(code, data) {
+        const base = AppErrors.humanError(code);
+        if (data && data.detail && base === code) {
+            return data.detail;
+        }
+        return base;
+    }
+
+    function api(path, options = {}) {
+        return AppApi.request(path, {
+            ...options,
+            csrfToken: state.csrf,
+            redirectOn401: '/index.html',
+            mapError
+        });
+    }
+
+    function safeExternalUrl(raw) {
+        if (!raw) return null;
+        try {
+            const u = new URL(String(raw));
+            if (u.protocol === 'https:' || u.protocol === 'http:') return u.href;
+        } catch (e) { /* invalid url */ }
+        return null;
+    }
+
+    function localizedCheckDesc(item) {
+        if (item && item.checkCode) {
+            const key = 'contrib.check.code.' + item.checkCode;
+            const localized = t(key, '');
+            if (localized && localized !== key) {
+                return localized;
+            }
+        }
+        return t('contrib.step1.failed.desc');
+    }
+
+    function formatMs(ms) {
+        const v = Number(ms) || 0;
+        if (v <= 0) return '-';
+        const sec = Math.round(v / 1000);
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function statusPillClass(st) {
+        switch (st) {
+            case 'READY_TO_SEED': return 'primary';
+            case 'EXISTING_MATCH': return 'warn';
+            case 'LINKED': return 'info';
+            case 'COMPLETED': return 'ok';
+            case 'CHECK_FAILED': return 'danger';
+            default: return '';
+        }
+    }
+
+    function filterCount(key) {
+        const s = state.stats || {};
+        switch (key) {
+            case 'ACTIONABLE': return Number(s.actionable) || 0;
+            case 'READY_TO_SEED': return Number(s.readyToSeed) || 0;
+            case 'EXISTING_MATCH': return Number(s.existingMatch) || 0;
+            case 'LINKED': return Number(s.linked) || 0;
+            case 'COMPLETED': return Number(s.completed) || 0;
+            case 'DISMISSED': return Number(s.dismissed) || 0;
+            case 'ALL': return Number(s.total) || 0;
+            default: return 0;
+        }
+    }
+
+    function renderFilters() {
+        const box = document.getElementById('filterChips');
+        box.innerHTML = FILTERS.map(f => `
+            <button type="button" class="chip${state.status === f ? ' active' : ''}" data-filter="${f}">
+                <span>${esc(t('contrib.filter.' + f, f))}</span>
+                <span class="n">${filterCount(f)}</span>
+            </button>
+        `).join('');
+        box.querySelectorAll('.chip').forEach(btn => {
+            btn.addEventListener('click', () => {
+                state.status = btn.getAttribute('data-filter');
+                loadList();
+            });
+        });
+    }
+
+    function renderQueue() {
+        renderFilters();
+        const listEl = document.getElementById('queueList');
+        if (!state.items.length) {
+            listEl.innerHTML = `<div class="queue-empty"><strong>${esc(t('contrib.queue.empty.title'))}</strong><div>${esc(t('contrib.queue.empty.hint'))}</div></div>`;
+            return;
+        }
+        listEl.innerHTML = state.items.map(it => {
+            const active = it.id === state.selectedId ? ' active' : '';
+            const sub = [it.albumArtist, it.releaseDate, it.mediaFormat].filter(Boolean).join(' · ');
+            const stLabel = t('contrib.status.' + (it.status || 'CHECKING'), it.status || '');
+            const caseLabel = it.checkCase ? t('contrib.case.' + it.checkCase, it.checkCase) : '';
+            return `
+                <button type="button" class="q-item${active}" data-id="${esc(it.id)}">
+                    <div class="q-title">${esc(it.title || it.archivedOutputDir || it.id)}</div>
+                    <div class="q-sub">${esc(sub || '-')}</div>
+                    <div class="q-tags">
+                        <span class="pill ${statusPillClass(it.status)}">${esc(stLabel)}</span>
+                        ${caseLabel ? `<span class="pill">${esc(caseLabel)}</span>` : ''}
+                        <span class="pill">${esc(tf('contrib.meta.tracks', it.trackCount || 0))}</span>
+                    </div>
+                </button>
+            `;
+        }).join('');
+        listEl.querySelectorAll('.q-item').forEach(btn => {
+            btn.addEventListener('click', () => selectItem(btn.getAttribute('data-id'), false));
+        });
+    }
+
+    async function loadList(keepSelectedId, openMobileDetail) {
+        const seq = ++state.listSeq;
+        const params = new URLSearchParams();
+        params.set('status', state.status);
+        if (state.query) params.set('q', state.query);
+        try {
+            const data = await api('/api/mb-contributions/list?' + params.toString());
+            if (seq !== state.listSeq) return;
+            state.items = Array.isArray(data.items) ? data.items : [];
+            state.stats = data.stats || {};
+            if (window.Shell && typeof Shell.refreshContributionsCount === 'function') {
+                Shell.refreshContributionsCount();
+            }
+            renderQueue();
+            const targetId = keepSelectedId || state.selectedId;
+            if (targetId && state.items.some(x => x.id === targetId)) {
+                await selectItem(targetId, !openMobileDetail);
+            } else if (targetId && keepSelectedId) {
+                await selectItem(targetId, !openMobileDetail);
+            } else if (!state.selectedId && state.items.length && window.innerWidth > 960) {
+                await selectItem(state.items[0].id, true);
+            } else if (state.selectedId && !state.items.some(x => x.id === state.selectedId) && !state.detail) {
+                renderEmptyDetail();
+            }
+        } catch (e) {
+            if (e.status !== 401) toast(e.message, true);
+        }
+    }
+
+    async function selectItem(id, silentDesk) {
+        if (!id) return;
+        state.selectedId = id;
+        renderQueue();
+        if (!silentDesk) {
+            document.getElementById('desk').setAttribute('data-view', 'detail');
+        }
+        const seq = ++state.itemSeq;
+        try {
+            const data = await api('/api/mb-contributions/item?id=' + encodeURIComponent(id));
+            if (seq !== state.itemSeq || state.selectedId !== id) return;
+            state.detail = data;
+            renderDetail();
+        } catch (e) {
+            if (e.status !== 401) toast(e.message, true);
+        }
+    }
+
+    function renderEmptyDetail() {
+        const pane = document.getElementById('detailPane');
+        pane.innerHTML = `<div class="detail-empty"><strong>${esc(t('contrib.detail.empty.title'))}</strong><div>${esc(t('contrib.detail.empty.hint'))}</div></div>`;
+    }
+
+    function renderStep1Banner(item) {
+        const cc = item.checkCase;
+        if (item.status === 'CHECKING') {
+            return `<div class="banner-box info"><strong>${esc(t('contrib.status.CHECKING'))}</strong><div>${esc(t('contrib.step1.checking.desc'))}</div></div>`;
+        }
+        if (cc === 'EXISTING_RELEASE') {
+            const mbUrl = item.matchedReleaseId ? ('https://musicbrainz.org/release/' + encodeURIComponent(item.matchedReleaseId)) : null;
+            const info = [item.matchedReleaseTitle, item.matchedReleaseArtist, item.matchedReleaseDate, item.matchedReleaseCountry].filter(Boolean).join(' · ');
+            return `
+                <div class="banner-box warn">
+                    <strong>${esc(t('contrib.step1.caseA.title'))}</strong>
+                    <div>${esc(t('contrib.step1.caseA.desc'))}</div>
+                    ${info ? `<div>${esc(info)} ${mbUrl ? `· <a href="${esc(mbUrl)}" target="_blank" rel="noopener noreferrer">${esc(item.matchedReleaseId)}</a>` : ''}</div>` : ''}
+                    ${item.matchedReleaseId ? `
+                        <div class="action-row">
+                            <button type="button" class="btn primary sm" id="btnLinkMatched">${esc(t('contrib.act.link.matched'))}</button>
+                        </div>
+                    ` : ''}
+                </div>`;
+        }
+        if (cc === 'MISSING_EDITION') {
+            const rgUrl = item.matchedReleaseGroupId ? ('https://musicbrainz.org/release-group/' + encodeURIComponent(item.matchedReleaseGroupId)) : null;
+            const existingList = Array.isArray(item.existingGroupReleases) ? item.existingGroupReleases : [];
+            return `
+                <div class="banner-box info">
+                    <strong>${esc(t('contrib.step1.caseB.title'))}</strong>
+                    <div>${esc(t('contrib.step1.caseB.desc'))}</div>
+                    ${rgUrl ? `<div>Release Group: <a href="${esc(rgUrl)}" target="_blank" rel="noopener noreferrer">${esc(item.matchedReleaseTitle || item.matchedReleaseGroupId)}</a></div>` : ''}
+                    <label class="checkbox-line">
+                        <input type="checkbox" id="chkUseExistingRg" ${item.useExistingReleaseGroup ? 'checked' : ''}>
+                        <span>${esc(t('contrib.step1.caseB.useExisting'))}</span>
+                    </label>
+                    ${existingList.length ? `
+                        <div>
+                            <div>${esc(t('contrib.step1.caseB.existingReleases'))}</div>
+                            <ul class="rg-release-list">
+                                ${existingList.map(r => `<li><a href="https://musicbrainz.org/release/${encodeURIComponent(r.releaseId || '')}" target="_blank" rel="noopener noreferrer">${esc(r.title || r.releaseId)}</a> · ${esc([r.date, r.country, r.mediaFormat, r.trackCount ? (r.trackCount + ' tracks') : ''].filter(Boolean).join(' / '))}</li>`).join('')}
+                            </ul>
+                        </div>` : ''}
+                </div>`;
+        }
+        if (cc === 'NOT_ELIGIBLE') {
+            return `<div class="banner-box warn"><strong>${esc(t('contrib.case.NOT_ELIGIBLE'))}</strong><div>${esc(localizedCheckDesc(item))}</div></div>`;
+        }
+        if (cc === 'ERROR' || item.status === 'CHECK_FAILED') {
+            return `<div class="banner-box danger"><strong>${esc(t('contrib.case.ERROR'))}</strong><div>${esc(localizedCheckDesc(item))}</div></div>`;
+        }
+        return `<div class="banner-box primary"><strong>${esc(t('contrib.step1.caseC.title'))}</strong><div>${esc(t('contrib.step1.caseC.desc'))}</div></div>`;
+    }
+
+    function renderDraftEditor(item) {
+        const d = item.draft || {};
+        const sources = Array.isArray(d.sourceUrls) ? d.sourceUrls : [];
+        const tracks = Array.isArray(d.tracks) ? d.tracks : [];
+        const mbids = d.entityMbids ? Object.values(d.entityMbids) : [];
+
+        return `
+            <details class="draft-details">
+                <summary>${esc(t('contrib.step1.draft.toggle'))}</summary>
+                <div class="draft-inner">
+                    <div class="draft-grid">
+                        <div class="field-cell"><label for="dfTitle">${esc(t('contrib.field.title'))}</label><input id="dfTitle" type="text" value="${esc(d.title || '')}"></div>
+                        <div class="field-cell"><label for="dfComment">${esc(t('contrib.field.comment'))}</label><input id="dfComment" type="text" value="${esc(d.comment || '')}"></div>
+                        <div class="field-cell"><label for="dfReleaseType">${esc(t('contrib.field.releaseType'))}</label><input id="dfReleaseType" type="text" value="${esc(d.releaseType || '')}" placeholder="Album / Single / EP"></div>
+                        <div class="field-cell"><label for="dfReleaseDate">${esc(t('contrib.field.releaseDate'))}</label><input id="dfReleaseDate" type="text" value="${esc(d.releaseDate || '')}" placeholder="YYYY-MM-DD"></div>
+                        <div class="field-cell"><label for="dfCountry">${esc(t('contrib.field.country'))}</label><input id="dfCountry" type="text" value="${esc(d.country || '')}" placeholder="JP / XW"></div>
+                        <div class="field-cell"><label for="dfMediaFormat">${esc(t('contrib.field.mediaFormat'))}</label><input id="dfMediaFormat" type="text" value="${esc(d.mediaFormat || '')}" placeholder="Digital Media / CD"></div>
+                        <div class="field-cell"><label for="dfLabel">${esc(t('contrib.field.label'))}</label><input id="dfLabel" type="text" value="${esc(d.label || '')}"></div>
+                        <div class="field-cell"><label for="dfCatalogNumber">${esc(t('contrib.field.catalogNumber'))}</label><input id="dfCatalogNumber" type="text" value="${esc(d.catalogNumber || '')}"></div>
+                        <div class="field-cell"><label for="dfBarcode">${esc(t('contrib.field.barcode'))}</label><input id="dfBarcode" type="text" value="${esc(d.barcode || '')}"></div>
+                        <div class="field-cell"><label for="dfLanguage">${esc(t('contrib.field.language'))}</label><input id="dfLanguage" type="text" value="${esc(d.language || '')}" placeholder="jpn / eng"></div>
+                        <div class="field-cell"><label for="dfScript">${esc(t('contrib.field.script'))}</label><input id="dfScript" type="text" value="${esc(d.script || '')}" placeholder="Jpan / Latn"></div>
+                    </div>
+
+                    ${mbids.length ? `
+                        <div>
+                            <div class="hint-text" style="font-weight:600;margin-bottom:6px;">${esc(t('contrib.step1.artists.head'))}</div>
+                            <div class="q-tags">
+                                ${mbids.map(m => `<a class="pill primary" href="https://musicbrainz.org/artist/${encodeURIComponent(m.mbid || '')}" target="_blank" rel="noopener noreferrer">${esc(m.canonicalName || m.displayName || m.mbid)}</a>`).join('')}
+                            </div>
+                        </div>` : ''}
+
+                    ${sources.length ? `
+                        <div>
+                            <div class="hint-text" style="font-weight:600;margin-bottom:6px;">${esc(t('contrib.step1.sources.head'))}</div>
+                            <div class="source-list">
+                                ${sources.map(s => {
+                                    const href = safeExternalUrl(s.url);
+                                    return `
+                                        <label class="source-row">
+                                            <input type="checkbox" class="df-source-chk" value="${esc(s.url || '')}" ${s.included ? 'checked' : ''}>
+                                            ${href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.domain || s.url)}</a>` : `<span>${esc(s.url || '')}</span>`}
+                                            ${s.reliability ? `<span class="pill">${esc(s.reliability)}</span>` : ''}
+                                        </label>`;
+                                }).join('')}
+                            </div>
+                        </div>` : ''}
+
+                    <div>
+                        <div class="hint-text" style="font-weight:600;margin-bottom:6px;">${esc(t('contrib.step1.tracks.head'))}</div>
+                        <div class="mini-table-wrap">
+                            <table class="mini-table">
+                                <thead>
+                                    <tr>
+                                        <th>${esc(t('contrib.track.col.no'))}</th>
+                                        <th>${esc(t('contrib.track.col.title'))}</th>
+                                        <th>${esc(t('contrib.track.col.artist'))}</th>
+                                        <th>${esc(t('contrib.track.col.duration'))}</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${tracks.map(tr => `
+                                        <tr>
+                                            <td class="mono">${esc((tr.discNo || 1) + '-' + (tr.trackNo || 0))}</td>
+                                            <td>${esc(tr.title || '')}</td>
+                                            <td>${esc(tr.artist || '')}</td>
+                                            <td class="mono">${esc(formatMs(tr.durationMs))} <span class="pill">${esc(t('contrib.dur.' + (tr.durationSource || 'UNKNOWN'), tr.durationSource || ''))}</span></td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="action-row">
+                        <button type="button" class="btn ghost sm" id="btnSaveDraft">${esc(t('contrib.act.save.draft'))}</button>
+                    </div>
+                </div>
+            </details>
+        `;
+    }
+
+    function renderStep2(item) {
+        const linked = !!item.linkedReleaseId;
+        const mappings = Array.isArray(item.backfilledTracks) ? item.backfilledTracks : [];
+        const relUrl = linked ? ('https://musicbrainz.org/release/' + encodeURIComponent(item.linkedReleaseId)) : null;
+        const rgUrl = item.linkedReleaseGroupId ? ('https://musicbrainz.org/release-group/' + encodeURIComponent(item.linkedReleaseGroupId)) : null;
+        return `
+            <div class="step-card">
+                <div class="step-head">
+                    <div class="step-title">${esc(t('contrib.step2.title'))}</div>
+                    ${linked ? `<span class="pill ok">${esc(t('contrib.status.LINKED'))}</span>` : ''}
+                </div>
+                <div class="hint-text">${esc(t('contrib.step2.desc'))}</div>
+                ${linked ? `
+                    <div class="banner-box ok">
+                        <strong>${esc(t('contrib.step2.linked.title'))}</strong>
+                        <div>
+                            Release: <a href="${esc(relUrl)}" target="_blank" rel="noopener noreferrer">${esc(item.linkedReleaseTitle || item.linkedReleaseId)}</a>
+                            ${rgUrl ? ` · Release Group: <a href="${esc(rgUrl)}" target="_blank" rel="noopener noreferrer">${esc(item.linkedReleaseGroupId)}</a>` : ''}
+                            · ${esc(tf('contrib.step2.linked.summary', item.backfilledFileCount || 0))}
+                        </div>
+                    </div>
+                ` : ''}
+                <div class="inline-form">
+                    <input type="text" id="releaseUrlInput" value="${esc(item.linkedReleaseId ? ('https://musicbrainz.org/release/' + item.linkedReleaseId) : (item.matchedReleaseId ? ('https://musicbrainz.org/release/' + item.matchedReleaseId) : ''))}" placeholder="${esc(t('contrib.step2.placeholder'))}">
+                    <button type="button" class="btn primary" id="btnLinkRelease">${esc(t('contrib.act.link.backfill'))}</button>
+                </div>
+                <div class="hint-text">${esc(t('contrib.step2.safe.note'))}</div>
+                ${mappings.length ? `
+                    <details class="draft-details">
+                        <summary>${esc(tf('contrib.step2.mappings.toggle', mappings.length))}</summary>
+                        <div class="draft-inner">
+                            <div class="mini-table-wrap">
+                                <table class="mini-table">
+                                    <thead>
+                                        <tr>
+                                            <th>${esc(t('contrib.track.col.no'))}</th>
+                                            <th>${esc(t('contrib.track.col.title'))}</th>
+                                            <th>${esc(t('contrib.track.col.recording'))}</th>
+                                            <th>${esc(t('contrib.track.col.file'))}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${mappings.map(m => `
+                                            <tr>
+                                                <td class="mono">${esc((m.discNo || 1) + '-' + (m.trackNo || 0))}</td>
+                                                <td>${esc(m.title || '')}</td>
+                                                <td class="mono">${m.recordingId ? `<a href="https://musicbrainz.org/recording/${encodeURIComponent(m.recordingId)}" target="_blank" rel="noopener noreferrer">${esc(m.recordingId)}</a>` : '-'}</td>
+                                                <td class="mono">${esc(m.localFilePath || '')}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </details>
+                ` : ''}
+            </div>
+        `;
+    }
+
+    function collectTrackRoleRows(tr) {
+        const rows = [];
+        const groups = [
+            { role: 'composer', list: tr.composers },
+            { role: 'lyricist', list: tr.lyricists },
+            { role: 'arranger', list: tr.arrangers }
+        ];
+        for (const g of groups) {
+            if (!Array.isArray(g.list)) continue;
+            for (const cr of g.list) {
+                if (cr) rows.push({ role: g.role, person: cr });
+            }
+        }
+        return rows;
+    }
+
+    function renderStep3(detail) {
+        const item = detail.item;
+        const linked = !!item.linkedReleaseId;
+        const cg = detail.coverGuide || {};
+        const wg = detail.worksGuide || {};
+        const worksTracks = Array.isArray(wg.tracks) ? wg.tracks : [];
+        const caaSeededHref = safeExternalUrl(cg.addCoverArtSeededUrl);
+        const caaBaseHref = safeExternalUrl(cg.addCoverArtBaseUrl);
+        const caaHref = caaSeededHref || caaBaseHref;
+        const pubImgHref = safeExternalUrl(cg.publicHighResUrl);
+        const relEditHref = safeExternalUrl(wg.editRelationshipsUrl);
+
+        let caaBody = `
+            <div class="hint-text">${esc(t('contrib.step3.caa.none'))}</div>
+            ${caaBaseHref ? `<div class="action-row"><a class="btn ghost sm" href="${esc(caaBaseHref)}" target="_blank" rel="noopener noreferrer">${esc(t('contrib.act.caa.open'))}</a></div>` : ''}
+        `;
+        if (cg.publicHighResUrl) {
+            caaBody = `
+                <div class="hint-text">${esc(t('contrib.step3.caa.public.hint'))}</div>
+                <div class="action-row">
+                    ${caaHref ? `<a class="btn primary sm" href="${esc(caaHref)}" target="_blank" rel="noopener noreferrer">${esc(t('contrib.act.caa.open'))}</a>` : ''}
+                    ${pubImgHref ? `<a class="btn ghost sm" href="${esc(pubImgHref)}" target="_blank" rel="noopener noreferrer">${esc(t('contrib.act.caa.view.public'))}</a>` : ''}
+                    ${cg.hasLocalBackup && cg.localDownloadUrl ? `<a class="btn plain sm" href="${esc(cg.localDownloadUrl)}">${esc(t('contrib.act.caa.download'))}</a>` : ''}
+                </div>
+            `;
+        } else if (cg.hasLocalBackup) {
+            const dims = (cg.width > 0 && cg.height > 0) ? ` (${cg.width}×${cg.height}, ${AppUI.formatBytes(cg.bytes || 0)})` : '';
+            caaBody = `
+                <div class="hint-text">${esc(t('contrib.step3.caa.local.hint'))}${esc(dims)}</div>
+                <div class="action-row">
+                    ${cg.localDownloadUrl ? `<a class="btn primary sm" href="${esc(cg.localDownloadUrl)}">${esc(t('contrib.act.caa.download'))}</a>` : ''}
+                    ${caaBaseHref ? `<a class="btn ghost sm" href="${esc(caaBaseHref)}" target="_blank" rel="noopener noreferrer">${esc(t('contrib.act.caa.open'))}</a>` : ''}
+                </div>
+            `;
+        }
+
+        const caaCommentHtml = cg.suggestedComment ? `
+            <div>
+                <div class="hint-text" style="margin-bottom:4px;">${esc(t('contrib.step3.caa.comment.label'))}</div>
+                <div class="code-box">${esc(cg.suggestedComment)}</div>
+                <div class="action-row" style="margin-top:6px;">
+                    <button type="button" class="btn plain sm" id="btnCopyCaaComment">${esc(t('contrib.act.copy.comment'))}</button>
+                </div>
+            </div>
+        ` : '';
+
+        const worksHtml = (wg.hasAnyCredits && worksTracks.length) ? worksTracks.map((tr, idx) => {
+            const recHref = tr.recordingId ? ('https://musicbrainz.org/recording/' + encodeURIComponent(tr.recordingId)) : null;
+            const roleRows = collectTrackRoleRows(tr);
+            if (!roleRows.length) return '';
+            const evUrls = Array.isArray(tr.evidenceUrls) ? tr.evidenceUrls.map(safeExternalUrl).filter(Boolean) : [];
+            const evQuotes = Array.isArray(tr.evidenceQuotes) ? tr.evidenceQuotes.filter(Boolean) : [];
+            return `
+                <div class="works-track">
+                    <div class="works-track-head">
+                        <div>
+                            <span class="mono">${esc((tr.discNo || 1) + '-' + (tr.trackNo || 0))}</span>
+                            <strong>${esc(tr.title || '')}</strong>
+                            ${recHref ? ` · <a class="mono" href="${esc(recHref)}" target="_blank" rel="noopener noreferrer">Recording</a>` : ''}
+                        </div>
+                        ${tr.suggestedEditNote ? `<button type="button" class="btn plain sm btn-copy-edit-note" data-idx="${idx}">${esc(t('contrib.act.copy.edit.note'))}</button>` : ''}
+                    </div>
+                    <div class="works-credit-list">
+                        ${roleRows.map(({ role, person: cr }) => {
+                            const artHref = safeExternalUrl(cr.artistUrl);
+                            const roleLabel = t('contrib.step3.works.role.' + role, role);
+                            const badgeCls = cr.needsVerification ? 'warn' : 'ok';
+                            const badgeTxt = cr.needsVerification
+                                ? t('contrib.step3.works.badge.probable')
+                                : t('contrib.step3.works.badge.verified');
+                            return `
+                                <div class="works-credit-row">
+                                    <span class="role-tag">${esc(roleLabel)}</span>
+                                    ${artHref
+                                        ? `<a href="${esc(artHref)}" target="_blank" rel="noopener noreferrer"><strong>${esc(cr.canonicalName || cr.cleanName)}</strong></a>`
+                                        : `<strong>${esc(cr.cleanName || '')}</strong>`}
+                                    ${cr.suggestedCreditedAs ? `<span class="pill">${esc(tf('contrib.step3.works.creditedAs', cr.suggestedCreditedAs))}</span>` : ''}
+                                    ${cr.affiliationNote ? `<span class="pill info">${esc(tf('contrib.step3.works.affiliation', cr.affiliationNote))}</span>` : ''}
+                                    <span class="pill ${badgeCls}">${esc(badgeTxt)}</span>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                    ${(evUrls.length || evQuotes.length) ? `
+                        <div class="works-evidence">
+                            ${evQuotes.slice(0, 2).map(q => `<div>“${esc(q)}”</div>`).join('')}
+                            ${evUrls.slice(0, 3).map(u => `<div>${esc(t('contrib.step3.works.evidence'))}: <a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a></div>`).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }).filter(Boolean).join('') : `<div class="hint-text">${esc(t('contrib.step3.works.empty'))}</div>`;
+
+        const totalBackfilled = Array.isArray(item.backfilledTracks) ? item.backfilledTracks.length : 0;
+        const submittedIds = Array.isArray(item.acoustIdSubmittedRecordingIds) ? item.acoustIdSubmittedRecordingIds : [];
+        const allAcoustSubmitted = totalBackfilled > 0 && item.acoustIdMappingVersion === item.linkedAt && submittedIds.length >= totalBackfilled;
+        const acoustSubmitted = item.acoustIdSubmittedAt > 0
+            ? `<div class="banner-box ok">${esc(tf('contrib.step3.acoustid.submitted', item.acoustIdSubmittedCount || submittedIds.length, new Date(item.acoustIdSubmittedAt).toLocaleString(AppUI.locale())))}</div>`
+            : '';
+        const acoustErr = item.acoustIdLastError
+            ? `<div class="banner-box danger">${esc(AppErrors.humanError(item.acoustIdLastError))}</div>`
+            : '';
+
+        return `
+            <div class="step-card${linked ? '' : ' locked'}">
+                <div class="step-head">
+                    <div class="step-title">${esc(t('contrib.step3.title'))}</div>
+                </div>
+                ${!linked ? `<div class="hint-text">${esc(t('contrib.step3.locked.hint'))}</div>` : `
+                    <div class="sub-grid">
+                        <div class="sub-panel">
+                            <h3>${esc(t('contrib.step3.caa.title'))}</h3>
+                            ${caaBody}
+                            ${caaCommentHtml}
+                        </div>
+                        <div class="sub-panel">
+                            <h3>${esc(t('contrib.step3.acoustid.title'))}</h3>
+                            <div class="hint-text">${esc(t('contrib.step3.acoustid.desc'))}</div>
+                            ${acoustSubmitted}
+                            ${acoustErr}
+                            ${detail.acoustIdReady ? `
+                                <div class="action-row">
+                                    <button type="button" class="btn primary sm" id="btnSubmitAcoustId" ${allAcoustSubmitted ? 'disabled' : ''}>${esc(allAcoustSubmitted ? t('contrib.step3.acoustid.all.done') : t('contrib.act.acoustid.submit'))}</button>
+                                </div>
+                            ` : `
+                                <div class="hint-text">${esc(t('contrib.step3.acoustid.need.key'))}</div>
+                                <div class="action-row">
+                                    <a class="btn ghost sm" href="index.html#settings">${esc(t('contrib.act.open.settings'))}</a>
+                                </div>
+                            `}
+                        </div>
+                    </div>
+
+                    <div class="sub-panel">
+                        <div class="step-head">
+                            <h3>${esc(t('contrib.step3.works.title'))}</h3>
+                            ${relEditHref ? `<a class="btn ghost sm" href="${esc(relEditHref)}" target="_blank" rel="noopener noreferrer">${esc(t('contrib.act.works.open'))}</a>` : ''}
+                        </div>
+                        <div class="hint-text">${esc(t('contrib.step3.works.hint'))}</div>
+                        ${worksHtml}
+                    </div>
+                `}
+            </div>
+        `;
+    }
+
+    function renderDetail() {
+        const detail = state.detail;
+        if (!detail || !detail.item) {
+            renderEmptyDetail();
+            return;
+        }
+        const item = detail.item;
+        const d = item.draft || {};
+        const seed = detail.seedPayload || {};
+        const isTerminal = item.status === 'COMPLETED' || item.status === 'DISMISSED';
+        const metaParts = [
+            d.albumArtist,
+            d.releaseDate,
+            d.mediaFormat,
+            d.country,
+            d.label,
+            d.catalogNumber,
+            tf('contrib.meta.tracks', (d.tracks || []).length),
+            tf('contrib.meta.files', (item.archivedFilePaths || []).length)
+        ].filter(Boolean);
+
+        const pane = document.getElementById('detailPane');
+        pane.innerHTML = `
+            <div class="detail-body">
+                <div>
+                    <button type="button" class="btn plain sm back-btn" id="btnBackQueue">${esc(t('contrib.act.back'))}</button>
+                    <div class="album-head">
+                        <div>
+                            <h2 class="album-title">${esc(d.title || item.id)} ${d.comment ? `<span class="pill">${esc(d.comment)}</span>` : ''}</h2>
+                            <div class="album-meta">
+                                <span class="pill ${statusPillClass(item.status)}">${esc(t('contrib.status.' + (item.status || 'CHECKING'), item.status || ''))}</span>
+                                ${item.checkCase ? `<span class="pill">${esc(t('contrib.case.' + item.checkCase, item.checkCase))}</span>` : ''}
+                                <span>${esc(metaParts.join(' · '))}</span>
+                            </div>
+                            ${item.archivedOutputDir ? `<div class="album-path">${esc(item.archivedOutputDir)}</div>` : ''}
+                        </div>
+                        <div class="head-actions">
+                            <button type="button" class="btn plain sm" id="btnRecheck">${esc(t('contrib.act.recheck'))}</button>
+                            ${!isTerminal ? `<button type="button" class="btn ghost sm" id="btnComplete">${esc(t('contrib.act.complete'))}</button>` : ''}
+                            ${!isTerminal ? `<button type="button" class="btn plain sm" id="btnDismiss">${esc(t('contrib.act.dismiss'))}</button>` : ''}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="step-card">
+                    <div class="step-head">
+                        <div class="step-title">${esc(t('contrib.step1.title'))}</div>
+                    </div>
+                    ${renderStep1Banner(item)}
+                    ${renderDraftEditor(item)}
+                    ${seed.seedable ? `
+                        <div class="action-row">
+                            <button type="button" class="btn primary" id="btnOpenSeed">${esc(t('contrib.act.seed.open'))}</button>
+                        </div>
+                        <div class="hint-text">${esc(t('contrib.step1.seed.hint'))}</div>
+                    ` : ''}
+                </div>
+
+                ${renderStep2(item)}
+                ${renderStep3(detail)}
+            </div>
+        `;
+
+        bindDetailEvents();
+    }
+
+    function openMusicBrainzSeedForm(seedPayload) {
+        if (!seedPayload || !seedPayload.seedable || !Array.isArray(seedPayload.fields) || !seedPayload.fields.length) {
+            return;
+        }
+        const actionUrl = String(seedPayload.actionUrl || '');
+        if (!actionUrl.startsWith('https://musicbrainz.org/release/add')) {
+            toast('Invalid MusicBrainz seeding endpoint', true);
+            return;
+        }
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = actionUrl;
+        form.enctype = 'multipart/form-data';
+        form.target = '_blank';
+        form.acceptCharset = 'UTF-8';
+        form.style.display = 'none';
+        for (const f of seedPayload.fields) {
+            if (!f || !f.name) continue;
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = String(f.name);
+            input.value = f.value == null ? '' : String(f.value);
+            form.appendChild(input);
+        }
+        document.body.appendChild(form);
+        form.submit();
+        document.body.removeChild(form);
+        toast(t('contrib.toast.seed.opened'));
+    }
+
+    async function copyText(text) {
+        if (!text) return;
+        try {
+            await navigator.clipboard.writeText(text);
+            toast(t('contrib.act.copied'));
+        } catch (e) {
+            toast(t('records.copy.failed', 'Copy failed'), true);
+        }
+    }
+
+    function collectDraftPatch(itemId) {
+        const includedSourceUrls = [];
+        document.querySelectorAll('.df-source-chk').forEach(chk => {
+            if (chk.checked) includedSourceUrls.push(chk.value);
+        });
+        const useRgEl = document.getElementById('chkUseExistingRg');
+        const patch = {
+            id: itemId,
+            title: document.getElementById('dfTitle').value,
+            comment: document.getElementById('dfComment').value,
+            releaseType: document.getElementById('dfReleaseType').value,
+            releaseDate: document.getElementById('dfReleaseDate').value,
+            country: document.getElementById('dfCountry').value,
+            mediaFormat: document.getElementById('dfMediaFormat').value,
+            label: document.getElementById('dfLabel').value,
+            catalogNumber: document.getElementById('dfCatalogNumber').value,
+            barcode: document.getElementById('dfBarcode').value,
+            language: document.getElementById('dfLanguage').value,
+            script: document.getElementById('dfScript').value,
+            includedSourceUrls
+        };
+        if (useRgEl) {
+            patch.useExistingReleaseGroup = !!useRgEl.checked;
+        }
+        return patch;
+    }
+
+    function applyMutationIfStillSelected(targetId, data) {
+        if (state.selectedId === targetId && data && data.item) {
+            state.detail = data;
+            renderDetail();
+        }
+        loadList(state.selectedId, false);
+    }
+
+    function bindDetailEvents() {
+        const item = state.detail.item;
+        const itemId = item.id;
+        const backBtn = document.getElementById('btnBackQueue');
+        if (backBtn) {
+            backBtn.addEventListener('click', () => document.getElementById('desk').setAttribute('data-view', 'queue'));
+        }
+
+        const recheckBtn = document.getElementById('btnRecheck');
+        if (recheckBtn) {
+            recheckBtn.addEventListener('click', () => AppUI.withButtonLock('recheck:' + itemId, recheckBtn, async () => {
+                const orig = recheckBtn.textContent;
+                recheckBtn.textContent = t('contrib.act.rechecking');
+                try {
+                    const data = await api('/api/mb-contributions/recheck', { method: 'POST', body: JSON.stringify({ id: itemId }) });
+                    applyMutationIfStillSelected(itemId, data);
+                    if (data && data.item && data.item.status === 'CHECK_FAILED') {
+                        toast(localizedCheckDesc(data.item), true);
+                    } else {
+                        toast(t('contrib.toast.rechecked'));
+                    }
+                } catch (e) {
+                    toast(e.message, true);
+                } finally {
+                    recheckBtn.textContent = orig;
+                }
+            }));
+        }
+
+        const chkUseRg = document.getElementById('chkUseExistingRg');
+        if (chkUseRg) {
+            chkUseRg.addEventListener('change', async () => {
+                try {
+                    const data = await api('/api/mb-contributions/update-draft', {
+                        method: 'POST',
+                        body: JSON.stringify({ id: itemId, useExistingReleaseGroup: !!chkUseRg.checked })
+                    });
+                    applyMutationIfStillSelected(itemId, data);
+                    toast(t('contrib.toast.draft.saved'));
+                } catch (e) {
+                    toast(e.message, true);
+                }
+            });
+        }
+
+        const saveDraftBtn = document.getElementById('btnSaveDraft');
+        if (saveDraftBtn) {
+            saveDraftBtn.addEventListener('click', () => AppUI.withButtonLock('draft:' + itemId, saveDraftBtn, async () => {
+                const orig = saveDraftBtn.textContent;
+                saveDraftBtn.textContent = t('contrib.act.saving');
+                try {
+                    const data = await api('/api/mb-contributions/update-draft', {
+                        method: 'POST',
+                        body: JSON.stringify(collectDraftPatch(itemId))
+                    });
+                    applyMutationIfStillSelected(itemId, data);
+                    toast(t('contrib.toast.draft.saved'));
+                } catch (e) {
+                    toast(e.message, true);
+                } finally {
+                    saveDraftBtn.textContent = orig;
+                }
+            }));
+        }
+
+        const seedBtn = document.getElementById('btnOpenSeed');
+        if (seedBtn) {
+            seedBtn.addEventListener('click', () => openMusicBrainzSeedForm(state.detail.seedPayload));
+        }
+
+        const linkMatchedBtn = document.getElementById('btnLinkMatched');
+        if (linkMatchedBtn) {
+            linkMatchedBtn.addEventListener('click', () => performLinkRelease(itemId, item.matchedReleaseId, linkMatchedBtn));
+        }
+
+        const linkBtn = document.getElementById('btnLinkRelease');
+        if (linkBtn) {
+            linkBtn.addEventListener('click', () => {
+                const val = document.getElementById('releaseUrlInput').value;
+                performLinkRelease(itemId, val, linkBtn);
+            });
+        }
+
+        const copyCaaBtn = document.getElementById('btnCopyCaaComment');
+        if (copyCaaBtn && state.detail.coverGuide) {
+            copyCaaBtn.addEventListener('click', () => copyText(state.detail.coverGuide.suggestedComment));
+        }
+
+        document.querySelectorAll('.btn-copy-edit-note').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = Number(btn.getAttribute('data-idx'));
+                const tr = state.detail.worksGuide && state.detail.worksGuide.tracks && state.detail.worksGuide.tracks[idx];
+                if (tr && tr.suggestedEditNote) copyText(tr.suggestedEditNote);
+            });
+        });
+
+        const submitFpBtn = document.getElementById('btnSubmitAcoustId');
+        if (submitFpBtn) {
+            submitFpBtn.addEventListener('click', () => AppUI.withButtonLock('acoustid:' + itemId, submitFpBtn, async () => {
+                const orig = submitFpBtn.textContent;
+                submitFpBtn.textContent = t('contrib.act.acoustid.submitting');
+                try {
+                    const data = await api('/api/mb-contributions/submit-acoustid', {
+                        method: 'POST',
+                        body: JSON.stringify({ id: itemId })
+                    });
+                    applyMutationIfStillSelected(itemId, data);
+                    const cnt = data.acoustIdResult ? data.acoustIdResult.submittedCount : 0;
+                    toast(tf('contrib.toast.acoustid.ok', cnt));
+                } catch (e) {
+                    toast(e.message, true);
+                    if (state.selectedId === itemId) {
+                        selectItem(itemId, true);
+                    }
+                } finally {
+                    submitFpBtn.textContent = orig;
+                }
+            }));
+        }
+
+        const completeBtn = document.getElementById('btnComplete');
+        if (completeBtn) {
+            completeBtn.addEventListener('click', () => AppUI.withButtonLock('complete:' + itemId, completeBtn, async () => {
+                try {
+                    const data = await api('/api/mb-contributions/complete', { method: 'POST', body: JSON.stringify({ id: itemId }) });
+                    applyMutationIfStillSelected(itemId, data);
+                    toast(t('contrib.toast.completed'));
+                } catch (e) {
+                    toast(e.message, true);
+                }
+            }));
+        }
+
+        const dismissBtn = document.getElementById('btnDismiss');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', () => AppUI.withButtonLock('dismiss:' + itemId, dismissBtn, async () => {
+                try {
+                    const data = await api('/api/mb-contributions/dismiss', { method: 'POST', body: JSON.stringify({ id: itemId }) });
+                    applyMutationIfStillSelected(itemId, data);
+                    toast(t('contrib.toast.dismissed'));
+                } catch (e) {
+                    toast(e.message, true);
+                }
+            }));
+        }
+    }
+
+    async function performLinkRelease(id, releaseUrlOrMbid, btn) {
+        return AppUI.withButtonLock('link:' + id, btn, async () => {
+            const orig = btn.textContent;
+            btn.textContent = t('contrib.act.linking');
+            try {
+                const data = await api('/api/mb-contributions/link-release', {
+                    method: 'POST',
+                    body: JSON.stringify({ id, releaseUrlOrMbid })
+                });
+                applyMutationIfStillSelected(id, data);
+                const bf = data.backfill || {};
+                toast(tf('contrib.toast.linked', bf.updatedFiles || 0, bf.updatedRecords || 0));
+            } catch (e) {
+                toast(e.message, true);
+            } finally {
+                btn.textContent = orig;
+            }
+        });
+    }
+
+    async function init() {
+        if (window.I18n && typeof I18n.init === 'function') {
+            await I18n.init();
+        }
+        try {
+            const resp = await fetch('/api/auth/status', { credentials: 'same-origin' });
+            const auth = await resp.json();
+            if (!auth.authenticated) {
+                location.href = 'index.html';
+                return;
+            }
+            state.csrf = auth.csrfToken;
+        } catch (e) {
+            location.href = 'index.html';
+            return;
+        }
+
+        const searchInput = document.getElementById('searchInput');
+        const searchClear = document.getElementById('searchClear');
+        searchInput.addEventListener('input', () => {
+            state.query = searchInput.value.trim();
+            searchClear.hidden = !state.query;
+            clearTimeout(state.searchTimer);
+            state.searchTimer = setTimeout(() => loadList(), 220);
+        });
+        searchClear.addEventListener('click', () => {
+            searchInput.value = '';
+            state.query = '';
+            searchClear.hidden = true;
+            loadList();
+        });
+        document.getElementById('btnRefresh').addEventListener('click', () => loadList(state.selectedId, false));
+
+        const urlParams = new URLSearchParams(location.search);
+        let initialId = urlParams.get('id');
+        if (!initialId && location.hash && location.hash.startsWith('#item=')) {
+            initialId = decodeURIComponent(location.hash.substring(6));
+        }
+        await loadList(initialId, !!initialId);
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+})();
+</script>
+</body>
+</html>

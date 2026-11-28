@@ -99,6 +99,8 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("userAgent", "musicbrainz.userAgent"),
             Map.entry("acoustIdApiKey", "acoustid.apiKey"),
             Map.entry("acoustIdApiUrl", "acoustid.apiUrl"),
+            Map.entry("acoustIdUserApiKey", "acoustid.userApiKey"),
+            Map.entry("acoustIdSubmitApiUrl", "acoustid.submitApiUrl"),
             Map.entry("supportedFormats", "file.supportedFormats"),
             Map.entry("autoRename", "file.autoRename"),
             Map.entry("createBackup", "file.createBackup"),
@@ -160,6 +162,8 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("onlineMbidResolveEnabled", "online.mbid.resolve.enabled"),
             Map.entry("onlineMbidMaxLookupsPerAlbum", "online.mbid.maxLookupsPerAlbum"),
             Map.entry("onlineMbidLlmDisambiguateEnabled", "online.mbid.llmDisambiguate.enabled"),
+            Map.entry("mbContributionEnabled", "mb.contribution.enabled"),
+            Map.entry("mbContributionAutoCheckAfterArchive", "mb.contribution.autoCheckAfterArchive"),
             Map.entry("webSearchProvider", "llm.webSearch.provider"),
             Map.entry("tavilyApiKey", "tavily.apiKey"),
             Map.entry("tavilyApiUrl", "tavily.apiUrl"),
@@ -196,6 +200,7 @@ public class ConfigServlet extends HttpServlet {
             "dbPassword",
             "proxyPassword",
             "acoustIdApiKey",
+            "acoustIdUserApiKey",
             "tavilyApiKey"
         );
     }
@@ -280,6 +285,8 @@ public class ConfigServlet extends HttpServlet {
         handleString(safeBody, updates, propertyUpdates, "userAgent", false);
         handleString(safeBody, updates, propertyUpdates, "acoustIdApiKey", false);
         handleString(safeBody, updates, propertyUpdates, "acoustIdApiUrl", false);
+        handleString(safeBody, updates, propertyUpdates, "acoustIdUserApiKey", false);
+        handleString(safeBody, updates, propertyUpdates, "acoustIdSubmitApiUrl", false);
         handleString(safeBody, updates, propertyUpdates, "supportedFormats", false);
         handleBoolean(safeBody, updates, propertyUpdates, "autoRename");
         handleBoolean(safeBody, updates, propertyUpdates, "createBackup");
@@ -340,6 +347,8 @@ public class ConfigServlet extends HttpServlet {
         handleStrictBoolean(safeBody, updates, propertyUpdates, "onlineMbidResolveEnabled");
         handleStrictIntegerInRange(safeBody, updates, propertyUpdates, "onlineMbidMaxLookupsPerAlbum", 0, 50);
         handleStrictBoolean(safeBody, updates, propertyUpdates, "onlineMbidLlmDisambiguateEnabled");
+        handleStrictBoolean(safeBody, updates, propertyUpdates, "mbContributionEnabled");
+        handleStrictBoolean(safeBody, updates, propertyUpdates, "mbContributionAutoCheckAfterArchive");
         handleString(safeBody, updates, propertyUpdates, "webSearchProvider", false);
         handleString(safeBody, updates, propertyUpdates, "tavilyApiKey", false);
         handleString(safeBody, updates, propertyUpdates, "tavilyApiUrl", false);
@@ -360,6 +369,10 @@ public class ConfigServlet extends HttpServlet {
 
         // 防掩码密钥外泄：若修改了目标端点 URL / Host / Port 且当前已存有配对密钥，则不允许继续沿用掩码密钥
         enforceSecretReentryOnUrlChange(updates, "acoustIdApiUrl", config.getAcoustIdApiUrl(),
+            "acoustIdApiKey", config.getAcoustIdApiKey());
+        enforceSecretReentryOnUrlChange(updates, "acoustIdSubmitApiUrl", config.getAcoustIdSubmitApiUrl(),
+            "acoustIdUserApiKey", config.getAcoustIdUserApiKey());
+        enforceSecretReentryOnUrlChange(updates, "acoustIdSubmitApiUrl", config.getAcoustIdSubmitApiUrl(),
             "acoustIdApiKey", config.getAcoustIdApiKey());
         enforceSecretReentryOnUrlChange(updates, "tavilyApiUrl", config.getTavilyApiUrl(),
             "tavilyApiKey", config.getTavilyApiKey());
@@ -398,6 +411,9 @@ public class ConfigServlet extends HttpServlet {
         data.put("acoustIdApiKey", maskSecret(config.getAcoustIdApiKey()));
         data.put("acoustIdApiKeySet", isSet(config.getAcoustIdApiKey()));
         data.put("acoustIdApiUrl", config.getAcoustIdApiUrl());
+        data.put("acoustIdUserApiKey", maskSecret(config.getAcoustIdUserApiKey()));
+        data.put("acoustIdUserApiKeySet", isSet(config.getAcoustIdUserApiKey()));
+        data.put("acoustIdSubmitApiUrl", config.getAcoustIdSubmitApiUrl());
         data.put("supportedFormats", config.getSupportedFormats() == null ? null : String.join(",", config.getSupportedFormats()));
         data.put("autoRename", config.isAutoRename());
         data.put("createBackup", config.isCreateBackup());
@@ -462,6 +478,8 @@ public class ConfigServlet extends HttpServlet {
         data.put("onlineMbidResolveEnabled", config.isOnlineMbidResolveEnabled());
         data.put("onlineMbidMaxLookupsPerAlbum", config.getOnlineMbidMaxLookupsPerAlbum());
         data.put("onlineMbidLlmDisambiguateEnabled", config.isOnlineMbidLlmDisambiguateEnabled());
+        data.put("mbContributionEnabled", config.isMbContributionEnabled());
+        data.put("mbContributionAutoCheckAfterArchive", config.isMbContributionAutoCheckAfterArchive());
         data.put("webSearchProvider", config.getWebSearchProvider());
         data.put("tavilyApiKey", maskSecret(config.getTavilyApiKey()));
         data.put("tavilyApiUrl", config.getTavilyApiUrl());
@@ -489,6 +507,7 @@ public class ConfigServlet extends HttpServlet {
                 data.put(key, maskSecret(secretVal));
                 if ("dbPassword".equals(key)) data.put("dbPasswordSet", isSet(secretVal));
                 if ("proxyPassword".equals(key)) data.put("proxyPasswordSet", isSet(secretVal));
+                if ("acoustIdUserApiKey".equals(key)) data.put("acoustIdUserApiKeySet", isSet(secretVal));
             } else {
                 data.put(key, val);
             }
@@ -655,11 +674,13 @@ public class ConfigServlet extends HttpServlet {
         if (updates.containsKey("userAgent")) {
             config.setUserAgent((String) updates.get("userAgent"));
         }
-        if (updates.containsKey("acoustIdApiKey")) {
-            config.setAcoustIdApiKey((String) updates.get("acoustIdApiKey"));
-        }
-        if (updates.containsKey("acoustIdApiUrl")) {
-            config.setAcoustIdApiUrl((String) updates.get("acoustIdApiUrl"));
+        if (updates.containsKey("acoustIdApiKey") || updates.containsKey("acoustIdApiUrl")
+                || updates.containsKey("acoustIdUserApiKey") || updates.containsKey("acoustIdSubmitApiUrl")) {
+            config.updateAcoustIdSettings(
+                updates.containsKey("acoustIdApiKey"), (String) updates.get("acoustIdApiKey"),
+                updates.containsKey("acoustIdApiUrl"), (String) updates.get("acoustIdApiUrl"),
+                updates.containsKey("acoustIdUserApiKey"), (String) updates.get("acoustIdUserApiKey"),
+                updates.containsKey("acoustIdSubmitApiUrl"), (String) updates.get("acoustIdSubmitApiUrl"));
         }
         if (updates.containsKey("supportedFormats")) {
             config.setSupportedFormats((String[]) updates.get("supportedFormats"));
@@ -855,6 +876,12 @@ public class ConfigServlet extends HttpServlet {
                 (Boolean) updates.get("onlineMbidResolveEnabled"),
                 maxLookups,
                 (Boolean) updates.get("onlineMbidLlmDisambiguateEnabled"));
+        }
+        if (updates.containsKey("mbContributionEnabled")
+                || updates.containsKey("mbContributionAutoCheckAfterArchive")) {
+            config.updateMbContributionSettings(
+                (Boolean) updates.get("mbContributionEnabled"),
+                (Boolean) updates.get("mbContributionAutoCheckAfterArchive"));
         }
         // 联网搜索来源：未知值一律回落 native，避免拼错后静默停用联网搜索
         if (updates.containsKey("webSearchProvider")) {

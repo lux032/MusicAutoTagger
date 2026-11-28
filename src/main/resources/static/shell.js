@@ -92,11 +92,34 @@
         }
     }
 
+    // 「回馈 MB」可处理条目计数（功能关闭且无可处理条目时隐藏入口）
+    async function refreshContributionsCount() {
+        if (stopped) return;
+        const link = document.getElementById('navContributions');
+        const badge = document.getElementById('contributionsCount');
+        if (!link || !badge) return;
+        try {
+            const resp = await fetch('/api/mb-contributions/stats', { credentials: 'same-origin' });
+            if (resp.status === 401) { handleUnauthorized(); return; }
+            if (resp.status === 503) { location.replace('setup.html'); return; }
+            if (!resp.ok) throw new Error('contributions stats unavailable');
+            const data = await resp.json();
+            const actionable = Number(data.actionable) || 0;
+            const visible = data.enabled !== false || actionable > 0;
+            link.style.display = (visible || link.classList.contains('active')) ? '' : 'none';
+            badge.textContent = actionable > 99 ? '99+' : String(actionable);
+            badge.classList.toggle('show', actionable > 0);
+        } catch (e) {
+            badge.classList.remove('show');
+        }
+    }
+
     function refreshCounts() {
         if (stopped || document.hidden) return;
         refreshReviewCount();
         refreshCoversCount();
         refreshRecoveryCount();
+        refreshContributionsCount();
     }
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -109,5 +132,5 @@
         });
     });
 
-    global.Shell = { toggleNav, refreshReviewCount, refreshCoversCount, refreshRecoveryCount, refreshCounts };
+    global.Shell = { toggleNav, refreshReviewCount, refreshCoversCount, refreshRecoveryCount, refreshContributionsCount, refreshCounts };
 })(window);

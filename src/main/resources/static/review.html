@@ -482,6 +482,11 @@
                 <span data-i18n="web.recovery">重新识别</span>
                 <span class="nav-count" id="recoveryCount">0</span>
             </a>
+            <a class="side-link" href="contributions.html" id="navContributions">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path><path d="M5 19h14"></path></svg>
+                <span data-i18n="web.contributions">回馈 MB</span>
+                <span class="nav-count" id="contributionsCount">0</span>
+            </a>
             <div class="side-group" data-i18n="web.nav.group.library">资料</div>
             <a class="side-link" href="records.html">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"></path></svg>
@@ -1414,9 +1419,36 @@
         const tone = item.status === 'REJECTED' ? 'warn' : (item.status === 'CONFIRMED' ? 'ok' : 'info');
         // 已忽略还能撤销，不能说「无需继续操作」
         const head = item.status === 'REJECTED' ? t('review.status.rejected') : t('review.suggestion.level.RESOLVED');
+        const contributeBtn = (item.status === 'CONFIRMED' && item.verificationSource === 'ONLINE_SEARCH')
+            ? `<button type="button" class="btn ghost sm" data-review-id="${escapeHtml(item.id)}" onclick="window.startMbContribution(this)">${escapeHtml(t('review.contribute.mb.btn'))}</button>`
+            : '';
         return `<div class="banner ${tone}">${ICON[tone]}<div class="grow"><strong>${escapeHtml(head)}</strong>
-            ${item.resolutionNote ? `<div class="sub">${escapeHtml(tf('review.resolution', item.resolutionNote))}</div>` : ''}</div></div>`;
+            ${item.resolutionNote ? `<div class="sub">${escapeHtml(tf('review.resolution', item.resolutionNote))}</div>` : ''}</div>${contributeBtn}</div>`;
     }
+
+    window.startMbContribution = async function (btn) {
+        const reviewItemId = btn && btn.getAttribute ? btn.getAttribute('data-review-id') : null;
+        if (!reviewItemId) return;
+        return AppUI.withButtonLock('contrib:' + reviewItemId, btn, async () => {
+            const orig = btn.textContent;
+            btn.textContent = t('review.contribute.mb.checking');
+            try {
+                const data = await api('/api/mb-contributions/create-from-review', {
+                    method: 'POST',
+                    body: JSON.stringify({ reviewItemId }),
+                    mapError: code => humanError(code)
+                });
+                const cid = data && data.item && data.item.id;
+                if (cid) {
+                    location.href = 'contributions.html?id=' + encodeURIComponent(cid);
+                }
+            } catch (e) {
+                if (e.status !== 401) toast(humanError(e.code || e.message));
+            } finally {
+                btn.textContent = orig;
+            }
+        });
+    };
 
     function renderMissingTracks(item) {
         const m = item.missingTracks;

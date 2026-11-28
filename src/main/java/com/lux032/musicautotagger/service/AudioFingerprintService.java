@@ -37,6 +37,7 @@ public class AudioFingerprintService {
     private final MusicConfig config;
     private final CloseableHttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final boolean allowTestSubmitEndpoint;
     
     // fpcalc 工具路径（需要用户安装 Chromaprint）
     private String fpcalcPath = "fpcalc";
@@ -50,9 +51,14 @@ public class AudioFingerprintService {
     private static final long FPCALC_VERSION_TIMEOUT_SECONDS = 10; // 可用性探测超时
     
     public AudioFingerprintService(MusicConfig config) {
+        this(config, false);
+    }
+
+    AudioFingerprintService(MusicConfig config, boolean allowTestSubmitEndpoint) {
         this.config = config;
         this.httpClient = createHttpClient(config);
         this.objectMapper = new ObjectMapper();
+        this.allowTestSubmitEndpoint = allowTestSubmitEndpoint;
     }
     
     /**
@@ -237,6 +243,201 @@ public class AudioFingerprintService {
         throw lastException;
     }
     
+    /**
+     * 通过 AcoustID /v2/submit 批量提交本地音频 Chromaprint 声纹与官方 MusicBrainz Recording MBID。
+     * 每批最多提交 50 首，单次读取不可变凭据/端点快照，禁止重定向，且绝不透传或记录远端原文错误信息。
+     */
+    public AcoustIdSubmitResult submitFingerprints(List<AcoustIdSubmissionItem> items) throws IOException, InterruptedException {
+        return submitFingerprints(items, null);
+    }
+
+    public AcoustIdSubmitResult submitFingerprints(List<AcoustIdSubmissionItem> items,
+                                                   java.util.function.Consumer<List<String>> onBatchSubmitted)
+            throws IOException, InterruptedException {
+        if (items == null || items.isEmpty()) {
+            throw new IllegalArgumentException("acoustid.submit.empty");
+        }
+        MusicConfig.AcoustIdSettings snap = config == null
+            ? new MusicConfig.AcoustIdSettings(null, null, null, null)
+            : config.getAcoustIdSettings();
+        String clientKey = snap.apiKey() == null ? "" : snap.apiKey().trim();
+        if (clientKey.isEmpty()) {
+            throw new IllegalStateException("acoustid.client.key.missing");
+        }
+        String userKey = snap.userApiKey() == null ? "" : snap.userApiKey().trim();
+        if (userKey.isEmpty()) {
+            throw new IllegalStateException("acoustid.user.key.missing");
+        }
+        String submitUrl = (snap.submitApiUrl() == null || snap.submitApiUrl().isBlank())
+            ? "https://api.acoustid.org/v2/submit"
+            : snap.submitApiUrl().trim();
+        validateSubmitEndpoint(submitUrl);
+
+        List<AcoustIdSubmissionItem> valid = new ArrayList<>();
+        for (AcoustIdSubmissionItem item : items) {
+            if (item == null || item.durationSeconds() <= 0
+                    || item.fingerprint() == null || item.fingerprint().isBlank()) {
+                continue;
+            }
+            String validMbid = MusicBrainzArtistCache.normalizeValidMbid(item.recordingMbid());
+            if (validMbid == null) {
+                continue;
+            }
+            valid.add(new AcoustIdSubmissionItem(item.durationSeconds(), item.fingerprint().trim(), validMbid));
+        }
+        if (valid.isEmpty()) {
+            throw new IllegalArgumentException("acoustid.submit.no.valid.tracks");
+        }
+
+        RequestConfig noRedirectConfig = RequestConfig.custom()
+            .setRedirectsEnabled(false)
+            .build();
+
+        final int batchSize = 50;
+        int submittedTotal = 0;
+        List<String> submissionIds = new ArrayList<>();
+        for (int start = 0; start < valid.size(); start += batchSize) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new InterruptedException("cancelled");
+            }
+            List<AcoustIdSubmissionItem> batch = valid.subList(start, Math.min(valid.size(), start + batchSize));
+            List<NameValuePair> params = new ArrayList<>(2 + batch.size() * 3);
+            params.add(new BasicNameValuePair("client", clientKey));
+            params.add(new BasicNameValuePair("user", userKey));
+            for (int i = 0; i < batch.size(); i++) {
+                AcoustIdSubmissionItem track = batch.get(i);
+                params.add(new BasicNameValuePair("duration." + i, String.valueOf(track.durationSeconds())));
+                params.add(new BasicNameValuePair("fingerprint." + i, track.fingerprint()));
+                params.add(new BasicNameValuePair("mbid." + i, track.recordingMbid()));
+            }
+            HttpPost httpPost = new HttpPost(submitUrl);
+            httpPost.setConfig(noRedirectConfig);
+            httpPost.setEntity(new UrlEncodedFormEntity(params, java.nio.charset.StandardCharsets.UTF_8));
+            httpPost.setHeader("User-Agent", config.getUserAgent() != null ? config.getUserAgent() : "MusicAutoTagger/1.0");
+            httpPost.setHeader("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+
+            try (CloseableHttpResponse response = httpClient.execute(httpPost)) {
+                int statusCode = response.getCode();
+                if (statusCode >= 300 && statusCode < 400) {
+                    log.warn("AcoustID /v2/submit 拒绝重定向响应: status={}", statusCode);
+                    throw new AcoustIdSubmitException("acoustid.submit.redirect.blocked", 502, submittedTotal);
+                }
+                String body = response.getEntity() == null ? "" : EntityUtils.toString(response.getEntity(), java.nio.charset.StandardCharsets.UTF_8);
+                int apiErrorCode = extractAcoustIdErrorCode(body);
+                if (statusCode != 200) {
+                    String mapped = mapAcoustIdErrorCode(apiErrorCode, statusCode);
+                    log.warn("AcoustID /v2/submit 请求失败: status={}, code={}, mapped={}", statusCode, apiErrorCode, mapped);
+                    throw new AcoustIdSubmitException(mapped, statusCode == 429 ? 429 : 502, submittedTotal);
+                }
+                JsonNode root = objectMapper.readTree(body);
+                String status = root.path("status").asText("");
+                if (!"ok".equalsIgnoreCase(status)) {
+                    String mapped = mapAcoustIdErrorCode(apiErrorCode, statusCode);
+                    log.warn("AcoustID /v2/submit 返回错误状态: code={}, mapped={}", apiErrorCode, mapped);
+                    throw new AcoustIdSubmitException(mapped, 502, submittedTotal);
+                }
+                JsonNode subs = root.path("submissions");
+                if (subs.isArray()) {
+                    for (JsonNode s : subs) {
+                        String sid = s.path("id").asText("");
+                        if (!sid.isEmpty()) {
+                            submissionIds.add(sid);
+                        }
+                    }
+                }
+                submittedTotal += batch.size();
+                if (onBatchSubmitted != null) {
+                    List<String> batchMbids = batch.stream().map(AcoustIdSubmissionItem::recordingMbid).toList();
+                    onBatchSubmitted.accept(batchMbids);
+                }
+            } catch (AcoustIdSubmitException e) {
+                throw e;
+            } catch (ParseException e) {
+                log.warn("解析 AcoustID /v2/submit 响应失败");
+                throw new AcoustIdSubmitException("acoustid.submit.failed", 502, submittedTotal);
+            } catch (IOException e) {
+                log.warn("AcoustID /v2/submit 网络异常: {}", e.getClass().getSimpleName());
+                throw new AcoustIdSubmitException("acoustid.submit.failed", 502, submittedTotal);
+            }
+        }
+        log.info("AcoustID /v2/submit 提交成功: {} 首曲目", submittedTotal);
+        return new AcoustIdSubmitResult(true, submittedTotal, List.copyOf(submissionIds));
+    }
+
+    private void validateSubmitEndpoint(String submitUrl) throws AcoustIdSubmitException {
+        if (allowTestSubmitEndpoint) {
+            return;
+        }
+        try {
+            java.net.URI uri = java.net.URI.create(submitUrl);
+            String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(java.util.Locale.ROOT);
+            int port = uri.getPort();
+            if (!"https".equals(scheme) || uri.getUserInfo() != null
+                    || (port != -1 && port != 443)
+                    || (!"api.acoustid.org".equals(host) && !host.endsWith(".acoustid.org"))) {
+                throw new AcoustIdSubmitException("acoustid.submit.endpoint.invalid", 400, 0);
+            }
+            if (!com.lux032.musicautotagger.util.HttpClientFactory.isProxyConfigured(config)) {
+                com.lux032.musicautotagger.util.OutboundUrlValidator.validateAndResolve(submitUrl, false, false, true);
+            }
+        } catch (AcoustIdSubmitException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new AcoustIdSubmitException("acoustid.submit.endpoint.invalid", 400, 0);
+        }
+    }
+
+    private int extractAcoustIdErrorCode(String body) {
+        if (body == null || body.isBlank()) {
+            return 0;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(body);
+            return root.path("error").path("code").asInt(0);
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private static String mapAcoustIdErrorCode(int apiCode, int httpStatus) {
+        return switch (apiCode) {
+            case 4 -> "acoustid.error.invalid.client.key";
+            case 6 -> "acoustid.error.invalid.user.key";
+            case 5 -> "acoustid.error.upstream";
+            case 8 -> "acoustid.submit.failed";
+            default -> {
+                if (httpStatus == 429) yield "acoustid.error.rate.limited";
+                if (httpStatus >= 500) yield "acoustid.error.upstream";
+                yield "acoustid.submit.failed";
+            }
+        };
+    }
+
+    /** 携带固定安全错误码（绝不包含远端回显明文）的 AcoustID 提交异常。 */
+    public static class AcoustIdSubmitException extends IOException {
+        private final String errorCode;
+        private final int httpStatus;
+        private final int submittedBeforeFailure;
+
+        public AcoustIdSubmitException(String errorCode, int httpStatus, int submittedBeforeFailure) {
+            super(errorCode);
+            this.errorCode = errorCode;
+            this.httpStatus = httpStatus;
+            this.submittedBeforeFailure = submittedBeforeFailure;
+        }
+
+        public String getErrorCode() { return errorCode; }
+        public int getHttpStatus() { return httpStatus; }
+        public int getSubmittedBeforeFailure() { return submittedBeforeFailure; }
+    }
+
+    /** 单条待提交 AcoustID 的声纹记录。 */
+    public record AcoustIdSubmissionItem(int durationSeconds, String fingerprint, String recordingMbid) { }
+
+    /** AcoustID /v2/submit 批量提交结果。 */
+    public record AcoustIdSubmitResult(boolean ok, int submittedCount, List<String> submissionIds) { }
+
     /**
      * 解析 AcoustID API 响应
      */

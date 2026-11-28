@@ -302,6 +302,418 @@ public class MusicBrainzClient {
         }
     }
 
+    /** MusicBrainz Release 检索摘要（用于回馈前存在性预检）。 */
+    public record ReleaseSearchHit(
+        String releaseId,
+        String releaseGroupId,
+        String title,
+        String artist,
+        String date,
+        String country,
+        String status,
+        String barcode,
+        String catalogNumber,
+        int trackCount,
+        String disambiguation,
+        int score
+    ) { }
+
+    /** MusicBrainz Release Group 检索摘要（用于回馈前存在性预检）。 */
+    public record ReleaseGroupSearchHit(
+        String releaseGroupId,
+        String title,
+        String artist,
+        List<String> artistMbids,
+        String primaryType,
+        List<String> secondaryTypes,
+        String firstReleaseDate,
+        int score
+    ) { }
+
+    /** MusicBrainz 官方 Release 完整曲目详情（用于贴回 Release URL 后的权威回填）。 */
+    public record ReleaseDetail(
+        String releaseId,
+        String releaseGroupId,
+        String title,
+        String disambiguation,
+        String status,
+        String date,
+        String country,
+        String barcode,
+        String script,
+        String primaryType,
+        List<String> secondaryTypes,
+        boolean compilation,
+        String albumArtistDisplay,
+        List<String> albumArtists,
+        String albumArtistCreditJson,
+        String albumArtistId,
+        String albumArtistSort,
+        String recordLabel,
+        String catalogNumber,
+        String originalReleaseDate,
+        String originalYear,
+        int discTotal,
+        List<ReleaseMediumDetail> media
+    ) {
+        public List<ReleaseTrackDetail> allTracks() {
+            if (media == null || media.isEmpty()) return List.of();
+            List<ReleaseTrackDetail> all = new ArrayList<>();
+            for (ReleaseMediumDetail m : media) {
+                if (m != null && m.tracks() != null) {
+                    all.addAll(m.tracks());
+                }
+            }
+            return all;
+        }
+    }
+
+    public record ReleaseMediumDetail(
+        int position,
+        String format,
+        String title,
+        int trackCount,
+        List<ReleaseTrackDetail> tracks
+    ) { }
+
+    public record ReleaseTrackDetail(
+        int discNo,
+        int trackNo,
+        String number,
+        String trackId,
+        String recordingId,
+        String title,
+        long lengthMs,
+        String artistDisplay,
+        List<String> artists,
+        String artistCreditJson,
+        String artistId,
+        String artistSort
+    ) { }
+
+    /** 按数字条码检索 MusicBrainz Release（仅接受 8..14 位数字条码）。 */
+    public List<ReleaseSearchHit> searchReleasesByBarcode(String rawBarcode) throws IOException, InterruptedException {
+        String digits = normalizeBarcodeDigits(rawBarcode);
+        if (digits == null) {
+            return List.of();
+        }
+        String query = "barcode:" + digits;
+        return executeReleaseSearch(query, 10);
+    }
+
+    /** 按目录号（可选结合艺人名或 Artist MBID）检索 MusicBrainz Release。 */
+    public List<ReleaseSearchHit> searchReleasesByCatalogNumber(String rawCatno, String artistNameOrMbid)
+            throws IOException, InterruptedException {
+        if (rawCatno == null || rawCatno.trim().isEmpty()) {
+            return List.of();
+        }
+        StringBuilder q = new StringBuilder();
+        q.append("catno:\"").append(escapeLucenePhrase(rawCatno.trim())).append("\"");
+        if (artistNameOrMbid != null && !artistNameOrMbid.trim().isEmpty()) {
+            String mbid = MusicBrainzArtistCache.normalizeValidMbid(artistNameOrMbid);
+            if (mbid != null) {
+                q.append(" AND arid:").append(mbid);
+            } else {
+                q.append(" AND artist:\"").append(escapeLucenePhrase(artistNameOrMbid.trim())).append("\"");
+            }
+        }
+        return executeReleaseSearch(q.toString(), 10);
+    }
+
+    /** 按标题与艺人（有合法 Artist MBID 时优先使用 arid 避免跨语种漏查）检索 MusicBrainz Release Group。 */
+    public List<ReleaseGroupSearchHit> searchReleaseGroups(String title, String artistName, String artistMbid, int limit)
+            throws IOException, InterruptedException {
+        if (title == null || title.trim().isEmpty()) {
+            return List.of();
+        }
+        int safeLimit = Math.max(1, Math.min(limit, 20));
+        StringBuilder q = new StringBuilder();
+        q.append("releasegroup:\"").append(escapeLucenePhrase(title.trim())).append("\"");
+        String validArtistMbid = MusicBrainzArtistCache.normalizeValidMbid(artistMbid);
+        if (validArtistMbid != null) {
+            q.append(" AND arid:").append(validArtistMbid);
+        } else if (artistName != null && !artistName.trim().isEmpty()
+                && !AlbumArtistPolicy.VARIOUS_ARTISTS.equalsIgnoreCase(artistName.trim())) {
+            q.append(" AND artist:\"").append(escapeLucenePhrase(artistName.trim())).append("\"");
+        }
+        rateLimit();
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("cancelled");
+        }
+        String encoded = URLEncoder.encode(q.toString(), StandardCharsets.UTF_8);
+        String url = String.format("%s/release-group?query=%s&fmt=json&limit=%d",
+            config.getMusicBrainzApiUrl(), encoded, safeLimit);
+        try {
+            String response = executeRequest(url);
+            return parseReleaseGroupSearchResponse(response);
+        } catch (NonRetryableHttpException e) {
+            if (e.getStatusCode() == 404) {
+                return List.of();
+            }
+            throw e;
+        } catch (IOException e) {
+            if (e.getCause() instanceof InterruptedException ie || Thread.currentThread().isInterrupted()) {
+                Thread.currentThread().interrupt();
+                throw new InterruptedException("cancelled");
+            }
+            throw e;
+        } catch (ParseException e) {
+            throw new IOException("解析 MusicBrainz Release Group 检索响应失败", e);
+        }
+    }
+
+    /**
+     * 按 Release MBID 权威拉取完整 Release（含 Release Group、Mediums、Tracks、Recordings、Labels 与 Artist Credits）。
+     * 强制绕过旧内存缓存以实时获取用户刚刚在 MusicBrainz 创建的新发行版；仅 404 返回 Optional.empty()，其余错误向上抛出。
+     */
+    public java.util.Optional<ReleaseDetail> getFullReleaseWithTracklist(String rawReleaseId)
+            throws IOException, InterruptedException {
+        String mbid = MusicBrainzArtistCache.normalizeValidMbid(rawReleaseId);
+        if (mbid == null) {
+            return java.util.Optional.empty();
+        }
+        try {
+            JsonNode release = getFullReleaseById(mbid, true);
+            if (release == null || release.isMissingNode() || !release.hasNonNull("id")) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.ofNullable(parseReleaseDetail(release));
+        } catch (NonRetryableHttpException e) {
+            if (e.getStatusCode() == 404) {
+                log.debug("MusicBrainz Release 不存在 (404): {}", mbid);
+                return java.util.Optional.empty();
+            }
+            throw e;
+        }
+    }
+
+    private List<ReleaseSearchHit> executeReleaseSearch(String luceneQuery, int limit)
+            throws IOException, InterruptedException {
+        rateLimit();
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("cancelled");
+        }
+        String encoded = URLEncoder.encode(luceneQuery, StandardCharsets.UTF_8);
+        String url = String.format("%s/release?query=%s&fmt=json&limit=%d",
+            config.getMusicBrainzApiUrl(), encoded, Math.max(1, Math.min(limit, 20)));
+        try {
+            String response = executeRequest(url);
+            return parseReleaseSearchHits(response);
+        } catch (NonRetryableHttpException e) {
+            if (e.getStatusCode() == 404) {
+                return List.of();
+            }
+            throw e;
+        } catch (IOException e) {
+            if (e.getCause() instanceof InterruptedException ie || Thread.currentThread().isInterrupted()) {
+                Thread.currentThread().interrupt();
+                throw new InterruptedException("cancelled");
+            }
+            throw e;
+        } catch (ParseException e) {
+            throw new IOException("解析 MusicBrainz Release 检索响应失败", e);
+        }
+    }
+
+    List<ReleaseSearchHit> parseReleaseSearchHits(String json) throws IOException {
+        List<ReleaseSearchHit> hits = new ArrayList<>();
+        if (json == null || json.isBlank()) {
+            return hits;
+        }
+        JsonNode root = objectMapper.readTree(json);
+        JsonNode releases = root.path("releases");
+        if (!releases.isArray()) {
+            return hits;
+        }
+        for (JsonNode r : releases) {
+            String id = blankToNull(r.path("id").asText(null));
+            if (id == null) continue;
+            String rgId = blankToNull(r.path("release-group").path("id").asText(null));
+            String title = blankToNull(r.path("title").asText(null));
+            JsonNode credits = r.path("artist-credit");
+            String artist = credits.isArray() && !credits.isEmpty()
+                ? albumArtistPolicy.resolveFromCredits(credits) : null;
+            String date = blankToNull(r.path("date").asText(null));
+            String country = blankToNull(r.path("country").asText(null));
+            String status = blankToNull(r.path("status").asText(null));
+            String barcode = blankToNull(r.path("barcode").asText(null));
+            String disambiguation = blankToNull(r.path("disambiguation").asText(null));
+            String catno = null;
+            JsonNode labelInfo = r.path("label-info");
+            if (labelInfo.isArray()) {
+                for (JsonNode li : labelInfo) {
+                    String c = blankToNull(li.path("catalog-number").asText(null));
+                    if (c != null) {
+                        catno = c;
+                        break;
+                    }
+                }
+            }
+            int trackCount = r.path("track-count").asInt(0);
+            if (trackCount <= 0 && r.path("media").isArray()) {
+                for (JsonNode m : r.path("media")) {
+                    trackCount += m.path("track-count").asInt(0);
+                }
+            }
+            int score = r.path("score").asInt(0);
+            hits.add(new ReleaseSearchHit(id, rgId, title, artist, date, country, status,
+                barcode, catno, trackCount, disambiguation, score));
+        }
+        return hits;
+    }
+
+    List<ReleaseGroupSearchHit> parseReleaseGroupSearchResponse(String json) throws IOException {
+        List<ReleaseGroupSearchHit> hits = new ArrayList<>();
+        if (json == null || json.isBlank()) {
+            return hits;
+        }
+        JsonNode root = objectMapper.readTree(json);
+        JsonNode groups = root.path("release-groups");
+        if (!groups.isArray()) {
+            return hits;
+        }
+        for (JsonNode rg : groups) {
+            String id = blankToNull(rg.path("id").asText(null));
+            if (id == null) continue;
+            String title = blankToNull(rg.path("title").asText(null));
+            JsonNode credits = rg.path("artist-credit");
+            String artist = credits.isArray() && !credits.isEmpty()
+                ? albumArtistPolicy.resolveFromCredits(credits) : null;
+            List<String> artistMbids = new ArrayList<>();
+            if (credits.isArray()) {
+                for (JsonNode c : credits) {
+                    String aid = MusicBrainzArtistCache.normalizeValidMbid(c.path("artist").path("id").asText(null));
+                    if (aid != null && !artistMbids.contains(aid)) {
+                        artistMbids.add(aid);
+                    }
+                }
+            }
+            String primaryType = normalizeReleaseType(rg.path("primary-type").asText(""));
+            List<String> secondaryTypes = new ArrayList<>();
+            JsonNode sec = rg.path("secondary-types");
+            if (sec.isArray()) {
+                for (JsonNode s : sec) {
+                    String st = normalizeReleaseType(s.asText(""));
+                    if (st != null) secondaryTypes.add(st);
+                }
+            }
+            String firstDate = blankToNull(rg.path("first-release-date").asText(null));
+            int score = rg.path("score").asInt(0);
+            hits.add(new ReleaseGroupSearchHit(id, title, artist, List.copyOf(artistMbids),
+                primaryType, List.copyOf(secondaryTypes), firstDate, score));
+        }
+        return hits;
+    }
+
+    ReleaseDetail parseReleaseDetail(JsonNode release) {
+        if (release == null || release.isMissingNode()) {
+            return null;
+        }
+        String releaseId = MusicBrainzArtistCache.normalizeValidMbid(release.path("id").asText(null));
+        if (releaseId == null) {
+            return null;
+        }
+        ReleaseTagBundle bundle = parseReleaseTagBundle(release);
+        JsonNode rg = release.path("release-group");
+        String rgId = MusicBrainzArtistCache.normalizeValidMbid(rg.path("id").asText(null));
+        List<String> secondaryTypes = new ArrayList<>();
+        if (rg.path("secondary-types").isArray()) {
+            for (JsonNode s : rg.path("secondary-types")) {
+                String st = normalizeReleaseType(s.asText(""));
+                if (st != null) secondaryTypes.add(st);
+            }
+        }
+        List<ReleaseMediumDetail> mediaList = new ArrayList<>();
+        JsonNode mediaArr = release.path("media");
+        if (mediaArr.isArray()) {
+            int fallbackDisc = 1;
+            for (JsonNode m : mediaArr) {
+                int pos = m.path("position").asInt(fallbackDisc);
+                fallbackDisc = pos + 1;
+                String format = blankToNull(m.path("format").asText(null));
+                String medTitle = blankToNull(m.path("title").asText(null));
+                List<ReleaseTrackDetail> trackList = new ArrayList<>();
+                JsonNode tracksArr = m.path("tracks");
+                if (tracksArr.isArray()) {
+                    int fallbackPos = 1;
+                    for (JsonNode tr : tracksArr) {
+                        int tPos = tr.path("position").asInt(fallbackPos);
+                        fallbackPos = tPos + 1;
+                        String number = blankToNull(tr.path("number").asText(null));
+                        String trackId = MusicBrainzArtistCache.normalizeValidMbid(tr.path("id").asText(null));
+                        JsonNode rec = tr.path("recording");
+                        String recordingId = MusicBrainzArtistCache.normalizeValidMbid(rec.path("id").asText(null));
+                        String trackTitle = blankToNull(tr.path("title").asText(null));
+                        if (trackTitle == null) {
+                            trackTitle = blankToNull(rec.path("title").asText(null));
+                        }
+                        long lengthMs = tr.path("length").asLong(0L);
+                        if (lengthMs <= 0L) {
+                            lengthMs = rec.path("length").asLong(0L);
+                        }
+                        JsonNode trCredits = tr.path("artist-credit");
+                        if (!trCredits.isArray() || trCredits.isEmpty()) {
+                            trCredits = rec.path("artist-credit");
+                        }
+                        if (!trCredits.isArray() || trCredits.isEmpty()) {
+                            trCredits = release.path("artist-credit");
+                        }
+                        cacheArtistCredits(trCredits, "MB_RELEASE_TRACK");
+                        String tArtistDisplay = trCredits.isArray() && !trCredits.isEmpty()
+                            ? resolveCreditedArtistText(trCredits, isPreferNativeArtistName()).trim()
+                            : bundle.getAlbumArtistCredit();
+                        List<String> tArtists = artistNames(trCredits);
+                        String tCreditJson = encodeArtistCredit(trCredits, tArtistDisplay);
+                        String tArtistId = joinArtistValues(trCredits, "id");
+                        String tArtistSort = joinArtistValues(trCredits, "sort-name");
+                        trackList.add(new ReleaseTrackDetail(
+                            pos, tPos, number != null ? number : String.valueOf(tPos),
+                            trackId, recordingId, trackTitle, lengthMs,
+                            blankToNull(tArtistDisplay), tArtists, tCreditJson, tArtistId, tArtistSort));
+                    }
+                }
+                int tc = m.path("track-count").asInt(trackList.size());
+                mediaList.add(new ReleaseMediumDetail(pos, format, medTitle, tc, List.copyOf(trackList)));
+            }
+        }
+        return new ReleaseDetail(
+            releaseId,
+            rgId,
+            blankToNull(release.path("title").asText(null)),
+            blankToNull(release.path("disambiguation").asText(null)),
+            bundle.getReleaseStatus(),
+            blankToNull(release.path("date").asText(null)),
+            bundle.getReleaseCountry(),
+            bundle.getBarcode(),
+            bundle.getScript(),
+            bundle.getReleaseType(),
+            List.copyOf(secondaryTypes),
+            bundle.isCompilation(),
+            bundle.getAlbumArtistCredit(),
+            bundle.getAlbumArtists() == null ? List.of() : List.copyOf(bundle.getAlbumArtists()),
+            bundle.getOriginalAlbumArtistCredit(),
+            bundle.getAlbumArtistId(),
+            bundle.getAlbumArtistSort(),
+            bundle.getRecordLabel(),
+            bundle.getCatalogNumber(),
+            bundle.getOriginalReleaseDate(),
+            bundle.getOriginalYear(),
+            mediaList.size(),
+            List.copyOf(mediaList)
+        );
+    }
+
+    public static String normalizeBarcodeDigits(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String digits = raw.replaceAll("[\\s-]+", "");
+        if (!digits.matches("^\\d{8,14}$")) {
+            return null;
+        }
+        return digits;
+    }
+
     List<ArtistMatch> parseArtistSearchResponse(String json) throws IOException {
         List<ArtistMatch> results = new ArrayList<>();
         if (json == null || json.isBlank()) {
@@ -2450,9 +2862,16 @@ public class MusicBrainzClient {
     /**
      * 服务端返回了重试也不会改变的错误(如 404 查无此记录)
      */
-    private static class NonRetryableHttpException extends IOException {
+    static class NonRetryableHttpException extends IOException {
+        private final int statusCode;
+
         NonRetryableHttpException(int statusCode) {
             super("API 请求失败: " + statusCode);
+            this.statusCode = statusCode;
+        }
+
+        int getStatusCode() {
+            return statusCode;
         }
     }
 

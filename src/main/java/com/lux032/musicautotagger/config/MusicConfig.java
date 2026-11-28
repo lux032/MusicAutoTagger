@@ -33,9 +33,68 @@ public class MusicConfig {
     private String userAgent;
     
     // AcoustID 配置
+    public record AcoustIdSettings(String apiKey, String apiUrl, String userApiKey, String submitApiUrl) { }
+
     @ToString.Exclude
-    private String acoustIdApiKey;
-    private String acoustIdApiUrl;
+    private volatile String acoustIdApiKey;
+    private volatile String acoustIdApiUrl;
+    /** AcoustID 个人用户提交 Key（用于 /v2/submit 上传本地 Chromaprint 声纹，可选，支持热更新） */
+    @ToString.Exclude
+    private volatile String acoustIdUserApiKey;
+    private volatile String acoustIdSubmitApiUrl;
+    @ToString.Exclude
+    private volatile AcoustIdSettings acoustIdSettings = new AcoustIdSettings(
+        null, "https://api.acoustid.org/v2/lookup", null, "https://api.acoustid.org/v2/submit");
+
+    public AcoustIdSettings getAcoustIdSettings() {
+        AcoustIdSettings s = this.acoustIdSettings;
+        return s != null ? s : new AcoustIdSettings(acoustIdApiKey, acoustIdApiUrl, acoustIdUserApiKey, acoustIdSubmitApiUrl);
+    }
+
+    public synchronized void setAcoustIdApiKey(String acoustIdApiKey) {
+        this.acoustIdApiKey = acoustIdApiKey;
+        publishAcoustIdSettings();
+    }
+
+    public synchronized void setAcoustIdApiUrl(String acoustIdApiUrl) {
+        this.acoustIdApiUrl = acoustIdApiUrl;
+        publishAcoustIdSettings();
+    }
+
+    public synchronized void setAcoustIdUserApiKey(String acoustIdUserApiKey) {
+        this.acoustIdUserApiKey = acoustIdUserApiKey;
+        publishAcoustIdSettings();
+    }
+
+    public synchronized void setAcoustIdSubmitApiUrl(String acoustIdSubmitApiUrl) {
+        this.acoustIdSubmitApiUrl = acoustIdSubmitApiUrl;
+        publishAcoustIdSettings();
+    }
+
+    /** 原子发布 AcoustID 端点与凭据快照，防止并发提交读到旧 Key + 新端点。 */
+    public synchronized AcoustIdSettings updateAcoustIdSettings(boolean hasApiKey, String apiKey,
+                                                                boolean hasApiUrl, String apiUrl,
+                                                                boolean hasUserApiKey, String userApiKey,
+                                                                boolean hasSubmitApiUrl, String submitApiUrl) {
+        if (hasApiKey) this.acoustIdApiKey = apiKey;
+        if (hasApiUrl) this.acoustIdApiUrl = apiUrl;
+        if (hasUserApiKey) this.acoustIdUserApiKey = userApiKey;
+        if (hasSubmitApiUrl) {
+            this.acoustIdSubmitApiUrl = (submitApiUrl == null || submitApiUrl.isBlank())
+                ? "https://api.acoustid.org/v2/submit" : submitApiUrl.trim();
+        }
+        return publishAcoustIdSettings();
+    }
+
+    private AcoustIdSettings publishAcoustIdSettings() {
+        AcoustIdSettings snap = new AcoustIdSettings(
+            this.acoustIdApiKey,
+            this.acoustIdApiUrl,
+            this.acoustIdUserApiKey,
+            this.acoustIdSubmitApiUrl);
+        this.acoustIdSettings = snap;
+        return snap;
+    }
     
     // 文件处理配置
     private String[] supportedFormats;
@@ -260,6 +319,44 @@ public class MusicConfig {
         return next;
     }
 
+    /** MusicBrainz 回馈闭环热更新配置不可变快照。 */
+    public record MbContributionSettings(boolean enabled, boolean autoCheckAfterArchive) { }
+
+    private volatile MbContributionSettings mbContributionSettings = new MbContributionSettings(true, true);
+
+    public MbContributionSettings getMbContributionSettings() {
+        MbContributionSettings s = this.mbContributionSettings;
+        return s != null ? s : new MbContributionSettings(true, true);
+    }
+
+    public boolean isMbContributionEnabled() {
+        return getMbContributionSettings().enabled();
+    }
+
+    public synchronized void setMbContributionEnabled(boolean enabled) {
+        MbContributionSettings cur = getMbContributionSettings();
+        this.mbContributionSettings = new MbContributionSettings(enabled, cur.autoCheckAfterArchive());
+    }
+
+    public boolean isMbContributionAutoCheckAfterArchive() {
+        return getMbContributionSettings().autoCheckAfterArchive();
+    }
+
+    public synchronized void setMbContributionAutoCheckAfterArchive(boolean autoCheckAfterArchive) {
+        MbContributionSettings cur = getMbContributionSettings();
+        this.mbContributionSettings = new MbContributionSettings(cur.enabled(), autoCheckAfterArchive);
+    }
+
+    public synchronized MbContributionSettings updateMbContributionSettings(Boolean enabled,
+                                                                            Boolean autoCheckAfterArchive) {
+        MbContributionSettings cur = getMbContributionSettings();
+        MbContributionSettings next = new MbContributionSettings(
+            enabled != null ? enabled : cur.enabled(),
+            autoCheckAfterArchive != null ? autoCheckAfterArchive : cur.autoCheckAfterArchive());
+        this.mbContributionSettings = next;
+        return next;
+    }
+
     // Tavily 外部检索（替代模型原生 Web Search）
     /**
      * 联网搜索的实现来源：native / tavily。
@@ -297,6 +394,9 @@ public class MusicConfig {
         this.coverArtApiUrl = "https://coverartarchive.org";
         this.userAgent = "MusicDemo/1.0 ( contact@example.com )";
         this.acoustIdApiUrl = "https://api.acoustid.org/v2/lookup";
+        this.acoustIdSubmitApiUrl = "https://api.acoustid.org/v2/submit";
+        this.acoustIdUserApiKey = null;
+        this.mbContributionSettings = new MbContributionSettings(true, true);
         this.supportedFormats = new String[]{"mp3", "flac", "m4a", "ogg", "wav"};
         this.autoRename = true;
         this.createBackup = true;
@@ -508,6 +608,17 @@ public class MusicConfig {
             if (props.containsKey("acoustid.apiUrl")) {
                 this.acoustIdApiUrl = props.getProperty("acoustid.apiUrl");
             }
+            if (props.containsKey("acoustid.userApiKey")) {
+                String ukey = props.getProperty("acoustid.userApiKey", "").trim();
+                this.acoustIdUserApiKey = ukey.isEmpty() ? null : ukey;
+            }
+            if (props.containsKey("acoustid.submitApiUrl")) {
+                String submitUrl = props.getProperty("acoustid.submitApiUrl", "").trim();
+                if (!submitUrl.isEmpty()) {
+                    this.acoustIdSubmitApiUrl = submitUrl;
+                }
+            }
+            publishAcoustIdSettings();
             if (props.containsKey("file.autoRename")) {
                 this.autoRename = Boolean.parseBoolean(props.getProperty("file.autoRename"));
             }
@@ -846,6 +957,14 @@ public class MusicConfig {
                 : true;
             this.onlineMbidSettings = new OnlineMbidSettings(mbidResolve, mbidMaxLookups, mbidLlmDisambiguate);
 
+            boolean mbContribEnabled = props.containsKey("mb.contribution.enabled")
+                ? Boolean.parseBoolean(props.getProperty("mb.contribution.enabled").trim())
+                : true;
+            boolean mbContribAutoCheck = props.containsKey("mb.contribution.autoCheckAfterArchive")
+                ? Boolean.parseBoolean(props.getProperty("mb.contribution.autoCheckAfterArchive").trim())
+                : true;
+            this.mbContributionSettings = new MbContributionSettings(mbContribEnabled, mbContribAutoCheck);
+
             // 加载 Tavily 外部检索配置
             if (props.containsKey("llm.webSearch.provider")) {
                 String provider = props.getProperty("llm.webSearch.provider", "native").trim();
@@ -1067,6 +1186,12 @@ public class MusicConfig {
             props.setProperty("acoustid.apiKey", acoustIdApiKey);
         }
         props.setProperty("acoustid.apiUrl", acoustIdApiUrl);
+        if (acoustIdUserApiKey != null && !acoustIdUserApiKey.isEmpty()) {
+            props.setProperty("acoustid.userApiKey", acoustIdUserApiKey);
+        }
+        if (acoustIdSubmitApiUrl != null && !acoustIdSubmitApiUrl.isEmpty()) {
+            props.setProperty("acoustid.submitApiUrl", acoustIdSubmitApiUrl);
+        }
         props.setProperty("file.autoRename", String.valueOf(autoRename));
         props.setProperty("file.createBackup", String.valueOf(createBackup));
         props.setProperty("tag.albumArtist.collapseToVariousArtists",
@@ -1169,6 +1294,9 @@ public class MusicConfig {
         props.setProperty("online.mbid.resolve.enabled", String.valueOf(mbid.resolveEnabled()));
         props.setProperty("online.mbid.maxLookupsPerAlbum", String.valueOf(mbid.maxLookupsPerAlbum()));
         props.setProperty("online.mbid.llmDisambiguate.enabled", String.valueOf(mbid.llmDisambiguateEnabled()));
+        MbContributionSettings mbContrib = getMbContributionSettings();
+        props.setProperty("mb.contribution.enabled", String.valueOf(mbContrib.enabled()));
+        props.setProperty("mb.contribution.autoCheckAfterArchive", String.valueOf(mbContrib.autoCheckAfterArchive()));
         props.setProperty("llm.webSearch.provider", webSearchProvider == null ? "native" : webSearchProvider);
         props.setProperty("tavily.apiKey", tavilyApiKey == null ? "" : tavilyApiKey);
         props.setProperty("tavily.apiUrl", tavilyApiUrl == null ? "https://api.tavily.com/search" : tavilyApiUrl);

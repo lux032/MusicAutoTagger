@@ -473,7 +473,8 @@ public class CoverCandidateService implements AutoCloseable {
             // 兜底确保旧缓存候选在写入前也符合 ImageCompressor 压缩规则（已合规 JPEG 零重编码直通）
             byte[] compressed = ImageCompressor.compressImage(bytes, ffmpegPath());
             if (compressed == null || compressed.length == 0) return Optional.empty();
-            return Optional.of(new ResolvedCover(compressed, selected.getOrigin(), selected.getReleaseGroupId()));
+            return Optional.of(new ResolvedCover(
+                compressed, selected.getOrigin(), selected.getReleaseGroupId(), selected.getSourceUrl()));
         } catch (Exception e) { return Optional.empty(); }
     }
 
@@ -514,5 +515,9 @@ public class CoverCandidateService implements AutoCloseable {
     private static boolean meaningful(String value) { return value != null && !value.isBlank(); }
     private static String sha256(byte[] data) throws Exception { StringBuilder s=new StringBuilder(); for(byte b:MessageDigest.getInstance("SHA-256").digest(data))s.append(String.format("%02x",b)); return s.toString(); }
     @Override public void close() throws Exception { fetcher.close(); }
-    public record ResolvedCover(byte[] data, CoverCandidateView.Origin origin, String releaseGroupId) {}
+    public record ResolvedCover(byte[] data, CoverCandidateView.Origin origin, String releaseGroupId, String sourceUrl) {
+        public ResolvedCover(byte[] data, CoverCandidateView.Origin origin, String releaseGroupId) {
+            this(data, origin, releaseGroupId, null);
+        }
+    }
 }

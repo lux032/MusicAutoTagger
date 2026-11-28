@@ -1548,6 +1548,42 @@ public class ProcessedFileLogger {
         return result;
     }
 
+    /** 按归档输出路径（target_file_path）精确查找既有监控源主记录，避免回填官方 MBID 时制造分裂记录。 */
+    public List<ProcessedRecord> findRecordsByTargetPaths(Collection<String> targetPaths) {
+        List<ProcessedRecord> result = new ArrayList<>();
+        if (targetPaths == null || targetPaths.isEmpty()) return result;
+        Set<String> wanted = dedupe(targetPaths);
+
+        if (!isDbMode) {
+            for (ProcessedRecord r : readFileRecords()) {
+                if (r.targetFilePath != null && wanted.contains(r.targetFilePath)) {
+                    result.add(r);
+                }
+            }
+            return result;
+        }
+        if (!targetFilePathColumnAvailable) {
+            return result;
+        }
+        List<String> list = new ArrayList<>(wanted);
+        try (Connection conn = databaseService.getConnection()) {
+            for (int i = 0; i < list.size(); i += IN_BATCH) {
+                List<String> chunk = list.subList(i, Math.min(i + IN_BATCH, list.size()));
+                String sql = "SELECT " + selectColumns() + " FROM processed_files WHERE target_file_path IN ("
+                    + String.join(", ", java.util.Collections.nCopies(chunk.size(), "?")) + ")";
+                try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                    for (int j = 0; j < chunk.size(); j++) pstmt.setString(j + 1, chunk.get(j));
+                    try (ResultSet rs = pstmt.executeQuery()) {
+                        while (rs.next()) result.add(mapRow(rs));
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("按输出路径查询处理记录失败: " + e.getMessage(), e);
+        }
+        return result;
+    }
+
     /** 保持输入顺序、去掉空值的去重集合。 */
     private static Set<String> dedupe(Collection<String> values) {
         Set<String> set = new java.util.LinkedHashSet<>();

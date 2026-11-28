@@ -1,0 +1,508 @@
+package com.lux032.musicautotagger.service;
+
+import com.lux032.musicautotagger.model.MbContributionItem;
+import com.lux032.musicautotagger.util.OutboundUrlValidator;
+
+import java.net.InetAddress;
+import java.net.URI;
+import java.net.UnknownHostException;
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * MusicBrainz 官方 Release Editor Seeding（{@code POST https://musicbrainz.org/release/add}）表单载荷构造器。
+ *
+ * <p>严格遵循官方文档参数规范：
+ * {@code name}、{@code comment}、{@code release_group}、{@code type}、{@code status}、{@code packaging}、
+ * {@code language}、{@code script}、{@code barcode}、{@code events.0.*}、{@code labels.0.*}、
+ * {@code artist_credit.names.i.*}、{@code mediums.m.format}、{@code mediums.m.track.t.*}、
+ * {@code urls.u.url}、{@code edit_note}。
+ */
+public final class MusicBrainzSeedBuilder {
+
+    public static final String RELEASE_ADD_URL = "https://musicbrainz.org/release/add";
+    private static final int MAX_SEED_URLS = 10;
+    private static final Pattern ISO_DATE = Pattern.compile("^(\\d{4})(?:-(\\d{1,2})(?:-(\\d{1,2}))?)?$");
+    private static final Set<String> VALID_PRIMARY_TYPES = Set.of("album", "single", "ep", "broadcast", "other");
+    private static final Pattern IPV4_LITERAL = Pattern.compile("^\\d{1,3}(?:\\.\\d{1,3}){3}$");
+
+    private MusicBrainzSeedBuilder() { }
+
+    public record SeedField(String name, String value) { }
+
+    public record SeedPayload(
+        boolean seedable,
+        String blockedReason,
+        String actionUrl,
+        List<SeedField> fields,
+        String editNote,
+        List<String> warnings
+    ) { }
+
+    public static SeedPayload build(MbContributionItem item) {
+        if (item == null || item.getDraft() == null) {
+            return blocked("mb.contribution.seed.missing.draft", List.of("缺少发行草稿数据"));
+        }
+        if (item.isTerminal()) {
+            return blocked("mb.contribution.seed.terminal", List.of());
+        }
+        if (item.getCheckCase() == MbContributionItem.CheckCase.EXISTING_RELEASE
+                || item.getStatus() == MbContributionItem.Status.EXISTING_MATCH) {
+            return blocked("mb.contribution.seed.existing.release", List.of());
+        }
+        if (item.getStatus() == MbContributionItem.Status.LINKED) {
+            return blocked("mb.contribution.seed.already.linked", List.of());
+        }
+        if (item.getStatus() == MbContributionItem.Status.CHECKING) {
+            return blocked("mb.contribution.seed.checking", List.of());
+        }
+        if (item.getStatus() == MbContributionItem.Status.CHECK_FAILED
+                || item.getCheckCase() == MbContributionItem.CheckCase.ERROR) {
+            return blocked("mb.contribution.seed.check.failed", List.of());
+        }
+        if (item.getStatus() != MbContributionItem.Status.READY_TO_SEED
+                || (item.getCheckCase() != MbContributionItem.CheckCase.MISSING_EDITION
+                    && item.getCheckCase() != MbContributionItem.CheckCase.MISSING_RELEASE_GROUP)) {
+            return blocked("mb.contribution.seed.not.eligible", List.of());
+        }
+
+        MbContributionItem.ReleaseDraft draft = item.getDraft();
+        String ineligibleReason = MusicBrainzExistenceChecker.evaluateCaseDIneligibility(draft);
+        if (ineligibleReason != null) {
+            return blocked("mb.contribution.seed.not.eligible", List.of(ineligibleReason));
+        }
+
+        List<SeedField> fields = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+
+        addField(fields, "name", draft.getTitle());
+        addField(fields, "comment", draft.getComment());
+
+        String rgMbid = (item.getCheckCase() == MbContributionItem.CheckCase.MISSING_EDITION
+                && item.isUseExistingReleaseGroup())
+            ? MusicBrainzArtistCache.normalizeValidMbid(item.getMatchedReleaseGroupId())
+            : null;
+        if (rgMbid != null) {
+            addField(fields, "release_group", rgMbid);
+        } else {
+            String primaryType = normalizePrimaryType(draft.getReleaseType(), draft);
+            if (primaryType != null) {
+                addField(fields, "type", primaryType);
+            }
+        }
+
+        addField(fields, "status", "official");
+        String mediaFormat = normalizeMediaFormat(draft.getMediaFormat());
+        if ("Digital Media".equalsIgnoreCase(mediaFormat)) {
+            addField(fields, "packaging", "None");
+        }
+
+        String language = trimToNull(draft.getLanguage());
+        String script = trimToNull(draft.getScript());
+        if (language == null && script == null && containsJapaneseKana(draft.getTitle())) {
+            language = "jpn";
+            script = "Jpan";
+        }
+        addField(fields, "language", language);
+        addField(fields, "script", script);
+
+        String barcode = MusicBrainzClient.normalizeBarcodeDigits(draft.getBarcode());
+        if (barcode != null) {
+            addField(fields, "barcode", barcode);
+        }
+
+        // Release event (date + country)
+        appendReleaseEvent(fields, draft.getReleaseDate(), draft.getCountry());
+
+        // Label + catalog number
+        addField(fields, "labels.0.name", draft.getLabel());
+        addField(fields, "labels.0.catalog_number", draft.getCatalogNumber());
+
+        // Release-level artist credit
+        List<String> albumArtists = resolveArtistsList(draft.getAlbumArtists(), draft.getAlbumArtist());
+        appendArtistCredit(fields, "artist_credit", albumArtists, draft.getAlbumArtist(), draft.getEntityMbids());
+
+        // Mediums & full official tracklist
+        List<MbContributionItem.ContributionTrack> tracks = draft.getTracks() == null
+            ? List.of() : new ArrayList<>(draft.getTracks());
+        tracks.sort(Comparator.comparingInt((MbContributionItem.ContributionTrack t) -> Math.max(1, t.getDiscNo()))
+            .thenComparingInt(MbContributionItem.ContributionTrack::getTrackNo));
+
+        Map<Integer, List<MbContributionItem.ContributionTrack>> byDisc = new LinkedHashMap<>();
+        for (MbContributionItem.ContributionTrack t : tracks) {
+            if (t == null) continue;
+            int disc = t.getDiscNo() > 0 ? t.getDiscNo() : 1;
+            byDisc.computeIfAbsent(disc, k -> new ArrayList<>()).add(t);
+        }
+
+        int localMatchedCount = 0;
+        int localPreciseDurationCount = 0;
+        int mediumIdx = 0;
+        for (Map.Entry<Integer, List<MbContributionItem.ContributionTrack>> entry : byDisc.entrySet()) {
+            String mediumPrefix = "mediums." + mediumIdx;
+            if (mediaFormat != null) {
+                addField(fields, mediumPrefix + ".format", mediaFormat);
+            }
+            List<MbContributionItem.ContributionTrack> discTracks = entry.getValue();
+            for (int tIdx = 0; tIdx < discTracks.size(); tIdx++) {
+                MbContributionItem.ContributionTrack tr = discTracks.get(tIdx);
+                String trPrefix = mediumPrefix + ".track." + tIdx;
+                String trTitle = trimToNull(tr.getTitle());
+                addField(fields, trPrefix + ".name", trTitle != null ? trTitle : ("Track " + (tIdx + 1)));
+                int pos = tr.getTrackNo() > 0 ? tr.getTrackNo() : (tIdx + 1);
+                addField(fields, trPrefix + ".number", String.valueOf(pos));
+                if (tr.getDurationMs() > 0) {
+                    addField(fields, trPrefix + ".length", String.valueOf(tr.getDurationMs()));
+                }
+                if (tr.getLocalFilePath() != null && !tr.getLocalFilePath().isBlank()) {
+                    localMatchedCount++;
+                    if ("LOCAL_PRECISE".equalsIgnoreCase(tr.getDurationSource())) {
+                        localPreciseDurationCount++;
+                    }
+                }
+                String recMbid = MusicBrainzArtistCache.normalizeValidMbid(tr.getExistingRecordingId());
+                if (recMbid != null) {
+                    addField(fields, trPrefix + ".recording", recMbid);
+                }
+                List<String> trackArtists = resolveArtistsList(tr.getArtists(), tr.getArtist());
+                if (!trackArtists.isEmpty()) {
+                    appendArtistCredit(fields, trPrefix + ".artist_credit", trackArtists, tr.getArtist(), draft.getEntityMbids());
+                }
+            }
+            mediumIdx++;
+        }
+
+        if (!tracks.isEmpty() && localMatchedCount < tracks.size()) {
+            warnings.add(String.format("本地已归档 %d/%d 首，已按官方完整 %d 首曲目表预填，仅对本地匹配曲目补强精准毫秒时长。",
+                localMatchedCount, tracks.size(), tracks.size()));
+        }
+
+        // External authoritative URLs (canonicalized safe public HTTP/HTTPS only; omit link_type for MB auto-detection)
+        List<CanonicalSource> includedSources = collectSafeIncludedSources(draft.getSourceUrls());
+        for (int uIdx = 0; uIdx < includedSources.size(); uIdx++) {
+            addField(fields, "urls." + uIdx + ".url", includedSources.get(uIdx).canonicalUrl());
+        }
+        if (includedSources.isEmpty()) {
+            warnings.add("当前没有勾选可公开访问的一手来源链接，建议在 MusicBrainz 编辑说明中补充出处。");
+        }
+
+        String editNote = buildEditNote(includedSources, localPreciseDurationCount, tracks.size());
+        addField(fields, "edit_note", editNote);
+
+        return new SeedPayload(true, null, RELEASE_ADD_URL, List.copyOf(fields), editNote, List.copyOf(warnings));
+    }
+
+    private static SeedPayload blocked(String reason, List<String> warnings) {
+        return new SeedPayload(false, reason, RELEASE_ADD_URL, List.of(), "", List.copyOf(warnings));
+    }
+
+    private record CanonicalSource(String canonicalUrl, String title) { }
+
+    /** 校验真实历法日期（拒绝如 2026-02-31 的非法日期）。 */
+    public static boolean isValidPartialIsoDate(String rawDate) {
+        String date = trimToNull(rawDate);
+        if (date == null) return true;
+        Matcher m = ISO_DATE.matcher(date);
+        if (!m.matches()) return false;
+        int year = Integer.parseInt(m.group(1));
+        if (year < 1000 || year > 2100) return false;
+        if (m.group(2) == null) return true;
+        int month = Integer.parseInt(m.group(2));
+        if (month < 1 || month > 12) return false;
+        if (m.group(3) == null) return true;
+        int day = Integer.parseInt(m.group(3));
+        try {
+            LocalDate.of(year, month, day);
+            return true;
+        } catch (DateTimeException e) {
+            return false;
+        }
+    }
+
+    private static void appendReleaseEvent(List<SeedField> fields, String rawDate, String rawCountry) {
+        String date = trimToNull(rawDate);
+        if (date != null && isValidPartialIsoDate(date)) {
+            Matcher m = ISO_DATE.matcher(date);
+            if (m.matches()) {
+                addField(fields, "events.0.date.year", m.group(1));
+                if (m.group(2) != null) {
+                    addField(fields, "events.0.date.month", String.valueOf(Integer.parseInt(m.group(2))));
+                }
+                if (m.group(3) != null) {
+                    addField(fields, "events.0.date.day", String.valueOf(Integer.parseInt(m.group(3))));
+                }
+            }
+        }
+        String country = trimToNull(rawCountry);
+        if (country != null) {
+            String upper = country.toUpperCase(Locale.ROOT);
+            if (upper.matches("^[A-Z]{2}$")) {
+                addField(fields, "events.0.country", upper);
+            }
+        }
+    }
+
+    private static void appendArtistCredit(List<SeedField> fields,
+                                           String prefix,
+                                           List<String> artists,
+                                           String displayString,
+                                           Map<String, MbContributionItem.EntityMbidRef> entityMbids) {
+        if (artists == null || artists.isEmpty()) {
+            return;
+        }
+        List<String> joinPhrases = inferJoinPhrases(artists, displayString);
+        for (int i = 0; i < artists.size(); i++) {
+            String name = trimToNull(artists.get(i));
+            if (name == null) continue;
+            String base = prefix + ".names." + i;
+            String mbid = null;
+            if (entityMbids != null) {
+                MbContributionItem.EntityMbidRef ref = entityMbids.get(MusicBrainzArtistCache.normalizePersonKey(name));
+                if (ref != null) {
+                    mbid = MusicBrainzArtistCache.normalizeValidMbid(ref.getMbid());
+                }
+            }
+            if (mbid != null) {
+                addField(fields, base + ".mbid", mbid);
+                addField(fields, base + ".name", name);
+            } else {
+                addField(fields, base + ".artist.name", name);
+                addField(fields, base + ".name", name);
+            }
+            if (i < artists.size() - 1) {
+                String jp = i < joinPhrases.size() ? joinPhrases.get(i) : ", ";
+                // MusicBrainz join_phrase 必须保留前后空格（例如 ", "、" & "），严禁 trim
+                if (jp != null && !jp.isEmpty()) {
+                    fields.add(new SeedField(base + ".join_phrase", jp));
+                }
+            }
+        }
+    }
+
+    static List<String> inferJoinPhrases(List<String> artists, String displayString) {
+        if (artists == null || artists.size() <= 1) {
+            return List.of();
+        }
+        int gaps = artists.size() - 1;
+        List<String> inferred = new ArrayList<>(gaps);
+        String display = trimToNull(displayString);
+        if (display != null) {
+            int cursor = 0;
+            boolean ok = true;
+            for (int i = 0; i < artists.size(); i++) {
+                String name = artists.get(i);
+                int idx = display.indexOf(name, cursor);
+                if (idx < 0) {
+                    ok = false;
+                    break;
+                }
+                if (i > 0) {
+                    String gap = display.substring(cursor, idx);
+                    inferred.add(gap.isEmpty() ? ", " : gap);
+                }
+                cursor = idx + name.length();
+            }
+            if (ok && inferred.size() == gaps) {
+                return inferred;
+            }
+        }
+        List<String> fallback = new ArrayList<>(gaps);
+        for (int i = 0; i < gaps; i++) {
+            fallback.add(i == gaps - 1 ? " & " : ", ");
+        }
+        return fallback;
+    }
+
+    private static List<CanonicalSource> collectSafeIncludedSources(List<MbContributionItem.SourceUrlEntry> raw) {
+        List<CanonicalSource> result = new ArrayList<>();
+        if (raw == null) return result;
+        Set<String> seen = new LinkedHashSet<>();
+        for (MbContributionItem.SourceUrlEntry entry : raw) {
+            if (entry == null || !entry.isIncluded() || entry.getUrl() == null || entry.getUrl().isBlank()) {
+                continue;
+            }
+            if (!"HIGH".equalsIgnoreCase(entry.getReliability()) && !"MEDIUM".equalsIgnoreCase(entry.getReliability())) {
+                continue;
+            }
+            String canon = canonicalSafePublicHttpUrl(entry.getUrl());
+            if (canon == null || !seen.add(canon)) {
+                continue;
+            }
+            result.add(new CanonicalSource(canon, trimToNull(entry.getTitle())));
+            if (result.size() >= MAX_SEED_URLS) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    /** 规范化并校验公网 HTTP/HTTPS URL（剥离追踪参数，拒绝内网/私网/凭证/非标端口）。 */
+    public static String canonicalSafePublicHttpUrl(String rawUrl) {
+        if (rawUrl == null || rawUrl.isBlank()) return null;
+        String trimmed = rawUrl.trim();
+        if (!isSafePublicHttpUrl(trimmed)) return null;
+        String canon = com.lux032.musicautotagger.service.llm.WebSearchClient.canonicalizeUrl(trimmed);
+        if (canon == null || canon.isBlank() || !isSafePublicHttpUrl(canon)) {
+            return null;
+        }
+        return canon;
+    }
+
+    static boolean isSafePublicHttpUrl(String url) {
+        if (url == null || url.isBlank()) return false;
+        URI uri;
+        try {
+            uri = URI.create(url.trim());
+        } catch (Exception e) {
+            return false;
+        }
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+        if (!"https".equals(scheme) && !"http".equals(scheme)) {
+            return false;
+        }
+        if (uri.getUserInfo() != null) {
+            return false;
+        }
+        int port = uri.getPort();
+        if (port != -1 && port != 80 && port != 443) {
+            return false;
+        }
+        String rawHost = uri.getHost();
+        if (rawHost == null || rawHost.isBlank()) {
+            return false;
+        }
+        String host = OutboundUrlValidator.stripIpv6Brackets(rawHost).toLowerCase(Locale.ROOT);
+        if (host.isEmpty() || "localhost".equals(host) || host.endsWith(".localhost")
+                || host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".lan")
+                || host.endsWith(".home") || host.endsWith(".arpa")) {
+            return false;
+        }
+        // IPv4 / IPv6 字面量直接交给 OutboundUrlValidator.isPublic 严格判定（含 172.16/12、169.254/16、100.64/10、ULA 等）
+        boolean isIpLiteral = host.indexOf(':') >= 0 || IPV4_LITERAL.matcher(host).matches() || host.matches("^\\d+$");
+        if (isIpLiteral) {
+            try {
+                InetAddress addr = InetAddress.getByName(host);
+                return OutboundUrlValidator.isPublic(addr);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        // 域名必须含点且不得解析到私网/保留地址（无 DNS/纯代理离线环境仅在 UnknownHostException 时按公网 FQDN 放行）
+        if (!host.contains(".")) {
+            return false;
+        }
+        try {
+            InetAddress[] resolved = InetAddress.getAllByName(host);
+            if (resolved != null) {
+                for (InetAddress addr : resolved) {
+                    if (!OutboundUrlValidator.isPublic(addr)) {
+                        return false;
+                    }
+                }
+            }
+        } catch (UnknownHostException ignored) {
+            // 代理或离线测试环境下无法本地解析，已通过上述私网后缀与字面量校验
+        } catch (Exception e) {
+            return false;
+        }
+        return true;
+    }
+
+    private static String buildEditNote(List<CanonicalSource> sources,
+                                        int localPreciseCount,
+                                        int totalTracks) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Sources:\n");
+        if (sources.isEmpty()) {
+            sb.append("- (Please add primary official source URLs before submitting)\n");
+        } else {
+            for (CanonicalSource s : sources) {
+                sb.append("- ").append(s.canonicalUrl());
+                if (s.title() != null) {
+                    sb.append(" (").append(s.title()).append(")");
+                }
+                sb.append('\n');
+            }
+        }
+        if (localPreciseCount > 0) {
+            sb.append("\nTrack lengths for ").append(localPreciseCount).append('/').append(totalTracks)
+              .append(" track(s) measured from local audio files.\n");
+        }
+        sb.append("\nMetadata prepared with MusicAutoTagger and reviewed by editor before submission.");
+        return sb.toString();
+    }
+
+    private static List<String> resolveArtistsList(List<String> structured, String display) {
+        List<String> clean = new ArrayList<>();
+        if (structured != null) {
+            for (String s : structured) {
+                String t = trimToNull(s);
+                if (t != null) clean.add(t);
+            }
+        }
+        if (clean.isEmpty()) {
+            String d = trimToNull(display);
+            if (d != null) clean.add(d);
+        }
+        return clean;
+    }
+
+    private static String normalizePrimaryType(String raw, MbContributionItem.ReleaseDraft draft) {
+        String t = trimToNull(raw);
+        if (t != null) {
+            String lower = t.toLowerCase(Locale.ROOT);
+            if (VALID_PRIMARY_TYPES.contains(lower)) {
+                return lower;
+            }
+        }
+        String comment = draft.getComment() == null ? "" : draft.getComment().toLowerCase(Locale.ROOT);
+        if (comment.contains("single") || (draft.getTracks() != null && draft.getTracks().size() <= 2)) {
+            return "single";
+        }
+        if (comment.contains("ep") || (draft.getTracks() != null && draft.getTracks().size() <= 6)) {
+            return "ep";
+        }
+        return "album";
+    }
+
+    private static String normalizeMediaFormat(String raw) {
+        String t = trimToNull(raw);
+        if (t == null) return null;
+        String lower = t.toLowerCase(Locale.ROOT);
+        if (lower.contains("digital") || lower.equals("web")) return "Digital Media";
+        if (lower.equals("cd")) return "CD";
+        return t;
+    }
+
+    private static boolean containsJapaneseKana(String text) {
+        if (text == null) return false;
+        for (int i = 0; i < text.length(); i++) {
+            Character.UnicodeBlock b = Character.UnicodeBlock.of(text.charAt(i));
+            if (b == Character.UnicodeBlock.HIRAGANA || b == Character.UnicodeBlock.KATAKANA) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void addField(List<SeedField> fields, String name, String value) {
+        String v = trimToNull(value);
+        if (v != null) {
+            fields.add(new SeedField(name, v));
+        }
+    }
+
+    private static String trimToNull(String s) {
+        return s == null || s.isBlank() ? null : s.trim();
+    }
+}

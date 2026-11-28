@@ -68,6 +68,7 @@ public class ApplicationLifecycleManager {
     private ReviewResolutionService reviewResolutionService;
     private RecoveryService recoveryService;
     private ProcessedRecordService processedRecordService;
+    private MusicBrainzContributionService contributionService;
     
     public ApplicationLifecycleManager(MusicConfig config) {
         this(config, Paths.get("config.properties"),
@@ -226,6 +227,13 @@ public class ApplicationLifecycleManager {
             failedFileHandler, fileSystemUtils, tagWriter, fingerprintService, coverCandidateService,
             musicBrainzClient, musicBrainzArtistCache);
         reviewResolutionService.setRecoveryService(recoveryService);
+
+        // MusicBrainz 缺失专辑/版本回馈闭环服务（与 reviewQueuePath 同目录原子持久化，非阻塞预检）
+        MbContributionStore contributionStore = MbContributionStore.forReviewQueuePath(config.getReviewQueuePath());
+        contributionService = new MusicBrainzContributionService(
+            config, contributionStore, musicBrainzClient, tagWriter, processedLogger,
+            fingerprintService, reviewQueueService, fileSystemUtils);
+        recoveryService.setContributionService(contributionService);
 
         // 启动期历史分裂处理记录幂等对账（必须在文件监控扫描启动前执行，任何异常仅告警不阻断启动）
         try {
@@ -544,6 +552,11 @@ public class ApplicationLifecycleManager {
         closeQuietly("恢复与在线搜索服务", () -> {
             if (recoveryService != null) {
                 recoveryService.close();
+            }
+        });
+        closeQuietly("MusicBrainz 回馈闭环服务", () -> {
+            if (contributionService != null) {
+                contributionService.close();
             }
         });
         closeQuietly("专辑艺人刷新服务", () -> {

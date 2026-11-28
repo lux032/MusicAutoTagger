@@ -455,3 +455,18 @@ review.queuePath=data/review-queue.json
 # 待确认条目的转码暂存目录
 # 长期挂起的条目不能一直占用系统临时目录，否则会被系统清理掉
 review.stagingDirectory=data/review-staging
+
+# ========================================
+# MusicBrainz 回馈闭环配置（可选）
+# ========================================
+
+# 是否启用「回馈 MusicBrainz」工作台（存在性预检、Release Editor 预填、
+# Cover Art Archive 封面引导、合规 Works 词曲编参考卡、官方 MBID 回填与 AcoustID 声纹提交）
+mb.contribution.enabled=true
+
+# 联网候选确认归档完成后，是否在后台自动执行非阻塞的 MusicBrainz 存在性预检并入队
+mb.contribution.autoCheckAfterArchive=true
+
+# AcoustID 个人用户提交 Key（用于可选的 /v2/submit 声纹提交，在 https://acoustid.org/api-key 获取；留空不启用声纹提交）
+acoustid.userApiKey=
+acoustid.submitApiUrl=https://api.acoustid.org/v2/submit

@@ -1425,6 +1425,64 @@ public class TagWriterService {
                 log.debug("读取 MusicBrainz Release ID 失败: {}", e.getMessage());
             }
             try {
+                String recId = tag.getFirst(FieldKey.MUSICBRAINZ_TRACK_ID);
+                if (recId != null && !recId.isBlank()) {
+                    metadata.setRecordingId(recId.trim());
+                }
+            } catch (Exception e) {
+                log.debug("读取 MusicBrainz Recording ID 失败: {}", e.getMessage());
+            }
+            try {
+                String relTrackId = tag.getFirst(FieldKey.MUSICBRAINZ_RELEASE_TRACK_ID);
+                if (relTrackId != null && !relTrackId.isBlank()) {
+                    metadata.setReleaseTrackId(relTrackId.trim());
+                }
+            } catch (Exception e) {
+                log.debug("读取 MusicBrainz Release Track ID 失败: {}", e.getMessage());
+            }
+            try {
+                String status = tag.getFirst(FieldKey.MUSICBRAINZ_RELEASE_STATUS);
+                if (status != null && !status.isBlank()) metadata.setReleaseStatus(status.trim());
+            } catch (Exception e) {
+                log.debug("读取 MusicBrainz Release Status 失败: {}", e.getMessage());
+            }
+            try {
+                String country = tag.getFirst(FieldKey.MUSICBRAINZ_RELEASE_COUNTRY);
+                if (country != null && !country.isBlank()) metadata.setReleaseCountry(country.trim());
+            } catch (Exception e) {
+                log.debug("读取 MusicBrainz Release Country 失败: {}", e.getMessage());
+            }
+            try {
+                String media = tag.getFirst(FieldKey.MEDIA);
+                if (media != null && !media.isBlank()) metadata.setMediaFormat(media.trim());
+            } catch (Exception e) {
+                log.debug("读取 Media Format 失败: {}", e.getMessage());
+            }
+            try {
+                String script = tag.getFirst(FieldKey.SCRIPT);
+                if (script != null && !script.isBlank()) metadata.setScript(script.trim());
+            } catch (Exception e) {
+                log.debug("读取 Script 失败: {}", e.getMessage());
+            }
+            try {
+                String barcode = tag.getFirst(FieldKey.BARCODE);
+                if (barcode != null && !barcode.isBlank()) metadata.setBarcode(barcode.trim());
+            } catch (Exception e) {
+                log.debug("读取 Barcode 失败: {}", e.getMessage());
+            }
+            try {
+                String catno = tag.getFirst(FieldKey.CATALOG_NO);
+                if (catno != null && !catno.isBlank()) metadata.setCatalogNumber(catno.trim());
+            } catch (Exception e) {
+                log.debug("读取 Catalog Number 失败: {}", e.getMessage());
+            }
+            try {
+                String label = tag.getFirst(FieldKey.RECORD_LABEL);
+                if (label != null && !label.isBlank()) metadata.setRecordLabel(label.trim());
+            } catch (Exception e) {
+                log.debug("读取 Record Label 失败: {}", e.getMessage());
+            }
+            try {
                 metadata.setArtistId(readJoinedTagValues(tag, FieldKey.MUSICBRAINZ_ARTISTID));
             } catch (Exception e) {
                 log.debug("读取 MusicBrainz Artist ID 失败: {}", e.getMessage());
@@ -1503,11 +1561,19 @@ public class TagWriterService {
             if (discNo != null && !discNo.isEmpty()) {
                 metadata.setDiscNo(discNo);
             }
+            try {
+                String discTotal = tag.getFirst(FieldKey.DISC_TOTAL);
+                if (discTotal != null && !discTotal.isBlank()) metadata.setDiscTotal(discTotal.trim());
+            } catch (Exception ignored) { }
 
             String trackNo = tag.getFirst(FieldKey.TRACK);
             if (trackNo != null && !trackNo.isEmpty()) {
                 metadata.setTrackNo(trackNo);
             }
+            try {
+                String trackTotal = tag.getFirst(FieldKey.TRACK_TOTAL);
+                if (trackTotal != null && !trackTotal.isBlank()) metadata.setTrackTotal(trackTotal.trim());
+            } catch (Exception ignored) { }
 
             return metadata;
 

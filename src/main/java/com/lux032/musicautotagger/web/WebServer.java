@@ -63,6 +63,7 @@ public class WebServer {
     private final SwappableServlet recoverySlot = new SwappableServlet();
     private final SwappableServlet searchQueueSlot = new SwappableServlet();
     private final SwappableServlet recordsSlot = new SwappableServlet();
+    private final SwappableServlet mbContributionsSlot = new SwappableServlet();
     private final SwappableServlet setupSlot = new SwappableServlet();
 
     private ConfigServlet configServlet;
@@ -245,6 +246,12 @@ public class WebServer {
         } else {
             recordsSlot.setDelegate(new NotAvailableServlet());
         }
+
+        if (lifecycleManager != null && lifecycleManager.getContributionService() != null) {
+            mbContributionsSlot.setDelegate(new MbContributionServlet(lifecycleManager.getContributionService()));
+        } else {
+            mbContributionsSlot.setDelegate(new NotAvailableServlet());
+        }
     }
 
     private void startJettySkeleton(MusicConfig config, ApplicationLifecycleManager lifecycleManager) throws Exception {
@@ -317,6 +324,7 @@ public class WebServer {
         servletHandler.addServlet(new ServletHolder(recoverySlot), "/api/recovery/*");
         servletHandler.addServlet(new ServletHolder(searchQueueSlot), "/api/search-queue/*");
         servletHandler.addServlet(new ServletHolder(recordsSlot), "/api/records/*");
+        servletHandler.addServlet(new ServletHolder(mbContributionsSlot), "/api/mb-contributions/*");
 
         // 安全响应头与 API 认证/CSRF 过滤器
         servletHandler.addFilter(SecurityHeadersFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));

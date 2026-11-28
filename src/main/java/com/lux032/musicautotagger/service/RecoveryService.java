@@ -85,6 +85,7 @@ public class RecoveryService implements AutoCloseable {
     private final LlmArtistSplitter artistSplitter;
     private final LocalArchiveDraft localArchiveDraft;
     private final RecoveryTrashService trashService;
+    private volatile MusicBrainzContributionService contributionService;
     private final Gson gson = new Gson();
     private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "manual-recovery");
@@ -1059,20 +1060,31 @@ public class RecoveryService implements AutoCloseable {
             confirmNoCover, true, manualTrackCredits, entityMbidOverrides);
     }
 
+    public void setContributionService(MusicBrainzContributionService contributionService) {
+        this.contributionService = contributionService;
+    }
+
     /** 「缺少封面」页补图或确认无封面后，继续完成之前暂缓的「联网候选确认入库」。 */
     public synchronized ReviewItem commitDeferredOnlineMissingCover(ReviewItem item, byte[] coverBytes,
                                                                     DuplicatePolicy duplicatePolicy) throws IOException {
-        return commitDeferredOnlineMissingCover(item, coverBytes, coverBytes == null || coverBytes.length == 0, duplicatePolicy);
+        return commitDeferredOnlineMissingCover(item, coverBytes, coverBytes == null || coverBytes.length == 0, duplicatePolicy, null);
     }
 
     public synchronized ReviewItem commitDeferredOnlineMissingCover(ReviewItem item, byte[] coverBytes,
                                                                     boolean confirmNoCover,
                                                                     DuplicatePolicy duplicatePolicy) throws IOException {
+        return commitDeferredOnlineMissingCover(item, coverBytes, confirmNoCover, duplicatePolicy, null);
+    }
+
+    public synchronized ReviewItem commitDeferredOnlineMissingCover(ReviewItem item, byte[] coverBytes,
+                                                                    boolean confirmNoCover,
+                                                                    DuplicatePolicy duplicatePolicy,
+                                                                    String selectedCoverSha256) throws IOException {
         if (item == null || item.getMissingCover() == null) throw new IOException("item.not.found");
         ReviewItem.MissingCover mc = item.getMissingCover();
         return confirmOnlineCandidateInternal(item.getId(), mc.getOnlineCandidateId(),
             mc.getAlbumTitle(), mc.getAlbumArtist(), mc.getReleaseDate(), null,
-            mc.getArchiveDirectoryName(), null, confirmNoCover ? null : coverBytes,
+            mc.getArchiveDirectoryName(), selectedCoverSha256, confirmNoCover ? null : coverBytes,
             duplicatePolicy == null ? DuplicatePolicy.ASK : duplicatePolicy,
             mc.getAlbumArtists(), confirmNoCover, false,
             mc.getOnlineTrackCredits(), mc.getOnlineEntityMbidOverrides());
@@ -1232,19 +1244,62 @@ public class RecoveryService implements AutoCloseable {
                 : (meaningful(edition) ? finalAlbum + " (" + edition.trim() + ")" : finalAlbum));
 
         CoverCandidateService.ResolvedCover selectedCover = null;
+        MusicBrainzContributionService.CoverCapture contributionCoverCapture = null;
+        boolean captureForContribution = this.contributionService != null
+            && config.getMbContributionSettings().enabled()
+            && config.getMbContributionSettings().autoCheckAfterArchive();
         byte[] cover = null;
         if (directCoverBytes != null && directCoverBytes.length > 0) {
             cover = compressCoverBytes(directCoverBytes);
+            if (captureForContribution) {
+                String deferredPublicUrl = null;
+                String deferredOrigin = "USER_UPLOAD";
+                if (meaningful(selectedCoverSha256) && item.getMissingCover() != null
+                        && item.getMissingCover().getCoverCandidates() != null) {
+                    for (CoverCandidateView cv : item.getMissingCover().getCoverCandidates()) {
+                        if (cv != null && selectedCoverSha256.equalsIgnoreCase(cv.getSha256())) {
+                            if (cv.getOrigin() != null) deferredOrigin = cv.getOrigin().name();
+                            if (meaningful(cv.getSourceUrl())) deferredPublicUrl = cv.getSourceUrl();
+                            break;
+                        }
+                    }
+                }
+                contributionCoverCapture = new MusicBrainzContributionService.CoverCapture(
+                    deferredOrigin, deferredPublicUrl, chosen.getCoverSourceUrl(),
+                    deferredPublicUrl == null ? directCoverBytes : null);
+            }
         } else if (meaningful(selectedCoverSha256)) {
             selectedCover = coverCandidateService.resolveBySha256(
                 selectedCoverSha256, chosen.getCoverCandidates())
                 .orElseThrow(() -> new IOException("cover.selection.expired"));
             cover = selectedCover.data();
             chosen.setSelectedCoverSha256(selectedCoverSha256);
+            if (captureForContribution) {
+                String originName = selectedCover.origin() == null ? "UNKNOWN" : selectedCover.origin().name();
+                if (meaningful(selectedCover.sourceUrl())) {
+                    contributionCoverCapture = new MusicBrainzContributionService.CoverCapture(
+                        originName, selectedCover.sourceUrl(), chosen.getCoverSourceUrl(), null);
+                } else if (selectedCover.origin() == CoverCandidateView.Origin.FOLDER) {
+                    byte[] rawFolder = readUncompressedFolderCoverOnly(source, originalFiles);
+                    contributionCoverCapture = new MusicBrainzContributionService.CoverCapture(
+                        originName, null, chosen.getCoverSourceUrl(),
+                        rawFolder != null && rawFolder.length > 0 ? rawFolder : selectedCover.data());
+                } else {
+                    // EMBEDDED / USER_UPLOAD 等严禁从目录误抓不相关封面，保真使用选定封面本身
+                    contributionCoverCapture = new MusicBrainzContributionService.CoverCapture(
+                        originName, null, chosen.getCoverSourceUrl(), selectedCover.data());
+                }
+            }
         } else {
             chosen.setSelectedCoverSha256(null);
             if (!confirmNoCover) {
                 cover = findLocalFallbackCover(source, originalFiles);
+                if (captureForContribution && cover != null && cover.length > 0) {
+                    byte[] rawLocal = readUncompressedLocalCoverIfAvailable(source, originalFiles);
+                    contributionCoverCapture = new MusicBrainzContributionService.CoverCapture(
+                        "FOLDER", null, chosen.getCoverSourceUrl(),
+                        rawLocal != null && rawLocal.length > 0 ? rawLocal : cover);
+                }
                 if ((cover == null || cover.length == 0)
                     && allowMissingCoverIntercept
                     && config.isCoverMissingRequireReview()) {
@@ -1336,6 +1391,8 @@ public class RecoveryService implements AutoCloseable {
         List<Path> replacedTargetPaths = collectReplacedTargetPaths(originalFiles);
         Map<Path, Path> newOutputByOriginalPath = new LinkedHashMap<>();
         Map<String, Path> outputByOriginalPath = new LinkedHashMap<>();
+        Map<String, MetadataUtils.ResolvedTrackCredits> resolvedCreditsByOriginalPath = new LinkedHashMap<>();
+        Map<String, String> existingRecordingIdByOriginalPath = new LinkedHashMap<>();
         try (TagWriterService.OutputScope scope = tagWriter.recoveryWorkspace(workRoot)) {
             for (File file : files) {
                 MusicMetadata original = tagWriter.readTags(file);
@@ -1352,6 +1409,12 @@ public class RecoveryService implements AutoCloseable {
                     manualOverride, mbCredits, original, track, track != null,
                     config == null || config.isOnlineCreditsApplyProbable(),
                     effectiveEntityMbids, explicitlyUnboundMbidKeys);
+                resolvedCreditsByOriginalPath.put(matchedPath, resolvedCredits);
+                // 仅采信前置 MusicBrainz/AcoustID 查证的 Recording MBID，不盲信源文件内未核验的旧标签
+                String knownRecId = queued != null ? MusicBrainzArtistCache.normalizeValidMbid(queued.getRecordingId()) : null;
+                if (knownRecId != null) {
+                    existingRecordingIdByOriginalPath.put(matchedPath, knownRecId);
+                }
                 MetadataUtils.applyResolvedTrackCredits(resolvedCredits, md);
                 md.setAlbum(finalAlbum);
                 ArtistCreditSupport.applyAlbumArtistCredit(md, finalArtist, finalAlbumArtists, albumArtistPolicy);
@@ -1465,7 +1528,115 @@ public class RecoveryService implements AutoCloseable {
             coverCandidateService.promoteIfMusicBrainz(selectedCover);
         }
         finishCommittedRecovery(item);
+
+        // 非阻塞触发 MusicBrainz 缺失专辑/版本存在性预检与回馈入队（请求线程不做磁盘时长探测，全部交由后台执行器）
+        MusicBrainzContributionService contrib = this.contributionService;
+        if (contrib != null && captureForContribution) {
+            try {
+                List<Path> archivedPaths = new ArrayList<>();
+                Map<String, MusicBrainzContributionService.ResolvedTrackSnapshot> trackSnaps = new LinkedHashMap<>();
+                for (File origFile : originalFiles) {
+                    String origKey = origFile.getAbsolutePath();
+                    Path rel = outputByOriginalPath.get(origKey);
+                    if (rel == null) continue;
+                    Path outPath = Path.of(config.getOutputDirectory()).resolve(rel).toAbsolutePath().normalize();
+                    archivedPaths.add(outPath);
+                    MetadataUtils.ResolvedTrackCredits rc = resolvedCreditsByOriginalPath.get(origKey);
+                    ReviewItem.OnlineTrack ot = trackByFile.get(origKey);
+                    ReviewItem.TrackCreditDetail cd = ot == null ? null : ot.getCreditDetail();
+                    trackSnaps.put(origKey, new MusicBrainzContributionService.ResolvedTrackSnapshot(
+                        outPath.toString(),
+                        0.0, // 由后台线程异步探测精准时长，避免阻塞归档响应
+                        existingRecordingIdByOriginalPath.get(origKey),
+                        rc != null && rc.composer() != null && !rc.composer().clear() ? rc.composer().names() : List.of(),
+                        rc != null && rc.lyricist() != null && !rc.lyricist().clear() ? rc.lyricist().names() : List.of(),
+                        rc != null && rc.arranger() != null && !rc.arranger().clear() ? rc.arranger().names() : List.of(),
+                        contributionRoleSource(rc == null ? null : rc.composer(), cd == null ? null : cd.getComposers()),
+                        contributionRoleSource(rc == null ? null : rc.lyricist(), cd == null ? null : cd.getLyricists()),
+                        contributionRoleSource(rc == null ? null : rc.arranger(), cd == null ? null : cd.getArrangers())
+                    ));
+                }
+                Path archivedAlbumDir = archivedPaths.isEmpty()
+                    ? Path.of(config.getOutputDirectory(), artistDir, albumDir).toAbsolutePath().normalize()
+                    : archivedPaths.get(0).getParent();
+                MusicBrainzContributionService.ArchiveSnapshot snap = new MusicBrainzContributionService.ArchiveSnapshot(
+                    item.getId(), chosen, finalAlbum, finalArtist, finalAlbumArtists, finalDate,
+                    meaningful(edition) ? edition.trim() : chosen.getEdition(),
+                    archivedAlbumDir, List.copyOf(archivedPaths),
+                    effectiveEntityMbids, trackSnaps, contributionCoverCapture);
+                contrib.enqueueAfterOnlineArchive(snap);
+            } catch (Exception e) {
+                log.warn("触发 MusicBrainz 回馈存在性预检失败（不影响本地归档）: {}", e.getMessage());
+            }
+        }
         return item;
+    }
+
+    private byte[] readUncompressedFolderCoverOnly(File source, List<File> originalFiles) {
+        if (coverCandidateService == null || coverCandidateService.getCoverArtService() == null) {
+            return null;
+        }
+        try {
+            File folder = (source != null && source.isDirectory())
+                ? source
+                : (originalFiles != null && !originalFiles.isEmpty() ? originalFiles.get(0).getParentFile() : null);
+            if (folder != null && folder.isDirectory()) {
+                CoverArtService cas = coverCandidateService.getCoverArtService();
+                File root = cas.resolveAlbumRootDirectory(folder);
+                File img = cas.findCoverFileInDirectory(root);
+                if (img != null && !Files.isSymbolicLink(img.toPath()) && Files.isRegularFile(img.toPath())
+                        && Files.size(img.toPath()) > 0 && Files.size(img.toPath()) <= ImageCompressor.MAX_INPUT_BYTES) {
+                    return Files.readAllBytes(img.toPath());
+                }
+            }
+        } catch (Exception e) {
+            log.debug("读取目录未压缩封面失败: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    private static String contributionRoleSource(MetadataUtils.ResolvedCreditRole role,
+                                                 ReviewItem.CreditFieldResult onlineField) {
+        if (role == null || role.clear() || role.names() == null || role.names().isEmpty() || role.source() == null) {
+            return "NONE";
+        }
+        if (role.source() == MetadataUtils.CreditSource.ONLINE) {
+            return MusicBrainzContributionService.creditSourceLabel(onlineField);
+        }
+        return role.source().name();
+    }
+
+    private byte[] readUncompressedLocalCoverIfAvailable(File source, List<File> originalFiles) {
+        if (coverCandidateService == null || coverCandidateService.getCoverArtService() == null) {
+            return null;
+        }
+        CoverArtService cas = coverCandidateService.getCoverArtService();
+        try {
+            File folder = (source != null && source.isDirectory())
+                ? source
+                : (originalFiles != null && !originalFiles.isEmpty() ? originalFiles.get(0).getParentFile() : null);
+            if (folder != null) {
+                File root = cas.resolveAlbumRootDirectory(folder);
+                File coverFile = cas.findCoverFileInDirectory(root);
+                if (coverFile != null && !Files.isSymbolicLink(coverFile.toPath())
+                        && Files.size(coverFile.toPath()) <= ImageCompressor.MAX_INPUT_BYTES) {
+                    return Files.readAllBytes(coverFile.toPath());
+                }
+            }
+            if (originalFiles != null) {
+                for (File orig : originalFiles) {
+                    if (orig != null && orig.isFile()) {
+                        byte[] emb = cas.extractEmbeddedCover(orig);
+                        if (emb != null && emb.length > 0 && emb.length <= ImageCompressor.MAX_INPUT_BYTES) {
+                            return emb;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("读取未压缩本地封面失败: {}", e.getMessage());
+        }
+        return null;
     }
 
     /**

@@ -342,7 +342,7 @@ public class CoverMissingService implements AutoCloseable {
                 throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
             }
             ReviewItem committed = recoveryService.commitDeferredOnlineMissingCover(
-                item, confirmedNoCover ? null : coverBytes, confirmedNoCover, duplicatePolicy);
+                item, confirmedNoCover ? null : coverBytes, confirmedNoCover, duplicatePolicy, selectedSha);
             ReviewItem.MissingCover committedMc = committed.getMissingCover();
             if (committedMc != null) {
                 committedMc.setSelectedCoverSha256(selectedSha);

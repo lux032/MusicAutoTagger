@@ -631,6 +631,9 @@ public class ReviewItem {
         private String country;
         private String label;
         private String catalogNumber;
+        private String barcode;
+        private String releaseType;
+        private String mediaFormat;
         private String coverUrl;
         private String coverSourceUrl;
         private double confidence;

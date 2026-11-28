@@ -602,7 +602,7 @@ public class OnlineIdentificationService implements AutoCloseable {
         sb.append("Return strict JSON:\n")
           .append("{\"needs_second_round\":boolean,\"candidates\":[{\"title\":string,\"artist\":string,\"artists\":[string],")
           .append("\"album_artist\":string,\"album_artists\":[string],\"release_date\":string,\"edition\":string,\"country\":string,")
-          .append("\"label\":string,\"catalog_number\":string,\"cover_url\":string,\"confidence\":number 0..1,")
+          .append("\"label\":string,\"catalog_number\":string,\"barcode\":string,\"release_type\":\"album|single|ep|broadcast|other\",\"media_format\":string,\"cover_url\":string,\"confidence\":number 0..1,")
           .append("\"reason\":string,\"tracks\":[{\"disc\":number,\"track\":number,\"title\":string,\"artist\":string,\"artists\":[string],")
           .append("\"composers\":[string],\"lyricists\":[string],\"arrangers\":[string],\"duration\":number,")
           .append("\"version_type\":\"original|remix|alternate_arrangement|live|acoustic|instrumental|other\",")
@@ -703,7 +703,11 @@ public class OnlineIdentificationService implements AutoCloseable {
         c.setArtists(new ArrayList<>(resolveStructuredArtists(c.getArtist(), strList(o, "artists"), List.of(), null)));
         c.setAlbumArtists(new ArrayList<>(resolveStructuredArtists(c.getAlbumArtist(), strList(o, "album_artists"), c.getArtists(), c.getArtist())));
         c.setReleaseDate(str(o,"release_date"));c.setEdition(str(o,"edition"));c.setCountry(str(o,"country"));c.setLabel(str(o,"label"));
-        c.setCatalogNumber(str(o,"catalog_number"));c.setCoverUrl(str(o,"cover_url"));c.setConfidence(normalizeConfidence(number(o,"confidence")));c.setReason(str(o,"reason"));
+        c.setCatalogNumber(str(o,"catalog_number"));
+        c.setBarcode(str(o,"barcode"));
+        c.setReleaseType(str(o,"release_type"));
+        c.setMediaFormat(str(o,"media_format"));
+        c.setCoverUrl(str(o,"cover_url"));c.setConfidence(normalizeConfidence(number(o,"confidence")));c.setReason(str(o,"reason"));
         Set<String> canonicalSourceUrls = new HashSet<>();
         JsonArray urls = arr(o, "source_urls");
         if (urls != null) {

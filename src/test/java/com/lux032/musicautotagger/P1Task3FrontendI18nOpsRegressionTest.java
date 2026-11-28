@@ -358,5 +358,37 @@ class P1Task3FrontendI18nOpsRegressionTest {
         assertFalse(indexHtml.contains("toLocaleTimeString('zh-CN'"), "index.html should not hardcode zh-CN time locale");
         Matcher hardcodedAria = Pattern.compile("aria-label=\"说明\"").matcher(indexHtml);
         assertFalse(hardcodedAria.find(), "index.html should localize info-tip aria-label");
+
+        // MusicBrainz 回馈闭环前端资产、导航与中英文 i18n 对称校验
+        String contribHtml = Files.readString(PROJECT_ROOT.resolve("src/main/resources/static/contributions.html"), StandardCharsets.UTF_8);
+        assertTrue(contribHtml.contains("AppApi.request"), "contributions.html should use shared AppApi.request");
+        assertTrue(contribHtml.contains("AppErrors.humanError"), "contributions.html should use shared AppErrors.humanError");
+        assertTrue(contribHtml.contains("listSeq:") && contribHtml.contains("itemSeq:"), "contributions.html should guard against out-of-order responses");
+        assertTrue(contribHtml.contains("multipart/form-data") && contribHtml.contains("https://musicbrainz.org/release/add"),
+            "contributions.html should submit official MusicBrainz Release Editor seeding form");
+        for (String dtoField : List.of("seed.seedable", "cg.addCoverArtBaseUrl", "cg.publicHighResUrl", "cg.hasLocalBackup",
+                "tr.composers", "tr.lyricists", "tr.arrangers", "tr.suggestedEditNote", "cr.suggestedCreditedAs", "cr.needsVerification")) {
+            assertTrue(contribHtml.contains(dtoField), "contributions.html should align with server DTO field: " + dtoField);
+        }
+        assertTrue(shellJs.contains("/api/mb-contributions/stats"), "shell.js should poll /api/mb-contributions/stats");
+        assertTrue(indexHtml.contains("/api/mb-contributions/stats") && indexHtml.contains("cfgAcoustIdUserApiKey")
+            && indexHtml.contains("cfgMbContributionEnabled") && indexHtml.contains("cfgMbContributionAutoCheckAfterArchive"),
+            "index.html should integrate MB contribution nav stats and hot-reload settings");
+        assertTrue(reviewHtml.contains("/api/mb-contributions/create-from-review"),
+            "review.html should expose manual MB contribution action on confirmed online items");
+
+        String errorsJs = Files.readString(PROJECT_ROOT.resolve("src/main/resources/static/errors.js"), StandardCharsets.UTF_8);
+        for (String code : List.of("mb.contribution.release.invalid", "mb.contribution.track.mismatch",
+                "acoustid.user.key.missing", "acoustid.submit.failed")) {
+            assertTrue(errorsJs.contains(code), "errors.js should map " + code);
+        }
+
+        String zhProps = Files.readString(PROJECT_ROOT.resolve("src/main/resources/messages_zh_CN.properties"), StandardCharsets.UTF_8);
+        String enProps = Files.readString(PROJECT_ROOT.resolve("src/main/resources/messages_en_US.properties"), StandardCharsets.UTF_8);
+        for (String key : List.of("web.contributions=", "config.acoustid.user.key=", "config.mb.contribution.enabled=",
+                "contrib.page.title=", "contrib.act.seed.open=", "contrib.step3.works.title=", "contrib.err.track.mismatch=")) {
+            assertTrue(zhProps.contains(key), "messages_zh_CN.properties missing " + key);
+            assertTrue(enProps.contains(key), "messages_en_US.properties missing " + key);
+        }
     }
 }
