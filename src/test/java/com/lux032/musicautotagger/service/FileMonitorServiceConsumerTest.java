@@ -252,11 +252,15 @@ class FileMonitorServiceConsumerTest {
     }
 
     @Test void noPredicatePreservesProcessingAndInterval() throws Exception {
+        CountDownLatch enqueued = new CountDownLatch(1);
         CountDownLatch done = new CountDownLatch(2); List<Long> starts = new CopyOnWriteArrayList<>();
         monitor.setFileReadyCallbackWithResult(f -> {
-            starts.add(System.nanoTime()); done.countDown(); return ProcessResult.SUCCESS;
+            starts.add(System.nanoTime());
+            try { enqueued.await(5, TimeUnit.SECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            done.countDown(); return ProcessResult.SUCCESS;
         });
         monitor.start(); monitor.requeueFiles(List.of(file("a-review"), file("b-review")));
+        enqueued.countDown();
         assertTrue(done.await(7, TimeUnit.SECONDS)); assertEquals(2, starts.size());
         assertTrue(TimeUnit.NANOSECONDS.toMillis(starts.get(1) - starts.get(0)) >= 1900);
     }
