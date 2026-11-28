@@ -8,10 +8,10 @@
     <link rel="stylesheet" href="app.css?v=11">
     <script src="i18n.js?v=1"></script>
     <script src="ui.js?v=1"></script>
-    <script src="errors.js?v=1"></script>
+    <script src="errors.js?v=2"></script>
     <script src="api.js?v=1"></script>
     <script src="shell.js?v=2"></script>
-    <script src="search-queue.js?v=3"></script>
+    <script src="search-queue.js?v=4"></script>
     <style>
         /* ============================================================
            待确认 —— 「建议 → 选择并核对 → 决定」三段式
@@ -379,6 +379,30 @@
         .oc-conflict-opt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; }
         .oc-conflict-btn { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #fca5a5; background: #fff; color: #991b1b; cursor: pointer; font-weight: 600; }
         .oc-conflict-btn:hover { background: #fee2e2; }
+        .oc-mbid-item { padding: 10px 0; border-bottom: 1px solid var(--border); display: grid; gap: 6px; }
+        .oc-mbid-item:last-child { border-bottom: 0; padding-bottom: 2px; }
+        .oc-mbid-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; }
+        .oc-mbid-name { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+        .oc-mbid-role { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--bg-soft); color: var(--text-soft); border: 1px solid var(--border); }
+        .mbid-badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; font-weight: 500; border: 1px solid var(--border); background: var(--bg-soft); color: var(--text-soft); margin-left: auto; white-space: nowrap; }
+        .mbid-badge.st-RESOLVED { background: #dcfce7; border-color: #86efac; color: #166534; }
+        .mbid-badge.st-AMBIGUOUS { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+        .mbid-badge.st-MANUAL { background: #e8f1ff; border-color: #c5dcff; color: #1d4ed8; }
+        .mbid-badge.st-NOT_FOUND, .mbid-badge.st-SKIPPED, .mbid-badge.st-UNBOUND { background: var(--bg-soft); border-color: var(--border); color: var(--text-mute); }
+        .oc-mbid-meta { font-size: 11.5px; color: var(--text-soft); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+        .oc-mbid-meta a { font-family: var(--mono); font-size: 11px; }
+        .oc-mbid-disambig { color: var(--text-mute); }
+        .oc-mbid-cands { padding: 6px 8px; border-radius: 6px; background: #fffbeb; border: 1px solid #fde68a; display: grid; gap: 4px; }
+        .oc-mbid-cand-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; }
+        .oc-mbid-pick-btn { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #f59e0b; background: #fff; color: #92400e; cursor: pointer; font-weight: 600; }
+        .oc-mbid-pick-btn:hover { background: #fef3c7; }
+        .oc-mbid-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+        .oc-mbid-select { width: 100%; font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: #fff; color: var(--text); }
+        .oc-mbid-input { font-family: var(--mono); font-size: 12px; padding: 5px 8px; }
+        .oc-mbid-input.is-invalid { border-color: var(--danger); box-shadow: 0 0 0 2px var(--danger-soft); }
+        .mbid-preview-list { display: grid; gap: 4px; margin-top: 4px; }
+        .mbid-preview-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text-soft); overflow-wrap: anywhere; }
+        .mbid-preview-row a { font-family: var(--mono); font-size: 11px; }
 
         .cover-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; margin-top:8px; }
         .cover-choice { border:2px solid var(--border); border-radius:8px; padding:6px; cursor:pointer; background:#fff; text-align:left; font:inherit; }
@@ -577,6 +601,11 @@
                 <summary id="ocCreditsSummary"></summary>
                 <div class="hint" style="margin-top:6px" data-i18n="review.online.credits.hint">自动合并优先级：MusicBrainz &gt; 本地标签 &gt; 联网提取。多人请用分号「;」分隔；将已有内容清空会在归档时删除该标签。</div>
                 <div id="ocCreditsList"></div>
+            </details>
+            <details class="local-tracks" id="ocMbidsDetails" hidden>
+                <summary id="ocMbidsSummary"></summary>
+                <div class="hint" style="margin-top:6px" data-i18n="review.online.mbid.hint">仅写入真实 MusicBrainz 艺人 ID（绝不写入专辑或录音 ID）。可点选同名候选、粘贴 UUID 或 musicbrainz.org/artist/... 链接，或一键取消绑定。</div>
+                <div id="ocMbidsList"></div>
             </details>
             <div class="form-row">
                 <div class="cover-head">
@@ -1594,9 +1623,12 @@
             const coverage = totalLocal ? matched / totalLocal : 0;
             const selectable = pending && !stale && !!c.id;
             const selected = !!(sel && sel.type === 'online' && sel.id === c.id);
+            const mbidStats = summarizeEntityMbids(c.entityMbids);
             const tags = [
                 c.id && c.id === sysId ? `<span class="tag sys">${escapeHtml(t('review.badge.suggested'))}</span>` : '',
-                c.edition ? `<span class="tag" style="background:var(--bg-soft);color:var(--text-soft)">${escapeHtml(c.edition)}</span>` : ''
+                c.edition ? `<span class="tag" style="background:var(--bg-soft);color:var(--text-soft)">${escapeHtml(c.edition)}</span>` : '',
+                mbidStats.total > 0 ? `<span class="tag" style="background:#e8f1ff;color:#1d4ed8">${escapeHtml(tf('review.online.mbid.badge.summary', mbidStats.resolved, mbidStats.total))}</span>` : '',
+                mbidStats.ambiguous > 0 ? `<span class="tag near">${escapeHtml(tf('review.online.mbid.badge.ambiguous', mbidStats.ambiguous))}</span>` : ''
             ].join('');
             const sub = [c.albumArtist || c.artist, c.releaseDate || t('review.date.unknown')].filter(Boolean).map(escapeHtml).join(' · ');
             const covCls = coverage >= 0.85 ? 'd-ok' : (coverage >= 0.6 ? 'd-warn' : 'd-bad');
@@ -1606,6 +1638,7 @@
                 → ${escapeHtml(baseName(x.matchedFilePath))} · ${escapeHtml(tf('review.match', percent(x.matchConfidence)))}</div>${creditHtml ? `<div class="match-credits">${creditHtml}</div>` : ''}`;
             }).join('');
             const sources = (c.sources || []).map(src => `<div class="src-line"><span class="src-rel">${escapeHtml(src.reliability || '?')}</span>${linkOrText(src.url, src.title || src.domain || src.url)}${src.snippet ? ' — ' + escapeHtml(src.snippet) : ''}</div>`).join('');
+            const mbidPreview = renderOnlineEntityMbidsPreview(c);
             const candidateArtists = (c.albumArtists && c.albumArtists.length)
                 ? c.albumArtists
                 : ((!c.albumArtist || c.albumArtist === c.artist) && c.artists && c.artists.length ? c.artists : []);
@@ -1630,6 +1663,7 @@
                 ${selected || !pending ? `<div class="cand-more">
                     <div class="cand-more-title">${escapeHtml(t('review.track.match.detail'))}<span class="hint">${escapeHtml(tf('review.tracklist.summary', (c.tracks || []).length, (c.sources || []).length))}</span></div>
                     ${trackRows || `<div class="hint">—</div>`}
+                    ${mbidPreview}
                     ${sources ? `<div class="cand-more-title" style="margin-top:10px">${escapeHtml(t('review.source'))}</div>${sources}` : ''}
                 </div>` : ''}
             </div>`;
@@ -2541,6 +2575,7 @@
                     const changed = !sameNameList(cur, init.names);
                     updateCreditSourceBadge(badge, changed ? 'MANUAL' : init.source);
                     refreshSummary();
+                    syncOnlineMbidsEditor(false);
                 });
                 line.append(label, input, badge);
                 card.append(line);
@@ -2558,10 +2593,414 @@
         refreshSummary();
     }
 
+    const UUID_EXACT_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+    const MB_ARTIST_URL_RE = /^(?:https?:\/\/)?(?:www\.|beta\.)?musicbrainz\.org\/artist\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?#].*)?$/i;
+    const NIL_UUID = '00000000-0000-0000-0000-000000000000';
+    const MBID_PLACEHOLDER_KEYS = new Set(['various artists', 'unknown artist', 'unknown', 'va', 'v.a.', 'v.a']);
+    const MBID_ROLE_I18N = {
+        album_artist: 'ALBUM_ARTIST',
+        artist: 'TRACK_ARTIST',
+        track_artist: 'TRACK_ARTIST',
+        composer: 'COMPOSER',
+        lyricist: 'LYRICIST',
+        arranger: 'ARRANGER'
+    };
+
+    function normalizePersonKeyJs(raw) {
+        return String(raw == null ? '' : raw)
+            .normalize('NFKC')
+            .replace(/[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/g, ' ')
+            .trim()
+            .toLowerCase();
+    }
+
+    function mbidRoleLabel(role) {
+        const key = MBID_ROLE_I18N[String(role || '').toLowerCase()] || String(role || '').toUpperCase();
+        return t('review.online.mbid.role.' + key, role || '');
+    }
+
+    function normalizeMbidInput(raw) {
+        const text = String(raw == null ? '' : raw).trim();
+        if (!text) return '';
+        let match = UUID_EXACT_RE.exec(text);
+        if (!match) match = MB_ARTIST_URL_RE.exec(text);
+        if (!match) return null;
+        const uuid = match[1].toLowerCase();
+        return uuid === NIL_UUID ? null : uuid;
+    }
+
+    function mbArtistUrl(uuid) {
+        const clean = normalizeMbidInput(uuid);
+        return clean ? 'https://musicbrainz.org/artist/' + clean : null;
+    }
+
+    function sortedEntityMbidEntries(entityMbids) {
+        if (!entityMbids || typeof entityMbids !== 'object') return [];
+        const statusOrder = { AMBIGUOUS: 0, RESOLVED: 1, NOT_FOUND: 2, SKIPPED: 3 };
+        return Object.entries(entityMbids)
+            .filter(([, v]) => v && typeof v === 'object')
+            .sort((a, b) => {
+                const sa = statusOrder[a[1].status] ?? 9;
+                const sb = statusOrder[b[1].status] ?? 9;
+                if (sa !== sb) return sa - sb;
+                return String(a[1].displayName || a[0]).localeCompare(String(b[1].displayName || b[0]));
+            });
+    }
+
+    function summarizeEntityMbids(entityMbids) {
+        const entries = sortedEntityMbidEntries(entityMbids);
+        let resolved = 0;
+        let ambiguous = 0;
+        for (const [, res] of entries) {
+            if (res.status === 'RESOLVED' && normalizeMbidInput(res.selectedMbid)) resolved++;
+            else if (res.status === 'AMBIGUOUS') ambiguous++;
+        }
+        return { total: entries.length, resolved, ambiguous };
+    }
+
+    function mbidBadgeText(status, source) {
+        if (status === 'RESOLVED' && source) {
+            return t('review.online.mbid.source.' + source, t('review.online.mbid.status.RESOLVED'));
+        }
+        return t('review.online.mbid.status.' + (status || 'NOT_FOUND'), status || '');
+    }
+
+    function mbidCandidateLabel(cand) {
+        if (!cand) return '';
+        const meta = [cand.disambiguation, cand.country, cand.type].filter(Boolean).join(' · ');
+        const base = cand.name || cand.mbid || '';
+        const shortId = cand.mbid ? String(cand.mbid).slice(0, 8) : '';
+        return meta ? `${base} (${meta}) [${shortId}]` : `${base} [${shortId}]`;
+    }
+
+    function renderOnlineEntityMbidsPreview(c) {
+        const entries = sortedEntityMbidEntries(c?.entityMbids);
+        if (!entries.length) return '';
+        const rows = entries.map(([key, res]) => {
+            const roles = Array.isArray(res.roles) ? res.roles.map(r =>
+                `<span class="oc-mbid-role">${escapeHtml(mbidRoleLabel(r))}</span>`).join('') : '';
+            const validMbid = res.status === 'RESOLVED' ? normalizeMbidInput(res.selectedMbid) : '';
+            const linkHtml = validMbid
+                ? `<a href="${escapeHtml(mbArtistUrl(validMbid))}" target="_blank" rel="noopener noreferrer">${escapeHtml(validMbid)}</a>`
+                : '';
+            const disambig = res.selectedDisambiguation
+                ? `<span class="oc-mbid-disambig">(${escapeHtml(res.selectedDisambiguation)})</span>` : '';
+            const badge = `<span class="mbid-badge st-${escapeHtml(res.status || 'NOT_FOUND')}" style="margin-left:0">${escapeHtml(mbidBadgeText(res.status, res.source))}</span>`;
+            let candHtml = '';
+            if (res.status === 'AMBIGUOUS' && Array.isArray(res.candidates) && res.candidates.length) {
+                const cList = res.candidates.map(cand => {
+                    const cMbid = normalizeMbidInput(cand?.mbid);
+                    if (!cMbid) return '';
+                    const detail = [cand.disambiguation, cand.country, cand.type].filter(Boolean).join(' · ');
+                    return `<div class="oc-mbid-cand-row"><span>${escapeHtml(cand.name || cMbid.slice(0, 8))}</span>${detail ? `<span class="oc-mbid-disambig">(${escapeHtml(detail)})</span>` : ''}<a href="${escapeHtml(mbArtistUrl(cMbid))}" target="_blank" rel="noopener noreferrer">${escapeHtml(t('review.online.mbid.open'))}</a></div>`;
+                }).filter(Boolean).join('');
+                if (cList) candHtml = `<div class="oc-mbid-cands" style="margin:2px 0 4px">${cList}</div>`;
+            }
+            return `<div class="mbid-preview-row"><strong>${escapeHtml(res.displayName || key)}</strong>${roles}${badge}${linkHtml}${disambig}</div>${candHtml}`;
+        }).join('');
+        return `<div class="cand-more-title" style="margin-top:10px">${escapeHtml(t('review.online.mbid.section.title'))}</div><div class="mbid-preview-list">${rows}</div>`;
+    }
+
+    function collectEditedDialogEntityEntries(candidate) {
+        const merged = new Map();
+        for (const [rawKey, res] of sortedEntityMbidEntries(candidate?.entityMbids)) {
+            const key = normalizePersonKeyJs(res.normalizedKey || res.displayName || rawKey);
+            if (!key || MBID_PLACEHOLDER_KEYS.has(key)) continue;
+            merged.set(key, { key, res, dynamic: false });
+        }
+        const addDynamic = (rawName, role) => {
+            const name = String(rawName || '').trim();
+            const key = normalizePersonKeyJs(name);
+            if (!key || MBID_PLACEHOLDER_KEYS.has(key)) return;
+            if (merged.has(key)) {
+                const existing = merged.get(key);
+                if (existing.dynamic && !existing.res.roles.includes(role)) {
+                    existing.res.roles.push(role);
+                }
+                return;
+            }
+            merged.set(key, {
+                key,
+                dynamic: true,
+                res: {
+                    normalizedKey: key,
+                    displayName: name,
+                    status: 'NOT_FOUND',
+                    roles: [role],
+                    candidates: []
+                }
+            });
+        };
+        const splitAlbumArtists = artistNames($('ocArtists'));
+        if (splitAlbumArtists.length) {
+            splitAlbumArtists.forEach(n => addDynamic(n, 'album_artist'));
+        } else {
+            const singleAlbumArtist = $('ocArtist').value.trim();
+            if (singleAlbumArtist && !/[,&/]|feat\.|ft\./i.test(singleAlbumArtist)) {
+                addDynamic(singleAlbumArtist, 'album_artist');
+            }
+        }
+        const roleKeyMap = { composers: 'composer', lyricists: 'lyricist', arrangers: 'arranger' };
+        for (const row of (pendingOnline?.creditRows || [])) {
+            for (const role of (row.roles || [])) {
+                const curNames = parseCreditInput(role.input.value);
+                curNames.forEach(n => addDynamic(n, roleKeyMap[role.key] || role.key));
+            }
+        }
+        return [...merged.values()];
+    }
+
+    function syncOnlineMbidsEditor(isInitialOpen) {
+        if (!pendingOnline) return;
+        const details = $('ocMbidsDetails');
+        const list = $('ocMbidsList');
+        const drafts = pendingOnline.mbidDrafts || (pendingOnline.mbidDrafts = new Map());
+        for (const row of (pendingOnline.mbidRows || [])) {
+            drafts.set(row.key, { value: row.input.value, explicitlyUnbound: !!row.explicitlyUnbound });
+        }
+        const candidate = pendingOnline.candidate;
+        const hasInitialServerMbids = sortedEntityMbidEntries(candidate?.entityMbids).length > 0;
+        const allEntries = collectEditedDialogEntityEntries(candidate);
+        const hasEditedDynamic = !isInitialOpen && allEntries.some(e => e.dynamic);
+
+        // 历史条目无 entityMbids 且用户未编辑新名字时隐藏区块，保持干净降级
+        if (!allEntries.length || (!hasInitialServerMbids && !hasEditedDynamic && !pendingOnline.mbidsVisible)) {
+            details.hidden = true;
+            if (isInitialOpen) details.open = false;
+            pendingOnline.mbidRows = [];
+            return;
+        }
+        pendingOnline.mbidsVisible = true;
+        const prevOpen = details.open;
+        list.replaceChildren();
+        details.hidden = false;
+        const rows = [];
+        let hasAnyAmbiguous = false;
+
+        function refreshSummary() {
+            let matched = 0;
+            let ambiguous = 0;
+            let edited = 0;
+            for (const row of rows) {
+                const cur = normalizeMbidInput(row.input.value);
+                if (cur) matched++;
+                else if (row.initialStatus === 'AMBIGUOUS' && row.input.value.trim() === '' && !row.explicitlyUnbound) ambiguous++;
+                const curEff = cur === null ? row.input.value.trim() : cur;
+                if (curEff !== row.initialMbid || row.explicitlyUnbound) edited++;
+            }
+            if (edited > 0) {
+                $('ocMbidsSummary').textContent = tf('review.online.mbid.summary.edited', matched, rows.length, edited);
+            } else if (ambiguous > 0) {
+                $('ocMbidsSummary').textContent = tf('review.online.mbid.summary.ambiguous', matched, rows.length, ambiguous);
+            } else {
+                $('ocMbidsSummary').textContent = tf('review.online.mbid.summary', matched, rows.length);
+            }
+        }
+
+        for (const entry of allEntries) {
+            const key = entry.key;
+            const res = entry.res;
+            const initialStatus = res.status || 'NOT_FOUND';
+            const initialSource = res.source || '';
+            const initialMbid = initialStatus === 'RESOLVED' ? (normalizeMbidInput(res.selectedMbid) || '') : '';
+            if (initialStatus === 'AMBIGUOUS') hasAnyAmbiguous = true;
+
+            const savedDraft = drafts.get(key);
+            const rowState = {
+                key,
+                initialStatus,
+                initialMbid,
+                explicitlyUnbound: savedDraft ? !!savedDraft.explicitlyUnbound : false,
+                input: null
+            };
+
+            const card = document.createElement('div');
+            card.className = 'oc-mbid-item';
+
+            const head = document.createElement('div');
+            head.className = 'oc-mbid-head';
+            const nameEl = document.createElement('span');
+            nameEl.className = 'oc-mbid-name';
+            nameEl.textContent = res.displayName || key;
+            head.append(nameEl);
+            for (const role of (Array.isArray(res.roles) ? res.roles : [])) {
+                const chip = document.createElement('span');
+                chip.className = 'oc-mbid-role';
+                chip.textContent = mbidRoleLabel(role);
+                head.append(chip);
+            }
+            const badge = document.createElement('span');
+            badge.className = 'mbid-badge st-' + initialStatus;
+            badge.textContent = mbidBadgeText(initialStatus, initialSource);
+            head.append(badge);
+            card.append(head);
+
+            const meta = document.createElement('div');
+            meta.className = 'oc-mbid-meta';
+            card.append(meta);
+
+            const candidates = Array.isArray(res.candidates) ? res.candidates.filter(x => x && normalizeMbidInput(x.mbid)) : [];
+            let selectEl = null;
+
+            const controls = document.createElement('div');
+            controls.className = 'oc-mbid-controls';
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'oc-mbid-input';
+            input.value = savedDraft ? savedDraft.value : initialMbid;
+            input.placeholder = t('review.online.mbid.placeholder');
+            input.setAttribute('aria-label', `${res.displayName || key} MusicBrainz Artist ID`);
+            rowState.input = input;
+
+            const unbindBtn = document.createElement('button');
+            unbindBtn.type = 'button';
+            unbindBtn.className = 'btn ghost sm';
+            unbindBtn.textContent = t('review.online.mbid.unbind');
+
+            function syncRowUi({ extractUrl = false, userTyped = false } = {}) {
+                const rawVal = input.value;
+                const parsed = normalizeMbidInput(rawVal);
+                if (extractUrl && parsed && rawVal.trim() !== parsed) {
+                    input.value = parsed;
+                }
+                if (userTyped) {
+                    if (rawVal.trim() !== '') {
+                        rowState.explicitlyUnbound = false;
+                    } else if (initialMbid !== '') {
+                        rowState.explicitlyUnbound = true;
+                    }
+                }
+                drafts.set(key, { value: input.value, explicitlyUnbound: rowState.explicitlyUnbound });
+                const invalid = rawVal.trim() !== '' && parsed === null;
+                input.classList.toggle('is-invalid', invalid);
+                if (selectEl) {
+                    const matchedOpt = parsed && candidates.some(x => normalizeMbidInput(x.mbid) === parsed);
+                    selectEl.value = matchedOpt ? parsed : '';
+                }
+                if (invalid) {
+                    badge.className = 'mbid-badge st-AMBIGUOUS';
+                    badge.textContent = t('review.online.mbid.status.MANUAL');
+                } else if (rowState.explicitlyUnbound && !parsed) {
+                    badge.className = 'mbid-badge st-UNBOUND';
+                    badge.textContent = t('review.online.mbid.status.UNBOUND');
+                } else if (parsed === initialMbid) {
+                    badge.className = 'mbid-badge st-' + initialStatus;
+                    badge.textContent = mbidBadgeText(initialStatus, initialSource);
+                } else if (parsed) {
+                    badge.className = 'mbid-badge st-MANUAL';
+                    badge.textContent = t('review.online.mbid.status.MANUAL');
+                } else {
+                    badge.className = 'mbid-badge st-UNBOUND';
+                    badge.textContent = t('review.online.mbid.status.UNBOUND');
+                }
+                meta.replaceChildren();
+                if (parsed) {
+                    meta.append(createSafeExternalLink(mbArtistUrl(parsed), parsed));
+                    const hitCand = candidates.find(x => normalizeMbidInput(x.mbid) === parsed);
+                    const disambig = hitCand?.disambiguation
+                        || (parsed === initialMbid ? res.selectedDisambiguation : '');
+                    if (disambig) {
+                        const dSpan = document.createElement('span');
+                        dSpan.className = 'oc-mbid-disambig';
+                        dSpan.textContent = `(${disambig})`;
+                        meta.append(dSpan);
+                    }
+                }
+                if (res.reason && parsed === initialMbid && !rowState.explicitlyUnbound) {
+                    const rSpan = document.createElement('span');
+                    rSpan.className = 'oc-mbid-disambig';
+                    rSpan.textContent = res.reason;
+                    meta.append(rSpan);
+                }
+                meta.hidden = meta.childNodes.length === 0;
+                refreshSummary();
+            }
+
+            if (candidates.length > 0) {
+                if (initialStatus === 'AMBIGUOUS') {
+                    const candBox = document.createElement('div');
+                    candBox.className = 'oc-mbid-cands';
+                    for (const cand of candidates) {
+                        const cMbid = normalizeMbidInput(cand.mbid);
+                        if (!cMbid) continue;
+                        const cRow = document.createElement('div');
+                        cRow.className = 'oc-mbid-cand-row';
+                        const pickBtn = document.createElement('button');
+                        pickBtn.type = 'button';
+                        pickBtn.className = 'oc-mbid-pick-btn';
+                        pickBtn.textContent = cand.name || cMbid.slice(0, 8);
+                        pickBtn.addEventListener('click', () => {
+                            input.value = cMbid;
+                            rowState.explicitlyUnbound = false;
+                            syncRowUi();
+                        });
+                        cRow.append(pickBtn);
+                        const detailParts = [cand.disambiguation, cand.country, cand.type].filter(Boolean);
+                        if (detailParts.length) {
+                            const info = document.createElement('span');
+                            info.className = 'oc-mbid-disambig';
+                            info.textContent = detailParts.join(' · ');
+                            cRow.append(info);
+                        }
+                        cRow.append(createSafeExternalLink(mbArtistUrl(cMbid), t('review.online.mbid.open')));
+                        candBox.append(cRow);
+                    }
+                    card.append(candBox);
+                }
+                selectEl = document.createElement('select');
+                selectEl.className = 'oc-mbid-select';
+                selectEl.setAttribute('aria-label', `${res.displayName || key} - ${t('review.online.mbid.candidates.label')}`);
+                const noneOpt = document.createElement('option');
+                noneOpt.value = '';
+                noneOpt.textContent = t('review.online.mbid.candidates.none');
+                selectEl.append(noneOpt);
+                for (const cand of candidates) {
+                    const cMbid = normalizeMbidInput(cand.mbid);
+                    if (!cMbid) continue;
+                    const opt = document.createElement('option');
+                    opt.value = cMbid;
+                    opt.textContent = mbidCandidateLabel(cand);
+                    selectEl.append(opt);
+                }
+                selectEl.addEventListener('change', () => {
+                    input.value = selectEl.value;
+                    rowState.explicitlyUnbound = selectEl.value === '' && initialMbid !== '';
+                    syncRowUi();
+                });
+                card.append(selectEl);
+            }
+
+            input.addEventListener('input', () => syncRowUi({ extractUrl: true, userTyped: true }));
+            input.addEventListener('blur', () => syncRowUi({ extractUrl: true }));
+            unbindBtn.addEventListener('click', () => {
+                input.value = '';
+                rowState.explicitlyUnbound = true;
+                syncRowUi();
+            });
+            controls.append(input, unbindBtn);
+            card.append(controls);
+            list.append(card);
+            rows.push(rowState);
+            syncRowUi();
+        }
+
+        details.open = isInitialOpen ? hasAnyAmbiguous : prevOpen;
+        pendingOnline.mbidRows = rows;
+        refreshSummary();
+    }
+
+    function renderOnlineMbidsEditor(item, c) {
+        if (!pendingOnline) return;
+        pendingOnline.candidate = c;
+        pendingOnline.mbidDrafts = new Map();
+        pendingOnline.mbidsVisible = false;
+        syncOnlineMbidsEditor(true);
+    }
+
     function doConfirmOnline() {
         const item = state.item, c = selectedCandidate();
         if (!item || !c || state.selection.type !== 'online') return;
-        pendingOnline = { itemId: item.id, candidateId: c.id, creditRows: [] };
+        pendingOnline = { itemId: item.id, candidateId: c.id, candidate: c, creditRows: [], mbidRows: [], mbidDrafts: new Map(), mbidsVisible: false };
         pendingCoverSha256 = null;
         $('ocTitle').value = c.title || '';
         const defaultArtist = c.albumArtist || c.artist || '';
@@ -2571,12 +3010,16 @@
         $('ocArtist').value = defaultArtist;
         const editor = $('ocArtists');
         editor.dataset.edited = '';
-        artistEditor(editor, defaultArtists, () => { editor.dataset.edited = '1'; });
+        artistEditor(editor, defaultArtists, () => {
+            editor.dataset.edited = '1';
+            syncOnlineMbidsEditor(false);
+        });
         $('ocDate').value = c.releaseDate || '';
         $('ocEdition').value = c.edition || '';
         $('ocDir').value = '';
         if ($('ocConfirmNoCover')) { $('ocConfirmNoCover').checked = false; $('ocConfirmNoCover').disabled = false; }
         renderOnlineCreditsEditor(item, c);
+        renderOnlineMbidsEditor(item, c);
         $('onlineError').style.display = 'none';
         chooseCover(null);
         openOverlay('onlineDialog');
@@ -2619,6 +3062,27 @@
         }
         if (Object.keys(trackCredits).length > 0) {
             payload.trackCredits = trackCredits;
+        }
+        const entityMbidOverrides = {};
+        for (const row of (pendingOnline.mbidRows || [])) {
+            const rawVal = row.input.value.trim();
+            const parsed = normalizeMbidInput(rawVal);
+            if (rawVal !== '' && parsed === null) {
+                const err = $('onlineError');
+                err.textContent = t('review.online.mbid.invalid');
+                err.style.display = 'block';
+                $('ocMbidsDetails').open = true;
+                row.input.classList.add('is-invalid');
+                row.input.focus();
+                return;
+            }
+            const effectiveVal = parsed || '';
+            if (effectiveVal !== row.initialMbid || row.explicitlyUnbound) {
+                entityMbidOverrides[row.key] = effectiveVal;
+            }
+        }
+        if (Object.keys(entityMbidOverrides).length > 0) {
+            payload.entityMbidOverrides = entityMbidOverrides;
         }
         if (!payload.albumTitle) {
             const err = $('onlineError');
@@ -2719,8 +3183,13 @@
     };
 
     $('ocArtist').addEventListener('input', () => {
-        if ($('ocArtists').dataset.edited) return;
-        artistEditor($('ocArtists'), [], () => { $('ocArtists').dataset.edited = '1'; });
+        if (!$('ocArtists').dataset.edited) {
+            artistEditor($('ocArtists'), [], () => {
+                $('ocArtists').dataset.edited = '1';
+                syncOnlineMbidsEditor(false);
+            });
+        }
+        syncOnlineMbidsEditor(false);
     });
 
     document.addEventListener('click', e => {

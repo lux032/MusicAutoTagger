@@ -352,6 +352,66 @@ class TagWriterServiceTest {
         }
     }
 
+    @Test
+    void explicitArtistIdClearFlagsDeleteAndRewriteAcrossContainers() throws Exception {
+        MusicMetadata initial = new MusicMetadata();
+        initial.setTitle("Song");
+        initial.setArtist("Old Singer");
+        initial.setAlbumArtist("Old Album Artist");
+        initial.setArtistId("11111111-1111-4111-8111-111111111111");
+        initial.setArtistSort("Singer, Old");
+        initial.setAlbumArtistId("22222222-2222-4222-8222-222222222222");
+        initial.setAlbumArtistSort("Artist, Old Album");
+
+        // copyWithoutHeavyFields 必须保留显式清空艺人 ID 标志
+        MusicMetadata clearOnly = new MusicMetadata();
+        clearOnly.setArtist("New Singer");
+        clearOnly.setAlbumArtist("Various Artists");
+        clearOnly.setClearArtistId(true);
+        clearOnly.setClearAlbumArtistId(true);
+        MusicMetadata copied = clearOnly.copyWithoutHeavyFields();
+        assertEquals(true, copied.isClearArtistId());
+        assertEquals(true, copied.isClearAlbumArtistId());
+
+        MusicMetadata rewriteBoth = new MusicMetadata();
+        rewriteBoth.setArtist("Rewritten Singer");
+        rewriteBoth.setAlbumArtist("Rewritten Album Artist");
+        rewriteBoth.setClearArtistId(true);
+        rewriteBoth.setClearAlbumArtistId(true);
+        rewriteBoth.setArtistId("33333333-3333-4333-8333-333333333333");
+        rewriteBoth.setArtistSort("Singer, Rewritten");
+        rewriteBoth.setAlbumArtistId("44444444-4444-4444-8444-444444444444");
+        rewriteBoth.setAlbumArtistSort("Artist, Rewritten Album");
+
+        org.jaudiotagger.tag.wav.WavTag wavTag =
+            new org.jaudiotagger.tag.wav.WavTag(org.jaudiotagger.audio.wav.WavOptions.READ_ID3_ONLY);
+        wavTag.setID3Tag(new ID3v24Tag());
+
+        for (org.jaudiotagger.tag.Tag tag : List.of(
+                new FlacTag(), new VorbisCommentTag(), new ID3v23Tag(), new ID3v24Tag(), new Mp4Tag(), wavTag)) {
+            String type = tag.getClass().getSimpleName();
+            invokeUpdateTextTags(tag, initial);
+            assertEquals("11111111-1111-4111-8111-111111111111", tag.getFirst(FieldKey.MUSICBRAINZ_ARTISTID), type);
+            assertEquals("22222222-2222-4222-8222-222222222222", tag.getFirst(FieldKey.MUSICBRAINZ_RELEASEARTISTID), type);
+            assertEquals("Singer, Old", tag.getFirst(FieldKey.ARTIST_SORT), type);
+            assertEquals("Artist, Old Album", tag.getFirst(FieldKey.ALBUM_ARTIST_SORT), type);
+
+            // 显式清理且无新值时，删除旧艺人 MBID 与对应排序名
+            invokeUpdateTextTags(tag, clearOnly);
+            assertEquals("", tag.getFirst(FieldKey.MUSICBRAINZ_ARTISTID), type);
+            assertEquals("", tag.getFirst(FieldKey.MUSICBRAINZ_RELEASEARTISTID), type);
+            assertEquals("", tag.getFirst(FieldKey.ARTIST_SORT), type);
+            assertEquals("", tag.getFirst(FieldKey.ALBUM_ARTIST_SORT), type);
+
+            // 显式清理并写入新值时，新 MBID 与排序名准确落盘
+            invokeUpdateTextTags(tag, rewriteBoth);
+            assertEquals("33333333-3333-4333-8333-333333333333", tag.getFirst(FieldKey.MUSICBRAINZ_ARTISTID), type);
+            assertEquals("44444444-4444-4444-8444-444444444444", tag.getFirst(FieldKey.MUSICBRAINZ_RELEASEARTISTID), type);
+            assertEquals("Singer, Rewritten", tag.getFirst(FieldKey.ARTIST_SORT), type);
+            assertEquals("Artist, Rewritten Album", tag.getFirst(FieldKey.ALBUM_ARTIST_SORT), type);
+        }
+    }
+
     private static void invokeUpdateTextTags(org.jaudiotagger.tag.Tag tag, MusicMetadata metadata) throws Exception {
         TagWriterService writer = new TagWriterService(MusicConfig.getInstance());
         Method method = TagWriterService.class.getDeclaredMethod(

@@ -391,6 +391,13 @@ online.credits.allowTavilyExtract=true
 # 联网自动合并时是否采用通过核验的 PROBABLE（推测级）字段（false = 仅自动采用 VERIFIED）
 online.credits.applyProbable=true
 
+# 联网识别人物级 MusicBrainz Artist MBID 解析（本地缓存 -> 网页外链核验 -> MB Artist API）
+online.mbid.resolve.enabled=true
+# 单张专辑人物级 MBID 解析最大外部 MusicBrainz API 查询次数（0..50）
+online.mbid.maxLookupsPerAlbum=15
+# 遇到 MusicBrainz 同名多候选时是否启用封闭式 LLM 上下文消歧
+online.mbid.llmDisambiguate.enabled=true
+
 # ----------------------------------------
 # 联网搜索的实现来源：native | tavily
 # ----------------------------------------

@@ -34,6 +34,9 @@ class OnlineCreditsConfigAndUsageTest {
         assertEquals(6, cfg.getOnlineCreditsMaxFetchPages());
         assertTrue(cfg.isOnlineCreditsAllowTavilyExtract());
         assertTrue(cfg.isOnlineCreditsApplyProbable());
+        assertTrue(cfg.isOnlineMbidResolveEnabled());
+        assertEquals(15, cfg.getOnlineMbidMaxLookupsPerAlbum());
+        assertTrue(cfg.isOnlineMbidLlmDisambiguateEnabled());
 
         // 验证 ConfigFieldSpec 注册齐全
         assertNotNull(ConfigFieldSpec.get("llm.webSearch.nativeContextSize"));
@@ -43,6 +46,12 @@ class OnlineCreditsConfigAndUsageTest {
         assertNotNull(ConfigFieldSpec.get("online.credits.maxFetchPages"));
         assertNotNull(ConfigFieldSpec.get("online.credits.allowTavilyExtract"));
         assertNotNull(ConfigFieldSpec.get("online.credits.applyProbable"));
+        assertNotNull(ConfigFieldSpec.get("online.mbid.resolve.enabled"));
+        assertNotNull(ConfigFieldSpec.get("online.mbid.maxLookupsPerAlbum"));
+        assertNotNull(ConfigFieldSpec.get("online.mbid.llmDisambiguate.enabled"));
+        assertFalse(ConfigFieldSpec.requiresRestart("online.mbid.resolve.enabled"));
+        assertFalse(ConfigFieldSpec.requiresRestart("online.mbid.maxLookupsPerAlbum"));
+        assertFalse(ConfigFieldSpec.requiresRestart("online.mbid.llmDisambiguate.enabled"));
 
         // 合法值写盘再重读
         cfg.setLlmWebSearchNativeContextSize("medium");
@@ -52,6 +61,9 @@ class OnlineCreditsConfigAndUsageTest {
         cfg.setOnlineCreditsMaxFetchPages(8);
         cfg.setOnlineCreditsAllowTavilyExtract(false);
         cfg.setOnlineCreditsApplyProbable(false);
+        cfg.setOnlineMbidResolveEnabled(false);
+        cfg.setOnlineMbidMaxLookupsPerAlbum(25);
+        cfg.setOnlineMbidLlmDisambiguateEnabled(false);
         Path propsFile = dir.resolve("config.properties");
         cfg.saveToFile(propsFile);
 
@@ -64,6 +76,9 @@ class OnlineCreditsConfigAndUsageTest {
         assertEquals(8, reloaded.getOnlineCreditsMaxFetchPages());
         assertFalse(reloaded.isOnlineCreditsAllowTavilyExtract());
         assertFalse(reloaded.isOnlineCreditsApplyProbable());
+        assertFalse(reloaded.isOnlineMbidResolveEnabled());
+        assertEquals(25, reloaded.getOnlineMbidMaxLookupsPerAlbum());
+        assertFalse(reloaded.isOnlineMbidLlmDisambiguateEnabled());
 
         // 越界值回退默认值
         Path badProps = dir.resolve("bad.properties");
@@ -72,6 +87,7 @@ class OnlineCreditsConfigAndUsageTest {
             online.credits.maxFollowUpRounds=99
             online.credits.maxSearchCalls=0
             online.credits.maxFetchPages=-5
+            online.mbid.maxLookupsPerAlbum=999
             """);
         MusicConfig clamped = newConfig();
         clamped.loadFromFile(badProps);
@@ -79,6 +95,68 @@ class OnlineCreditsConfigAndUsageTest {
         assertEquals(2, clamped.getOnlineCreditsMaxFollowUpRounds());
         assertEquals(6, clamped.getOnlineCreditsMaxSearchCalls());
         assertEquals(6, clamped.getOnlineCreditsMaxFetchPages());
+        assertEquals(15, clamped.getOnlineMbidMaxLookupsPerAlbum());
+
+        // 缺省属性文件重载时恢复默认值
+        Path emptyProps = dir.resolve("empty.properties");
+        Files.writeString(emptyProps, "web.port=8080\n");
+        reloaded.loadFromFile(emptyProps);
+        assertTrue(reloaded.isOnlineMbidResolveEnabled());
+        assertEquals(15, reloaded.getOnlineMbidMaxLookupsPerAlbum());
+        assertTrue(reloaded.isOnlineMbidLlmDisambiguateEnabled());
+    }
+
+    @Test
+    void configServletHotReloadsOnlineMbidOptionsWithoutRestart() throws Exception {
+        Path configPath = dir.resolve("hot.properties");
+        Files.writeString(configPath, "web.port=8080\n");
+        MusicConfig cfg = newConfig();
+        cfg.loadFromFile(configPath);
+        com.lux032.musicautotagger.web.ConfigServlet servlet =
+            new com.lux032.musicautotagger.web.ConfigServlet(cfg, configPath);
+
+        java.lang.reflect.Method apply = com.lux032.musicautotagger.web.ConfigServlet.class
+            .getDeclaredMethod("applyConfigMap", java.util.Map.class, boolean.class, boolean.class);
+        apply.setAccessible(true);
+        Object res = apply.invoke(servlet, java.util.Map.of(
+            "onlineMbidResolveEnabled", Boolean.FALSE,
+            "onlineMbidMaxLookupsPerAlbum", 30,
+            "onlineMbidLlmDisambiguateEnabled", Boolean.FALSE
+        ), false, false);
+        java.lang.reflect.Method requiresRestart = res.getClass().getDeclaredMethod("requiresRestart");
+        requiresRestart.setAccessible(true);
+        assertFalse((Boolean) requiresRestart.invoke(res));
+        assertFalse(cfg.isOnlineMbidResolveEnabled());
+        assertEquals(30, cfg.getOnlineMbidMaxLookupsPerAlbum());
+        assertFalse(cfg.isOnlineMbidLlmDisambiguateEnabled());
+
+        java.util.Properties persisted = new java.util.Properties();
+        try (var reader = Files.newBufferedReader(configPath)) {
+            persisted.load(reader);
+        }
+        assertEquals("false", persisted.getProperty("online.mbid.resolve.enabled"));
+        assertEquals("30", persisted.getProperty("online.mbid.maxLookupsPerAlbum"));
+        assertEquals("false", persisted.getProperty("online.mbid.llmDisambiguate.enabled"));
+
+        // 非法类型、小数与越界值必须抛出 ValidationException（对应 HTTP 400）
+        for (java.util.Map<String, Object> badBody : java.util.List.<java.util.Map<String, Object>>of(
+                java.util.Map.of("onlineMbidMaxLookupsPerAlbum", 12.5d),
+                java.util.Map.of("onlineMbidMaxLookupsPerAlbum", -1),
+                java.util.Map.of("onlineMbidMaxLookupsPerAlbum", 51),
+                java.util.Map.of("onlineMbidMaxLookupsPerAlbum", "abc"),
+                java.util.Map.of("onlineMbidResolveEnabled", 123),
+                java.util.Map.of("onlineMbidLlmDisambiguateEnabled", "maybe"))) {
+            java.lang.reflect.InvocationTargetException ite = assertThrows(
+                java.lang.reflect.InvocationTargetException.class,
+                () -> apply.invoke(servlet, badBody, false, false),
+                "Expected validation failure for " + badBody);
+            assertEquals("ValidationException", ite.getCause().getClass().getSimpleName());
+        }
+
+        // 不可变快照与上界夹紧（0..50）保证跨线程一致性
+        MusicConfig.OnlineMbidSettings snap = cfg.updateOnlineMbidSettings(true, 999, true);
+        assertEquals(50, snap.maxLookupsPerAlbum());
+        assertEquals(snap, cfg.getOnlineMbidSettings());
     }
 
     @Test

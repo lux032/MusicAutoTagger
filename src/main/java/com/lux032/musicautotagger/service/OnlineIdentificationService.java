@@ -9,6 +9,7 @@ import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.llm.CreditEvidenceVerifier;
 import com.lux032.musicautotagger.service.llm.LlmAlbumJudge;
+import com.lux032.musicautotagger.service.llm.LlmArtistDisambiguator;
 import com.lux032.musicautotagger.service.llm.LlmArtistSplitter;
 import com.lux032.musicautotagger.service.llm.LlmClient;
 import com.lux032.musicautotagger.service.llm.NativeWebSearchClient;
@@ -54,6 +55,7 @@ public class OnlineIdentificationService implements AutoCloseable {
     private final WebSearchClient searchClientOverride;
     private final WebPageFetcher webPageFetcher;
     private final TrackCreditEnrichmentService creditEnrichmentService;
+    private final OnlineEntityMbidResolver entityMbidResolver;
     private final ReviewQueueService reviewQueue;
     private final TagWriterService tagWriter;
     private final AudioFingerprintService fingerprintService;
@@ -63,19 +65,28 @@ public class OnlineIdentificationService implements AutoCloseable {
 
     public OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
                                        TagWriterService tagWriter, AudioFingerprintService fingerprintService) {
-        this(config, reviewQueue, tagWriter, fingerprintService, new LlmArtistSplitter(config), null, null, null);
+        this(config, reviewQueue, tagWriter, fingerprintService, new LlmArtistSplitter(config), null, null, null, null, null, null);
     }
 
     OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
                                 TagWriterService tagWriter, AudioFingerprintService fingerprintService,
                                 LlmArtistSplitter artistSplitter) {
-        this(config, reviewQueue, tagWriter, fingerprintService, artistSplitter, null, null, null);
+        this(config, reviewQueue, tagWriter, fingerprintService, artistSplitter, null, null, null, null, null, null);
+    }
+
+    OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
+                                TagWriterService tagWriter, AudioFingerprintService fingerprintService,
+                                LlmArtistSplitter artistSplitter,
+                                MusicBrainzClient musicBrainzClient,
+                                MusicBrainzArtistCache artistCache) {
+        this(config, reviewQueue, tagWriter, fingerprintService, artistSplitter, null, null, null,
+            musicBrainzClient, artistCache, null);
     }
 
     OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
                                 TagWriterService tagWriter, AudioFingerprintService fingerprintService,
                                 LlmArtistSplitter artistSplitter, WebSearchClient searchClientOverride) {
-        this(config, reviewQueue, tagWriter, fingerprintService, artistSplitter, searchClientOverride, null, null);
+        this(config, reviewQueue, tagWriter, fingerprintService, artistSplitter, searchClientOverride, null, null, null, null, null);
     }
 
     OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
@@ -83,6 +94,18 @@ public class OnlineIdentificationService implements AutoCloseable {
                                 LlmArtistSplitter artistSplitter, WebSearchClient searchClientOverride,
                                 WebPageFetcher webPageFetcherOverride,
                                 TrackCreditEnrichmentService creditEnrichmentOverride) {
+        this(config, reviewQueue, tagWriter, fingerprintService, artistSplitter, searchClientOverride,
+            webPageFetcherOverride, creditEnrichmentOverride, null, null, null);
+    }
+
+    OnlineIdentificationService(MusicConfig config, ReviewQueueService reviewQueue,
+                                TagWriterService tagWriter, AudioFingerprintService fingerprintService,
+                                LlmArtistSplitter artistSplitter, WebSearchClient searchClientOverride,
+                                WebPageFetcher webPageFetcherOverride,
+                                TrackCreditEnrichmentService creditEnrichmentOverride,
+                                MusicBrainzClient musicBrainzClient,
+                                MusicBrainzArtistCache artistCache,
+                                OnlineEntityMbidResolver entityMbidResolverOverride) {
         this.config = config;
         LlmClient sharedLlm = new LlmClient(config);
         this.nativeSearchClient = new NativeWebSearchClient(config);
@@ -94,6 +117,14 @@ public class OnlineIdentificationService implements AutoCloseable {
         this.creditEnrichmentService = creditEnrichmentOverride != null
             ? creditEnrichmentOverride
             : new TrackCreditEnrichmentService(config, this.tavilySearchClient, sharedLlm, this.webPageFetcher);
+        MusicBrainzArtistCache effectiveCache = artistCache != null
+            ? artistCache
+            : (musicBrainzClient != null ? musicBrainzClient.getArtistCache() : null);
+        this.entityMbidResolver = entityMbidResolverOverride != null
+            ? entityMbidResolverOverride
+            : (musicBrainzClient != null || effectiveCache != null
+                ? new OnlineEntityMbidResolver(config, musicBrainzClient, effectiveCache, new LlmArtistDisambiguator(sharedLlm))
+                : null);
         this.reviewQueue = reviewQueue;
         this.tagWriter = tagWriter;
         this.fingerprintService = fingerprintService;
@@ -219,9 +250,12 @@ public class OnlineIdentificationService implements AutoCloseable {
         // 第一轮结果立即持久化；只有证据不足才执行第二轮。
         // 同一次识别的两轮搜索必须用同一个实现：中途配置变更不应让第二轮换一套证据来源
         WebSearchClient client = searchClient();
+        MusicConfig.OnlineMbidSettings mbidSettings = config != null
+            ? config.getOnlineMbidSettings() : MusicConfig.OnlineMbidSettings.defaults();
         boolean isNative = "native".equalsIgnoreCase(client.name());
         boolean isTavily = "tavily".equalsIgnoreCase(client.name());
         Map<String, WebSearchClient.Citation> citationPoolByCanon = new LinkedHashMap<>();
+        Map<String, WebPageFetcher.FetchedPage> sessionFetchedPages = new LinkedHashMap<>();
 
         checkInterrupted();
         WebSearchClient.ProgressListener r1Progress = bridgeClientProgress(progress, 1, itemId, files.size(), false);
@@ -232,7 +266,7 @@ public class OnlineIdentificationService implements AutoCloseable {
         addCitationsToPool(citationPoolByCanon, first.getCitations());
         Parsed parsed = parse(first, List.of(), citationPoolByCanon, Map.of(), isNative);
         if (isNative && config.isOnlineCreditsEnrichEnabled() && hasAnyCreditDetail(parsed)) {
-            verifyNativeCandidatesWithDirectFetch(parsed, citationPoolByCanon);
+            verifyNativeCandidatesWithDirectFetch(parsed, citationPoolByCanon, sessionFetchedPages);
         }
         emitProgress(progress, 2, "ROUND1_MATCHING", 1, 0, files.size(),
             first.getCitations() == null ? 0 : first.getCitations().size(), 72, null, itemId, files.size(), false);
@@ -264,7 +298,7 @@ public class OnlineIdentificationService implements AutoCloseable {
                 // 第二轮候选经常引用第一轮已经检索到的高可信 URL，解析时必须合并一二轮引用池
                 Parsed secondParsed = parse(second, parsed.clues, citationPoolByCanon, Map.of(), isNative);
                 if (isNative && config.isOnlineCreditsEnrichEnabled() && hasAnyCreditDetail(secondParsed)) {
-                    verifyNativeCandidatesWithDirectFetch(secondParsed, citationPoolByCanon);
+                    verifyNativeCandidatesWithDirectFetch(secondParsed, citationPoolByCanon, sessionFetchedPages);
                 }
                 merge(parsed, secondParsed);
                 mergeEvidence(parsed.clues, second.getCitations());
@@ -298,9 +332,10 @@ public class OnlineIdentificationService implements AutoCloseable {
                     WebSearchClient.SearchResponse creditResp = client.search(SYSTEM, creditPrompt,
                         bridgeClientProgress(progress, 2, itemId, files.size(), true));
                     checkInterrupted();
+                    lastResponse = creditResp;
                     addCitationsToPool(citationPoolByCanon, creditResp.getCitations());
                     mergeEvidence(parsed.clues, creditResp.getCitations());
-                    if (applyNativeCreditsFollowUp(best, creditResp, citationPoolByCanon)) {
+                    if (applyNativeCreditsFollowUp(best, creditResp, citationPoolByCanon, sessionFetchedPages)) {
                         save(item, creditResp, parsed, evidenceHash);
                     }
                 } catch (InterruptedException interrupted) {
@@ -324,13 +359,40 @@ public class OnlineIdentificationService implements AutoCloseable {
                 Map<String, MusicMetadata> baseCredits = collectExistingBaseCredits(item, files);
                 TrackCreditEnrichmentService.EnrichmentSummary summary = creditEnrichmentService.enrich(
                     best, baseCredits, bridgeEnrichmentProgress(progress, itemId, files.size()));
+                if (summary.fetchedPages() != null && !summary.fetchedPages().isEmpty()) {
+                    sessionFetchedPages.putAll(summary.fetchedPages());
+                }
                 if (summary.collectedCitations() != null && !summary.collectedCitations().isEmpty()) {
+                    addCitationsToPool(citationPoolByCanon, summary.collectedCitations());
                     mergeEvidence(parsed.clues, summary.collectedCitations());
                 }
                 if (summary.searchCalls() > 0 || summary.pagesFetched() > 0) {
                     save(item, lastResponse, parsed, evidenceHash);
                 }
                 if (summary.interrupted()) {
+                    Thread.currentThread().interrupt();
+                    throw new InterruptedException("cancelled");
+                }
+            }
+        }
+
+        // 人物级 MusicBrainz Artist MBID 三层预解析（使用本次搜索起始捕获的不可变配置快照）
+        if (entityMbidResolver != null && mbidSettings.resolveEnabled() && !parsed.candidates.isEmpty()) {
+            ReviewItem.OnlineCandidate best = selectBestCandidate(parsed.candidates);
+            if (best != null) {
+                checkInterrupted();
+                emitProgress(progress, 3, "RESOLVING_MBIDS", 2, 0, 0, citationPoolByCanon.size(), 96,
+                    best.getTitle(), itemId, files.size(), true);
+                OnlineEntityMbidResolver.ResolutionSummary mbidSummary = entityMbidResolver.resolveForCandidate(
+                    best, sessionFetchedPages, citationPoolByCanon, mbidSettings,
+                    (cur, tot, person) -> emitProgress(progress, 3, "RESOLVING_MBIDS", 2, cur, tot,
+                        citationPoolByCanon.size(), 96 + (tot > 0 ? Math.min(3, (cur * 3) / tot) : 0),
+                        person, itemId, files.size(), true));
+                if (mbidSummary.resolutions() != null && !mbidSummary.resolutions().isEmpty()) {
+                    best.setEntityMbids(mbidSummary.resolutions());
+                    save(item, lastResponse, parsed, evidenceHash);
+                }
+                if (mbidSummary.interrupted()) {
                     Thread.currentThread().interrupt();
                     throw new InterruptedException("cancelled");
                 }
@@ -768,9 +830,10 @@ public class OnlineIdentificationService implements AutoCloseable {
         return false;
     }
 
-    /** 原生模式下对前 3 个被曲目证据引用的页面执行零费用直连正文复核，成功则升级为正文核验、失配则拦截幻觉。 */
+    /** 原生模式下对前 6 个被曲目证据引用的页面执行零费用直连正文复核，成功则升级为正文核验、失配则拦截幻觉。 */
     private void verifyNativeCandidatesWithDirectFetch(Parsed parsed,
-                                                       Map<String, WebSearchClient.Citation> citationPoolByCanon)
+                                                       Map<String, WebSearchClient.Citation> citationPoolByCanon,
+                                                       Map<String, WebPageFetcher.FetchedPage> sessionFetchedPages)
             throws InterruptedException {
         if (webPageFetcher == null || parsed == null || parsed.candidates.isEmpty()) return;
         Map<String, String> urlsToFetch = new LinkedHashMap<>();
@@ -800,6 +863,9 @@ public class OnlineIdentificationService implements AutoCloseable {
                 WebPageFetcher.FetchedPage p = webPageFetcher.fetchDirectOnly(url, artistHint);
                 if (p != null && p.ok()) {
                     fetched.put(p.canonicalUrl(), p);
+                    if (sessionFetchedPages != null) {
+                        sessionFetchedPages.put(p.canonicalUrl(), p);
+                    }
                 }
             } catch (InterruptedException ie) {
                 throw ie;
@@ -895,7 +961,8 @@ public class OnlineIdentificationService implements AutoCloseable {
 
     private boolean applyNativeCreditsFollowUp(ReviewItem.OnlineCandidate targetCandidate,
                                                WebSearchClient.SearchResponse response,
-                                               Map<String, WebSearchClient.Citation> citationPoolByCanon)
+                                               Map<String, WebSearchClient.Citation> citationPoolByCanon,
+                                               Map<String, WebPageFetcher.FetchedPage> sessionFetchedPages)
             throws InterruptedException {
         JsonObject json = LlmAlbumJudge.parseJsonObject(response.getText());
         if (json == null) return false;
@@ -928,7 +995,7 @@ public class OnlineIdentificationService implements AutoCloseable {
         if (updated) {
             Parsed wrapper = new Parsed();
             wrapper.candidates.add(targetCandidate);
-            verifyNativeCandidatesWithDirectFetch(wrapper, citationPoolByCanon);
+            verifyNativeCandidatesWithDirectFetch(wrapper, citationPoolByCanon, sessionFetchedPages);
         }
         return updated;
     }

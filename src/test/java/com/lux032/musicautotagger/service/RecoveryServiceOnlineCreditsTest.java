@@ -288,6 +288,360 @@ class RecoveryServiceOnlineCreditsTest {
         assertNull(out.getArranger(), "CONFLICT field must NEVER be auto-written");
     }
 
+    @Test
+    void confirmOnlineWritesAlignedArtistAndCreatorMbidsDropsPartialAndNeverFabricatesAlbumIds() throws Exception {
+        String idKajiura = "11111111-1111-4111-8111-111111111111";
+        String idMori = "22222222-2222-4222-8222-222222222222";
+        String idVocal = "33333333-3333-4333-8333-333333333333";
+
+        Path albumDir = Files.createDirectory(monitorDir.resolve("AlignedMbidsAlbum"));
+        File flac = createFlac(albumDir.resolve("01. Horizon.flac"), "Horizon", "Old Artist", "Old", "1",
+            null, null, "Old Arranger", null);
+        // 写入一个旧编曲 MBID，用来验证部分命中时旧编曲 MBID 会被清除而不残留
+        var preAudio = AudioFileIO.read(flac);
+        ((org.jaudiotagger.tag.flac.FlacTag) preAudio.getTag()).setField(
+            "MUSICBRAINZ_ARRANGERID", "99999999-9999-4999-8999-999999999999");
+        preAudio.commit();
+
+        config.setCollapseAlbumArtistToVariousArtists(false);
+        ReviewItem item = reviewQueue.enqueueRecoveryFolder(albumDir.toString(), null, List.of(flac), tagWriter, null);
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("cand-mbids");
+        cand.setTitle("Horizon EP");
+        cand.setArtist("梶浦由記, Vocal A");
+        cand.setArtists(List.of("梶浦由記", "Vocal A"));
+        cand.setAlbumArtist("梶浦由記, Vocal A");
+        cand.setAlbumArtists(List.of("梶浦由記", "Vocal A"));
+
+        ReviewItem.OnlineTrack track = onlineTrack(1, 1, "Horizon", "梶浦由記, Vocal A",
+            List.of("梶浦由記", "森空青"), List.of("梶浦由記"), List.of("森空青", "Unmatched Newcomer"));
+        track.setArtists(List.of("梶浦由記", "Vocal A"));
+        cand.setTracks(List.of(track));
+
+        // 仅 梶浦由記 / Vocal A / 森空青 为 RESOLVED，Unmatched Newcomer 为 NOT_FOUND
+        cand.setEntityMbids(Map.of(
+            "梶浦由記", resolvedEntity("梶浦由記", idKajiura, "Kajiura, Yuki"),
+            "vocal a", resolvedEntity("Vocal A", idVocal, "Vocal A"),
+            "森空青", resolvedEntity("森空青", idMori, "Mori, Sorao")
+        ));
+        item.setOnlineCandidates(List.of(cand));
+        OnlineIdentificationService online = new OnlineIdentificationService(config, reviewQueue, tagWriter, null, null);
+        item.setEvidenceHash(online.evidenceHashForFolder(albumDir.toFile()));
+        reviewQueue.update(item);
+
+        // 覆盖 track 编曲为 ["森空青", "Unmatched Newcomer"] 以走部分命中逻辑（原文件已有 Old Arranger）
+        ReviewItem.TrackCreditsOverride arrOverride = new ReviewItem.TrackCreditsOverride();
+        arrOverride.setArrangers(List.of("森空青", "Unmatched Newcomer"));
+
+        AudioFingerprintService stubFp = new AudioFingerprintService(config) {
+            @Override
+            public List<Integer> extractDurationSequence(List<File> files) {
+                return List.of(120);
+            }
+        };
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, processedLogger, reviewQueue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, stubFp, null, null)) {
+            recovery.confirmOnlineCandidate(item.getId(), cand.getId(),
+                "Horizon EP", "梶浦由記, Vocal A", "2026-08-01", "", null, null,
+                RecoveryService.DuplicatePolicy.ASK, List.of("梶浦由記", "Vocal A"), true,
+                Map.of(flac.getAbsolutePath(), arrOverride), null);
+        }
+
+        File outFile = outputDir.resolve("梶浦由記, Vocal A/Horizon EP/1.01 梶浦由記, Vocal A - Horizon.flac").toFile();
+        assertTrue(outFile.isFile());
+        MusicMetadata out = tagWriter.readTags(outFile);
+        assertNotNull(out);
+        assertEquals(idKajiura + "; " + idVocal, out.getAlbumArtistId());
+        assertEquals("Kajiura, Yuki; Vocal A", out.getAlbumArtistSort());
+        assertEquals(idKajiura + "; " + idVocal, out.getArtistId());
+        assertEquals("Kajiura, Yuki; Vocal A", out.getArtistSort());
+        assertEquals(List.of(idKajiura, idMori), out.getComposerIds());
+        assertEquals(List.of(idKajiura), out.getLyricistIds());
+        assertEquals(List.of("森空青", "Unmatched Newcomer"), out.getArrangers());
+        assertNull(out.getArrangerIds(), "Partial multi-arranger match must drop arranger MBID and clear stale ID");
+
+        // 严禁写入任何虚构的专辑级或录音级 MBID
+        Tag rawTag = AudioFileIO.read(outFile).getTag();
+        assertEquals("", rawTag.getFirst(FieldKey.MUSICBRAINZ_RELEASEID));
+        assertEquals("", rawTag.getFirst(FieldKey.MUSICBRAINZ_RELEASE_GROUP_ID));
+        assertEquals("", rawTag.getFirst(FieldKey.MUSICBRAINZ_TRACK_ID));
+        assertEquals("", ((org.jaudiotagger.tag.flac.FlacTag) rawTag).getFirst("MUSICBRAINZ_ARRANGERID"));
+    }
+
+    @Test
+    void confirmOnlineClearsStaleArtistIdsOnOverwriteOrVaCollapseAndRetainsUnmatchedTrackArtistId() throws Exception {
+        String staleAlbumArtistId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        String staleTrackArtistId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        String keptLocalArtistId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+        Path albumDir = Files.createDirectory(monitorDir.resolve("StaleCleanupAlbum"));
+        File f1 = createFlacWithArtistIds(albumDir.resolve("01. First.flac"), "First", "Old Singer 1", "Old", "1",
+            staleTrackArtistId, "Old, Singer 1", staleAlbumArtistId, "Old, Album");
+        File f2 = createFlacWithArtistIds(albumDir.resolve("02. Second.flac"), "Second", "Old Singer 2", "Old", "2",
+            staleTrackArtistId, "Old, Singer 2", staleAlbumArtistId, "Old, Album");
+        File f3 = createFlacWithArtistIds(albumDir.resolve("03. Third.flac"), "Third", "Old Singer 3", "Old", "3",
+            staleTrackArtistId, "Old, Singer 3", staleAlbumArtistId, "Old, Album");
+        File f4 = createFlacWithArtistIds(albumDir.resolve("04. Bonus.flac"), "Unrelated Local", "Local Artist", "Old", "99",
+            keptLocalArtistId, "Artist, Local", staleAlbumArtistId, "Old, Album");
+
+        config.setCollapseAlbumArtistToVariousArtists(true);
+        ReviewItem item = reviewQueue.enqueueRecoveryFolder(albumDir.toString(), null, List.of(f1, f2, f3, f4), tagWriter, null);
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("cand-cleanup");
+        cand.setTitle("Compilation Album");
+        cand.setArtist("Artist A, Artist B");
+        cand.setAlbumArtist("Artist A, Artist B");
+        cand.setAlbumArtists(List.of("Artist A", "Artist B"));
+        cand.setTracks(List.of(
+            onlineTrack(1, 1, "First", "Unresolved Artist 1", List.of(), List.of(), List.of()),
+            onlineTrack(1, 2, "Second", "Unresolved Artist 2", List.of(), List.of(), List.of()),
+            onlineTrack(1, 3, "Third", "Unresolved Artist 3", List.of(), List.of(), List.of()),
+            onlineTrack(1, 4, "Totally Different Track", "Other Artist", List.of(), List.of(), List.of())
+        ));
+        item.setOnlineCandidates(List.of(cand));
+        OnlineIdentificationService online = new OnlineIdentificationService(config, reviewQueue, tagWriter, null, null);
+        item.setEvidenceHash(online.evidenceHashForFolder(albumDir.toFile()));
+        reviewQueue.update(item);
+
+        AudioFingerprintService stubFp = new AudioFingerprintService(config) {
+            @Override
+            public List<Integer> extractDurationSequence(List<File> files) {
+                return List.of(120, 120, 120, 120);
+            }
+        };
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, processedLogger, reviewQueue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, stubFp, null, null)) {
+            recovery.confirmOnlineCandidate(item.getId(), cand.getId(),
+                "Compilation Album", "Artist A, Artist B", "2026-09-01", "", null, null,
+                RecoveryService.DuplicatePolicy.ASK, List.of("Artist A", "Artist B"), true, null, null);
+        }
+
+        // 折叠为 Various Artists -> 必须清除旧 MUSICBRAINZ_RELEASEARTISTID；改写了曲目艺人无有效 MBID -> 必须清除旧 MUSICBRAINZ_ARTISTID
+        MusicMetadata out1 = tagWriter.readTags(
+            outputDir.resolve("Various Artists/Compilation Album/1.01 Unresolved Artist 1 - First.flac").toFile());
+        assertNotNull(out1);
+        assertEquals("Various Artists", out1.getAlbumArtist());
+        assertNull(out1.getAlbumArtistId(), "VA collapse must clear stale MUSICBRAINZ_RELEASEARTISTID");
+        assertNull(out1.getAlbumArtistSort());
+        assertEquals("Unresolved Artist 1", out1.getArtist());
+        assertNull(out1.getArtistId(), "Overwritten track artist without MBID must clear stale MUSICBRAINZ_ARTISTID");
+        assertNull(out1.getArtistSort());
+
+        // 未达可靠匹配阈值的第 4 轨：保留原本地艺人及既有 MUSICBRAINZ_ARTISTID，仅专辑艺人折叠清理
+        MusicMetadata out4 = tagWriter.readTags(
+            outputDir.resolve("Various Artists/Compilation Album/99. Local Artist - Unrelated Local.flac").toFile());
+        assertNotNull(out4);
+        assertEquals("Local Artist", out4.getArtist());
+        assertEquals(keptLocalArtistId, out4.getArtistId(), "Unmatched track retaining local artist must preserve existing MUSICBRAINZ_ARTISTID");
+        assertNull(out4.getAlbumArtistId());
+    }
+
+    @Test
+    void confirmOnlineAppliesEntityMbidOverridesRejectsInvalidAndPersistsAcrossMissingCoverRestart() throws Exception {
+        String idAuto = "11111111-1111-4111-8111-111111111111";
+        String idChosen = "22222222-2222-4222-8222-222222222222";
+
+        Path albumDir = Files.createDirectory(monitorDir.resolve("MissingCoverMbidAlbum"));
+        File flac = createFlac(albumDir.resolve("01. Song.flac"), "Song", "Ambiguous Singer", "Old", "1",
+            null, null, null, null);
+
+        config.setCoverMissingRequireReview(true);
+        ReviewItem item = reviewQueue.enqueueRecoveryFolder(albumDir.toString(), null, List.of(flac), tagWriter, null);
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("cand-mc-mbid");
+        cand.setTitle("Deferred Album");
+        cand.setArtist("Ambiguous Singer");
+        cand.setAlbumArtist("Ambiguous Singer");
+        cand.setTracks(List.of(onlineTrack(1, 1, "Song", "Ambiguous Singer", List.of("Auto Composer"), List.of(), List.of())));
+
+        ReviewItem.EntityMbidResolution ambiguousRes = new ReviewItem.EntityMbidResolution();
+        ambiguousRes.setDisplayName("Ambiguous Singer");
+        ambiguousRes.setNormalizedKey("ambiguous singer");
+        ambiguousRes.setStatus(ReviewItem.EntityMbidStatus.AMBIGUOUS);
+        ReviewItem.EntityMbidCandidate c1 = new ReviewItem.EntityMbidCandidate();
+        c1.setMbid(idChosen);
+        c1.setName("Ambiguous Singer");
+        c1.setSortName("Singer, Ambiguous");
+        ambiguousRes.setCandidates(List.of(c1));
+
+        cand.setEntityMbids(Map.of(
+            "ambiguous singer", ambiguousRes,
+            "auto composer", resolvedEntity("Auto Composer", idAuto, "Composer, Auto")
+        ));
+        item.setOnlineCandidates(List.of(cand));
+        OnlineIdentificationService online = new OnlineIdentificationService(config, reviewQueue, tagWriter, null, null);
+        item.setEvidenceHash(online.evidenceHashForFolder(albumDir.toFile()));
+        reviewQueue.update(item);
+
+        AudioFingerprintService stubFp = new AudioFingerprintService(config) {
+            @Override
+            public List<Integer> extractDurationSequence(List<File> files) {
+                return List.of(120);
+            }
+        };
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, processedLogger, reviewQueue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, stubFp, null, null)) {
+            // 非法 UUID 必须被拒绝
+            java.io.IOException invalidEx = assertThrows(java.io.IOException.class, () ->
+                recovery.confirmOnlineCandidate(item.getId(), cand.getId(),
+                    "Deferred Album", "Ambiguous Singer", "2026-10-01", "", null, null,
+                    RecoveryService.DuplicatePolicy.ASK, null, false, null,
+                    Map.of("Ambiguous Singer", "not-a-uuid")));
+            assertEquals("online.mbid.override.invalid", invalidEx.getMessage());
+
+            // 合法覆盖（大写 UUID 规范化）+ 显式取消绑定 Auto Composer -> 缺封面转入 COVER_MISSING
+            ReviewItem moved = recovery.confirmOnlineCandidate(item.getId(), cand.getId(),
+                "Deferred Album", "Ambiguous Singer", "2026-10-01", "", null, null,
+                RecoveryService.DuplicatePolicy.ASK, null, false, null,
+                Map.of("Ambiguous Singer", idChosen.toUpperCase(), "Auto Composer", ""));
+            assertEquals(ReviewItem.Kind.COVER_MISSING, moved.effectiveKind());
+            assertNotNull(moved.getMissingCover());
+            assertEquals(Map.of("ambiguous singer", idChosen, "auto composer", ""),
+                moved.getMissingCover().getOnlineEntityMbidOverrides());
+        }
+
+        // 模拟进程重启：重新从磁盘加载 review-queue.json 后完成无封面入库
+        ReviewQueueService restartedQueue = new ReviewQueueService(config);
+        ReviewItem reloaded = restartedQueue.get(item.getId());
+        assertNotNull(reloaded);
+        assertEquals(ReviewItem.Kind.COVER_MISSING, reloaded.effectiveKind());
+        assertEquals(Map.of("ambiguous singer", idChosen, "auto composer", ""),
+            reloaded.getMissingCover().getOnlineEntityMbidOverrides());
+
+        try (RecoveryService restartedRecovery = new RecoveryService(
+                config, null, processedLogger, restartedQueue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, stubFp, null, null)) {
+            restartedRecovery.commitDeferredOnlineMissingCover(reloaded, null, true, RecoveryService.DuplicatePolicy.ASK);
+        }
+
+        MusicMetadata out = tagWriter.readTags(
+            outputDir.resolve("Ambiguous Singer/Deferred Album/1.01 Ambiguous Singer - Song.flac").toFile());
+        assertNotNull(out);
+        assertEquals(idChosen, out.getAlbumArtistId());
+        assertEquals("Singer, Ambiguous", out.getAlbumArtistSort());
+        assertEquals(idChosen, out.getArtistId());
+        assertEquals("Auto Composer", out.getComposer());
+        assertNull(out.getComposerIds(), "Persisted explicit unbind override must survive missing-cover restart");
+    }
+
+    @Test
+    void retainedUnmatchedTrackPreservesMultiValueVorbisArtistIdsAndSupportsPartialCollabOverride() throws Exception {
+        String idA = "11111111-1111-4111-8111-111111111111";
+        String idB = "22222222-2222-4222-8222-222222222222";
+        String idBNew = "33333333-3333-4333-8333-333333333333";
+
+        Path albumDir = Files.createDirectory(monitorDir.resolve("MultiValueRetainedAlbum"));
+        File f1 = createFlac(albumDir.resolve("01. First.flac"), "First", "Singer", "Old", "1", null, null, null, null);
+        File f2 = createFlac(albumDir.resolve("02. Second.flac"), "Second", "Singer", "Old", "2", null, null, null, null);
+        File f3 = createFlac(albumDir.resolve("03. Third.flac"), "Third", "Singer", "Old", "3", null, null, null, null);
+        File f4 = createFlac(albumDir.resolve("04. UnmatchedMulti.flac"), "Unrelated Local", "Collab A, Collab B", "Old", "99", null, null, null, null);
+        // 写入重复多值 Vorbis MUSICBRAINZ_ARTISTID 字段（非分号拼接，模拟 Picard/MusicBee 常见写法）
+        var audio4 = AudioFileIO.read(f4);
+        org.jaudiotagger.tag.flac.FlacTag flacTag4 = (org.jaudiotagger.tag.flac.FlacTag) audio4.getTag();
+        flacTag4.addField(FieldKey.ARTISTS, "Collab A");
+        flacTag4.addField(FieldKey.ARTISTS, "Collab B");
+        flacTag4.addField(FieldKey.MUSICBRAINZ_ARTISTID, idA);
+        flacTag4.addField(FieldKey.MUSICBRAINZ_ARTISTID, idB);
+        flacTag4.addField(FieldKey.ARTIST_SORT, "A, Collab");
+        flacTag4.addField(FieldKey.ARTIST_SORT, "B, Collab");
+        audio4.commit();
+
+        ReviewItem item = reviewQueue.enqueueRecoveryFolder(albumDir.toString(), null, List.of(f1, f2, f3, f4), tagWriter, null);
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("cand-multi-retained");
+        cand.setTitle("Multi Retained Album");
+        cand.setArtist("Singer");
+        cand.setAlbumArtist("Singer");
+        cand.setTracks(List.of(
+            onlineTrack(1, 1, "First", "Singer", List.of(), List.of(), List.of()),
+            onlineTrack(1, 2, "Second", "Singer", List.of(), List.of(), List.of()),
+            onlineTrack(1, 3, "Third", "Singer", List.of(), List.of(), List.of()),
+            onlineTrack(1, 4, "Completely Unmatched", "Other", List.of(), List.of(), List.of())
+        ));
+        item.setOnlineCandidates(List.of(cand));
+        OnlineIdentificationService online = new OnlineIdentificationService(config, reviewQueue, tagWriter, null, null);
+        item.setEvidenceHash(online.evidenceHashForFolder(albumDir.toFile()));
+        reviewQueue.update(item);
+
+        AudioFingerprintService stubFp = new AudioFingerprintService(config) {
+            @Override
+            public List<Integer> extractDurationSequence(List<File> files) {
+                return List.of(120, 120, 120, 120);
+            }
+        };
+
+        // 1. 不传覆盖时，未匹配曲目必须原样保留两个重复多值 Vorbis MUSICBRAINZ_ARTISTID，绝不坍缩为首个值
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, processedLogger, reviewQueue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, stubFp, null, null)) {
+            recovery.confirmOnlineCandidate(item.getId(), cand.getId(),
+                "Multi Retained Album", "Singer", "2026-11-01", "", null, null,
+                RecoveryService.DuplicatePolicy.ASK, null, true, null, null);
+        }
+        File out4 = outputDir.resolve("Singer/Multi Retained Album/99. Collab A, Collab B - Unrelated Local.flac").toFile();
+        Tag rawOut4 = AudioFileIO.read(out4).getTag();
+        assertEquals(List.of(idA, idB), rawOut4.getAll(FieldKey.MUSICBRAINZ_ARTISTID),
+            "Retained unmatched track must preserve repeated multi-value Vorbis MUSICBRAINZ_ARTISTID fields verbatim");
+
+        // 2. 对保留的二人合作曲目仅覆盖其中一人（Collab B -> idBNew）时，另一人沿用原对齐基线 idA
+        Path albumDir2 = Files.createDirectory(monitorDir.resolve("MultiValueRetainedAlbum2"));
+        File g1 = createFlac(albumDir2.resolve("01. First.flac"), "First", "Singer", "Old", "1", null, null, null, null);
+        File g2 = createFlac(albumDir2.resolve("02. Second.flac"), "Second", "Singer", "Old", "2", null, null, null, null);
+        File g3 = createFlac(albumDir2.resolve("03. Third.flac"), "Third", "Singer", "Old", "3", null, null, null, null);
+        File g4 = Files.copy(f4.toPath(), albumDir2.resolve("04. UnmatchedMulti.flac")).toFile();
+
+        ReviewItem item2 = reviewQueue.enqueueRecoveryFolder(albumDir2.toString(), null, List.of(g1, g2, g3, g4), tagWriter, null);
+        item2.setOnlineCandidates(List.of(cand));
+        item2.setEvidenceHash(online.evidenceHashForFolder(albumDir2.toFile()));
+        reviewQueue.update(item2);
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, processedLogger, reviewQueue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, stubFp, null, null)) {
+            recovery.confirmOnlineCandidate(item2.getId(), cand.getId(),
+                "Multi Retained Album 2", "Singer", "2026-11-01", "", null, null,
+                RecoveryService.DuplicatePolicy.ASK, null, true, null,
+                Map.of("Collab B", idBNew));
+        }
+        MusicMetadata outG4 = tagWriter.readTags(
+            outputDir.resolve("Singer/Multi Retained Album 2/99. Collab A, Collab B - Unrelated Local.flac").toFile());
+        assertNotNull(outG4);
+        assertEquals(idA + "; " + idBNew, outG4.getArtistId(),
+            "Partial override on retained collaboration must merge unchanged collaborator's baseline MBID");
+    }
+
+    private static ReviewItem.EntityMbidResolution resolvedEntity(String display, String mbid, String sortName) {
+        ReviewItem.EntityMbidResolution r = new ReviewItem.EntityMbidResolution();
+        r.setDisplayName(display);
+        r.setNormalizedKey(MusicBrainzArtistCache.normalizePersonKey(display));
+        r.setStatus(ReviewItem.EntityMbidStatus.RESOLVED);
+        r.setSource(ReviewItem.EntityMbidSource.MB_SEARCH_EXACT);
+        r.setSelectedMbid(mbid);
+        r.setSelectedName(display);
+        r.setSelectedSortName(sortName);
+        return r;
+    }
+
+    private static File createFlacWithArtistIds(Path target, String title, String artist, String album, String trackNo,
+                                                String artistId, String artistSort,
+                                                String albumArtistId, String albumArtistSort) throws Exception {
+        File file = createFlac(target, title, artist, album, trackNo, null, null, null, null);
+        var audio = AudioFileIO.read(file);
+        Tag tag = audio.getTag();
+        if (artistId != null) tag.setField(FieldKey.MUSICBRAINZ_ARTISTID, artistId);
+        if (artistSort != null) tag.setField(FieldKey.ARTIST_SORT, artistSort);
+        if (albumArtistId != null) tag.setField(FieldKey.MUSICBRAINZ_RELEASEARTISTID, albumArtistId);
+        if (albumArtistSort != null) tag.setField(FieldKey.ALBUM_ARTIST_SORT, albumArtistSort);
+        audio.commit();
+        return file;
+    }
+
     private static ReviewItem.OnlineTrack onlineTrack(int disc, int track, String title, String artist,
                                                       List<String> composers, List<String> lyricists, List<String> arrangers) {
         ReviewItem.OnlineTrack t = new ReviewItem.OnlineTrack();

@@ -61,6 +61,9 @@ public final class ConfigFieldSpec {
         register(map, "online.credits.maxFetchPages", "6", false, false, 0.0, 12.0);
         register(map, "online.credits.allowTavilyExtract", "true", false, false, null, null);
         register(map, "online.credits.applyProbable", "true", false, false, null, null);
+        register(map, "online.mbid.resolve.enabled", "true", false, false, null, null);
+        register(map, "online.mbid.maxLookupsPerAlbum", "15", false, false, 0.0, 50.0);
+        register(map, "online.mbid.llmDisambiguate.enabled", "true", false, false, null, null);
         register(map, "llm.album.autoApplyMinConfidence", "0.85", false, false, 0.0, 1.0);
         register(map, "file.partial.minTagCoverage", "0.8", false, false, 0.0, 1.0);
         register(map, "review.queuePath", "data/review-queue.json", true, true, null, null);

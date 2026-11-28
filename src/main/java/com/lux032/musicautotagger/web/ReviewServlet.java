@@ -219,12 +219,13 @@ public class ReviewServlet extends HttpServlet {
                 case "online-confirm": {
                     if (recoveryService == null) throw new ReviewResolutionService.ResolutionException(501, "recovery.unavailable");
                     Map<String, ReviewItem.TrackCreditsOverride> trackCredits = parseTrackCredits(body.get("trackCredits"));
+                    Map<String, String> entityMbidOverrides = parseEntityMbidOverrides(body.get("entityMbidOverrides"));
                     ReviewItem item = recoveryService.confirmOnlineCandidate(id, str(body.get("candidateId")),
                         str(body.get("albumTitle")), str(body.get("albumArtist")), str(body.get("releaseDate")),
                         str(body.get("edition")), str(body.get("archiveDirectoryName")),
                         str(body.get("selectedCoverSha256")), duplicatePolicy(str(body.get("duplicatePolicy"))),
                         strList(body.get("albumArtists")), Boolean.TRUE.equals(body.get("confirmNoCover")),
-                        trackCredits);
+                        trackCredits, entityMbidOverrides);
                     respond(resp, 200, Map.of("success", true, "item", toDetail(item),
                         "movedToMissingCover", item.effectiveKind() == ReviewItem.Kind.COVER_MISSING));
                     return;
@@ -500,6 +501,8 @@ public class ReviewServlet extends HttpServlet {
         map.put("onlineClues", item.getOnlineClues());
         map.put("onlineCandidates", item.getOnlineCandidates());
         map.put("onlineCreditsApplyProbable", resolutionService.getConfig().isOnlineCreditsApplyProbable());
+        map.put("onlineMbidResolveEnabled", resolutionService.getConfig().isOnlineMbidResolveEnabled());
+        map.put("onlineMbidLlmDisambiguateEnabled", resolutionService.getConfig().isOnlineMbidLlmDisambiguateEnabled());
         map.put("systemSuggestion", SystemSuggestionCalculator.evaluate(item,
             resolutionService.getConfig().getLlmAlbumAutoApplyMinConfidence()));
         return map;
@@ -632,6 +635,26 @@ public class ReviewServlet extends HttpServlet {
                 com.lux032.musicautotagger.util.ArtistCreditSupport.parseSemicolonOrLineList(text));
         }
         throw new IOException("online.track.credits.invalid");
+    }
+
+    private Map<String, String> parseEntityMbidOverrides(Object value) throws IOException {
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof Map<?, ?> map)) {
+            throw new IOException("online.mbid.override.invalid");
+        }
+        Map<String, String> rawStringMap = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (!(entry.getKey() instanceof String rawKey) || !(entry.getValue() instanceof String rawVal)) {
+                throw new IOException("online.mbid.override.invalid");
+            }
+            if (rawStringMap.containsKey(rawKey)) {
+                throw new IOException("online.mbid.override.invalid");
+            }
+            rawStringMap.put(rawKey, rawVal);
+        }
+        return RecoveryService.normalizeAndValidateEntityMbidOverrides(rawStringMap);
     }
 
     private Map<String, List<String>> trackArtistLists(Object value) throws IOException {

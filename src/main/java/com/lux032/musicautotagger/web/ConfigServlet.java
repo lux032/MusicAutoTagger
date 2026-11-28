@@ -157,6 +157,9 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("onlineCreditsMaxFetchPages", "online.credits.maxFetchPages"),
             Map.entry("onlineCreditsAllowTavilyExtract", "online.credits.allowTavilyExtract"),
             Map.entry("onlineCreditsApplyProbable", "online.credits.applyProbable"),
+            Map.entry("onlineMbidResolveEnabled", "online.mbid.resolve.enabled"),
+            Map.entry("onlineMbidMaxLookupsPerAlbum", "online.mbid.maxLookupsPerAlbum"),
+            Map.entry("onlineMbidLlmDisambiguateEnabled", "online.mbid.llmDisambiguate.enabled"),
             Map.entry("webSearchProvider", "llm.webSearch.provider"),
             Map.entry("tavilyApiKey", "tavily.apiKey"),
             Map.entry("tavilyApiUrl", "tavily.apiUrl"),
@@ -334,6 +337,9 @@ public class ConfigServlet extends HttpServlet {
         handleIntegerInRange(safeBody, updates, propertyUpdates, "onlineCreditsMaxFetchPages", 0, 12);
         handleBoolean(safeBody, updates, propertyUpdates, "onlineCreditsAllowTavilyExtract");
         handleBoolean(safeBody, updates, propertyUpdates, "onlineCreditsApplyProbable");
+        handleStrictBoolean(safeBody, updates, propertyUpdates, "onlineMbidResolveEnabled");
+        handleStrictIntegerInRange(safeBody, updates, propertyUpdates, "onlineMbidMaxLookupsPerAlbum", 0, 50);
+        handleStrictBoolean(safeBody, updates, propertyUpdates, "onlineMbidLlmDisambiguateEnabled");
         handleString(safeBody, updates, propertyUpdates, "webSearchProvider", false);
         handleString(safeBody, updates, propertyUpdates, "tavilyApiKey", false);
         handleString(safeBody, updates, propertyUpdates, "tavilyApiUrl", false);
@@ -453,6 +459,9 @@ public class ConfigServlet extends HttpServlet {
         data.put("onlineCreditsMaxFetchPages", config.getOnlineCreditsMaxFetchPages());
         data.put("onlineCreditsAllowTavilyExtract", config.isOnlineCreditsAllowTavilyExtract());
         data.put("onlineCreditsApplyProbable", config.isOnlineCreditsApplyProbable());
+        data.put("onlineMbidResolveEnabled", config.isOnlineMbidResolveEnabled());
+        data.put("onlineMbidMaxLookupsPerAlbum", config.getOnlineMbidMaxLookupsPerAlbum());
+        data.put("onlineMbidLlmDisambiguateEnabled", config.isOnlineMbidLlmDisambiguateEnabled());
         data.put("webSearchProvider", config.getWebSearchProvider());
         data.put("tavilyApiKey", maskSecret(config.getTavilyApiKey()));
         data.put("tavilyApiUrl", config.getTavilyApiUrl());
@@ -836,6 +845,17 @@ public class ConfigServlet extends HttpServlet {
         if (updates.containsKey("onlineCreditsApplyProbable")) {
             config.setOnlineCreditsApplyProbable((Boolean) updates.get("onlineCreditsApplyProbable"));
         }
+        if (updates.containsKey("onlineMbidResolveEnabled")
+                || updates.containsKey("onlineMbidMaxLookupsPerAlbum")
+                || updates.containsKey("onlineMbidLlmDisambiguateEnabled")) {
+            Integer maxLookups = updates.containsKey("onlineMbidMaxLookupsPerAlbum")
+                ? clamp((Integer) updates.get("onlineMbidMaxLookupsPerAlbum"), 0, 50)
+                : null;
+            config.updateOnlineMbidSettings(
+                (Boolean) updates.get("onlineMbidResolveEnabled"),
+                maxLookups,
+                (Boolean) updates.get("onlineMbidLlmDisambiguateEnabled"));
+        }
         // 联网搜索来源：未知值一律回落 native，避免拼错后静默停用联网搜索
         if (updates.containsKey("webSearchProvider")) {
             String provider = (String) updates.get("webSearchProvider");
@@ -1067,6 +1087,88 @@ public class ConfigServlet extends HttpServlet {
         int clamped = clamp(value, min, max);
         updates.put(field, clamped);
         setPropertyUpdate(propertyUpdates, field, String.valueOf(clamped));
+    }
+
+    /** 严格布尔校验：拒绝数组、对象、数字和非 true/false 字符串，防止非法 JSON 静默转为 false。 */
+    private void handleStrictBoolean(Map<String, Object> body, Map<String, Object> updates,
+                                     Map<String, String> propertyUpdates, String field) throws IOException {
+        if (!body.containsKey(field)) {
+            return;
+        }
+        Object raw = body.get(field);
+        if (raw == null) {
+            return;
+        }
+        Boolean parsed;
+        if (raw instanceof Boolean b) {
+            parsed = b;
+        } else if (raw instanceof String s) {
+            String trimmed = s.trim();
+            if ("true".equalsIgnoreCase(trimmed)) {
+                parsed = Boolean.TRUE;
+            } else if ("false".equalsIgnoreCase(trimmed)) {
+                parsed = Boolean.FALSE;
+            } else {
+                throwValidation("boolean.invalid", field);
+                return;
+            }
+        } else {
+            throwValidation("boolean.invalid", field);
+            return;
+        }
+        updates.put(field, parsed);
+        setPropertyUpdate(propertyUpdates, field, String.valueOf(parsed));
+    }
+
+    /** 严格范围整数校验：拒绝小数（如 12.5）、布尔、对象/数组及越界值（HTTP 400）。 */
+    private void handleStrictIntegerInRange(Map<String, Object> body, Map<String, Object> updates,
+                                            Map<String, String> propertyUpdates, String field,
+                                            int min, int max) throws IOException {
+        if (!body.containsKey(field)) {
+            return;
+        }
+        Object raw = body.get(field);
+        if (raw == null) {
+            return;
+        }
+        int parsed;
+        if (raw instanceof Integer i) {
+            parsed = i;
+        } else if (raw instanceof Long l) {
+            if (l < Integer.MIN_VALUE || l > Integer.MAX_VALUE) {
+                throwValidation("number.invalid", field);
+                return;
+            }
+            parsed = l.intValue();
+        } else if (raw instanceof Double d) {
+            if (!Double.isFinite(d) || Math.rint(d) != d || d < Integer.MIN_VALUE || d > Integer.MAX_VALUE) {
+                throwValidation("number.invalid", field);
+                return;
+            }
+            parsed = (int) d.doubleValue();
+        } else if (raw instanceof Float f) {
+            if (!Float.isFinite(f) || Math.rint(f) != f || f < Integer.MIN_VALUE || f > Integer.MAX_VALUE) {
+                throwValidation("number.invalid", field);
+                return;
+            }
+            parsed = (int) f.floatValue();
+        } else if (raw instanceof String s) {
+            try {
+                parsed = Integer.parseInt(s.trim());
+            } catch (NumberFormatException e) {
+                throwValidation("number.invalid", field);
+                return;
+            }
+        } else {
+            throwValidation("number.invalid", field);
+            return;
+        }
+        if (parsed < min || parsed > max) {
+            throwValidation("number.out.of.range", field);
+            return;
+        }
+        updates.put(field, parsed);
+        setPropertyUpdate(propertyUpdates, field, String.valueOf(parsed));
     }
 
     private void handleInteger(Map<String, Object> body, Map<String, Object> updates,

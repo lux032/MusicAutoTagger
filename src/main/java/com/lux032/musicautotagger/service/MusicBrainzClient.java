@@ -45,6 +45,7 @@ public class MusicBrainzClient {
     private final CloseableHttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final CoverArtArchiveClient coverArtArchiveClient;
+    private volatile MusicBrainzArtistCache artistCache;
     private static final int RELEASE_CACHE_LIMIT = 64;
     private final java.util.Map<String, JsonNode> fullReleaseCache = Collections.synchronizedMap(
         new LinkedHashMap<String, JsonNode>(RELEASE_CACHE_LIMIT, 0.75f, true) {
@@ -85,6 +86,31 @@ public class MusicBrainzClient {
     static final int MAX_RETRIES = 3; // 最大重试次数
     private static final long RETRY_DELAY_MS = 10000; // 首次重试间隔10秒,之后指数退避
     private static final long MAX_RETRY_DELAY_MS = 60000; // 单次重试等待上限60秒
+    private final ThreadLocal<java.util.function.BooleanSupplier> attemptBudgetGate = new ThreadLocal<>();
+
+    /** 当单次解析会话已耗尽出站 HTTP 尝试预算（含重试）时立即中止请求。 */
+    static final class BudgetExhaustedException extends IOException {
+        BudgetExhaustedException() {
+            super("musicbrainz.attempt.budget.exhausted");
+        }
+    }
+
+    /** 绑定当前线程的出站 HTTP 尝试预算闸门（含自动重试），确保重试不会突破专辑查询上限。 */
+    AutoCloseable withAttemptBudget(java.util.function.BooleanSupplier gate) {
+        java.util.function.BooleanSupplier previous = attemptBudgetGate.get();
+        if (gate == null) {
+            attemptBudgetGate.remove();
+        } else {
+            attemptBudgetGate.set(gate);
+        }
+        return () -> {
+            if (previous == null) {
+                attemptBudgetGate.remove();
+            } else {
+                attemptBudgetGate.set(previous);
+            }
+        };
+    }
 
     /** 候选发行版曲目数相对文件夹文件数的允许偏差比例 */
     private static final double TRACK_COUNT_TOLERANCE_RATIO = 0.20;
@@ -97,12 +123,237 @@ public class MusicBrainzClient {
     private static final double SCORE_EPSILON = 1e-9;
     
     public MusicBrainzClient(MusicConfig config) {
+        this(config, null);
+    }
+
+    public MusicBrainzClient(MusicConfig config, MusicBrainzArtistCache artistCache) {
         this.config = config;
         this.albumArtistPolicy = new AlbumArtistPolicy(config);
         this.httpClient = createHttpClient(config);
         this.objectMapper = new ObjectMapper();
+        this.artistCache = artistCache;
         this.coverArtArchiveClient = new CoverArtArchiveClient(
             config, this.httpClient, this.objectMapper, this::rateLimit, this::executeRequest);
+    }
+
+    public void setArtistCache(MusicBrainzArtistCache artistCache) {
+        this.artistCache = artistCache;
+    }
+
+    public MusicBrainzArtistCache getArtistCache() {
+        return artistCache;
+    }
+
+    /** MusicBrainz Artist 实体标准化检索/核验结果。 */
+    public record ArtistMatch(
+        String mbid,
+        String name,
+        String sortName,
+        String disambiguation,
+        String country,
+        String areaName,
+        String type,
+        String lifeSpanBegin,
+        String lifeSpanEnd,
+        int score,
+        List<String> aliases,
+        List<String> tags
+    ) {
+        public ArtistMatch {
+            aliases = aliases == null ? List.of() : List.copyOf(aliases);
+            tags = tags == null ? List.of() : List.copyOf(tags);
+        }
+
+        public MusicBrainzArtistCache.CachedArtist toCachedArtist(String source) {
+            return new MusicBrainzArtistCache.CachedArtist(
+                mbid, name, sortName, disambiguation, country, type, aliases, source, System.currentTimeMillis());
+        }
+    }
+
+    /**
+     * 按人名或别名检索 MusicBrainz Artist 实体（复用统一 1 req/s 限流、代理与重试策略）。
+     */
+    public List<ArtistMatch> searchArtists(String queryName, int limit) throws IOException, InterruptedException {
+        if (queryName == null || queryName.isBlank()) {
+            return List.of();
+        }
+        int clampedLimit = Math.max(1, Math.min(25, limit));
+        String escaped = escapeLucenePhrase(queryName);
+        if (escaped.isEmpty()) {
+            return List.of();
+        }
+        rateLimit();
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("cancelled");
+        }
+        String query = "artist:\"" + escaped + "\" OR alias:\"" + escaped + "\"";
+        String encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8);
+        String url = String.format("%s/artist?query=%s&fmt=json&limit=%d",
+            config.getMusicBrainzApiUrl(), encodedQuery, clampedLimit);
+        try {
+            String response = executeRequest(url);
+            return parseArtistSearchResponse(response);
+        } catch (NonRetryableHttpException e) {
+            log.debug("MusicBrainz Artist 检索返回不可重试错误 ({}): {}", queryName, e.getMessage());
+            return List.of();
+        } catch (IOException e) {
+            if (e.getCause() instanceof InterruptedException ie || Thread.currentThread().isInterrupted()) {
+                Thread.currentThread().interrupt();
+                throw new InterruptedException("cancelled");
+            }
+            throw e;
+        } catch (ParseException e) {
+            log.error("解析 MusicBrainz Artist 检索响应失败", e);
+            throw new IOException("解析响应失败", e);
+        }
+    }
+
+    /**
+     * 按 Artist MBID 拉取单个实体（用于核验从网页外链提取的 UUID）。
+     */
+    public java.util.Optional<ArtistMatch> getArtistById(String rawMbid) throws IOException, InterruptedException {
+        String mbid = MusicBrainzArtistCache.normalizeValidMbid(rawMbid);
+        if (mbid == null) {
+            return java.util.Optional.empty();
+        }
+        rateLimit();
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("cancelled");
+        }
+        String url = String.format("%s/artist/%s?fmt=json&inc=aliases+tags",
+            config.getMusicBrainzApiUrl(), mbid);
+        try {
+            String response = executeRequest(url);
+            JsonNode root = objectMapper.readTree(response);
+            return java.util.Optional.ofNullable(parseArtistNode(root));
+        } catch (NonRetryableHttpException e) {
+            log.debug("MusicBrainz Artist 单实体查询未命中 ({}): {}", mbid, e.getMessage());
+            return java.util.Optional.empty();
+        } catch (IOException e) {
+            if (e.getCause() instanceof InterruptedException ie || Thread.currentThread().isInterrupted()) {
+                Thread.currentThread().interrupt();
+                throw new InterruptedException("cancelled");
+            }
+            throw e;
+        } catch (ParseException e) {
+            log.error("解析 MusicBrainz Artist 单实体响应失败", e);
+            throw new IOException("解析响应失败", e);
+        }
+    }
+
+    List<ArtistMatch> parseArtistSearchResponse(String json) throws IOException {
+        List<ArtistMatch> results = new ArrayList<>();
+        if (json == null || json.isBlank()) {
+            return results;
+        }
+        JsonNode root = objectMapper.readTree(json);
+        JsonNode artists = root.path("artists");
+        if (!artists.isArray()) {
+            return results;
+        }
+        for (JsonNode artistNode : artists) {
+            ArtistMatch match = parseArtistNode(artistNode);
+            if (match != null) {
+                results.add(match);
+            }
+        }
+        return results;
+    }
+
+    ArtistMatch parseArtistNode(JsonNode artistNode) {
+        if (artistNode == null || artistNode.isMissingNode() || !artistNode.isObject()) {
+            return null;
+        }
+        String mbid = MusicBrainzArtistCache.normalizeValidMbid(artistNode.path("id").asText(null));
+        String name = blankToNull(artistNode.path("name").asText(null));
+        if (mbid == null || name == null) {
+            return null;
+        }
+        String sortName = blankToNull(artistNode.path("sort-name").asText(null));
+        String disambiguation = blankToNull(artistNode.path("disambiguation").asText(null));
+        String country = blankToNull(artistNode.path("country").asText(null));
+        JsonNode area = artistNode.path("area");
+        String areaName = area.isObject() ? blankToNull(area.path("name").asText(null)) : null;
+        if (country == null && area.isObject()) {
+            JsonNode isoCodes = area.path("iso-3166-1-codes");
+            if (isoCodes.isArray() && !isoCodes.isEmpty()) {
+                country = blankToNull(isoCodes.get(0).asText(null));
+            }
+        }
+        String type = blankToNull(artistNode.path("type").asText(null));
+        JsonNode lifeSpan = artistNode.path("life-span");
+        String begin = lifeSpan.isObject() ? blankToNull(lifeSpan.path("begin").asText(null)) : null;
+        String end = lifeSpan.isObject() ? blankToNull(lifeSpan.path("end").asText(null)) : null;
+        int score = artistNode.path("score").asInt(0);
+
+        LinkedHashSet<String> aliases = new LinkedHashSet<>();
+        JsonNode aliasNodes = artistNode.path("aliases");
+        if (aliasNodes.isArray()) {
+            for (JsonNode alias : aliasNodes) {
+                String aliasName = blankToNull(alias.path("name").asText(null));
+                if (aliasName != null) {
+                    aliases.add(aliasName);
+                }
+            }
+        }
+        LinkedHashSet<String> tags = new LinkedHashSet<>();
+        JsonNode tagNodes = artistNode.path("tags");
+        if (tagNodes.isArray()) {
+            for (JsonNode tag : tagNodes) {
+                String tagName = blankToNull(tag.path("name").asText(null));
+                if (tagName != null) {
+                    tags.add(tagName);
+                }
+            }
+        }
+        return new ArtistMatch(
+            mbid, name, sortName, disambiguation, country, areaName, type, begin, end, score,
+            List.copyOf(aliases), List.copyOf(tags));
+    }
+
+    private void cacheArtistCredits(JsonNode credits, String source) {
+        MusicBrainzArtistCache cache = this.artistCache;
+        if (cache == null || credits == null || !credits.isArray()) {
+            return;
+        }
+        try {
+            for (JsonNode credit : credits) {
+                if (credit == null || !credit.isObject()) continue;
+                JsonNode artist = credit.path("artist");
+                String creditedName = blankToNull(credit.path("name").asText(null));
+                cacheArtistNode(cache, artist, creditedName, source);
+            }
+        } catch (Exception e) {
+            log.debug("被动沉淀 MusicBrainz 艺人缓存失败: {}", e.getMessage());
+        }
+    }
+
+    private void cacheArtistNode(MusicBrainzArtistCache cache, JsonNode artist, String creditedName, String source) {
+        if (cache == null || artist == null || !artist.isObject()) {
+            return;
+        }
+        String mbid = MusicBrainzArtistCache.normalizeValidMbid(artist.path("id").asText(null));
+        String name = blankToNull(artist.path("name").asText(null));
+        if (mbid == null || name == null) {
+            return;
+        }
+        String sortName = blankToNull(artist.path("sort-name").asText(null));
+        String disambiguation = blankToNull(artist.path("disambiguation").asText(null));
+        String country = blankToNull(artist.path("country").asText(null));
+        String type = blankToNull(artist.path("type").asText(null));
+        LinkedHashSet<String> aliases = new LinkedHashSet<>();
+        JsonNode aliasNodes = artist.path("aliases");
+        if (aliasNodes.isArray()) {
+            for (JsonNode alias : aliasNodes) {
+                String aliasName = blankToNull(alias.path("name").asText(null));
+                if (aliasName != null) {
+                    aliases.add(aliasName);
+                }
+            }
+        }
+        List<String> extraNames = (creditedName != null && !creditedName.equals(name))
+            ? List.of(creditedName) : List.of();
+        cache.recordArtist(mbid, name, sortName, disambiguation, country, type, List.copyOf(aliases), extraNames, source);
     }
     
     /**
@@ -1084,6 +1335,13 @@ public class MusicBrainzClient {
         IOException lastException = null;
         
         while (retryCount <= MAX_RETRIES) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IOException("请求已被中断", new InterruptedException("cancelled"));
+            }
+            java.util.function.BooleanSupplier gate = attemptBudgetGate.get();
+            if (gate != null && !gate.getAsBoolean()) {
+                throw new BudgetExhaustedException();
+            }
             try {
                 HttpGet httpGet = new HttpGet(url);
                 httpGet.setHeader("User-Agent", config.getUserAgent());
@@ -1109,7 +1367,7 @@ public class MusicBrainzClient {
                     throw new NonRetryableHttpException(statusCode);
                 }
                 
-            } catch (NonRetryableHttpException e) {
+            } catch (NonRetryableHttpException | BudgetExhaustedException e) {
                 throw e;
             } catch (IOException e) {
                 lastException = e;
@@ -1125,6 +1383,9 @@ public class MusicBrainzClient {
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         throw new IOException("重试等待被中断", ie);
+                    }
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new IOException("重试等待被中断", new InterruptedException("cancelled"));
                     }
                 } else {
                     log.error("网络请求失败,已达最大重试次数({}/{})", retryCount, MAX_RETRIES);
@@ -1401,6 +1662,7 @@ public class MusicBrainzClient {
                 collectCredit(relation, COMPOSER_RELATION_TYPES, composers);
                 collectCredit(relation, LYRICIST_RELATION_TYPES, lyricists);
                 collectCredit(relation, ARRANGER_RELATION_TYPES, arrangers);
+                cacheCreatorRelationArtist(relation);
 
                 // 从 work 关系中提取
                 JsonNode workRelations = relation.path("work").path("relations");
@@ -1409,6 +1671,7 @@ public class MusicBrainzClient {
                         collectCredit(workRel, COMPOSER_RELATION_TYPES, composers);
                         collectCredit(workRel, LYRICIST_RELATION_TYPES, lyricists);
                         collectCredit(workRel, ARRANGER_RELATION_TYPES, arrangers);
+                        cacheCreatorRelationArtist(workRel);
                     }
                 }
             }
@@ -1433,6 +1696,25 @@ public class MusicBrainzClient {
             }
         } catch (Exception e) {
             log.warn("解析作曲/作词/编曲信息失败", e);
+        }
+    }
+
+    private void cacheCreatorRelationArtist(JsonNode relation) {
+        MusicBrainzArtistCache cache = this.artistCache;
+        if (cache == null || relation == null || !relation.isObject()) {
+            return;
+        }
+        String type = relation.path("type").asText("").trim().toLowerCase(Locale.ROOT);
+        if (!COMPOSER_RELATION_TYPES.contains(type)
+                && !LYRICIST_RELATION_TYPES.contains(type)
+                && !ARRANGER_RELATION_TYPES.contains(type)) {
+            return;
+        }
+        try {
+            String targetCredit = blankToNull(relation.path("target-credit").asText(null));
+            cacheArtistNode(cache, relation.path("artist"), targetCredit, "MB_CREATOR");
+        } catch (Exception e) {
+            log.debug("被动沉淀幕后人员缓存失败: {}", e.getMessage());
         }
     }
 
@@ -1587,6 +1869,7 @@ public class MusicBrainzClient {
     ReleaseTagBundle parseReleaseTagBundle(JsonNode release) {
         ReleaseTagBundle bundle = new ReleaseTagBundle();
         JsonNode credits = release.path("artist-credit");
+        cacheArtistCredits(credits, "MB_RELEASE");
         bundle.setAlbumArtists(artistNames(credits));
         bundle.setAlbumArtistCredit(albumArtistPolicy.resolveFromCredits(credits));
         bundle.setOriginalAlbumArtistCredit(encodeArtistCredit(credits, bundle.getAlbumArtistCredit()));
@@ -1632,6 +1915,7 @@ public class MusicBrainzClient {
     }
 
     private void applyRecordingArtistCredit(MusicMetadata metadata, JsonNode credits) {
+        cacheArtistCredits(credits, "MB_RECORDING");
         String display = resolveCreditedArtistText(credits, isPreferNativeArtistName()).trim();
         if (!display.isEmpty()) {
             metadata.setArtist(display);

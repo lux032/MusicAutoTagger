@@ -191,7 +191,24 @@ public class DatabaseService implements AutoCloseable {
                 + "cached_time DATETIME NOT NULL, "
                 + "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
                 + "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-            "CREATE INDEX IF NOT EXISTS idx_cac_cached_time ON cover_art_cache(cached_time)"
+            "CREATE INDEX IF NOT EXISTS idx_cac_cached_time ON cover_art_cache(cached_time)",
+            "CREATE TABLE IF NOT EXISTS mb_artist_cache ("
+                + "mbid VARCHAR(36) PRIMARY KEY, "
+                + "name VARCHAR(500) NOT NULL, "
+                + "sort_name VARCHAR(500), "
+                + "disambiguation VARCHAR(500), "
+                + "country VARCHAR(32), "
+                + "artist_type VARCHAR(64), "
+                + "aliases_json TEXT, "
+                + "source VARCHAR(32), "
+                + "updated_at BIGINT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS mb_artist_name_index ("
+                + "normalized_name VARCHAR(500) NOT NULL, "
+                + "mbid VARCHAR(36) NOT NULL, "
+                + "match_kind VARCHAR(32) NOT NULL, "
+                + "updated_at BIGINT NOT NULL, "
+                + "PRIMARY KEY (normalized_name, mbid))",
+            "CREATE INDEX IF NOT EXISTS idx_mb_artist_name_mbid ON mb_artist_name_index(mbid)"
         };
         try (Connection conn = dataSource.getConnection();
              Statement stmt = conn.createStatement()) {

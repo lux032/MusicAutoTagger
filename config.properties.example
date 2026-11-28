@@ -440,6 +440,13 @@ online.credits.allowTavilyExtract=true
 # Whether verified PROBABLE online credit fields auto-populate in confirmation dialog (false = VERIFIED only)
 online.credits.applyProbable=true
 
+# Online person-level MusicBrainz Artist MBID resolution (cache -> verified webpage link -> MB Artist API)
+online.mbid.resolve.enabled=true
+# Max external MusicBrainz Artist API lookups per album during online search (0..50)
+online.mbid.maxLookupsPerAlbum=15
+# Use closed-choice LLM disambiguation when MusicBrainz returns multiple homonym artists
+online.mbid.llmDisambiguate.enabled=true
+
 # ----------------------------------------
 # Web search backend: native | tavily
 # ----------------------------------------

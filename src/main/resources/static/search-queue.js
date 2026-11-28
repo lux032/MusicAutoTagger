@@ -131,6 +131,9 @@
             case 'CREDITS_FETCHING': return tf('sq.stage.CREDITS_FETCHING', cur || 1, tot || 1);
             case 'CREDITS_GAP_FILL': return tf('sq.stage.CREDITS_GAP_FILL', cur || 1, tot || 1);
             case 'CREDITS_VERIFYING': return t('sq.stage.CREDITS_VERIFYING');
+            case 'RESOLVING_MBIDS': return tot > 0
+                ? tf('sq.stage.RESOLVING_MBIDS.progress', cur, tot)
+                : t('sq.stage.RESOLVING_MBIDS');
             case 'COVER_LOCAL_CHECK': return t('sq.stage.COVER_LOCAL_CHECK');
             case 'COVER_ITUNES_SEARCH': return t('sq.stage.COVER_ITUNES_SEARCH');
             case 'COVER_AI_SEARCH': return t('sq.stage.COVER_AI_SEARCH');
@@ -163,6 +166,7 @@
             return t('sq.short.r1');
         }
         if (step === 2) return t('sq.short.matching');
+        if (task.stageCode === 'RESOLVING_MBIDS') return t('sq.short.mbids');
         if (task.stageCode === 'ROUND2_WEB_SEARCH' && task.stageTotal > 0) {
             return `${t('sq.short.r2')} ${task.stageCurrent}/${task.stageTotal}`;
         }

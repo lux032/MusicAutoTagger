@@ -25,6 +25,7 @@
         'online.destination.exists': 'review.error.destination.exists',
         'online.duplicate.exists': 'review.duplicate.title',
         'online.track.credits.invalid': 'review.online.credits.invalid',
+        'online.mbid.override.invalid': 'review.online.mbid.invalid',
         // 恢复与回收站
         'recovery.unavailable': 'review.error.recovery.unavailable',
         'recovery.already.running': 'review.error.online.already.running',

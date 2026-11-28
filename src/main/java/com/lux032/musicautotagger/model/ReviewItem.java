@@ -230,6 +230,12 @@ public class ReviewItem {
                 oc.sources = copyOnWrite(oc.sources);
                 oc.coverCandidates = copyOnWrite(oc.coverCandidates);
                 oc.manualTrackOverrides = copyOnWrite(oc.manualTrackOverrides);
+                oc.entityMbids = concurrentMap(oc.entityMbids);
+                for (EntityMbidResolution res : oc.entityMbids.values()) {
+                    if (res != null) {
+                        res.ensureThreadSafeCollections();
+                    }
+                }
             }
         }
         if (this.missingTracks != null) {
@@ -242,6 +248,7 @@ public class ReviewItem {
             this.missingCover.coverCandidates = copyOnWrite(this.missingCover.coverCandidates);
             this.missingCover.archivedOutputDirs = copyOnWrite(this.missingCover.archivedOutputDirs);
             this.missingCover.onlineTrackCredits = concurrentMap(this.missingCover.onlineTrackCredits);
+            this.missingCover.onlineEntityMbidOverrides = concurrentMap(this.missingCover.onlineEntityMbidOverrides);
         }
     }
 
@@ -347,6 +354,8 @@ public class ReviewItem {
         private String onlineCandidateId;
         /** 联网确认时用户在弹窗中提交的逐曲幕后人员覆盖（按本地文件绝对路径索引） */
         private Map<String, TrackCreditsOverride> onlineTrackCredits = new ConcurrentHashMap<>();
+        /** 联网确认时用户在弹窗中提交的人物级 MBID 覆盖（键为规范化人名键，值为小写 UUID 或空串表示显式取消绑定） */
+        private Map<String, String> onlineEntityMbidOverrides = new ConcurrentHashMap<>();
         /** 用户补充的自定义搜索关键词 */
         private String customSearchQuery;
         private long coverSearchedAt;
@@ -385,6 +394,10 @@ public class ReviewItem {
 
         public void setOnlineTrackCredits(Map<String, TrackCreditsOverride> onlineTrackCredits) {
             this.onlineTrackCredits = concurrentMap(onlineTrackCredits);
+        }
+
+        public void setOnlineEntityMbidOverrides(Map<String, String> onlineEntityMbidOverrides) {
+            this.onlineEntityMbidOverrides = concurrentMap(onlineEntityMbidOverrides);
         }
     }
 
@@ -546,6 +559,65 @@ public class ReviewItem {
         private double matchConfidence;
     }
 
+    /** 联网识别人物级 MusicBrainz Artist MBID 解析状态。 */
+    public enum EntityMbidStatus {
+        RESOLVED,
+        AMBIGUOUS,
+        NOT_FOUND,
+        SKIPPED
+    }
+
+    /** 联网识别人物级 MusicBrainz Artist MBID 命中来源。 */
+    public enum EntityMbidSource {
+        LOCAL_CACHE,
+        WEB_LINK_VERIFIED,
+        MB_SEARCH_EXACT,
+        MB_SEARCH_LLM_DISAMBIGUATED,
+        MANUAL
+    }
+
+    /** MusicBrainz Artist 检索返回的单个真实候选实体快照。 */
+    @Data
+    public static class EntityMbidCandidate {
+        private String mbid;
+        private String name;
+        private String sortName;
+        private String disambiguation;
+        private String country;
+        private String type;
+        private int score;
+    }
+
+    /** 联网候选中单个规范化人物的 MusicBrainz Artist MBID 解析结果。 */
+    @Data
+    public static class EntityMbidResolution {
+        private String normalizedKey;
+        private String displayName;
+        private List<String> roles = new CopyOnWriteArrayList<>();
+        private EntityMbidStatus status = EntityMbidStatus.NOT_FOUND;
+        private String selectedMbid;
+        private String selectedName;
+        private String selectedSortName;
+        private String selectedDisambiguation;
+        private EntityMbidSource source;
+        private double confidence;
+        private String reason;
+        private List<EntityMbidCandidate> candidates = new CopyOnWriteArrayList<>();
+
+        public void setRoles(List<String> roles) {
+            this.roles = copyOnWrite(roles);
+        }
+
+        public void setCandidates(List<EntityMbidCandidate> candidates) {
+            this.candidates = copyOnWrite(candidates);
+        }
+
+        public void ensureThreadSafeCollections() {
+            this.roles = copyOnWrite(this.roles);
+            this.candidates = copyOnWrite(this.candidates);
+        }
+    }
+
     @Data
     public static class OnlineCandidate {
         private String id;
@@ -573,6 +645,8 @@ public class ReviewItem {
         private String selectedCoverSha256;
         /** 首期只开放专辑级编辑，逐曲覆盖字段为后续预留 */
         private List<OnlineTrack> manualTrackOverrides = new CopyOnWriteArrayList<>();
+        /** 人物级 MusicBrainz Artist MBID 预解析表（键为规范化人名键，兼容历史数据可为空） */
+        private Map<String, EntityMbidResolution> entityMbids = new ConcurrentHashMap<>();
 
         public void setTracks(List<OnlineTrack> tracks) {
             this.tracks = copyOnWrite(tracks);
@@ -588,6 +662,10 @@ public class ReviewItem {
 
         public void setManualTrackOverrides(List<OnlineTrack> manualTrackOverrides) {
             this.manualTrackOverrides = copyOnWrite(manualTrackOverrides);
+        }
+
+        public void setEntityMbids(Map<String, EntityMbidResolution> entityMbids) {
+            this.entityMbids = concurrentMap(entityMbids);
         }
     }
 

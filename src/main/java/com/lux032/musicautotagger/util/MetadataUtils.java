@@ -4,12 +4,15 @@ import lombok.extern.slf4j.Slf4j;
 import com.lux032.musicautotagger.model.MusicMetadata;
 import com.lux032.musicautotagger.model.ReviewItem;
 import com.lux032.musicautotagger.service.AudioFingerprintService;
+import com.lux032.musicautotagger.service.MusicBrainzArtistCache;
 
 import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -502,6 +505,133 @@ public class MetadataUtils {
         ResolvedCreditRole arranger
     ) {}
 
+    /** 单个人物生效的 MusicBrainz Artist MBID 与排序名。 */
+    public record EffectiveEntityMbid(String mbid, String sortName) {}
+
+    /**
+     * 合并候选预解析表（仅 {@code RESOLVED} 状态）与人工提交的 {@code entityMbidOverrides}。
+     * 覆盖值为空串 {@code ""} 表示显式取消绑定，会移除预解析结果。
+     */
+    public static Map<String, EffectiveEntityMbid> buildEffectiveEntityMbids(
+            Map<String, ReviewItem.EntityMbidResolution> resolvedMap,
+            Map<String, String> overrides) {
+        Map<String, EffectiveEntityMbid> effective = new LinkedHashMap<>();
+        if (resolvedMap != null) {
+            for (Map.Entry<String, ReviewItem.EntityMbidResolution> entry : resolvedMap.entrySet()) {
+                ReviewItem.EntityMbidResolution res = entry.getValue();
+                if (res == null || res.getStatus() != ReviewItem.EntityMbidStatus.RESOLVED) {
+                    continue;
+                }
+                String validMbid = MusicBrainzArtistCache.normalizeValidMbid(res.getSelectedMbid());
+                if (validMbid == null) {
+                    continue;
+                }
+                String key = MusicBrainzArtistCache.normalizePersonKey(
+                    !isBlank(res.getNormalizedKey()) ? res.getNormalizedKey()
+                        : (!isBlank(res.getDisplayName()) ? res.getDisplayName() : entry.getKey()));
+                if (!key.isEmpty()) {
+                    String sortName = isBlank(res.getSelectedSortName()) ? null : res.getSelectedSortName().trim();
+                    effective.put(key, new EffectiveEntityMbid(validMbid, sortName));
+                }
+            }
+        }
+        if (overrides != null) {
+            for (Map.Entry<String, String> entry : overrides.entrySet()) {
+                String key = MusicBrainzArtistCache.normalizePersonKey(entry.getKey());
+                if (key.isEmpty()) {
+                    continue;
+                }
+                String rawVal = entry.getValue();
+                if (rawVal == null || rawVal.isBlank()) {
+                    effective.remove(key);
+                    continue;
+                }
+                String validMbid = MusicBrainzArtistCache.normalizeValidMbid(rawVal);
+                if (validMbid == null) {
+                    effective.remove(key);
+                    continue;
+                }
+                String sortName = findCandidateSortName(resolvedMap, key, validMbid);
+                effective.put(key, new EffectiveEntityMbid(validMbid, sortName));
+            }
+        }
+        return effective;
+    }
+
+    private static String findCandidateSortName(Map<String, ReviewItem.EntityMbidResolution> resolvedMap,
+                                                String normalizedKey, String validMbid) {
+        if (resolvedMap == null || normalizedKey == null || validMbid == null) {
+            return null;
+        }
+        ReviewItem.EntityMbidResolution res = resolvedMap.get(normalizedKey);
+        if (res == null) {
+            for (ReviewItem.EntityMbidResolution r : resolvedMap.values()) {
+                if (r != null && normalizedKey.equals(MusicBrainzArtistCache.normalizePersonKey(
+                        !isBlank(r.getNormalizedKey()) ? r.getNormalizedKey() : r.getDisplayName()))) {
+                    res = r;
+                    break;
+                }
+            }
+        }
+        if (res == null) {
+            return null;
+        }
+        if (validMbid.equalsIgnoreCase(res.getSelectedMbid()) && !isBlank(res.getSelectedSortName())) {
+            return res.getSelectedSortName().trim();
+        }
+        if (res.getCandidates() != null) {
+            for (ReviewItem.EntityMbidCandidate c : res.getCandidates()) {
+                if (c != null && validMbid.equalsIgnoreCase(c.getMbid()) && !isBlank(c.getSortName())) {
+                    return c.getSortName().trim();
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 按“全有或全无（All-or-Nothing）”规则为有序人名列表组装严格位置对齐且无重复的 MBID 列表。
+     * 任一成员无合法 UUID 或存在重复 UUID 时返回 {@code null}，防止一维列表错位。
+     */
+    public static List<String> resolveAlignedEntityMbids(List<String> names,
+                                                         Map<String, EffectiveEntityMbid> effectiveMbids) {
+        if (names == null || names.isEmpty() || effectiveMbids == null || effectiveMbids.isEmpty()) {
+            return null;
+        }
+        List<String> ids = new ArrayList<>(names.size());
+        Set<String> seen = new LinkedHashSet<>();
+        for (String name : names) {
+            String key = MusicBrainzArtistCache.normalizePersonKey(name);
+            if (key.isEmpty()) {
+                return null;
+            }
+            EffectiveEntityMbid hit = effectiveMbids.get(key);
+            if (hit == null || hit.mbid() == null || !seen.add(hit.mbid())) {
+                return null;
+            }
+            ids.add(hit.mbid());
+        }
+        return ids.size() == names.size() ? List.copyOf(ids) : null;
+    }
+
+    /** 仅当有序人名列表全部成员均存在非空排序名时返回分号拼接排序名，否则返回 null。 */
+    public static String resolveAlignedArtistSort(List<String> names,
+                                                  Map<String, EffectiveEntityMbid> effectiveMbids) {
+        if (names == null || names.isEmpty() || effectiveMbids == null || effectiveMbids.isEmpty()) {
+            return null;
+        }
+        List<String> sorts = new ArrayList<>(names.size());
+        for (String name : names) {
+            String key = MusicBrainzArtistCache.normalizePersonKey(name);
+            EffectiveEntityMbid hit = effectiveMbids.get(key);
+            if (hit == null || isBlank(hit.sortName())) {
+                return null;
+            }
+            sorts.add(hit.sortName().trim());
+        }
+        return sorts.size() == names.size() ? String.join("; ", sorts) : null;
+    }
+
     /**
      * 判断元数据是否携带真实的 MusicBrainz recordingId（排除各类内部哨兵值）。
      */
@@ -608,6 +738,23 @@ public class MetadataUtils {
             ReviewItem.OnlineTrack onlineTrack,
             boolean onlineConfident,
             boolean applyProbable) {
+        return resolveOnlineTrackCredits(manualOverride, musicBrainz, local, onlineTrack, onlineConfident,
+            applyProbable, null, Set.of());
+    }
+
+    /**
+     * 按确定优先级逐字段（作曲 / 作词 / 编曲独立）解析联网归档时的最终幕后人员与严格对齐的 MBID。
+     */
+    public static ResolvedTrackCredits resolveOnlineTrackCredits(
+            ReviewItem.TrackCreditsOverride manualOverride,
+            MusicMetadata musicBrainz,
+            MusicMetadata local,
+            ReviewItem.OnlineTrack onlineTrack,
+            boolean onlineConfident,
+            boolean applyProbable,
+            Map<String, EffectiveEntityMbid> effectiveEntityMbids,
+            Set<String> explicitlyUnboundKeys) {
+        Set<String> unbound = explicitlyUnboundKeys == null ? Set.of() : explicitlyUnboundKeys;
         ResolvedCreditRole composer = resolveRole(
             manualOverride == null ? null : manualOverride.getComposers(),
             musicBrainz == null ? null : musicBrainz.getComposer(),
@@ -617,7 +764,9 @@ public class MetadataUtils {
             local == null ? null : local.getComposers(),
             local == null ? null : local.getComposerIds(),
             extractAdmittedOnlineNames(onlineTrack, "composers", applyProbable),
-            onlineConfident
+            onlineConfident,
+            effectiveEntityMbids,
+            unbound
         );
         ResolvedCreditRole lyricist = resolveRole(
             manualOverride == null ? null : manualOverride.getLyricists(),
@@ -628,7 +777,9 @@ public class MetadataUtils {
             local == null ? null : local.getLyricists(),
             local == null ? null : local.getLyricistIds(),
             extractAdmittedOnlineNames(onlineTrack, "lyricists", applyProbable),
-            onlineConfident
+            onlineConfident,
+            effectiveEntityMbids,
+            unbound
         );
         ResolvedCreditRole arranger = resolveRole(
             manualOverride == null ? null : manualOverride.getArrangers(),
@@ -639,12 +790,14 @@ public class MetadataUtils {
             local == null ? null : local.getArrangers(),
             local == null ? null : local.getArrangerIds(),
             extractAdmittedOnlineNames(onlineTrack, "arrangers", applyProbable),
-            onlineConfident
+            onlineConfident,
+            effectiveEntityMbids,
+            unbound
         );
         return new ResolvedTrackCredits(composer, lyricist, arranger);
     }
 
-    private static List<String> extractAdmittedOnlineNames(ReviewItem.OnlineTrack onlineTrack,
+    public static List<String> extractAdmittedOnlineNames(ReviewItem.OnlineTrack onlineTrack,
                                                            String role, boolean applyProbable) {
         if (onlineTrack == null) {
             return List.of();
@@ -681,24 +834,45 @@ public class MetadataUtils {
             List<String> manualNames,
             String mbDisplay, List<String> mbNames, List<String> mbIds,
             String localDisplay, List<String> localNames, List<String> localIds,
-            List<String> onlineNames, boolean onlineConfident) {
+            List<String> onlineNames, boolean onlineConfident,
+            Map<String, EffectiveEntityMbid> effectiveEntityMbids,
+            Set<String> explicitlyUnboundKeys) {
         if (manualNames != null) {
             List<String> cleaned = cleanDistinctCreditNames(manualNames);
             if (cleaned.isEmpty()) {
                 return ResolvedCreditRole.cleared();
             }
-            return new ResolvedCreditRole(CreditSource.MANUAL, String.join(", ", cleaned), cleaned, null, false);
+            List<String> alignedIds = resolveAlignedEntityMbids(cleaned, effectiveEntityMbids);
+            return new ResolvedCreditRole(CreditSource.MANUAL, String.join(", ", cleaned), cleaned, alignedIds, false);
         }
         if (!isBlank(mbDisplay) || (mbNames != null && !mbNames.isEmpty())) {
             return buildMetadataRole(CreditSource.MUSICBRAINZ, mbDisplay, mbNames, mbIds);
         }
         if (!isBlank(localDisplay) || (localNames != null && !localNames.isEmpty())) {
-            return buildMetadataRole(CreditSource.LOCAL, localDisplay, localNames, localIds);
+            ResolvedCreditRole base = buildMetadataRole(CreditSource.LOCAL, localDisplay, localNames, localIds);
+            List<String> effectiveNames = !base.names().isEmpty()
+                ? base.names()
+                : (!isBlank(base.display()) && !ArtistCreditSupport.looksComposite(base.display())
+                    ? List.of(base.display()) : List.of());
+            boolean anyUnbound = effectiveNames.stream()
+                .map(MusicBrainzArtistCache::normalizePersonKey)
+                .anyMatch(explicitlyUnboundKeys::contains);
+            if (anyUnbound) {
+                return new ResolvedCreditRole(CreditSource.LOCAL, base.display(), base.names(), null, false);
+            }
+            if ((base.mbids() == null || base.mbids().isEmpty()) && !effectiveNames.isEmpty()) {
+                List<String> alignedIds = resolveAlignedEntityMbids(effectiveNames, effectiveEntityMbids);
+                if (alignedIds != null) {
+                    return new ResolvedCreditRole(CreditSource.LOCAL, base.display(), base.names(), alignedIds, false);
+                }
+            }
+            return base;
         }
         if (onlineConfident && onlineNames != null && !onlineNames.isEmpty()) {
             List<String> cleaned = cleanDistinctCreditNames(onlineNames);
             if (!cleaned.isEmpty()) {
-                return new ResolvedCreditRole(CreditSource.ONLINE, String.join(", ", cleaned), cleaned, null, false);
+                List<String> alignedIds = resolveAlignedEntityMbids(cleaned, effectiveEntityMbids);
+                return new ResolvedCreditRole(CreditSource.ONLINE, String.join(", ", cleaned), cleaned, alignedIds, false);
             }
         }
         return ResolvedCreditRole.empty();

@@ -39,6 +39,7 @@ public class ApplicationLifecycleManager {
     private DatabaseService databaseService;
     private FileMonitorService fileMonitor;
     private AudioFingerprintService fingerprintService;
+    private MusicBrainzArtistCache musicBrainzArtistCache;
     private MusicBrainzClient musicBrainzClient;
     private TagWriterService tagWriter;
     private LyricsService lyricsService;
@@ -126,7 +127,8 @@ public class ApplicationLifecycleManager {
         // Level 2: 初始化其他服务
         log.info(I18nUtil.getMessage("app.init.other.services"));
         fingerprintService = new AudioFingerprintService(config);
-        musicBrainzClient = new MusicBrainzClient(config);
+        musicBrainzArtistCache = new MusicBrainzArtistCache(databaseService);
+        musicBrainzClient = new MusicBrainzClient(config, musicBrainzArtistCache);
         lyricsService = new LyricsService(config);
         tagWriter = new TagWriterService(config);
         lyricsBackfillService = new LyricsBackfillService(config, lyricsService, tagWriter);
@@ -221,7 +223,8 @@ public class ApplicationLifecycleManager {
         // 部分识别 / 失败目录的人工重新识别入口
         recoveryService = new RecoveryService(
             config, audioFileProcessorService, processedLogger, reviewQueueService, folderAlbumCache,
-            failedFileHandler, fileSystemUtils, tagWriter, fingerprintService, coverCandidateService);
+            failedFileHandler, fileSystemUtils, tagWriter, fingerprintService, coverCandidateService,
+            musicBrainzClient, musicBrainzArtistCache);
         reviewResolutionService.setRecoveryService(recoveryService);
 
         // 启动期历史分裂处理记录幂等对账（必须在文件监控扫描启动前执行，任何异常仅告警不阻断启动）
@@ -364,6 +367,7 @@ public class ApplicationLifecycleManager {
         fingerprintService = null;
         coverCandidateService = null;
         musicBrainzClient = null;
+        musicBrainzArtistCache = null;
         coverArtService = null;
         coverArtCache = null;
         folderAlbumCache = null;

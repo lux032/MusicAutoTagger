@@ -198,6 +198,68 @@ public class MusicConfig {
     /** 联网自动合并时是否允许采用通过校验的 PROBABLE（推测级）幕后人员字段 */
     private boolean onlineCreditsApplyProbable;
 
+    // 联网人物级 MusicBrainz ID 解析配置（不可变快照，保证跨线程热更新一致性）
+    public record OnlineMbidSettings(
+        boolean resolveEnabled,
+        int maxLookupsPerAlbum,
+        boolean llmDisambiguateEnabled
+    ) {
+        public OnlineMbidSettings {
+            maxLookupsPerAlbum = Math.max(0, Math.min(50, maxLookupsPerAlbum));
+        }
+
+        public static OnlineMbidSettings defaults() {
+            return new OnlineMbidSettings(true, 15, true);
+        }
+    }
+
+    private volatile OnlineMbidSettings onlineMbidSettings = OnlineMbidSettings.defaults();
+
+    public OnlineMbidSettings getOnlineMbidSettings() {
+        OnlineMbidSettings s = this.onlineMbidSettings;
+        return s != null ? s : OnlineMbidSettings.defaults();
+    }
+
+    public boolean isOnlineMbidResolveEnabled() {
+        return getOnlineMbidSettings().resolveEnabled();
+    }
+
+    public synchronized void setOnlineMbidResolveEnabled(boolean enabled) {
+        OnlineMbidSettings cur = getOnlineMbidSettings();
+        this.onlineMbidSettings = new OnlineMbidSettings(enabled, cur.maxLookupsPerAlbum(), cur.llmDisambiguateEnabled());
+    }
+
+    public int getOnlineMbidMaxLookupsPerAlbum() {
+        return getOnlineMbidSettings().maxLookupsPerAlbum();
+    }
+
+    public synchronized void setOnlineMbidMaxLookupsPerAlbum(int maxLookups) {
+        OnlineMbidSettings cur = getOnlineMbidSettings();
+        this.onlineMbidSettings = new OnlineMbidSettings(cur.resolveEnabled(), maxLookups, cur.llmDisambiguateEnabled());
+    }
+
+    public boolean isOnlineMbidLlmDisambiguateEnabled() {
+        return getOnlineMbidSettings().llmDisambiguateEnabled();
+    }
+
+    public synchronized void setOnlineMbidLlmDisambiguateEnabled(boolean enabled) {
+        OnlineMbidSettings cur = getOnlineMbidSettings();
+        this.onlineMbidSettings = new OnlineMbidSettings(cur.resolveEnabled(), cur.maxLookupsPerAlbum(), enabled);
+    }
+
+    /** 原子发布人物级 MBID 热更新配置快照，避免工作线程观测到半更新状态。 */
+    public synchronized OnlineMbidSettings updateOnlineMbidSettings(Boolean resolveEnabled,
+                                                                    Integer maxLookupsPerAlbum,
+                                                                    Boolean llmDisambiguateEnabled) {
+        OnlineMbidSettings cur = getOnlineMbidSettings();
+        OnlineMbidSettings next = new OnlineMbidSettings(
+            resolveEnabled != null ? resolveEnabled : cur.resolveEnabled(),
+            maxLookupsPerAlbum != null ? maxLookupsPerAlbum : cur.maxLookupsPerAlbum(),
+            llmDisambiguateEnabled != null ? llmDisambiguateEnabled : cur.llmDisambiguateEnabled());
+        this.onlineMbidSettings = next;
+        return next;
+    }
+
     // Tavily 外部检索（替代模型原生 Web Search）
     /**
      * 联网搜索的实现来源：native / tavily。
@@ -324,6 +386,7 @@ public class MusicConfig {
         this.onlineCreditsMaxFetchPages = 6;
         this.onlineCreditsAllowTavilyExtract = true;
         this.onlineCreditsApplyProbable = true;
+        this.onlineMbidSettings = OnlineMbidSettings.defaults();
 
         // 默认仍为 native，保证已有部署升级后行为不变；切到 tavily 需显式配置 key
         this.webSearchProvider = "native";
@@ -771,6 +834,17 @@ public class MusicConfig {
                 this.onlineCreditsApplyProbable = Boolean.parseBoolean(
                     props.getProperty("online.credits.applyProbable").trim());
             }
+            boolean mbidResolve = props.containsKey("online.mbid.resolve.enabled")
+                ? Boolean.parseBoolean(props.getProperty("online.mbid.resolve.enabled").trim())
+                : true;
+            int mbidMaxLookups = props.containsKey("online.mbid.maxLookupsPerAlbum")
+                ? parseIntInRange(props.getProperty("online.mbid.maxLookupsPerAlbum"),
+                    15, 0, 50, "online.mbid.maxLookupsPerAlbum")
+                : 15;
+            boolean mbidLlmDisambiguate = props.containsKey("online.mbid.llmDisambiguate.enabled")
+                ? Boolean.parseBoolean(props.getProperty("online.mbid.llmDisambiguate.enabled").trim())
+                : true;
+            this.onlineMbidSettings = new OnlineMbidSettings(mbidResolve, mbidMaxLookups, mbidLlmDisambiguate);
 
             // 加载 Tavily 外部检索配置
             if (props.containsKey("llm.webSearch.provider")) {
@@ -1091,6 +1165,10 @@ public class MusicConfig {
         props.setProperty("online.credits.maxFetchPages", String.valueOf(onlineCreditsMaxFetchPages));
         props.setProperty("online.credits.allowTavilyExtract", String.valueOf(onlineCreditsAllowTavilyExtract));
         props.setProperty("online.credits.applyProbable", String.valueOf(onlineCreditsApplyProbable));
+        OnlineMbidSettings mbid = getOnlineMbidSettings();
+        props.setProperty("online.mbid.resolve.enabled", String.valueOf(mbid.resolveEnabled()));
+        props.setProperty("online.mbid.maxLookupsPerAlbum", String.valueOf(mbid.maxLookupsPerAlbum()));
+        props.setProperty("online.mbid.llmDisambiguate.enabled", String.valueOf(mbid.llmDisambiguateEnabled()));
         props.setProperty("llm.webSearch.provider", webSearchProvider == null ? "native" : webSearchProvider);
         props.setProperty("tavily.apiKey", tavilyApiKey == null ? "" : tavilyApiKey);
         props.setProperty("tavily.apiUrl", tavilyApiUrl == null ? "https://api.tavily.com/search" : tavilyApiUrl);

@@ -24,6 +24,9 @@ public class MusicMetadata {
     private String albumArtistCredit;
     private String artistId;
     private String albumArtistId;
+    /** 显式清除原音频文件中残留的曲目艺人 / 专辑艺人 MBID（及无新值时对应排序名）。 */
+    private boolean clearArtistId;
+    private boolean clearAlbumArtistId;
     private String releaseTrackId;
     private String artistSort;
     private String albumArtistSort;
@@ -122,6 +125,8 @@ public class MusicMetadata {
         copy.albumArtistCredit = albumArtistCredit;
         copy.artistId = artistId;
         copy.albumArtistId = albumArtistId;
+        copy.clearArtistId = clearArtistId;
+        copy.clearAlbumArtistId = clearAlbumArtistId;
         copy.releaseTrackId = releaseTrackId;
         copy.artistSort = artistSort;
         copy.albumArtistSort = albumArtistSort;

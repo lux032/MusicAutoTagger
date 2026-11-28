@@ -83,8 +83,19 @@ public class TrackCreditEnrichmentService implements AutoCloseable {
         int followUpRounds,
         LlmClient.TokenUsage tokenUsage,
         List<WebSearchClient.Citation> collectedCitations,
-        boolean interrupted
+        boolean interrupted,
+        Map<String, WebPageFetcher.FetchedPage> fetchedPages
     ) {
+        public EnrichmentSummary {
+            fetchedPages = fetchedPages == null ? Map.of() : Map.copyOf(fetchedPages);
+        }
+
+        public EnrichmentSummary(int searchCalls, int pagesFetched, int followUpRounds,
+                                 LlmClient.TokenUsage tokenUsage,
+                                 List<WebSearchClient.Citation> collectedCitations,
+                                 boolean interrupted) {
+            this(searchCalls, pagesFetched, followUpRounds, tokenUsage, collectedCitations, interrupted, Map.of());
+        }
     }
 
     private record PlannedQuery(String query, List<String> includeDomains, String depth) {
@@ -314,7 +325,7 @@ public class TrackCreditEnrichmentService implements AutoCloseable {
         }
         return new EnrichmentSummary(
             searchCalls, pagesFetched, followUpRounds, totalUsage,
-            new ArrayList<>(citationPool.values()), interrupted);
+            new ArrayList<>(citationPool.values()), interrupted, new LinkedHashMap<>(fetchedPages));
     }
 
     private LlmClient.TokenUsage runExtractionAndVerify(

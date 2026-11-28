@@ -109,7 +109,25 @@ public class RecoveryService implements AutoCloseable {
                            AudioFingerprintService fingerprintService,
                            CoverCandidateService coverCandidateService) {
         this(config, processor, processedLogger, reviewQueue, folderAlbumCache, failedFileHandler,
-            fileSystemUtils, tagWriter, fingerprintService, coverCandidateService, new LlmArtistSplitter(config));
+            fileSystemUtils, tagWriter, fingerprintService, coverCandidateService, new LlmArtistSplitter(config),
+            null, null, null);
+    }
+
+    public RecoveryService(MusicConfig config,
+                           AudioFileProcessorService processor,
+                           ProcessedFileLogger processedLogger,
+                           ReviewQueueService reviewQueue,
+                           FolderAlbumCache folderAlbumCache,
+                           FailedFileHandler failedFileHandler,
+                           FileSystemUtils fileSystemUtils,
+                           TagWriterService tagWriter,
+                           AudioFingerprintService fingerprintService,
+                           CoverCandidateService coverCandidateService,
+                           MusicBrainzClient musicBrainzClient,
+                           MusicBrainzArtistCache artistCache) {
+        this(config, processor, processedLogger, reviewQueue, folderAlbumCache, failedFileHandler,
+            fileSystemUtils, tagWriter, fingerprintService, coverCandidateService, new LlmArtistSplitter(config),
+            null, musicBrainzClient, artistCache);
     }
 
     RecoveryService(MusicConfig config,
@@ -124,7 +142,7 @@ public class RecoveryService implements AutoCloseable {
                     CoverCandidateService coverCandidateService,
                     LlmArtistSplitter artistSplitter) {
         this(config, processor, processedLogger, reviewQueue, folderAlbumCache, failedFileHandler,
-            fileSystemUtils, tagWriter, fingerprintService, coverCandidateService, artistSplitter, null);
+            fileSystemUtils, tagWriter, fingerprintService, coverCandidateService, artistSplitter, null, null, null);
     }
 
     RecoveryService(MusicConfig config,
@@ -139,6 +157,25 @@ public class RecoveryService implements AutoCloseable {
                     CoverCandidateService coverCandidateService,
                     LlmArtistSplitter artistSplitter,
                     OnlineIdentificationService onlineIdentificationOverride) {
+        this(config, processor, processedLogger, reviewQueue, folderAlbumCache, failedFileHandler,
+            fileSystemUtils, tagWriter, fingerprintService, coverCandidateService, artistSplitter,
+            onlineIdentificationOverride, null, null);
+    }
+
+    RecoveryService(MusicConfig config,
+                    AudioFileProcessorService processor,
+                    ProcessedFileLogger processedLogger,
+                    ReviewQueueService reviewQueue,
+                    FolderAlbumCache folderAlbumCache,
+                    FailedFileHandler failedFileHandler,
+                    FileSystemUtils fileSystemUtils,
+                    TagWriterService tagWriter,
+                    AudioFingerprintService fingerprintService,
+                    CoverCandidateService coverCandidateService,
+                    LlmArtistSplitter artistSplitter,
+                    OnlineIdentificationService onlineIdentificationOverride,
+                    MusicBrainzClient musicBrainzClient,
+                    MusicBrainzArtistCache artistCache) {
         this.config = config;
         this.processor = processor;
         this.processedLogger = processedLogger;
@@ -162,7 +199,8 @@ public class RecoveryService implements AutoCloseable {
             this.originRegistry);
         this.onlineIdentificationService = onlineIdentificationOverride != null
             ? onlineIdentificationOverride
-            : new OnlineIdentificationService(config, reviewQueue, tagWriter, fingerprintService, artistSplitter);
+            : new OnlineIdentificationService(config, reviewQueue, tagWriter, fingerprintService, artistSplitter,
+                musicBrainzClient, artistCache);
         this.searchQueueService = new OnlineSearchQueueService(config, reviewQueue, this.onlineIdentificationService);
         this.searchQueueService.setRecoveryOtherJobsSupplier(this::listOtherJobs);
         recoverPendingReplacements();
@@ -1001,9 +1039,24 @@ public class RecoveryService implements AutoCloseable {
                                                            List<String> manualAlbumArtists,
                                                            boolean confirmNoCover,
                                                            Map<String, ReviewItem.TrackCreditsOverride> manualTrackCredits) throws IOException {
+        return confirmOnlineCandidate(itemId, candidateId, albumTitle, albumArtist, releaseDate, edition,
+            archiveDirectoryName, selectedCoverSha256, duplicatePolicy, manualAlbumArtists, confirmNoCover,
+            manualTrackCredits, null);
+    }
+
+    public synchronized ReviewItem confirmOnlineCandidate(String itemId, String candidateId,
+                                                           String albumTitle, String albumArtist,
+                                                           String releaseDate, String edition,
+                                                           String archiveDirectoryName,
+                                                           String selectedCoverSha256,
+                                                           DuplicatePolicy duplicatePolicy,
+                                                           List<String> manualAlbumArtists,
+                                                           boolean confirmNoCover,
+                                                           Map<String, ReviewItem.TrackCreditsOverride> manualTrackCredits,
+                                                           Map<String, String> entityMbidOverrides) throws IOException {
         return confirmOnlineCandidateInternal(itemId, candidateId, albumTitle, albumArtist, releaseDate, edition,
             archiveDirectoryName, selectedCoverSha256, null, duplicatePolicy, manualAlbumArtists,
-            confirmNoCover, true, manualTrackCredits);
+            confirmNoCover, true, manualTrackCredits, entityMbidOverrides);
     }
 
     /** 「缺少封面」页补图或确认无封面后，继续完成之前暂缓的「联网候选确认入库」。 */
@@ -1022,7 +1075,43 @@ public class RecoveryService implements AutoCloseable {
             mc.getArchiveDirectoryName(), null, confirmNoCover ? null : coverBytes,
             duplicatePolicy == null ? DuplicatePolicy.ASK : duplicatePolicy,
             mc.getAlbumArtists(), confirmNoCover, false,
-            mc.getOnlineTrackCredits());
+            mc.getOnlineTrackCredits(), mc.getOnlineEntityMbidOverrides());
+    }
+
+    /** 校验并规范化人物级 MBID 人工覆盖：仅精确空串 "" 表示取消绑定，非空必须是合法非零 UUID，且拒绝规范化键冲突与 null/纯空白值。 */
+    public static Map<String, String> normalizeAndValidateEntityMbidOverrides(Map<String, String> rawOverrides)
+            throws IOException {
+        if (rawOverrides == null || rawOverrides.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> normalized = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : rawOverrides.entrySet()) {
+            String key = MusicBrainzArtistCache.normalizePersonKey(entry.getKey());
+            if (key.isEmpty()) {
+                throw new IOException("online.mbid.override.invalid");
+            }
+            String val = entry.getValue();
+            if (val == null) {
+                throw new IOException("online.mbid.override.invalid");
+            }
+            String normalizedVal;
+            if (val.isEmpty()) {
+                normalizedVal = "";
+            } else if (val.isBlank()) {
+                throw new IOException("online.mbid.override.invalid");
+            } else {
+                String validMbid = MusicBrainzArtistCache.normalizeValidMbid(val);
+                if (validMbid == null) {
+                    throw new IOException("online.mbid.override.invalid");
+                }
+                normalizedVal = validMbid;
+            }
+            if (normalized.containsKey(key)) {
+                throw new IOException("online.mbid.override.invalid");
+            }
+            normalized.put(key, normalizedVal);
+        }
+        return normalized;
     }
 
     private ReviewItem confirmOnlineCandidateInternal(String itemId, String candidateId,
@@ -1035,7 +1124,9 @@ public class RecoveryService implements AutoCloseable {
                                                       List<String> manualAlbumArtists,
                                                       boolean confirmNoCover,
                                                       boolean allowMissingCoverIntercept,
-                                                      Map<String, ReviewItem.TrackCreditsOverride> manualTrackCredits) throws IOException {
+                                                      Map<String, ReviewItem.TrackCreditsOverride> manualTrackCredits,
+                                                      Map<String, String> entityMbidOverrides) throws IOException {
+        Map<String, String> validatedMbidOverrides = normalizeAndValidateEntityMbidOverrides(entityMbidOverrides);
         ReviewItem item = reviewQueue.get(itemId);
         if (item == null) throw new IOException("item.not.found");
         if (item.getStatus() != ReviewItem.Status.PENDING_REVIEW) throw new IOException("item.already.resolved");
@@ -1172,6 +1263,9 @@ public class RecoveryService implements AutoCloseable {
                     if (manualTrackCredits != null && !manualTrackCredits.isEmpty()) {
                         details.setOnlineTrackCredits(copyTrackCreditsOverrides(manualTrackCredits));
                     }
+                    if (!validatedMbidOverrides.isEmpty()) {
+                        details.setOnlineEntityMbidOverrides(new LinkedHashMap<>(validatedMbidOverrides));
+                    }
                     if (chosen.getCoverCandidates() != null && !chosen.getCoverCandidates().isEmpty()) {
                         details.setCoverCandidates(new ArrayList<>(chosen.getCoverCandidates()));
                     }
@@ -1218,6 +1312,27 @@ public class RecoveryService implements AutoCloseable {
             }
         }
 
+        Map<String, MetadataUtils.EffectiveEntityMbid> effectiveEntityMbids =
+            MetadataUtils.buildEffectiveEntityMbids(chosen.getEntityMbids(), validatedMbidOverrides);
+        Set<String> explicitlyUnboundMbidKeys = new LinkedHashSet<>();
+        for (Map.Entry<String, String> entry : validatedMbidOverrides.entrySet()) {
+            if (entry.getValue() == null || entry.getValue().isBlank()) {
+                explicitlyUnboundMbidKeys.add(entry.getKey());
+            }
+        }
+
+        // 专辑艺人 MBID（全有或全无严格对齐；合辑折叠或未全员命中时显式清除旧 MUSICBRAINZ_RELEASEARTISTID）
+        List<String> effectiveAlbumArtistNamesForMbid = AlbumArtistPolicy.VARIOUS_ARTISTS.equalsIgnoreCase(finalArtist)
+            ? List.of()
+            : (!finalAlbumArtists.isEmpty()
+                ? finalAlbumArtists
+                : (!ArtistCreditSupport.looksComposite(finalArtist) ? List.of(finalArtist.trim()) : List.of()));
+        List<String> resolvedAlbumArtistIds =
+            MetadataUtils.resolveAlignedEntityMbids(effectiveAlbumArtistNamesForMbid, effectiveEntityMbids);
+        String finalAlbumArtistId = resolvedAlbumArtistIds == null ? null : String.join("; ", resolvedAlbumArtistIds);
+        String finalAlbumArtistSort = resolvedAlbumArtistIds == null ? null
+            : MetadataUtils.resolveAlignedArtistSort(effectiveAlbumArtistNamesForMbid, effectiveEntityMbids);
+
         List<Path> replacedTargetPaths = collectReplacedTargetPaths(originalFiles);
         Map<Path, Path> newOutputByOriginalPath = new LinkedHashMap<>();
         Map<String, Path> outputByOriginalPath = new LinkedHashMap<>();
@@ -1235,10 +1350,14 @@ public class RecoveryService implements AutoCloseable {
                 MusicMetadata mbCredits = MetadataUtils.extractQueuedMusicBrainzCredits(queued, original);
                 MetadataUtils.ResolvedTrackCredits resolvedCredits = MetadataUtils.resolveOnlineTrackCredits(
                     manualOverride, mbCredits, original, track, track != null,
-                    config == null || config.isOnlineCreditsApplyProbable());
+                    config == null || config.isOnlineCreditsApplyProbable(),
+                    effectiveEntityMbids, explicitlyUnboundMbidKeys);
                 MetadataUtils.applyResolvedTrackCredits(resolvedCredits, md);
                 md.setAlbum(finalAlbum);
                 ArtistCreditSupport.applyAlbumArtistCredit(md, finalArtist, finalAlbumArtists, albumArtistPolicy);
+                md.setClearAlbumArtistId(true);
+                md.setAlbumArtistId(finalAlbumArtistId);
+                md.setAlbumArtistSort(finalAlbumArtistSort);
                 md.setReleaseDate(finalDate);
                 if (track != null) {
                     if (meaningful(track.getTitle())) md.setTitle(track.getTitle());
@@ -1246,13 +1365,24 @@ public class RecoveryService implements AutoCloseable {
                         List<String> trackArtists = resolveOnlineTrackArtists(
                             track, finalArtist, finalAlbumArtists);
                         ArtistCreditSupport.applyTrackArtistCredit(md, track.getArtist(), trackArtists);
+                        List<String> effectiveTrackNames = (md.getArtists() != null && !md.getArtists().isEmpty())
+                            ? md.getArtists()
+                            : (!ArtistCreditSupport.looksComposite(md.getArtist()) ? List.of(md.getArtist().trim()) : List.of());
+                        List<String> resolvedTrackIds =
+                            MetadataUtils.resolveAlignedEntityMbids(effectiveTrackNames, effectiveEntityMbids);
+                        md.setClearArtistId(true);
+                        md.setArtistId(resolvedTrackIds == null ? null : String.join("; ", resolvedTrackIds));
+                        md.setArtistSort(resolvedTrackIds == null ? null
+                            : MetadataUtils.resolveAlignedArtistSort(effectiveTrackNames, effectiveEntityMbids));
                     } else {
                         ensureTrackStructuredArtists(md);
+                        applyExplicitMbidOverridesForRetainedArtist(md, validatedMbidOverrides, effectiveEntityMbids, explicitlyUnboundMbidKeys);
                     }
                     if (track.getDiscNo() > 0) md.setDiscNo(String.valueOf(track.getDiscNo()));
                     if (track.getTrackNo() > 0) md.setTrackNo(String.valueOf(track.getTrackNo()));
                 } else {
                     ensureTrackStructuredArtists(md);
+                    applyExplicitMbidOverridesForRetainedArtist(md, validatedMbidOverrides, effectiveEntityMbids, explicitlyUnboundMbidKeys);
                 }
                 TagWriterService.TagProcessResult result =
                     tagWriter.processFileToRootWithResult(file, md, cover, workRoot);
@@ -2366,6 +2496,116 @@ public class RecoveryService implements AutoCloseable {
             return finalAlbumArtists;
         }
         return splitDisplayArtists(trackArtist);
+    }
+
+    private void applyExplicitMbidOverridesForRetainedArtist(
+            MusicMetadata md,
+            Map<String, String> validatedOverrides,
+            Map<String, MetadataUtils.EffectiveEntityMbid> effectiveEntityMbids,
+            Set<String> explicitlyUnboundMbidKeys) {
+        if (md == null) {
+            return;
+        }
+        // 快照原文件已有的艺人 ID / 排序名后先置空写回字段：
+        // 未触发人工覆盖时保持 clearArtistId=false 且字段为 null，确保 TagWriterService 完全不改写原文件（保留多值 Vorbis 字段）。
+        String originalArtistId = md.getArtistId();
+        String originalArtistSort = md.getArtistSort();
+        md.setClearArtistId(false);
+        md.setArtistId(null);
+        md.setArtistSort(null);
+        if (validatedOverrides == null || validatedOverrides.isEmpty()) {
+            return;
+        }
+        List<String> retainedNames = (md.getArtists() != null && !md.getArtists().isEmpty())
+            ? md.getArtists()
+            : (meaningful(md.getArtist()) && !ArtistCreditSupport.looksComposite(md.getArtist())
+                ? List.of(md.getArtist().trim()) : List.of());
+        if (retainedNames.isEmpty()) {
+            return;
+        }
+        boolean anyOverridden = retainedNames.stream()
+            .map(MusicBrainzArtistCache::normalizePersonKey)
+            .anyMatch(validatedOverrides::containsKey);
+        if (!anyOverridden) {
+            return;
+        }
+        boolean anyUnbound = retainedNames.stream()
+            .map(MusicBrainzArtistCache::normalizePersonKey)
+            .anyMatch(explicitlyUnboundMbidKeys::contains);
+        if (anyUnbound) {
+            md.setClearArtistId(true);
+            return;
+        }
+        // 若原文件已携带与保留艺人名单严格位置对齐的 MBID 列表，作为未改动协作者的基线再叠加人工覆盖
+        Map<String, MetadataUtils.EffectiveEntityMbid> mergedMbids = new LinkedHashMap<>();
+        List<String> baselineIds = parseAlignedBaselineIds(originalArtistId, retainedNames.size());
+        List<String> baselineSorts = parseAlignedBaselineSorts(originalArtistSort, retainedNames.size());
+        if (baselineIds != null) {
+            for (int i = 0; i < retainedNames.size(); i++) {
+                String k = MusicBrainzArtistCache.normalizePersonKey(retainedNames.get(i));
+                if (!k.isEmpty()) {
+                    String sort = baselineSorts != null ? baselineSorts.get(i) : null;
+                    mergedMbids.put(k, new MetadataUtils.EffectiveEntityMbid(baselineIds.get(i), sort));
+                }
+            }
+        }
+        if (effectiveEntityMbids != null) {
+            for (Map.Entry<String, MetadataUtils.EffectiveEntityMbid> entry : effectiveEntityMbids.entrySet()) {
+                MetadataUtils.EffectiveEntityMbid prev = mergedMbids.get(entry.getKey());
+                MetadataUtils.EffectiveEntityMbid next = entry.getValue();
+                if (next != null) {
+                    String sort = (next.sortName() != null && !next.sortName().isBlank())
+                        ? next.sortName()
+                        : (prev != null && next.mbid().equals(prev.mbid()) ? prev.sortName() : null);
+                    mergedMbids.put(entry.getKey(), new MetadataUtils.EffectiveEntityMbid(next.mbid(), sort));
+                }
+            }
+        }
+        List<String> aligned = MetadataUtils.resolveAlignedEntityMbids(retainedNames, mergedMbids);
+        if (aligned != null) {
+            md.setClearArtistId(true);
+            md.setArtistId(String.join("; ", aligned));
+            md.setArtistSort(MetadataUtils.resolveAlignedArtistSort(retainedNames, mergedMbids));
+        }
+    }
+
+    private static List<String> parseAlignedBaselineIds(String rawJoinedIds, int expectedSize) {
+        if (rawJoinedIds == null || rawJoinedIds.isBlank() || expectedSize <= 0) {
+            return null;
+        }
+        String[] parts = rawJoinedIds.split(";");
+        if (parts.length != expectedSize) {
+            return null;
+        }
+        List<String> parsed = new ArrayList<>(expectedSize);
+        Set<String> seen = new LinkedHashSet<>();
+        for (String part : parts) {
+            String valid = MusicBrainzArtistCache.normalizeValidMbid(part);
+            if (valid == null || !seen.add(valid)) {
+                return null;
+            }
+            parsed.add(valid);
+        }
+        return parsed;
+    }
+
+    private static List<String> parseAlignedBaselineSorts(String rawJoinedSorts, int expectedSize) {
+        if (rawJoinedSorts == null || rawJoinedSorts.isBlank() || expectedSize <= 0) {
+            return null;
+        }
+        String[] parts = rawJoinedSorts.split(";");
+        if (parts.length != expectedSize) {
+            return null;
+        }
+        List<String> parsed = new ArrayList<>(expectedSize);
+        for (String part : parts) {
+            String trimmed = part == null ? "" : part.trim();
+            if (trimmed.isEmpty()) {
+                return null;
+            }
+            parsed.add(trimmed);
+        }
+        return parsed;
     }
 
     private void ensureTrackStructuredArtists(MusicMetadata md) {

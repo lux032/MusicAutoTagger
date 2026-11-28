@@ -63,6 +63,9 @@ public class WebPageFetcher implements AutoCloseable {
         Pattern.compile("\"videoDetails\"\\s*:\\s*\\{");
     private static final Pattern CHARSET_PATTERN =
         Pattern.compile("(?i)charset\\s*=\\s*[\"']?([a-z0-9._-]+)");
+    public static final Pattern MB_ARTIST_URL_PATTERN = Pattern.compile(
+        "(?i)https?://(?:www\\.|beta\\.)?musicbrainz\\.org/artist/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f-])");
+    private static final int MAX_MB_LINKS_PER_PAGE = 50;
 
     private static final Set<String> ELIGIBLE_EXTRACT_FALLBACK_STATUSES = Set.of(
         "http_401", "http_403", "http_429", "http_500", "http_502", "http_503",
@@ -84,6 +87,10 @@ public class WebPageFetcher implements AutoCloseable {
     private final ThreadLocal<Map<String, InetAddress[]>> requestPins = new ThreadLocal<>();
     private final CloseableHttpClient pinnedClient;
 
+    /** 从抓取网页 HTML / JSON-LD / 正文中提取到的 MusicBrainz Artist 外链线索。 */
+    public record ExtractedMbArtistLink(String mbid, String anchorText, String sourceUrl) {
+    }
+
     public record FetchedPage(
         String url,
         String canonicalUrl,
@@ -92,11 +99,21 @@ public class WebPageFetcher implements AutoCloseable {
         String method,
         String directStatus,
         String textForPrompt,
-        String fullTextForVerify
+        String fullTextForVerify,
+        List<ExtractedMbArtistLink> mbArtistLinks
     ) {
+        public FetchedPage {
+            mbArtistLinks = mbArtistLinks == null ? List.of() : List.copyOf(mbArtistLinks);
+        }
+
+        public FetchedPage(String url, String canonicalUrl, String sourceType, boolean ok,
+                           String method, String directStatus, String textForPrompt, String fullTextForVerify) {
+            this(url, canonicalUrl, sourceType, ok, method, directStatus, textForPrompt, fullTextForVerify, List.of());
+        }
+
         public static FetchedPage failed(String url, String sourceType, String method, String directStatus) {
             return new FetchedPage(url, WebSearchClient.canonicalizeUrl(url), sourceType,
-                false, method, directStatus, "", "");
+                false, method, directStatus, "", "", List.of());
         }
     }
 
@@ -223,8 +240,9 @@ public class WebPageFetcher implements AutoCloseable {
                     String directStatus = existing != null ? existing.directStatus() : "skipped";
                     String verifyText = truncate(content, VERIFY_TEXT_LIMIT);
                     String promptText = truncate(content, PROMPT_TEXT_LIMIT);
+                    List<ExtractedMbArtistLink> links = extractMbArtistLinksFromText(content, url);
                     results.put(canon, new FetchedPage(
-                        url, canon, sourceType, true, "tavily_extract", directStatus, promptText, verifyText));
+                        url, canon, sourceType, true, "tavily_extract", directStatus, promptText, verifyText, links));
                 }
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
@@ -404,15 +422,18 @@ public class WebPageFetcher implements AutoCloseable {
             if (ytDesc == null || ytDesc.isBlank()) {
                 return FetchedPage.failed(initialUrl, sourceType, "direct_http", "js_shell_or_bot_gate");
             }
+            List<ExtractedMbArtistLink> ytLinks = extractMbArtistLinksFromText(ytDesc, finalUrl);
             return new FetchedPage(initialUrl, canon, sourceType, true, "direct_http", "ok",
-                truncate(ytDesc, PROMPT_TEXT_LIMIT), truncate(ytDesc, VERIFY_TEXT_LIMIT));
+                truncate(ytDesc, PROMPT_TEXT_LIMIT), truncate(ytDesc, VERIFY_TEXT_LIMIT), ytLinks);
         }
 
         String charset = extractValidatedCharset(raw.contentType());
         String extracted;
         String bodyOnly;
+        List<ExtractedMbArtistLink> mbLinks;
         try {
             Document doc = Jsoup.parse(new ByteArrayInputStream(bytes), charset, finalUrl);
+            mbLinks = extractMbArtistLinksFromDocument(doc, finalUrl);
             StringBuilder header = new StringBuilder();
             String title = doc.title();
             if (title != null && !title.isBlank()) {
@@ -450,7 +471,120 @@ public class WebPageFetcher implements AutoCloseable {
             return FetchedPage.failed(initialUrl, sourceType, "direct_http", "js_shell_or_thin");
         }
         return new FetchedPage(initialUrl, canon, sourceType, true, "direct_http", "ok",
-            truncate(extracted, PROMPT_TEXT_LIMIT), truncate(extracted, VERIFY_TEXT_LIMIT));
+            truncate(extracted, PROMPT_TEXT_LIMIT), truncate(extracted, VERIFY_TEXT_LIMIT), mbLinks);
+    }
+
+    /** 在 HTML 清洗前从 <a href>、JSON-LD 及页面自身 URL 提取合法的 MusicBrainz Artist UUID 链接。 */
+    static List<ExtractedMbArtistLink> extractMbArtistLinksFromDocument(Document doc, String pageUrl) {
+        Map<String, ExtractedMbArtistLink> byMbid = new LinkedHashMap<>();
+        if (pageUrl != null) {
+            extractMbArtistLinkFromUrl(pageUrl, doc == null ? null : doc.title(), pageUrl)
+                .ifPresent(link -> mergeMbLink(byMbid, link));
+        }
+        if (doc != null) {
+            for (Element anchor : doc.select("a[href]")) {
+                if (byMbid.size() >= MAX_MB_LINKS_PER_PAGE) break;
+                String href = anchor.absUrl("href");
+                if (href == null || href.isBlank()) {
+                    href = anchor.attr("href");
+                }
+                if (href == null || href.isBlank()) continue;
+                extractMbArtistLinkFromUrl(href, anchor.text(), pageUrl)
+                    .ifPresent(link -> mergeMbLink(byMbid, link));
+            }
+            for (Element ld : doc.select("script[type=application/ld+json]")) {
+                if (byMbid.size() >= MAX_MB_LINKS_PER_PAGE) break;
+                addMbLinksFromText(ld.data(), null, pageUrl, byMbid);
+            }
+        }
+        return byMbid.isEmpty() ? List.of() : List.copyOf(byMbid.values());
+    }
+
+    /** 严格按完整 URL 解析校验 MusicBrainz Artist 页面链接（拒绝将 MB 链接嵌套在其他站点查询参数中的伪链接）。 */
+    public static java.util.Optional<ExtractedMbArtistLink> extractMbArtistLinkFromUrl(
+            String rawUrl, String anchorText, String sourceUrl) {
+        if (rawUrl == null || rawUrl.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        try {
+            URI uri = URI.create(rawUrl.trim());
+            String scheme = uri.getScheme();
+            if (scheme == null || (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme))) {
+                return java.util.Optional.empty();
+            }
+            String host = uri.getHost();
+            if (host == null) {
+                return java.util.Optional.empty();
+            }
+            String lowerHost = host.toLowerCase(Locale.ROOT);
+            if (!"musicbrainz.org".equals(lowerHost)
+                    && !"www.musicbrainz.org".equals(lowerHost)
+                    && !"beta.musicbrainz.org".equals(lowerHost)) {
+                return java.util.Optional.empty();
+            }
+            String path = uri.getPath();
+            if (path == null) {
+                return java.util.Optional.empty();
+            }
+            String trimmedPath = path.startsWith("/") ? path.substring(1) : path;
+            String[] segments = trimmedPath.split("/");
+            if (segments.length < 2 || !"artist".equalsIgnoreCase(segments[0])) {
+                return java.util.Optional.empty();
+            }
+            String mbid = com.lux032.musicautotagger.service.MusicBrainzArtistCache.normalizeValidMbid(segments[1]);
+            if (mbid == null) {
+                return java.util.Optional.empty();
+            }
+            String cleanAnchor = cleanAnchorText(anchorText);
+            return java.util.Optional.of(new ExtractedMbArtistLink(mbid, cleanAnchor, sourceUrl));
+        } catch (IllegalArgumentException e) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    /** 从自由文本（如 JSON-LD）中提取合法的 MusicBrainz Artist UUID 链接；若提供 sourceUrl 也单独严格校验。 */
+    public static List<ExtractedMbArtistLink> extractMbArtistLinksFromText(String text, String sourceUrl) {
+        Map<String, ExtractedMbArtistLink> byMbid = new LinkedHashMap<>();
+        if (sourceUrl != null) {
+            extractMbArtistLinkFromUrl(sourceUrl, null, sourceUrl)
+                .ifPresent(link -> mergeMbLink(byMbid, link));
+        }
+        if (text != null) {
+            addMbLinksFromText(text, null, sourceUrl, byMbid);
+        }
+        return byMbid.isEmpty() ? List.of() : List.copyOf(byMbid.values());
+    }
+
+    private static void addMbLinksFromText(String input, String anchorText, String sourceUrl,
+                                           Map<String, ExtractedMbArtistLink> target) {
+        if (input == null || input.isBlank() || target.size() >= MAX_MB_LINKS_PER_PAGE) {
+            return;
+        }
+        Matcher matcher = MB_ARTIST_URL_PATTERN.matcher(input);
+        String cleanAnchor = cleanAnchorText(anchorText);
+        while (matcher.find() && target.size() < MAX_MB_LINKS_PER_PAGE) {
+            String mbid = com.lux032.musicautotagger.service.MusicBrainzArtistCache.normalizeValidMbid(matcher.group(1));
+            if (mbid == null) continue;
+            mergeMbLink(target, new ExtractedMbArtistLink(mbid, cleanAnchor, sourceUrl));
+        }
+    }
+
+    private static void mergeMbLink(Map<String, ExtractedMbArtistLink> target, ExtractedMbArtistLink incoming) {
+        if (incoming == null || target.size() >= MAX_MB_LINKS_PER_PAGE) {
+            return;
+        }
+        ExtractedMbArtistLink existing = target.get(incoming.mbid());
+        if (existing == null
+                || ((existing.anchorText() == null || existing.anchorText().isBlank())
+                    && incoming.anchorText() != null && !incoming.anchorText().isBlank())) {
+            target.put(incoming.mbid(), incoming);
+        }
+    }
+
+    private static String cleanAnchorText(String anchorText) {
+        if (anchorText == null) return null;
+        String clean = anchorText.replaceAll("\\s+", " ").trim();
+        return clean.isEmpty() ? null : clean;
     }
 
     /** 定位同一 videoDetails JSON 对象，同步提取 title / author / shortDescription，避免全局正则错配。 */

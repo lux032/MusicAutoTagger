@@ -329,4 +329,49 @@ class WebPageFetcherTest {
             assertEquals("proxy_unpinned_blocked", blocked.directStatus());
         }
     }
+
+    @Test
+    void extractsValidMusicBrainzArtistLinksFromHtmlAndJsonLdIgnoringInvalidUuids() throws Exception {
+        MusicConfig cfg = newConfig();
+        String mbid1 = "11111111-1111-4111-8111-111111111111";
+        String mbid2 = "22222222-2222-4222-8222-222222222222";
+        String html = "<html><head><title>Aimer - Wikipedia</title>"
+            + "<script type=\"application/ld+json\">{\"sameAs\":[\"https://musicbrainz.org/artist/" + mbid2 + "\","
+            + "\"https://musicbrainz.org/artist/00000000-0000-0000-0000-000000000000\","
+            + "\"https://musicbrainz.org/artist/not-a-valid-uuid\"]}</script>"
+            + "</head><body>"
+            + "<p>" + "音楽データベースおよびウィキペディアの外部リンク説明文。".repeat(20) + "</p>"
+            + "<a href=\"https://musicbrainz.org/artist/" + mbid1 + "\">Aimer</a>"
+            + "<a href=\"https://musicbrainz.org/release/33333333-3333-4333-8333-333333333333\">Some Release</a>"
+            + "</body></html>";
+
+        try (WebPageFetcher fetcher = new WebPageFetcher(cfg, null) {
+            @Override
+            OutboundUrlValidator.ValidatedTarget validatePublicTarget(String url) {
+                try {
+                    return fakePublicTarget(url);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            }
+
+            @Override
+            RawHttpResult executeSingleHop(OutboundUrlValidator.ValidatedTarget target) {
+                return new RawHttpResult(200, "text/html; charset=utf-8", null, html.getBytes(StandardCharsets.UTF_8));
+            }
+        }) {
+            WebPageFetcher.FetchedPage page = fetcher.fetchDirectOnly("https://ja.wikipedia.org/wiki/Aimer", "Aimer");
+            assertTrue(page.ok());
+            assertEquals(2, page.mbArtistLinks().size());
+            assertEquals(mbid1, page.mbArtistLinks().get(0).mbid());
+            assertEquals("Aimer", page.mbArtistLinks().get(0).anchorText());
+            assertEquals(mbid2, page.mbArtistLinks().get(1).mbid());
+        }
+
+        // 嵌套在其他域名查询参数里的伪 MusicBrainz 链接必须被完整 URL 校验拒收
+        assertTrue(WebPageFetcher.extractMbArtistLinkFromUrl(
+            "https://evil.example.com/redirect?target=https://musicbrainz.org/artist/" + mbid1, "Aimer", "https://evil.example.com").isEmpty());
+        assertTrue(WebPageFetcher.extractMbArtistLinkFromUrl(
+            "https://musicbrainz.org/artist/" + mbid1 + "/releases", "Aimer", "https://musicbrainz.org").isPresent());
+    }
 }

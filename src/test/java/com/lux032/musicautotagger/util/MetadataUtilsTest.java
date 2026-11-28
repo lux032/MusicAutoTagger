@@ -319,4 +319,111 @@ class MetadataUtilsTest {
         assertEquals(MetadataUtils.CreditSource.MANUAL, manualWin.arranger().source());
         assertEquals("Chosen Arranger", manualWin.arranger().display());
     }
+
+    @Test
+    void buildAndResolveAlignedEntityMbidsEnforcesAllOrNothingOverridesAndNoDuplicates() {
+        String idA = "11111111-1111-4111-8111-111111111111";
+        String idB = "22222222-2222-4222-8222-222222222222";
+        String idC = "33333333-3333-4333-8333-333333333333";
+
+        ReviewItem.EntityMbidResolution resA = new ReviewItem.EntityMbidResolution();
+        resA.setDisplayName("梶浦由記");
+        resA.setNormalizedKey("梶浦由記");
+        resA.setStatus(ReviewItem.EntityMbidStatus.RESOLVED);
+        resA.setSelectedMbid(idA);
+        resA.setSelectedSortName("Kajiura, Yuki");
+
+        ReviewItem.EntityMbidResolution resB = new ReviewItem.EntityMbidResolution();
+        resB.setDisplayName("森空青");
+        resB.setNormalizedKey("森空青");
+        resB.setStatus(ReviewItem.EntityMbidStatus.AMBIGUOUS);
+        ReviewItem.EntityMbidCandidate candB = new ReviewItem.EntityMbidCandidate();
+        candB.setMbid(idB);
+        candB.setName("森空青");
+        candB.setSortName("Mori, Sorao");
+        resB.setCandidates(List.of(candB));
+
+        ReviewItem.EntityMbidResolution resC = new ReviewItem.EntityMbidResolution();
+        resC.setDisplayName("澤野弘之");
+        resC.setNormalizedKey("澤野弘之");
+        resC.setStatus(ReviewItem.EntityMbidStatus.RESOLVED);
+        resC.setSelectedMbid(idC);
+        resC.setSelectedSortName("Sawano, Hiroyuki");
+
+        java.util.Map<String, ReviewItem.EntityMbidResolution> resolvedMap = java.util.Map.of(
+            "梶浦由記", resA,
+            "森空青", resB,
+            "澤野弘之", resC
+        );
+
+        // 无覆盖时：AMBIGUOUS 不生效，部分命中整组返回 null
+        java.util.Map<String, MetadataUtils.EffectiveEntityMbid> base =
+            MetadataUtils.buildEffectiveEntityMbids(resolvedMap, null);
+        assertEquals(List.of(idA), MetadataUtils.resolveAlignedEntityMbids(List.of("梶浦由記"), base));
+        assertNull(MetadataUtils.resolveAlignedEntityMbids(List.of("梶浦由記", "森空青"), base));
+        assertEquals("Kajiura, Yuki; Sawano, Hiroyuki",
+            MetadataUtils.resolveAlignedArtistSort(List.of("梶浦由記", "澤野弘之"), base));
+
+        // 人工覆盖为 AMBIGUOUS 选定 UUID + 显式取消绑定 澤野弘之
+        java.util.Map<String, MetadataUtils.EffectiveEntityMbid> overridden =
+            MetadataUtils.buildEffectiveEntityMbids(resolvedMap, java.util.Map.of(
+                "森空青", idB.toUpperCase(),
+                "澤野弘之", ""
+            ));
+        assertEquals(List.of(idA, idB), MetadataUtils.resolveAlignedEntityMbids(List.of("梶浦由記", "森空青"), overridden));
+        assertEquals("Kajiura, Yuki; Mori, Sorao",
+            MetadataUtils.resolveAlignedArtistSort(List.of("梶浦由記", "森空青"), overridden));
+        assertNull(MetadataUtils.resolveAlignedEntityMbids(List.of("澤野弘之"), overridden));
+
+        // 两人被绑定为同一个 UUID 时禁止错位写入（防重复 UUID）
+        java.util.Map<String, MetadataUtils.EffectiveEntityMbid> dupMap =
+            MetadataUtils.buildEffectiveEntityMbids(resolvedMap, java.util.Map.of("森空青", idA));
+        assertNull(MetadataUtils.resolveAlignedEntityMbids(List.of("梶浦由記", "森空青"), dupMap));
+    }
+
+    @Test
+    void resolveOnlineTrackCreditsIntegratesEntityMbidsAcrossTiersAndUnbind() {
+        String idMb = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        String idLocal = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        String idOnline = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        String idManual = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+
+        MusicMetadata mb = new MusicMetadata();
+        mb.setRecordingId("99999999-9999-4999-8999-999999999999");
+        mb.setComposer("MB Composer");
+        mb.setComposers(List.of("MB Composer"));
+        mb.setComposerIds(List.of(idMb));
+
+        MusicMetadata local = new MusicMetadata();
+        local.setLyricist("Local Lyricist");
+        local.setLyricists(List.of("Local Lyricist"));
+        local.setArranger("Local Arranger");
+        local.setArrangers(List.of("Local Arranger"));
+        local.setArrangerIds(List.of(idLocal));
+
+        ReviewItem.OnlineTrack online = new ReviewItem.OnlineTrack();
+        online.setComposers(List.of("Online C"));
+        online.setLyricists(List.of("Online L"));
+        online.setArrangers(List.of("Online A"));
+
+        java.util.Map<String, MetadataUtils.EffectiveEntityMbid> effective = java.util.Map.of(
+            "local lyricist", new MetadataUtils.EffectiveEntityMbid(idOnline, "Lyricist, Local"),
+            "manual arranger", new MetadataUtils.EffectiveEntityMbid(idManual, "Arranger, Manual")
+        );
+
+        // 1) MB 保持权威 MBID；LOCAL 无 ID 时按 effective 补全；LOCAL 有 ID 且被显式取消绑定时清空
+        MetadataUtils.ResolvedTrackCredits r1 = MetadataUtils.resolveOnlineTrackCredits(
+            null, mb, local, online, true, true, effective, java.util.Set.of("local arranger"));
+        assertEquals(List.of(idMb), r1.composer().mbids());
+        assertEquals(List.of(idOnline), r1.lyricist().mbids());
+        assertNull(r1.arranger().mbids(), "Explicit unbind must strip existing LOCAL creator MBID");
+
+        // 2) MANUAL 编曲全员命中时写入对齐 MBID
+        ReviewItem.TrackCreditsOverride manual = new ReviewItem.TrackCreditsOverride();
+        manual.setArrangers(List.of("Manual Arranger"));
+        MetadataUtils.ResolvedTrackCredits r2 = MetadataUtils.resolveOnlineTrackCredits(
+            manual, null, null, online, true, true, effective, java.util.Set.of());
+        assertEquals(MetadataUtils.CreditSource.MANUAL, r2.arranger().source());
+        assertEquals(List.of(idManual), r2.arranger().mbids());
+    }
 }

@@ -122,12 +122,16 @@ class ReviewServletOnlineCreditsTest {
     }
 
     private HttpResponse<String> post(String path, Object body) throws Exception {
+        return postRaw(path, gson.toJson(body));
+    }
+
+    private HttpResponse<String> postRaw(String path, String rawJson) throws Exception {
         // 先触发一次 GET 建立会话 cookie
         get("/api/review/stats");
         return http.send(HttpRequest.newBuilder(URI.create(base + path))
                 .header("Content-Type", "application/json")
                 .header("X-CSRF-Token", "tok")
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)))
+                .POST(HttpRequest.BodyPublishers.ofString(rawJson))
                 .build(),
             HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     }
@@ -342,6 +346,120 @@ class ReviewServletOnlineCreditsTest {
         assertEquals("CONFLICT", cd.getAsJsonObject("arrangers").get("status").getAsString());
         assertEquals("两家媒体编曲署名不一致", cd.getAsJsonObject("arrangers").get("notes").getAsString());
         assertEquals(2, cd.getAsJsonObject("arrangers").getAsJsonArray("candidates").size());
+    }
+
+    @Test
+    void detailExposesEntityMbidsAndOnlineConfirmValidatesAndAppliesEntityMbidOverrides() throws Exception {
+        String idSinger = "11111111-1111-4111-8111-111111111111";
+        String idComp = "22222222-2222-4222-8222-222222222222";
+        Path albumDir = Files.createDirectory(monitorDir.resolve("ServletMbidsAlbum"));
+        File flac = createFlac(albumDir.resolve("01. Song.flac"), "Song", "Singer", "Old", "1",
+            null, null, null);
+        ReviewItem item = reviewQueue.enqueueRecoveryFolder(albumDir.toString(), null, List.of(flac), tagWriter, null);
+
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("cand-mbid-http");
+        cand.setTitle("MBID Album");
+        cand.setArtist("Singer");
+        cand.setAlbumArtist("Singer");
+        ReviewItem.OnlineTrack track = new ReviewItem.OnlineTrack();
+        track.setDiscNo(1);
+        track.setTrackNo(1);
+        track.setTitle("Song");
+        track.setArtist("Singer");
+        track.setComposers(List.of("Auto Comp"));
+        track.setDuration(120);
+        cand.setTracks(List.of(track));
+
+        ReviewItem.EntityMbidResolution resSinger = new ReviewItem.EntityMbidResolution();
+        resSinger.setDisplayName("Singer");
+        resSinger.setNormalizedKey("singer");
+        resSinger.setStatus(ReviewItem.EntityMbidStatus.AMBIGUOUS);
+        ReviewItem.EntityMbidCandidate mbCand = new ReviewItem.EntityMbidCandidate();
+        mbCand.setMbid(idSinger);
+        mbCand.setName("Singer");
+        mbCand.setSortName("Singer, Official");
+        mbCand.setDisambiguation("Japanese vocalist");
+        resSinger.setCandidates(List.of(mbCand));
+
+        ReviewItem.EntityMbidResolution resComp = new ReviewItem.EntityMbidResolution();
+        resComp.setDisplayName("Auto Comp");
+        resComp.setNormalizedKey("auto comp");
+        resComp.setStatus(ReviewItem.EntityMbidStatus.RESOLVED);
+        resComp.setSource(ReviewItem.EntityMbidSource.LOCAL_CACHE);
+        resComp.setSelectedMbid(idComp);
+        resComp.setSelectedSortName("Comp, Auto");
+
+        cand.setEntityMbids(Map.of("singer", resSinger, "auto comp", resComp));
+        item.setOnlineCandidates(List.of(cand));
+        OnlineIdentificationService online = new OnlineIdentificationService(config, reviewQueue, tagWriter, null);
+        item.setEvidenceHash(online.evidenceHashForFolder(albumDir.toFile()));
+        reviewQueue.update(item);
+
+        // 1. GET /api/review/item 透传配置开关与 candidate.entityMbids
+        HttpResponse<String> detailResp = get("/api/review/item?id=" + item.getId());
+        assertEquals(200, detailResp.statusCode());
+        JsonObject detailItem = gson.fromJson(detailResp.body(), JsonObject.class).getAsJsonObject("item");
+        assertTrue(detailItem.get("onlineMbidResolveEnabled").getAsBoolean());
+        JsonObject entityMbids = detailItem.getAsJsonArray("onlineCandidates").get(0).getAsJsonObject()
+            .getAsJsonObject("entityMbids");
+        assertNotNull(entityMbids);
+        assertEquals("AMBIGUOUS", entityMbids.getAsJsonObject("singer").get("status").getAsString());
+        assertEquals("RESOLVED", entityMbids.getAsJsonObject("auto comp").get("status").getAsString());
+
+        // 2. 非法 entityMbidOverrides 全部返回 HTTP 400 online.mbid.override.invalid
+        java.util.Map<String, Object> conflictingKeysMap = new java.util.LinkedHashMap<>();
+        conflictingKeysMap.put("Singer", idSinger);
+        conflictingKeysMap.put("singer", idComp);
+        for (Object badPayload : List.of(
+                List.of("not-a-map"),
+                Map.of("Singer", "not-a-uuid"),
+                Map.of("Singer", "00000000-0000-0000-0000-000000000000"),
+                Map.of("Singer", "   "),
+                Map.of("Singer", 12345),
+                Map.of("   ", idSinger),
+                conflictingKeysMap)) {
+            HttpResponse<String> badResp = post("/api/review/online-confirm", Map.of(
+                "id", item.getId(),
+                "candidateId", cand.getId(),
+                "albumTitle", "MBID Album",
+                "albumArtist", "Singer",
+                "confirmNoCover", true,
+                "entityMbidOverrides", badPayload
+            ));
+            assertEquals(400, badResp.statusCode(), "Expected 400 for " + badPayload);
+            assertEquals("online.mbid.override.invalid",
+                gson.fromJson(badResp.body(), JsonObject.class).get("error").getAsString());
+        }
+        // 显式发送含 JSON null 值的原始请求体（默认 Gson 会省略 null 字段）
+        HttpResponse<String> nullValResp = postRaw("/api/review/online-confirm", """
+            {"id":"%s","candidateId":"%s","albumTitle":"MBID Album","albumArtist":"Singer",
+             "confirmNoCover":true,"entityMbidOverrides":{"Singer":null}}
+            """.formatted(item.getId(), cand.getId()));
+        assertEquals(400, nullValResp.statusCode(), "Expected 400 for explicit JSON null value");
+        assertEquals("online.mbid.override.invalid",
+            gson.fromJson(nullValResp.body(), JsonObject.class).get("error").getAsString());
+
+        // 3. 合法覆盖（大写 UUID 规范化 + "" 显式取消绑定）生效
+        HttpResponse<String> okResp = post("/api/review/online-confirm", Map.of(
+            "id", item.getId(),
+            "candidateId", cand.getId(),
+            "albumTitle", "MBID Album",
+            "albumArtist", "Singer",
+            "confirmNoCover", true,
+            "entityMbidOverrides", Map.of(
+                "Singer", idSinger.toUpperCase(),
+                "Auto Comp", ""
+            )
+        ));
+        assertEquals(200, okResp.statusCode(), okResp.body());
+        MusicMetadata out = tagWriter.readTags(outputDir.resolve("Singer/MBID Album/1.01 Singer - Song.flac").toFile());
+        assertNotNull(out);
+        assertEquals(idSinger, out.getAlbumArtistId());
+        assertEquals("Singer, Official", out.getAlbumArtistSort());
+        assertEquals(idSinger, out.getArtistId());
+        assertEquals("Auto Comp", out.getComposer());
+        assertNull(out.getComposerIds(), "Explicit unbind must prevent writing auto-resolved composer MBID");
     }
 
     private static File createFlac(Path target, String title, String artist, String album, String trackNo,

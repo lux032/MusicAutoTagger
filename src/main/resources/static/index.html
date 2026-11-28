@@ -852,6 +852,33 @@
                                     </label>
                                     <input id="cfgLlmWebSearchMaxConcurrency" type="number" min="1" max="3" placeholder="1">
                                 </div>
+                                <div class="form-row checkbox-row">
+                                    <input id="cfgOnlineMbidResolveEnabled" type="checkbox">
+                                    <label for="cfgOnlineMbidResolveEnabled" class="label-with-tip">
+                                        <span data-i18n="config.online.mbid.resolve.enabled">联网识别解析人物 MusicBrainz ID</span>
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
+                                            <span class="tip-text" data-i18n="config.online.mbid.resolve.enabled.hint">联网识别完成后通过本地缓存、网页外链与 MusicBrainz Artist API 为歌手及词曲编创作者匹配真实 Artist MBID（不生成专辑或录音 ID）。</span>
+                                        </span>
+                                    </label>
+                                </div>
+                                <div class="form-row">
+                                    <label for="cfgOnlineMbidMaxLookupsPerAlbum" class="label-with-tip">
+                                        <span data-i18n="config.online.mbid.max.lookups">单专人物 MBID 查询上限</span>
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
+                                            <span class="tip-text" data-i18n="config.online.mbid.max.lookups.hint">单张专辑在人物级 MBID 解析阶段最多发起的外部 MusicBrainz API 请求次数（0—50，默认 15，受 1 次/秒限流约束）。</span>
+                                        </span>
+                                    </label>
+                                    <input id="cfgOnlineMbidMaxLookupsPerAlbum" type="number" min="0" max="50" placeholder="15">
+                                </div>
+                                <div class="form-row checkbox-row">
+                                    <input id="cfgOnlineMbidLlmDisambiguateEnabled" type="checkbox">
+                                    <label for="cfgOnlineMbidLlmDisambiguateEnabled" class="label-with-tip">
+                                        <span data-i18n="config.online.mbid.llm.disambiguate">启用同名艺人封闭式 LLM 消歧</span>
+                                        <span class="info-tip" data-i18n-aria="aria.info" aria-label="Info">!
+                                            <span class="tip-text" data-i18n="config.online.mbid.llm.disambiguate.hint">MusicBrainz 返回多个同名候选时，允许 LLM 结合专辑上下文从真实候选中择一；关闭后直接留待确认弹窗人工选择。</span>
+                                        </span>
+                                    </label>
+                                </div>
                             </div>
 
                             <div class="form-section-title" data-i18n="settings.section.websearch">联网搜索来源</div>
@@ -2487,6 +2514,9 @@
                 document.getElementById('cfgLlmWebSearchMaxTokens').value = cfg.llmWebSearchMaxTokens ?? '';
                 document.getElementById('cfgLlmWebSearchTimeoutSeconds').value = cfg.llmWebSearchTimeoutSeconds ?? '';
                 document.getElementById('cfgLlmWebSearchMaxConcurrency').value = cfg.llmWebSearchMaxConcurrency ?? 1;
+                document.getElementById('cfgOnlineMbidResolveEnabled').checked = cfg.onlineMbidResolveEnabled !== false;
+                document.getElementById('cfgOnlineMbidMaxLookupsPerAlbum').value = cfg.onlineMbidMaxLookupsPerAlbum ?? 15;
+                document.getElementById('cfgOnlineMbidLlmDisambiguateEnabled').checked = cfg.onlineMbidLlmDisambiguateEnabled !== false;
                 document.getElementById('cfgWebSearchProvider').value = cfg.webSearchProvider || 'native';
                 document.getElementById('cfgTavilyApiKey').value = cfg.tavilyApiKey || '';
                 document.getElementById('cfgTavilyApiUrl').value = cfg.tavilyApiUrl || '';
@@ -2571,6 +2601,9 @@
                     llmWebSearchMaxTokens: getNumberValue('cfgLlmWebSearchMaxTokens'),
                     llmWebSearchTimeoutSeconds: getNumberValue('cfgLlmWebSearchTimeoutSeconds'),
                     llmWebSearchMaxConcurrency: getNumberValue('cfgLlmWebSearchMaxConcurrency'),
+                    onlineMbidResolveEnabled: document.getElementById('cfgOnlineMbidResolveEnabled').checked,
+                    onlineMbidMaxLookupsPerAlbum: getNumberValue('cfgOnlineMbidMaxLookupsPerAlbum'),
+                    onlineMbidLlmDisambiguateEnabled: document.getElementById('cfgOnlineMbidLlmDisambiguateEnabled').checked,
                     webSearchProvider: getValue('cfgWebSearchProvider'),
                     // 未修改时回传的是掩码串，后端识别后保留原值
                     tavilyApiKey: getValue('cfgTavilyApiKey'),

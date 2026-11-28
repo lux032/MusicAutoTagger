@@ -739,6 +739,18 @@ public class TagWriterService {
             for (FieldKey key : albumKeys) deleteFieldSafely(tag, key);
             clearOriginalReleaseTags(tag);
         }
+        if (metadata.isClearArtistId()) {
+            deleteFieldSafely(tag, FieldKey.MUSICBRAINZ_ARTISTID);
+            if (metadata.getArtistSort() == null || metadata.getArtistSort().isBlank()) {
+                deleteFieldSafely(tag, FieldKey.ARTIST_SORT);
+            }
+        }
+        if (metadata.isClearAlbumArtistId()) {
+            deleteFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASEARTISTID);
+            if (metadata.getAlbumArtistSort() == null || metadata.getAlbumArtistSort().isBlank()) {
+                deleteFieldSafely(tag, FieldKey.ALBUM_ARTIST_SORT);
+            }
+        }
         setFieldSafely(tag, FieldKey.MUSICBRAINZ_ARTISTID, metadata.getArtistId());
         setFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASEARTISTID, metadata.getAlbumArtistId());
         setFieldSafely(tag, FieldKey.MUSICBRAINZ_RELEASE_TRACK_ID, metadata.getReleaseTrackId());
@@ -1413,6 +1425,26 @@ public class TagWriterService {
                 log.debug("读取 MusicBrainz Release ID 失败: {}", e.getMessage());
             }
             try {
+                metadata.setArtistId(readJoinedTagValues(tag, FieldKey.MUSICBRAINZ_ARTISTID));
+            } catch (Exception e) {
+                log.debug("读取 MusicBrainz Artist ID 失败: {}", e.getMessage());
+            }
+            try {
+                metadata.setAlbumArtistId(readJoinedTagValues(tag, FieldKey.MUSICBRAINZ_RELEASEARTISTID));
+            } catch (Exception e) {
+                log.debug("读取 MusicBrainz Album Artist ID 失败: {}", e.getMessage());
+            }
+            try {
+                metadata.setArtistSort(readJoinedTagValues(tag, FieldKey.ARTIST_SORT));
+            } catch (Exception e) {
+                log.debug("读取 Artist Sort 失败: {}", e.getMessage());
+            }
+            try {
+                metadata.setAlbumArtistSort(readJoinedTagValues(tag, FieldKey.ALBUM_ARTIST_SORT));
+            } catch (Exception e) {
+                log.debug("读取 Album Artist Sort 失败: {}", e.getMessage());
+            }
+            try {
                 String compilation = tag.getFirst(FieldKey.IS_COMPILATION);
                 metadata.setCompilation("1".equals(compilation) || "true".equalsIgnoreCase(compilation));
             } catch (Exception e) {
@@ -1609,6 +1641,28 @@ public class TagWriterService {
                 }
             }
         }
+    }
+
+    /** 读取单值或重复多值字段（如 Vorbis 重复的 MUSICBRAINZ_ARTISTID），保留全部有效值而不丢弃后续槽位。 */
+    private static String readJoinedTagValues(Tag tag, FieldKey key) {
+        if (tag == null || key == null) {
+            return null;
+        }
+        List<String> all = tag.getAll(key);
+        if (all == null || all.isEmpty()) {
+            return emptyToNull(tag.getFirst(key));
+        }
+        List<String> cleaned = new ArrayList<>();
+        for (String v : all) {
+            String trimmed = emptyToNull(v);
+            if (trimmed != null) {
+                cleaned.add(trimmed);
+            }
+        }
+        if (cleaned.isEmpty()) {
+            return null;
+        }
+        return cleaned.size() == 1 ? cleaned.get(0) : String.join("; ", cleaned);
     }
 
 }

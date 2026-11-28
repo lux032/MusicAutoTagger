@@ -87,3 +87,26 @@ SELECT
     MIN(cached_time) AS oldest_cache,
     MAX(cached_time) AS newest_cache
 FROM cover_art_cache;
+
+-- MusicBrainz 艺人实体缓存表（被动沉淀常规识别及联网核验通过的 Artist MBID）
+CREATE TABLE IF NOT EXISTS mb_artist_cache (
+    mbid VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY COMMENT 'MusicBrainz Artist MBID (lowercase UUID)',
+    name VARCHAR(500) NOT NULL COMMENT 'MusicBrainz 官方主名',
+    sort_name VARCHAR(500) NULL COMMENT 'MusicBrainz 排序名',
+    disambiguation VARCHAR(500) NULL COMMENT 'MusicBrainz 消歧备注',
+    country VARCHAR(32) NULL COMMENT '国家/地区代码',
+    artist_type VARCHAR(64) NULL COMMENT '实体类型（Person/Group/Character 等）',
+    aliases_json TEXT NULL COMMENT '已知别名列表 JSON',
+    source VARCHAR(32) NULL COMMENT '缓存来源标记',
+    updated_at BIGINT NOT NULL COMMENT '最近更新时间戳（毫秒）'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='MusicBrainz 艺人实体缓存表';
+
+-- MusicBrainz 艺人规范化人名索引表（支持 O(1) 名称反查与同名多实体冲突检测）
+CREATE TABLE IF NOT EXISTS mb_artist_name_index (
+    normalized_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL COMMENT 'NFKC 归一化小写的艺名/别名（超长键以 #sha256: 摘要索引）',
+    mbid VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'MusicBrainz Artist MBID',
+    match_kind VARCHAR(32) NOT NULL COMMENT '索引类型（PRIMARY/ALIAS/CREDITED/HOMONYM_CANDIDATE）',
+    updated_at BIGINT NOT NULL COMMENT '最近更新时间戳（毫秒）',
+    PRIMARY KEY (normalized_name, mbid),
+    INDEX idx_mb_artist_name_mbid (mbid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin COMMENT='MusicBrainz 艺人名称反查与同名冲突索引表';
