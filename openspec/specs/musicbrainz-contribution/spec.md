@@ -1,10 +1,10 @@
-# Spec Delta: musicbrainz-contribution
+# musicbrainz-contribution Specification
 
 ## Purpose
 
 规范 MusicBrainz 缺失专辑与版本的存在性预检分流、待回馈队列管理、合规 Release Editor Seeding 预填、Cover Art Archive 高画质封面上传引导、去所属括号的 Works 幕后人员补录参考、关联真实 Release 回填本地全套官方 MBID 及可选 AcoustID 声纹提交的可观测行为。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: MusicBrainz 存在性预检与四类分流
 系统 SHALL 支持对联网识别确认归档的专辑执行只读 MusicBrainz 存在性预检，按条码、目录号与「专辑名 + 艺人（优先使用已解析 Artist MBID）」结合曲目数和时长序列将目标专辑划分为四类结论：`EXISTING_RELEASE`（Case A）、`MISSING_EDITION`（Case B）、`MISSING_RELEASE_GROUP`（Case C）或 `NOT_ELIGIBLE`（Case D）。
@@ -48,8 +48,8 @@
 
 #### Scenario: Case B 与 Case C 生成标准 Seeding 字段与一手来源 Edit Note
 - **WHEN** 用户请求某个待回馈条目的 Release Seeding 载荷并在浏览器中打开 MusicBrainz Release Editor
-- **THEN** 载荷包含合法的 `name`、`status`（默认 `official`）、`type`（如 `album`/`single`/`ep`）、发行事件（`events.0.date.year/month/day`、`events.0.country`）、厂牌与目录号（`labels.0.name`、`labels.0.catalog_number`）、条码（`barcode`）、媒介格式（`mediums.x.format`）、完整曲目（`mediums.x.track.y.name/number/length` 与已有 `recording`）、外部权威链接（`urls.z.url`）及自动生成且列出一手可核验来源 URL 与人工核对声明的 `edit_note`
-- **AND** 当条目为 Case B 且用户保留关联既有 Release Group 时，载荷携带 `release_group=<rgMbid>`；当用户选择新建或为 Case C 时省略 `release_group`
+- **THEN** 载荷包含合法的 `name`、`status`（默认 `official`）、`type`（如 `album`/`single`/`ep`）、发行事件（`events.0.date.year/month/day`、`events.0.country`）、厂牌与目录号（`labels.i.name`；单厂牌时附带 `labels.0.catalog_number`，多厂牌拆分时将目录号写入 `edit_note` 供人工核对归属）、条码（`barcode`）、媒介格式（`mediums.x.format`）、完整曲目（`mediums.x.track.y.name/number/length` 与已有 `recording`）、过滤单曲歌词页后的专辑级外部权威链接（`urls.z.url`）及自动生成且列出一手可核验来源 URL 与人工核对声明的 `edit_note`
+- **AND** 当条目为 Case B 且用户保留关联既有 Release Group 时，载荷携带 `release_group=<rgMbid>`；当用户选择新建或为 Case C 时省略 `release_group`（且全新独立 Release Group 省略纯国家/格式/类型通用消歧词）
 
 #### Scenario: 多人艺人署名按已核验 MBID 与连接符正确展开
 - **WHEN** 专辑艺人或曲目艺人包含单人或多位合作艺人，且部分或全部成员已绑定经核验的真实 MusicBrainz Artist MBID
@@ -65,7 +65,7 @@
 
 #### Scenario: 公网原图封面保留高清 URL 并生成兼容 x_seed 的上传链接
 - **WHEN** 选定的封面来自公网来源（如 Apple Music/iTunes 封面可升级至高分辨率原图 URL 或权威站点原图 URL）且条目已绑定合法 Release MBID
-- **THEN** 系统提供直达 `https://musicbrainz.org/release/<mbid>/add-cover-art` 且附带 `x_seed.origin`、`x_seed.image.0.url`、`x_seed.image.0.types=front` 与 `x_seed.image.0.comment` 参数的链接（兼容 ECAU 等社区脚本），同时提供建议 Comment 文本一键复制与原图下载
+- **THEN** 系统提供直达 `https://musicbrainz.org/release/<mbid>/add-cover-art` 且附带 `x_seed.origin`（自动避开单曲歌词页）、`x_seed.image.0.url`、`x_seed.image.0.types=[1]`（URL 编码为 `%5B1%5D`）参数的链接（兼容 ECAU 等社区脚本），同时提供建议 CAA Edit Note 文本一键复制与原图查看/下载
 
 #### Scenario: 本地或上传封面保留未压缩原图备份并在终态自动清理
 - **WHEN** 选定的封面来自本地目录图片、内嵌封面或用户本地上传（无公网原图 URL）
@@ -83,6 +83,11 @@
 #### Scenario: 明确区分已核验与推测来源并附带出处引文
 - **WHEN** 某首曲目的作曲、作词或编曲分别处于 `verified` 与 `probable` 状态
 - **THEN** 参考卡清晰标注各字段的核验级别并展示对应来源 URL 与原文短引文，对 `probable` 字段显式提醒用户在写入 MusicBrainz Edit Note 前二次核对出处，且自动排除未通过核验或冲突未决的字段
+
+#### Scenario: 可选配套浏览器用户脚本在关系编辑页预填待核对关系且绝不自动提交
+- **WHEN** 用户安装内置配套用户脚本（`/mb-works-helper.user.js`）并在已关联 Release 的条目上发起「一键预填词曲编」或手动导入填充包 JSON
+- **THEN** 用户脚本严格校验填充包中的 `releaseId` 与当前 MusicBrainz 页面 Release MBID 一致后，提供逐轨与逐条创作者复核勾选（`probable` 默认不勾选），仅通过 MusicBrainz 官方 React 关系编辑器状态分发写入待提交的 Work、`composer`/`lyricist`（Work 级）、`arranger`（Recording 级）关系及 Edit Note
+- **AND** 绝不自动提交编辑表单或直接发起写接口 `POST`，最终提交必须由用户在 MusicBrainz 原生页面核对后手动点击 `Enter edit`
 
 ### Requirement: 贴回 MusicBrainz Release 链接回填本地全套官方 MBID
 当用户在待回馈条目（含 Case A 已有版本与 Case B/C 新建版本）提交真实 MusicBrainz Release URL 或 UUID 后，系统 SHALL 从 MusicBrainz 拉取该 Release 的权威完整元数据，校验曲目匹配后原位回填本地已归档音频文件的官方 MBID 与发行元数据，并保持处理记录与本地艺人缓存同步。
