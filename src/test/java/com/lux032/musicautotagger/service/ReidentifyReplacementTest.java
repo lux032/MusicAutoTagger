@@ -723,4 +723,78 @@ class ReidentifyReplacementTest {
         assertEquals(0, res.get("removed"));
         assertTrue(logger.isFileProcessed(src), "跳过待确认条目时不应删掉原记录");
     }
+
+    @Test
+    void llmAutoArchiveSkipsDuplicateFolderWhenEditionArchiveOrReplacementAlreadyExists() throws Exception {
+        Path partialRoot = Files.createDirectories(dir.resolve("partial"));
+        Path failedRoot = Files.createDirectories(dir.resolve("failed"));
+        config.setPartialDirectory(partialRoot.toString());
+        config.setFailedDirectory(failedRoot.toString());
+        config.setEnableLLMMatching(true);
+        config.setPartialRequireReadableTags(false);
+        config.setAudioNormalizeEnabled(false);
+
+        // 1. 输出目录已存在带版本后缀的确认归档（相同 FLAC STREAMINFO MD5），无 pending-replacements 登记
+        Path existingEditionFile = output.resolve("HIMEHINA/VAMPY (Japanese EP)/1.01 HIMEHINA - VAMPY.flac");
+        write(existingEditionFile, flac(77));
+
+        Path monVampyDir = Files.createDirectories(monitor.resolve("HIMEHINA — VAMPY"));
+        Path monVampyFile = monVampyDir.resolve("01. VAMPY.flac");
+        write(monVampyFile, flac(77));
+        Files.write(monVampyDir.resolve("cover.jpg"), new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xD9});
+
+        // 2. 非 FLAC（WAV）无音频 MD5，但在 pending-replacements 中已登记旧归档
+        Path existingWavTarget = wav(output.resolve("Utada/Intentions (Japanese digital single)/1.01 Utada - Intentions.wav"), 2, (byte) 3).toPath();
+        Path monUtadaDir = Files.createDirectories(monitor.resolve("Utada — Intentions"));
+        File monUtadaFile = wav(monUtadaDir.resolve("01. Intentions.wav"), 2, (byte) 3);
+        Files.write(monUtadaDir.resolve("cover.jpg"), new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xD9});
+        registry.record(monUtadaFile.getAbsolutePath(), existingWavTarget.toString());
+
+        TagWriterService stubTagWriter = new TagWriterService(config) {
+            @Override
+            public boolean hasEmbeddedCover(File file) { return true; }
+
+            @Override
+            public boolean hasPartialTags(File file) { return true; }
+
+            @Override
+            public MusicMetadata readTags(File file) {
+                String p = file.getAbsolutePath();
+                if (p.contains("VAMPY")) {
+                    return meta("HIMEHINA", "HIMEHINA", "VAMPY", "VAMPY", "1");
+                }
+                return meta("Utada", "Utada", "Intentions", "Intentions", "1");
+            }
+        };
+        CoverArtService stubCover = new CoverArtService(null, null) {
+            @Override
+            public byte[] findCoverInDirectory(File dir) { return new byte[] {1, 2, 3, 4}; }
+        };
+        ArtistMatchingService stubMatcher = new ArtistMatchingService(config) {
+            @Override
+            public MatchResult matchArtist(String sourceArtist) {
+                return new MatchResult(sourceArtist, 0.99, "stub match");
+            }
+        };
+
+        FailedFileHandler handler = new FailedFileHandler(
+            config, stubTagWriter, stubCover, logger, new FileSystemUtils(config),
+            stubMatcher, new LlmArtistSplitter(config));
+
+        handler.handleAlbumFileFailed(monVampyFile.toFile(), monVampyDir.toFile());
+        assertFalse(Files.exists(output.resolve("HIMEHINA/VAMPY")),
+            "艺术家目录下已有同 FLAC MD5 版本目录时，LLM 自动归档不得创建重复目录 HIMEHINA/VAMPY");
+        assertTrue(Files.isDirectory(partialRoot.resolve("HIMEHINA — VAMPY")),
+            "放弃自动归档后应保留在部分识别目录供人工确认");
+        assertFalse(Files.exists(failedRoot.resolve("HIMEHINA — VAMPY")),
+            "已保留在部分识别目录时不应再额外制造失败副本");
+        assertTrue(logger.isFileProcessed(monVampyFile.toFile()), "监控源文件仍须标记已处理以防重启重扫");
+
+        handler.handleAlbumFileFailed(monUtadaFile, monUtadaDir.toFile());
+        assertFalse(Files.exists(output.resolve("Utada/Intentions")),
+            "已有待替换历史归档时，LLM 自动归档不得创建重复目录 Utada/Intentions");
+        assertTrue(Files.isDirectory(partialRoot.resolve("Utada — Intentions")),
+            "放弃自动归档后应保留在部分识别目录");
+        assertTrue(logger.isFileProcessed(monUtadaFile), "监控源文件仍须标记已处理以防重启重扫");
+    }
 }

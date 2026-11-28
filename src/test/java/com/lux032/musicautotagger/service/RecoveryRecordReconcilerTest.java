@@ -314,9 +314,85 @@ class RecoveryRecordReconcilerTest {
         assertFalse(offlineRes.hasChanges(), "监控根目录不可访问时必须安全跳过");
     }
 
+    @Test
+    void evidence1ReconcilesHiResNormalizedFlacPairWhileRejectingUnnormalizedOrDurationMismatch() throws Exception {
+        ProcessedFileLogger logger = createLogger("sqlite");
+        ReviewQueueService queue = new ReviewQueueService(config);
+
+        // 1. Hi-Res 96kHz/24bit FLAC (216s) -> normalized 48kHz/24bit FLAC (216s), different MD5 -> MUST merge!
+        Path hiResMon = writeFlacWithStreamInfo(
+            monitorDir.resolve("宇多田ヒカル — Intentions (2026) [WEB FLAC 24⧸96]/01. Intentions.flac"),
+            96000, 24, 216, 11);
+        Path hiResOut = writeFlacWithStreamInfo(
+            outputDir.resolve("宇多田ヒカル/Intentions (Japanese digital single)/1.01 宇多田ヒカル - Intentions.flac"),
+            48000, 24, 216, 22);
+        logger.markFileAsProcessed(hiResMon.toFile(), "UNKNOWN", "识别失败 - 整个专辑", "01. Intentions.flac", "Unknown Album");
+        logger.markFileAsProcessed(hiResOut.toFile(), "ONLINE_SEARCH", "宇多田ヒカル", "Intentions", "Intentions", null, hiResOut.toString());
+        ReviewItem hiResItem = queue.enqueueRecoveryFolder(
+            partialDir.resolve("宇多田ヒカル — Intentions (2026) [WEB FLAC 24⧸96]").toString(), "PARTIAL", List.of(), null, null);
+        hiResItem.setCommittedOutputPaths(List.of(hiResOut.getParent().toString()));
+        queue.markResolved(hiResItem, ReviewItem.Status.CONFIRMED, "confirmed");
+
+        // 2. Normal 44.1kHz/16bit FLAC with mismatched MD5 -> MUST still reject!
+        Path stdMon = writeFlacWithStreamInfo(monitorDir.resolve("StdMismatch/01.flac"), 44100, 16, 216, 33);
+        Path stdOut = writeFlacWithStreamInfo(outputDir.resolve("ArtStd/StdMismatch/01.flac"), 44100, 16, 216, 44);
+        logger.markFileAsProcessed(stdMon.toFile(), "UNKNOWN", "fail", "01.flac", "Unknown Album");
+        logger.markFileAsProcessed(stdOut.toFile(), "ONLINE_SEARCH", "ArtStd", "S1", "StdMismatch", null, stdOut.toString());
+        ReviewItem stdItem = queue.enqueueRecoveryFolder(partialDir.resolve("StdMismatch").toString(), "PARTIAL", List.of(), null, null);
+        stdItem.setCommittedOutputPaths(List.of(stdOut.getParent().toString()));
+        queue.markResolved(stdItem, ReviewItem.Status.CONFIRMED, "confirmed");
+
+        // 3. Hi-Res 96kHz/24bit FLAC (216s) vs 48kHz/24bit FLAC (240s, >2s diff) -> MUST reject!
+        Path durMon = writeFlacWithStreamInfo(monitorDir.resolve("DurMismatch/01.flac"), 96000, 24, 216, 55);
+        Path durOut = writeFlacWithStreamInfo(outputDir.resolve("ArtDur/DurMismatch/01.flac"), 48000, 24, 240, 66);
+        logger.markFileAsProcessed(durMon.toFile(), "UNKNOWN", "fail", "01.flac", "Unknown Album");
+        logger.markFileAsProcessed(durOut.toFile(), "ONLINE_SEARCH", "ArtDur", "S1", "DurMismatch", null, durOut.toString());
+        ReviewItem durItem = queue.enqueueRecoveryFolder(partialDir.resolve("DurMismatch").toString(), "PARTIAL", List.of(), null, null);
+        durItem.setCommittedOutputPaths(List.of(durOut.getParent().toString()));
+        queue.markResolved(durItem, ReviewItem.Status.CONFIRMED, "confirmed");
+
+        assertTrue(AudioFormatNormalizer.isNormalizedFlacCounterpart(hiResMon, hiResOut));
+        assertFalse(AudioFormatNormalizer.isNormalizedFlacCounterpart(stdMon, stdOut));
+        assertFalse(AudioFormatNormalizer.isNormalizedFlacCounterpart(durMon, durOut));
+
+        RecoveryRecordReconciler.ReconcileResult res = new RecoveryRecordReconciler(config, logger, queue).reconcile();
+        assertEquals(1, res.mergedAlbums(), "仅高规格降采样且时长一致的 Confirmed 记录应合并");
+        assertEquals(1, res.mergedRecords());
+
+        List<ProcessedRecord> hiResMonRecs = logger.findRecordsByPaths(List.of(hiResMon.toString()));
+        assertEquals(1, hiResMonRecs.size());
+        assertEquals(ProcessedRecord.Status.SUCCESS, hiResMonRecs.get(0).status);
+        assertEquals(hiResOut.toString(), hiResMonRecs.get(0).targetFilePath);
+        assertTrue(logger.findRecordsByPaths(List.of(hiResOut.toString())).isEmpty(), "冗余输出行应被清理");
+
+        // Unnormalized MD5 mismatch & duration mismatch remain unmerged
+        assertEquals(ProcessedRecord.Status.FAILED, logger.findRecordsByPaths(List.of(stdMon.toString())).get(0).status);
+        assertEquals(ProcessedRecord.Status.FAILED, logger.findRecordsByPaths(List.of(durMon.toString())).get(0).status);
+    }
+
     private static Path writeFlac(Path target, int md5Seed) throws Exception {
         Files.createDirectories(target.getParent());
         Files.write(target, flac(md5Seed));
+        return target;
+    }
+
+    private static Path writeFlacWithStreamInfo(Path target, int sampleRate, int bitDepth, int durationSeconds, int md5Seed)
+            throws Exception {
+        byte[] data = flac(md5Seed);
+        int off = 8; // STREAMINFO payload starts after "fLaC" (4) + block header (4)
+        int channelsMinus1 = 1; // stereo
+        int bpsMinus1 = bitDepth - 1;
+        long totalSamples = (long) sampleRate * durationSeconds;
+        data[off + 10] = (byte) ((sampleRate >>> 12) & 0xFF);
+        data[off + 11] = (byte) ((sampleRate >>> 4) & 0xFF);
+        data[off + 12] = (byte) (((sampleRate & 0x0F) << 4) | ((channelsMinus1 & 0x07) << 1) | ((bpsMinus1 >>> 4) & 0x01));
+        data[off + 13] = (byte) (((bpsMinus1 & 0x0F) << 4) | (int) ((totalSamples >>> 32) & 0x0F));
+        data[off + 14] = (byte) ((totalSamples >>> 24) & 0xFF);
+        data[off + 15] = (byte) ((totalSamples >>> 16) & 0xFF);
+        data[off + 16] = (byte) ((totalSamples >>> 8) & 0xFF);
+        data[off + 17] = (byte) (totalSamples & 0xFF);
+        Files.createDirectories(target.getParent());
+        Files.write(target, data);
         return target;
     }
 }

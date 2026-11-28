@@ -1967,10 +1967,14 @@ public class RecoveryService implements AutoCloseable {
         Optional<String> isoMd5 = ArchiveDuplicateDetector.flacAudioMd5(isolatedPath);
         Optional<String> candMd5 = ArchiveDuplicateDetector.flacAudioMd5(candidate);
         if (isoMd5.isPresent() && candMd5.isPresent()) {
-            return isoMd5.get().equals(candMd5.get());
+            if (isoMd5.get().equals(candMd5.get())) {
+                return true;
+            }
+            // 高规格源（如 96kHz/24bit）进 partial 目录时会被规范化降采样为 48kHz FLAC，音频 MD5 会变化
+            return AudioFormatNormalizer.isNormalizedFlacCounterpart(candidate, isolatedPath);
         }
         if (isoMd5.isPresent() != candMd5.isPresent()) {
-            return false;
+            return AudioFormatNormalizer.isNormalizedFlacCounterpart(candidate, isolatedPath);
         }
         String isoExt = fileExtensionLower(isolatedPath);
         String candExt = fileExtensionLower(candidate);

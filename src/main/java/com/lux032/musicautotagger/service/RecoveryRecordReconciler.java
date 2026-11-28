@@ -567,10 +567,7 @@ public class RecoveryRecordReconciler {
         if (allLeftExist) {
             Map<String, ProcessedRecord> leftMd5 = collectStrictFolderFlacMd5(left, false);
             Map<String, ProcessedRecord> rightMd5 = collectStrictFolderFlacMd5(right, true);
-            if (leftMd5 != null && rightMd5 != null) {
-                if (!leftMd5.keySet().equals(rightMd5.keySet())) {
-                    return List.of();
-                }
+            if (leftMd5 != null && rightMd5 != null && leftMd5.keySet().equals(rightMd5.keySet())) {
                 List<RecordPair> pairs = new ArrayList<>(leftMd5.size());
                 for (Map.Entry<String, ProcessedRecord> entry : leftMd5.entrySet()) {
                     pairs.add(new RecordPair(entry.getValue(), rightMd5.get(entry.getKey())));
@@ -579,7 +576,8 @@ public class RecoveryRecordReconciler {
             }
         }
 
-        // 2) 非全 FLAC（例如 MP3、混编格式）或已确认全删源的清理：构造候选配对后，仍逐曲校验任何存在的 FLAC MD5 不得冲突
+        // 2) 非全 FLAC、已确认全删源或高规格降采样转码（如 96kHz -> 48kHz FLAC）：
+        //    构造候选配对后，仍逐曲校验 FLAC MD5 一致或严格满足高规格规范化对应关系，禁止忽略真实指纹冲突
         List<RecordPair> candidatePairs;
         if (left.size() == 1) {
             candidatePairs = List.of(new RecordPair(left.get(0), right.get(0)));
@@ -598,13 +596,16 @@ public class RecoveryRecordReconciler {
             }
         }
 
-        // 对混合格式中任意实际存在的 FLAC 曲目强制校验音频 MD5 一致，禁止忽略任何可用指纹冲突
+        // 对混合格式或降采样转码曲目逐首校验：普通 FLAC 必须 MD5 一致，高规格源仅允许严格匹配降采样后的 48kHz FLAC 产物
         if (allLeftExist) {
             for (RecordPair pair : candidatePairs) {
-                Optional<String> lMd5 = ArchiveDuplicateDetector.flacAudioMd5(Path.of(pair.monitorFailed().filePath));
-                Optional<String> rMd5 = ArchiveDuplicateDetector.flacAudioMd5(Path.of(effectiveOutputPath(pair.outputSuccess())));
+                Path leftPath = Path.of(pair.monitorFailed().filePath);
+                Path rightPath = Path.of(effectiveOutputPath(pair.outputSuccess()));
+                Optional<String> lMd5 = ArchiveDuplicateDetector.flacAudioMd5(leftPath);
+                Optional<String> rMd5 = ArchiveDuplicateDetector.flacAudioMd5(rightPath);
                 if (lMd5.isPresent() || rMd5.isPresent()) {
-                    if (lMd5.isEmpty() || rMd5.isEmpty() || !lMd5.get().equals(rMd5.get())) {
+                    boolean exactMd5 = lMd5.isPresent() && rMd5.isPresent() && lMd5.get().equals(rMd5.get());
+                    if (!exactMd5 && !AudioFormatNormalizer.isNormalizedFlacCounterpart(leftPath, rightPath)) {
                         return List.of();
                     }
                 }

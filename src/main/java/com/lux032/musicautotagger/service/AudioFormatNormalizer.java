@@ -174,9 +174,123 @@ public class AudioFormatNormalizer {
     }
 
     private boolean needsNormalization(int sampleRate, int bitDepth) {
-        boolean sampleRateHigh = sampleRate > TARGET_SAMPLE_RATE;
-        boolean bitDepthHigh = bitDepth > TARGET_BIT_DEPTH;
-        return sampleRateHigh || bitDepthHigh;
+        return requiresNormalization(sampleRate, bitDepth);
+    }
+
+    /** 音频规格是否触发格式规范化降采样/降位深（>48kHz 或 >24bit）。 */
+    public static boolean requiresNormalization(int sampleRate, int bitDepth) {
+        return sampleRate > TARGET_SAMPLE_RATE || bitDepth > TARGET_BIT_DEPTH;
+    }
+
+    /**
+     * 判断 {@code candidate} 是否可能是 {@code original} 经本规范化器降采样/转码后的 FLAC 产物：
+     * 仅当原文件确实满足 {@link #requiresNormalization}（如 96kHz/24bit），且目标为 <=48kHz / <=24bit 的 FLAC、
+     * 且两者播放时长相差不超过 2 秒时返回 {@code true}。
+     * 普通 44.1kHz/48kHz 文件绝不触发此回退，保持严格 FLAC STREAMINFO MD5 校验不变。
+     */
+    public static boolean isNormalizedFlacCounterpart(Path original, Path candidate) {
+        if (original == null || candidate == null
+                || !Files.isRegularFile(original) || !Files.isRegularFile(candidate)) {
+            return false;
+        }
+        String candName = candidate.getFileName() == null ? "" : candidate.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        if (!candName.endsWith(".flac")) {
+            return false;
+        }
+        AudioStreamMeta origMeta = readStreamMeta(original);
+        if (origMeta == null || !requiresNormalization(origMeta.sampleRate(), origMeta.bitDepth())) {
+            return false;
+        }
+        AudioStreamMeta candMeta = readFlacStreamInfo(candidate);
+        if (candMeta == null || candMeta.sampleRate() <= 0 || candMeta.sampleRate() > TARGET_SAMPLE_RATE) {
+            return false;
+        }
+        if (candMeta.bitDepth() > TARGET_BIT_DEPTH) {
+            return false;
+        }
+        if (origMeta.durationSeconds() <= 0.0 || candMeta.durationSeconds() <= 0.0) {
+            return false;
+        }
+        return Math.abs(origMeta.durationSeconds() - candMeta.durationSeconds()) <= 2.0;
+    }
+
+    private record AudioStreamMeta(int sampleRate, int bitDepth, double durationSeconds) { }
+
+    private static AudioStreamMeta readStreamMeta(Path path) {
+        String name = path.getFileName() == null ? "" : path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+        if (name.endsWith(".flac")) {
+            AudioStreamMeta flac = readFlacStreamInfo(path);
+            if (flac != null) {
+                return flac;
+            }
+        }
+        try {
+            AudioFile af = AudioFileIO.read(path.toFile());
+            AudioHeader h = af.getAudioHeader();
+            int rate = parsePositiveIntStatic(h.getSampleRate());
+            int bits = parsePositiveIntStatic(String.valueOf(h.getBitsPerSample()));
+            double dur = h.getPreciseTrackLength() > 0 ? h.getPreciseTrackLength() : h.getTrackLength();
+            return new AudioStreamMeta(rate, bits, dur);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 直接解析 FLAC STREAMINFO（兼容前置 ID3v2），零重型解码依赖且无日志噪音。 */
+    private static AudioStreamMeta readFlacStreamInfo(Path path) {
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(path.toFile(), "r")) {
+            long offset = 0;
+            byte[] header = new byte[10];
+            if (raf.read(header) < 10) return null;
+            if (header[0] == 'I' && header[1] == 'D' && header[2] == '3') {
+                long size = ((header[6] & 0x7F) << 21) | ((header[7] & 0x7F) << 14)
+                    | ((header[8] & 0x7F) << 7) | (header[9] & 0x7F);
+                boolean footer = (header[5] & 0x10) != 0;
+                offset = 10 + size + (footer ? 10 : 0);
+            }
+            raf.seek(offset);
+            byte[] block = new byte[4 + 4 + 34];
+            raf.readFully(block);
+            if (block[0] != 'f' || block[1] != 'L' || block[2] != 'a' || block[3] != 'C') {
+                return null;
+            }
+            int blockType = block[4] & 0x7F;
+            int length = ((block[5] & 0xFF) << 16) | ((block[6] & 0xFF) << 8) | (block[7] & 0xFF);
+            if (blockType != 0 || length < 34) {
+                return null;
+            }
+            int off = 8;
+            int b10 = block[off + 10] & 0xFF;
+            int b11 = block[off + 11] & 0xFF;
+            int b12 = block[off + 12] & 0xFF;
+            int b13 = block[off + 13] & 0xFF;
+            int b14 = block[off + 14] & 0xFF;
+            int b15 = block[off + 15] & 0xFF;
+            int b16 = block[off + 16] & 0xFF;
+            int b17 = block[off + 17] & 0xFF;
+            int sampleRate = (b10 << 12) | (b11 << 4) | (b12 >>> 4);
+            int bitDepth = (((b12 & 0x01) << 4) | (b13 >>> 4)) + 1;
+            long totalSamples = (((long) (b13 & 0x0F)) << 32)
+                | (((long) b14) << 24)
+                | (((long) b15) << 16)
+                | (((long) b16) << 8)
+                | ((long) b17);
+            double duration = (sampleRate > 0 && totalSamples > 0) ? (totalSamples / (double) sampleRate) : 0.0;
+            return new AudioStreamMeta(sampleRate, bitDepth, duration);
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static int parsePositiveIntStatic(String value) {
+        if (value == null || value.isEmpty()) {
+            return 0;
+        }
+        try {
+            return Math.max(Integer.parseInt(value.trim()), 0);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     private boolean runFfmpeg(File sourceFile, File outputFile, int bitDepth) throws IOException {

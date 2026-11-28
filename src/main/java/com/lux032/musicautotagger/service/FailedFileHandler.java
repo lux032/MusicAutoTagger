@@ -62,6 +62,7 @@ public class FailedFileHandler {
     private final AutoArchiveRegistry autoArchiveRegistry;
     private final ReidentifyReplacementRegistry replacementRegistry;
     private final RecoveryOriginRegistry originRegistry;
+    private final ArchiveDuplicateDetector duplicateDetector;
     private final LlmArtistSplitter artistSplitter;
     
     public FailedFileHandler(MusicConfig config, TagWriterService tagWriter,
@@ -86,6 +87,7 @@ public class FailedFileHandler {
         this.autoArchiveRegistry = AutoArchiveRegistry.forReviewQueuePath(config.getReviewQueuePath());
         this.replacementRegistry = ReidentifyReplacementRegistry.forReviewQueuePath(config.getReviewQueuePath());
         this.originRegistry = RecoveryOriginRegistry.forReviewQueuePath(config.getReviewQueuePath());
+        this.duplicateDetector = new ArchiveDuplicateDetector(this::isAudioFile);
         this.artistSplitter = artistSplitter;
     }
 
@@ -208,7 +210,7 @@ public class FailedFileHandler {
 
             // LLM 匹配逻辑：如果启用且源文件有艺术家标签，尝试匹配并移动到 outputDirectory
             boolean llmAllowed = config.isEnableLLMMatching() && !Boolean.TRUE.equals(SUPPRESS_LLM_AUTO_ARCHIVE.get());
-            Path archivedFile = llmAllowed ? tryLLMMatchAndMove(audioFile, targetFile) : null;
+            Path archivedFile = llmAllowed ? tryLLMMatchAndMove(audioFile, targetFile, true) : null;
             if (archivedFile != null) {
                 log.info("LLM 匹配成功，文件已移动到 outputDirectory");
                 onArchived.accept(archivedFile);
@@ -403,7 +405,7 @@ public class FailedFileHandler {
             boolean llmAllowed = config.isEnableLLMMatching()
                 && !Boolean.TRUE.equals(SUPPRESS_LLM_AUTO_ARCHIVE.get());
             Path archivedFolder = llmAllowed && !audioFiles.isEmpty()
-                ? tryLLMMatchAndMoveAlbum(audioFiles.get(0), targetFolder) : null;
+                ? tryLLMMatchAndMoveAlbum(audioFiles.get(0), targetFolder, true) : null;
             if (archivedFolder != null) {
                 log.info("LLM 匹配成功，专辑已移动到 outputDirectory");
                 onArchived.accept(archivedFolder);
@@ -551,7 +553,7 @@ public class FailedFileHandler {
         }
         if (partialItem.isFile()) {
             Path partialPath = partialItem.toPath().toAbsolutePath().normalize();
-            Path finalFile = tryLLMMatchAndMove(partialItem, partialItem);
+            Path finalFile = tryLLMMatchAndMove(partialItem, partialItem, false);
             if (finalFile == null) {
                 return List.of();
             }
@@ -570,7 +572,7 @@ public class FailedFileHandler {
             .map(f -> partialRoot.relativize(f.toPath().toAbsolutePath().normalize()))
             .sorted()
             .toList();
-        Path finalFolder = tryLLMMatchAndMoveAlbum(audioFiles.get(0), partialItem);
+        Path finalFolder = tryLLMMatchAndMoveAlbum(audioFiles.get(0), partialItem, false);
         if (finalFolder == null) {
             return List.of();
         }
@@ -626,8 +628,18 @@ public class FailedFileHandler {
     }
 
     /** @return 归档后的文件路径；未匹配或无法安全归档时返回 null，文件保持原位 */
-    private Path tryLLMMatchAndMove(File sourceFile, File partialFile) {
+    private Path tryLLMMatchAndMove(File sourceFile, File partialFile, boolean isAutoArchive) {
         try {
+            if (isAutoArchive) {
+                Path existingArchive = findLiveReplacementArchive(List.of(sourceFile, partialFile));
+                if (existingArchive != null) {
+                    log.warn("源文件已有历史归档，跳过 LLM 自动归档以免重复入库: {} (现有归档: {})",
+                        sourceFile.getName(), existingArchive);
+                    LogCollector.addLog("WARN", "已有历史归档，跳过 LLM 自动归档以免重复入库: " + sourceFile.getName());
+                    return null;
+                }
+            }
+
             // 读取源文件的艺术家标签
             com.lux032.musicautotagger.model.MusicMetadata metadata = tagWriter.readTags(sourceFile);
             if ((metadata == null || metadata.getArtist() == null || metadata.getArtist().trim().isEmpty())
@@ -678,6 +690,17 @@ public class FailedFileHandler {
                     + "/" + partialFile.getName());
                 return null;
             }
+            List<Path> excluded = isAutoArchive ? List.of() : collectReplacementTargets(List.of(sourceFile, partialFile));
+            List<ArchiveDuplicateDetector.DuplicateGroup> duplicates =
+                findDuplicateAudioInArtistDir(List.of(partialFile.toPath()), artistDir, excluded);
+            if (!duplicates.isEmpty()) {
+                String existing = formatDuplicatePaths(duplicates);
+                log.warn("LLM 匹配目标艺术家目录内已存在相同音频，放弃自动归档以免重复入库: {} -> {}",
+                    folderArtist, existing);
+                LogCollector.addLog("WARN", "目标艺术家目录已有相同音频，未自动归档: " + folderArtist + "/" + albumName
+                    + " (已存在: " + existing + ")");
+                return null;
+            }
             albumDir.mkdirs();
 
             // 移动文件（不覆盖）并同步写入结构化艺术家标签
@@ -704,9 +727,9 @@ public class FailedFileHandler {
 
     /**
      * 尝试使用 LLM 匹配艺术家并移动整个专辑到 outputDirectory
-     * @return true 如果匹配成功并移动，false 否则
+     * @return 归档后的专辑目录路径；未匹配或存在重复归档风险时返回 null
      */
-    private Path tryLLMMatchAndMoveAlbum(File sourceFile, File partialFolder) {
+    private Path tryLLMMatchAndMoveAlbum(File sourceFile, File partialFolder, boolean isAutoArchive) {
         try {
             // 收集专辑中所有音频文件
             List<File> audioFiles = new ArrayList<>();
@@ -714,6 +737,21 @@ public class FailedFileHandler {
 
             if (audioFiles.isEmpty()) {
                 return null;
+            }
+
+            if (isAutoArchive) {
+                List<File> checkFiles = new ArrayList<>(audioFiles.size() + 1);
+                if (sourceFile != null) {
+                    checkFiles.add(sourceFile);
+                }
+                checkFiles.addAll(audioFiles);
+                Path existingArchive = findLiveReplacementArchive(checkFiles);
+                if (existingArchive != null) {
+                    log.warn("专辑已有历史归档，跳过 LLM 自动归档以免制造重复副本: {} (现有归档: {})",
+                        partialFolder.getName(), existingArchive);
+                    LogCollector.addLog("WARN", "专辑已有历史归档，跳过 LLM 自动归档以免重复入库: " + partialFolder.getName());
+                    return null;
+                }
             }
 
             // 检查是否有多个不同的艺术家
@@ -756,6 +794,21 @@ public class FailedFileHandler {
                 return null;
             }
 
+            // 即使目录名不同（例如已存在带版本后缀的 "VAMPY (Japanese digital EP)"），
+            // 只要同一艺术家目录下已有相同 FLAC 音频 MD5，也必须放弃自动归档，避免制造两份副本。
+            List<Path> incomingPaths = audioFiles.stream().map(File::toPath).toList();
+            List<Path> excluded = isAutoArchive ? List.of() : collectReplacementTargets(audioFiles);
+            List<ArchiveDuplicateDetector.DuplicateGroup> duplicates =
+                findDuplicateAudioInArtistDir(incomingPaths, artistDir, excluded);
+            if (!duplicates.isEmpty()) {
+                String existing = formatDuplicatePaths(duplicates);
+                log.warn("LLM 匹配目标艺术家目录内已存在相同音频，放弃自动归档以免重复入库: {} -> {}",
+                    matchedArtist, existing);
+                LogCollector.addLog("WARN", "目标艺术家目录已有相同音频，未自动归档: " + matchedArtist + "/" + albumName
+                    + " (已存在: " + existing + ")");
+                return null;
+            }
+
             // 复制整个文件夹；有文件没复制成功时撤销，避免留下半张专辑后又删掉部分识别副本
             int[] counts = fileSystemUtils.copyDirectoryRecursively(partialFolder.toPath(), finalFolder.toPath());
             if (counts[1] > 0) {
@@ -784,6 +837,63 @@ public class FailedFileHandler {
             log.error("LLM 匹配处理失败: {}", e.getMessage(), e);
             return null;
         }
+    }
+
+    /** 检查输入文件是否已登记待替换的既有输出归档，防止自动 LLM 匹配在原归档旁再写一份未补全副本。 */
+    private Path findLiveReplacementArchive(java.util.Collection<File> candidateFiles) {
+        List<Path> targets = collectReplacementTargets(candidateFiles);
+        return targets.isEmpty() ? null : targets.get(0);
+    }
+
+    private List<Path> collectReplacementTargets(java.util.Collection<File> candidateFiles) {
+        if (replacementRegistry == null || candidateFiles == null || candidateFiles.isEmpty()) {
+            return List.of();
+        }
+        String outDir = config == null ? null : config.getOutputDirectory();
+        if (outDir == null || outDir.isBlank()) {
+            return List.of();
+        }
+        Path outputRoot = Path.of(outDir.trim()).toAbsolutePath().normalize();
+        java.util.LinkedHashSet<Path> liveTargets = new java.util.LinkedHashSet<>();
+        for (File f : candidateFiles) {
+            if (f == null) continue;
+            replacementRegistry.findOldTarget(f).ifPresent(target -> {
+                Path norm = target.toAbsolutePath().normalize();
+                if (norm.startsWith(outputRoot) && !norm.equals(outputRoot) && Files.isRegularFile(norm)) {
+                    liveTargets.add(norm);
+                }
+            });
+        }
+        return List.copyOf(liveTargets);
+    }
+
+    private List<ArchiveDuplicateDetector.DuplicateGroup> findDuplicateAudioInArtistDir(
+            java.util.Collection<Path> incomingAudio, File artistDir, java.util.Collection<Path> excluded) {
+        if (duplicateDetector == null || incomingAudio == null || incomingAudio.isEmpty()
+                || artistDir == null || !artistDir.isDirectory()) {
+            return List.of();
+        }
+        String outDir = config == null ? null : config.getOutputDirectory();
+        if (outDir == null || outDir.isBlank()) {
+            return List.of();
+        }
+        return duplicateDetector.find(incomingAudio, Path.of(outDir.trim()), List.of(artistDir.toPath()), excluded);
+    }
+
+    private String formatDuplicatePaths(List<ArchiveDuplicateDetector.DuplicateGroup> duplicates) {
+        String outDir = config == null ? null : config.getOutputDirectory();
+        Path outputRoot = (outDir == null || outDir.isBlank()) ? null : Path.of(outDir.trim()).toAbsolutePath().normalize();
+        return duplicates.stream()
+            .map(d -> {
+                if (outputRoot != null) {
+                    try {
+                        return outputRoot.relativize(d.path().toAbsolutePath().normalize()).toString();
+                    } catch (IllegalArgumentException ignored) {
+                    }
+                }
+                return d.path().toString();
+            })
+            .collect(java.util.stream.Collectors.joining(", "));
     }
 
     /**
