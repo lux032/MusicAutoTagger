@@ -14,8 +14,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -80,6 +82,12 @@ public class TavilyWebSearchClient implements WebSearchClient {
         String key = config.getTavilyApiKey();
         // 归纳阶段仍然要调 LLM，光有 Tavily key 不算可用
         return key != null && !key.isBlank() && llmClient.isConfigured();
+    }
+
+    /** 是否已配置非空 Tavily API Key（供批量 /extract 降级判断是否可调用） */
+    public boolean hasTavilyKey() {
+        String key = config.getTavilyApiKey();
+        return key != null && !key.isBlank();
     }
 
     @Override
@@ -158,6 +166,7 @@ public class TavilyWebSearchClient implements WebSearchClient {
         result.setText(summary.getText());
         result.setModel(summary.getModel());
         result.setProvider("tavily+" + summary.getProvider());
+        result.addTokenUsage(summary.getUsage());
         return result;
     }
 
@@ -269,6 +278,127 @@ public class TavilyWebSearchClient implements WebSearchClient {
 
     // ==================== 第二步：调用 Tavily ====================
 
+    private static final int EXTRACT_BATCH_SIZE = 5;
+
+    /**
+     * 执行单次低层 Tavily /search 调用，供幕后人员开放域补全服务复用。
+     * includeDomains 为 null 或空时执行全网开放域检索（不受 13 域名白名单限制）。
+     */
+    public List<Citation> searchRaw(String query, String searchDepth, int maxResults,
+                                    List<String> includeDomains) throws Exception {
+        if (!hasTavilyKey()) {
+            throw new IllegalStateException("tavily.apiKey missing");
+        }
+        if (query == null || query.isBlank()) {
+            return List.of();
+        }
+        JsonObject body = new JsonObject();
+        body.addProperty("query", query.trim());
+        body.addProperty("search_depth", "basic".equalsIgnoreCase(searchDepth) ? "basic" : "advanced");
+        body.addProperty("max_results", Math.max(1, Math.min(20, maxResults)));
+        body.addProperty("include_answer", false);
+        body.addProperty("include_raw_content", false);
+        if (includeDomains != null && !includeDomains.isEmpty()) {
+            JsonArray include = new JsonArray();
+            for (String d : includeDomains) {
+                if (d != null && !d.isBlank()) {
+                    include.add(d.trim());
+                }
+            }
+            if (include.size() > 0) {
+                body.add("include_domains", include);
+            }
+        }
+        JsonObject json = sendTavilyPost(config.getTavilyApiUrl(), body);
+        JsonArray results = json == null ? null : json.getAsJsonArray("results");
+        if (results == null) {
+            return List.of();
+        }
+        List<Citation> out = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (JsonElement element : results) {
+            if (!element.isJsonObject()) continue;
+            JsonObject item = element.getAsJsonObject();
+            String url = string(item, "url");
+            if (url == null || url.isBlank()) continue;
+            String canon = WebSearchClient.canonicalizeUrl(url);
+            if (!seen.add(canon)) continue;
+            out.add(Citation.of(url, string(item, "title"), truncate(string(item, "content"), 1500)));
+        }
+        return out;
+    }
+
+    /**
+     * 批量调用 Tavily /extract 提取直连受阻（403/429/JS空壳/YouTube）的网页正文。
+     * 按每批最多 5 个 URL 打包以最大化 Tavily 额度利用率（5 URL = 1 basic credit）。
+     *
+     * @return Map(canonicalUrl -> rawContent)，部分失败不影响已成功的 URL
+     */
+    public Map<String, String> extract(List<String> urls, String extractDepth) throws Exception {
+        Map<String, String> extracted = new LinkedHashMap<>();
+        if (!hasTavilyKey() || urls == null || urls.isEmpty()) {
+            return extracted;
+        }
+        List<String> cleaned = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String u : urls) {
+            if (u != null && !u.isBlank() && seen.add(WebSearchClient.canonicalizeUrl(u))) {
+                cleaned.add(u.trim());
+            }
+        }
+        if (cleaned.isEmpty()) {
+            return extracted;
+        }
+        String extractUrl = resolveExtractUrl(config.getTavilyApiUrl());
+        String depthParam = "advanced".equalsIgnoreCase(extractDepth) ? "advanced" : "basic";
+        for (int start = 0; start < cleaned.size(); start += EXTRACT_BATCH_SIZE) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new InterruptedException("cancelled");
+            }
+            List<String> batch = cleaned.subList(start, Math.min(cleaned.size(), start + EXTRACT_BATCH_SIZE));
+            JsonObject body = new JsonObject();
+            JsonArray arr = new JsonArray();
+            batch.forEach(arr::add);
+            body.add("urls", arr);
+            body.addProperty("extract_depth", depthParam);
+            try {
+                JsonObject json = sendTavilyPost(extractUrl, body);
+                JsonArray results = json == null ? null : json.getAsJsonArray("results");
+                if (results != null) {
+                    for (JsonElement el : results) {
+                        if (!el.isJsonObject()) continue;
+                        JsonObject item = el.getAsJsonObject();
+                        String u = string(item, "url");
+                        String raw = string(item, "raw_content");
+                        if (u != null && !u.isBlank() && raw != null && !raw.isBlank()) {
+                            extracted.put(WebSearchClient.canonicalizeUrl(u), raw.trim());
+                        }
+                    }
+                }
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw ie;
+            } catch (Exception e) {
+                log.warn("Tavily /extract 批次提取失败 ({} URLs): {}", batch.size(), e.getMessage());
+            }
+        }
+        return extracted;
+    }
+
+    static String resolveExtractUrl(String searchUrl) {
+        if (searchUrl == null || searchUrl.isBlank()) {
+            return "https://api.tavily.com/extract";
+        }
+        String trimmed = searchUrl.trim();
+        if (trimmed.matches("(?i).*/search/?$")) {
+            return trimmed.replaceAll("(?i)/search/?$", "/extract");
+        }
+        if (trimmed.endsWith("/extract")) {
+            return trimmed;
+        }
+        return trimmed.endsWith("/") ? trimmed + "extract" : trimmed + "/extract";
+    }
+
     private void collect(String query, SearchResponse result, boolean includeImages) throws Exception {
         JsonObject body = new JsonObject();
         body.addProperty("query", query);
@@ -287,35 +417,7 @@ public class TavilyWebSearchClient implements WebSearchClient {
             body.add("include_domains", include);
         }
 
-        String tavilyUrl = config.getTavilyApiUrl();
-        com.lux032.musicautotagger.util.OutboundUrlValidator.validateAndResolve(
-            tavilyUrl, config.isLlmAllowPrivateEndpoints(), false, false);
-        HttpRequest request = HttpRequest.newBuilder(URI.create(tavilyUrl))
-            .header("Content-Type", "application/json")
-            // 新版 Tavily 用 Bearer；旧版的 body.api_key 已废弃，不再兼容以免混淆错误信息
-            .header("Authorization", "Bearer " + config.getTavilyApiKey())
-            .timeout(Duration.ofSeconds(Math.max(5, config.getTavilyTimeoutSeconds())))
-            .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)))
-            .build();
-
-        HttpResponse<java.io.InputStream> response = http().send(
-            request, HttpResponse.BodyHandlers.ofInputStream());
-        String responseBody;
-        try (java.io.InputStream in = response.body()) {
-            responseBody = com.lux032.musicautotagger.util.OutboundUrlValidator.readBoundedString(
-                in, com.lux032.musicautotagger.util.OutboundUrlValidator.DEFAULT_MAX_RESPONSE_BYTES);
-        }
-        if (response.statusCode() != 200) {
-            throw new IllegalStateException("tavily http " + response.statusCode()
-                + ": " + truncate(responseBody, 300));
-        }
-
-        JsonObject json;
-        try {
-            json = gson.fromJson(responseBody, JsonObject.class);
-        } catch (JsonSyntaxException e) {
-            throw new IllegalStateException("tavily 响应不是合法 JSON");
-        }
+        JsonObject json = sendTavilyPost(config.getTavilyApiUrl(), body);
         JsonArray results = json == null ? null : json.getAsJsonArray("results");
         if (results == null) {
             throw new IllegalStateException("tavily 响应缺少 results");
@@ -338,6 +440,35 @@ public class TavilyWebSearchClient implements WebSearchClient {
                     result.addImageUrl(string(imgEl.getAsJsonObject(), "url"));
                 }
             }
+        }
+    }
+
+    JsonObject sendTavilyPost(String tavilyUrl, JsonObject body) throws Exception {
+        com.lux032.musicautotagger.util.OutboundUrlValidator.validateAndResolve(
+            tavilyUrl, config.isLlmAllowPrivateEndpoints(), false, false);
+        HttpRequest request = HttpRequest.newBuilder(URI.create(tavilyUrl))
+            .header("Content-Type", "application/json")
+            // 新版 Tavily 用 Bearer；旧版的 body.api_key 已废弃，不再兼容以免混淆错误信息
+            .header("Authorization", "Bearer " + config.getTavilyApiKey())
+            .timeout(Duration.ofSeconds(Math.max(5, config.getTavilyTimeoutSeconds())))
+            .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(body)))
+            .build();
+
+        HttpResponse<java.io.InputStream> response = http().send(
+            request, HttpResponse.BodyHandlers.ofInputStream());
+        String responseBody;
+        try (java.io.InputStream in = response.body()) {
+            responseBody = com.lux032.musicautotagger.util.OutboundUrlValidator.readBoundedString(
+                in, com.lux032.musicautotagger.util.OutboundUrlValidator.DEFAULT_MAX_RESPONSE_BYTES);
+        }
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException("tavily http " + response.statusCode()
+                + ": " + NativeWebSearchClient.sanitizeErrorSummary(responseBody, gson));
+        }
+        try {
+            return gson.fromJson(responseBody, JsonObject.class);
+        } catch (JsonSyntaxException e) {
+            throw new IllegalStateException("tavily 响应不是合法 JSON");
         }
     }
 

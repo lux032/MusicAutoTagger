@@ -585,7 +585,7 @@ public class MetadataUtils {
 
     /**
      * 按确定优先级逐字段（作曲 / 作词 / 编曲独立）解析联网归档时的最终幕后人员：
-     * 手动编辑 > MusicBrainz 指纹结果 > 本地文件已有标签 > 联网提取（仅高置信度匹配）。
+     * 手动编辑 > MusicBrainz 指纹结果 > 本地文件已有标签 > 联网提取（仅高置信度匹配且核验准入）。
      */
     public static ResolvedTrackCredits resolveOnlineTrackCredits(
             ReviewItem.TrackCreditsOverride manualOverride,
@@ -593,6 +593,21 @@ public class MetadataUtils {
             MusicMetadata local,
             ReviewItem.OnlineTrack onlineTrack,
             boolean onlineConfident) {
+        return resolveOnlineTrackCredits(manualOverride, musicBrainz, local, onlineTrack, onlineConfident, true);
+    }
+
+    /**
+     * 按确定优先级逐字段（作曲 / 作词 / 编曲独立）解析联网归档时的最终幕后人员，
+     * 并严格按字段级核验状态执行准入：仅 {@code VERIFIED} 或（启用 {@code applyProbable} 时的）{@code PROBABLE}
+     * 允许自动写入；{@code CONFLICT} / {@code NOT_FOUND} / {@code NOT_SEARCHED} 绝不自动采用。
+     */
+    public static ResolvedTrackCredits resolveOnlineTrackCredits(
+            ReviewItem.TrackCreditsOverride manualOverride,
+            MusicMetadata musicBrainz,
+            MusicMetadata local,
+            ReviewItem.OnlineTrack onlineTrack,
+            boolean onlineConfident,
+            boolean applyProbable) {
         ResolvedCreditRole composer = resolveRole(
             manualOverride == null ? null : manualOverride.getComposers(),
             musicBrainz == null ? null : musicBrainz.getComposer(),
@@ -601,7 +616,7 @@ public class MetadataUtils {
             local == null ? null : local.getComposer(),
             local == null ? null : local.getComposers(),
             local == null ? null : local.getComposerIds(),
-            onlineTrack == null ? null : onlineTrack.getComposers(),
+            extractAdmittedOnlineNames(onlineTrack, "composers", applyProbable),
             onlineConfident
         );
         ResolvedCreditRole lyricist = resolveRole(
@@ -612,7 +627,7 @@ public class MetadataUtils {
             local == null ? null : local.getLyricist(),
             local == null ? null : local.getLyricists(),
             local == null ? null : local.getLyricistIds(),
-            onlineTrack == null ? null : onlineTrack.getLyricists(),
+            extractAdmittedOnlineNames(onlineTrack, "lyricists", applyProbable),
             onlineConfident
         );
         ResolvedCreditRole arranger = resolveRole(
@@ -623,10 +638,43 @@ public class MetadataUtils {
             local == null ? null : local.getArranger(),
             local == null ? null : local.getArrangers(),
             local == null ? null : local.getArrangerIds(),
-            onlineTrack == null ? null : onlineTrack.getArrangers(),
+            extractAdmittedOnlineNames(onlineTrack, "arrangers", applyProbable),
             onlineConfident
         );
         return new ResolvedTrackCredits(composer, lyricist, arranger);
+    }
+
+    private static List<String> extractAdmittedOnlineNames(ReviewItem.OnlineTrack onlineTrack,
+                                                           String role, boolean applyProbable) {
+        if (onlineTrack == null) {
+            return List.of();
+        }
+        ReviewItem.TrackCreditDetail detail = onlineTrack.getCreditDetail();
+        if (detail != null) {
+            ReviewItem.CreditFieldResult field = switch (role) {
+                case "composers" -> detail.getComposers();
+                case "lyricists" -> detail.getLyricists();
+                case "arrangers" -> detail.getArrangers();
+                default -> null;
+            };
+            if (field == null || field.getStatus() == null || field.getNames() == null || field.getNames().isEmpty()) {
+                return List.of();
+            }
+            if (field.getStatus() == ReviewItem.CreditStatus.VERIFIED) {
+                return cleanDistinctCreditNames(field.getNames());
+            }
+            if (applyProbable && field.getStatus() == ReviewItem.CreditStatus.PROBABLE) {
+                return cleanDistinctCreditNames(field.getNames());
+            }
+            return List.of();
+        }
+        // 历史队列条目缺少 creditDetail：保持向后兼容，直接回退读取扁平数组
+        return switch (role) {
+            case "composers" -> onlineTrack.getComposers();
+            case "lyricists" -> onlineTrack.getLyricists();
+            case "arrangers" -> onlineTrack.getArrangers();
+            default -> List.of();
+        };
     }
 
     private static ResolvedCreditRole resolveRole(

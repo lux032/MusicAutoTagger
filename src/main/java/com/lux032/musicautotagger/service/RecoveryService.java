@@ -1234,7 +1234,8 @@ public class RecoveryService implements AutoCloseable {
                     manualTrackCredits, matchedPath, singleFallbackEntryPath);
                 MusicMetadata mbCredits = MetadataUtils.extractQueuedMusicBrainzCredits(queued, original);
                 MetadataUtils.ResolvedTrackCredits resolvedCredits = MetadataUtils.resolveOnlineTrackCredits(
-                    manualOverride, mbCredits, original, track, track != null);
+                    manualOverride, mbCredits, original, track, track != null,
+                    config == null || config.isOnlineCreditsApplyProbable());
                 MetadataUtils.applyResolvedTrackCredits(resolvedCredits, md);
                 md.setAlbum(finalAlbum);
                 ArtistCreditSupport.applyAlbumArtistCredit(md, finalArtist, finalAlbumArtists, albumArtistPolicy);
@@ -3103,6 +3104,9 @@ public class RecoveryService implements AutoCloseable {
     public void close() {
         if (searchQueueService != null) {
             searchQueueService.close();
+        }
+        if (onlineIdentificationService != null) {
+            onlineIdentificationService.close();
         }
         executor.shutdownNow();
     }

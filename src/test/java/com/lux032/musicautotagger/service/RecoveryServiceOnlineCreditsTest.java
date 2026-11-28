@@ -227,6 +227,67 @@ class RecoveryServiceOnlineCreditsTest {
         assertEquals("森空青", out.getArranger());
     }
 
+    @Test
+    void confirmOnlineBlocksConflictAndProbableWhenApplyProbableDisabled() throws Exception {
+        config.setOnlineCreditsApplyProbable(false);
+        Path albumDir = Files.createDirectory(monitorDir.resolve("StatusAdmissionAlbum"));
+        File flac = createFlac(albumDir.resolve("01. VAMPY.flac"), "VAMPY", "HIMEHINA", "Old", "1",
+            null, null, null, null);
+
+        ReviewItem item = reviewQueue.enqueueRecoveryFolder(albumDir.toString(), null, List.of(flac), tagWriter, null);
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("cand-status");
+        cand.setTitle("VAMPY");
+        cand.setArtist("HIMEHINA");
+        cand.setAlbumArtist("HIMEHINA");
+
+        ReviewItem.OnlineTrack track = onlineTrack(1, 1, "VAMPY", "HIMEHINA",
+            List.of("Soma Genda"), List.of("Gohgo"), List.of("Wrong Conflict"));
+        ReviewItem.TrackCreditDetail detail = new ReviewItem.TrackCreditDetail();
+        ReviewItem.CreditFieldResult comp = new ReviewItem.CreditFieldResult();
+        comp.setStatus(ReviewItem.CreditStatus.VERIFIED);
+        comp.setNames(List.of("Soma Genda"));
+        detail.setComposers(comp);
+
+        ReviewItem.CreditFieldResult lyr = new ReviewItem.CreditFieldResult();
+        lyr.setStatus(ReviewItem.CreditStatus.PROBABLE);
+        lyr.setNames(List.of("Gohgo"));
+        detail.setLyricists(lyr);
+
+        ReviewItem.CreditFieldResult arr = new ReviewItem.CreditFieldResult();
+        arr.setStatus(ReviewItem.CreditStatus.CONFLICT);
+        arr.setNames(List.of("Wrong Conflict"));
+        detail.setArrangers(arr);
+        track.setCreditDetail(detail);
+
+        cand.setTracks(List.of(track));
+        item.setOnlineCandidates(List.of(cand));
+        OnlineIdentificationService online = new OnlineIdentificationService(config, reviewQueue, tagWriter, null, null);
+        item.setEvidenceHash(online.evidenceHashForFolder(albumDir.toFile()));
+        reviewQueue.update(item);
+
+        AudioFingerprintService stubFp = new AudioFingerprintService(config) {
+            @Override
+            public List<Integer> extractDurationSequence(List<File> files) {
+                return List.of(120);
+            }
+        };
+
+        try (RecoveryService recovery = new RecoveryService(
+                config, null, processedLogger, reviewQueue, new FolderAlbumCache(null, null, null), null,
+                new FileSystemUtils(config), tagWriter, stubFp, null, null)) {
+            recovery.confirmOnlineCandidate(item.getId(), cand.getId(),
+                "VAMPY", "HIMEHINA", "2026-11-27", "", null, null,
+                RecoveryService.DuplicatePolicy.ASK, null, true, null);
+        }
+
+        MusicMetadata out = tagWriter.readTags(outputDir.resolve("HIMEHINA/VAMPY/1.01 HIMEHINA - VAMPY.flac").toFile());
+        assertNotNull(out);
+        assertEquals("Soma Genda", out.getComposer(), "VERIFIED field must be written");
+        assertNull(out.getLyricist(), "PROBABLE field must NOT be auto-written when online.credits.applyProbable=false");
+        assertNull(out.getArranger(), "CONFLICT field must NEVER be auto-written");
+    }
+
     private static ReviewItem.OnlineTrack onlineTrack(int disc, int track, String title, String artist,
                                                       List<String> composers, List<String> lyricists, List<String> arrangers) {
         ReviewItem.OnlineTrack t = new ReviewItem.OnlineTrack();

@@ -127,6 +127,10 @@
             case 'ROUND2_NATIVE_SEARCH': return t('sq.stage.ROUND2_NATIVE_SEARCH');
             case 'ROUND2_NATIVE_RETRY': return tf('sq.stage.ROUND2_NATIVE_RETRY', cur || 1, cit || 1);
             case 'ROUND2_MATCHING': return t('sq.stage.ROUND2_MATCHING');
+            case 'CREDITS_ALBUM_SEARCH': return tf('sq.stage.CREDITS_ALBUM_SEARCH', cur || 1, tot || 1, cit);
+            case 'CREDITS_FETCHING': return tf('sq.stage.CREDITS_FETCHING', cur || 1, tot || 1);
+            case 'CREDITS_GAP_FILL': return tf('sq.stage.CREDITS_GAP_FILL', cur || 1, tot || 1);
+            case 'CREDITS_VERIFYING': return t('sq.stage.CREDITS_VERIFYING');
             case 'COVER_LOCAL_CHECK': return t('sq.stage.COVER_LOCAL_CHECK');
             case 'COVER_ITUNES_SEARCH': return t('sq.stage.COVER_ITUNES_SEARCH');
             case 'COVER_AI_SEARCH': return t('sq.stage.COVER_AI_SEARCH');

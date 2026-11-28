@@ -358,8 +358,27 @@
         .credit-src.src-MUSICBRAINZ { background: #e8f1ff; border-color: #c5dcff; color: #1d4ed8; }
         .credit-src.src-LOCAL { background: #f1f5f9; border-color: #cbd5e1; color: #475569; }
         .credit-src.src-ONLINE { background: #e3f4f8; border-color: #bae6fd; color: #0e7490; }
+        .credit-src.src-ONLINE_VERIFIED { background: #dcfce7; border-color: #86efac; color: #166534; }
+        .credit-src.src-ONLINE_PROBABLE { background: #e0f2fe; border-color: #7dd3fc; color: #0369a1; }
         .credit-src.src-MANUAL { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
         .credit-src.src-NONE { background: transparent; border-color: transparent; color: var(--text-mute); }
+        .credit-st { display: inline-block; font-size: 10.5px; padding: 0 5px; border-radius: 999px; margin-left: 4px; font-weight: 500; border: 1px solid var(--border); vertical-align: middle; }
+        .credit-st.st-VERIFIED { background: #dcfce7; border-color: #86efac; color: #166534; }
+        .credit-st.st-PROBABLE { background: #e0f2fe; border-color: #7dd3fc; color: #0369a1; }
+        .credit-st.st-CONFLICT { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+        .credit-st.st-NOT_FOUND { background: var(--bg-soft); border-color: var(--border); color: var(--text-mute); }
+        .oc-credit-meta { margin: 2px 0 4px 58px; display: grid; gap: 4px; font-size: 11.5px; color: var(--text-soft); }
+        .oc-credit-note { color: var(--text-mute); line-height: 1.45; }
+        .oc-credit-ev summary { cursor: pointer; color: var(--primary); font-size: 11.5px; user-select: none; }
+        .oc-credit-ev-list { margin-top: 4px; display: grid; gap: 4px; padding-left: 8px; border-left: 2px solid var(--border); }
+        .oc-credit-ev-item { font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+        .oc-credit-ev-type { display: inline-block; font-size: 10.5px; padding: 0 5px; border-radius: 4px; background: var(--bg-soft); color: var(--text-soft); margin-right: 5px; }
+        .oc-credit-quote { color: var(--text-mute); margin-top: 2px; font-style: italic; }
+        .oc-conflict-box { padding: 6px 8px; border-radius: 6px; background: #fff5f5; border: 1px solid #fecaca; display: grid; gap: 5px; }
+        .oc-conflict-title { font-size: 11.5px; font-weight: 600; color: #991b1b; }
+        .oc-conflict-opt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; }
+        .oc-conflict-btn { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #fca5a5; background: #fff; color: #991b1b; cursor: pointer; font-weight: 600; }
+        .oc-conflict-btn:hover { background: #fee2e2; }
 
         .cover-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:10px; margin-top:8px; }
         .cover-choice { border:2px solid var(--border); border-radius:8px; padding:6px; cursor:pointer; background:#fff; text-align:left; font:inherit; }
@@ -1508,12 +1527,47 @@
         </div>`;
     }
 
-    function formatOnlineTrackCredits(x) {
+    function creditStatusLabel(status) {
+        if (!status) return '';
+        return t('review.online.credits.status.' + status, status);
+    }
+
+    function creditSourceTypeLabel(sourceType) {
+        if (!sourceType) return t('review.online.credits.sourceType.other');
+        return t('review.online.credits.sourceType.' + sourceType, sourceType);
+    }
+
+    function renderOnlineTrackCreditsHtml(x) {
         if (!x) return '';
+        const detail = x.creditDetail || null;
+        const roleMeta = [
+            { key: 'composers', shortKey: 'review.online.credit.short.composer' },
+            { key: 'lyricists', shortKey: 'review.online.credit.short.lyricist' },
+            { key: 'arrangers', shortKey: 'review.online.credit.short.arranger' }
+        ];
         const parts = [];
-        if (Array.isArray(x.composers) && x.composers.length) parts.push(`${t('review.online.credit.short.composer')}: ${x.composers.join(' / ')}`);
-        if (Array.isArray(x.lyricists) && x.lyricists.length) parts.push(`${t('review.online.credit.short.lyricist')}: ${x.lyricists.join(' / ')}`);
-        if (Array.isArray(x.arrangers) && x.arrangers.length) parts.push(`${t('review.online.credit.short.arranger')}: ${x.arrangers.join(' / ')}`);
+        for (const r of roleMeta) {
+            const fd = detail && detail[r.key] ? detail[r.key] : null;
+            if (fd) {
+                const st = fd.status || '';
+                const names = Array.isArray(fd.names) ? fd.names.filter(Boolean) : [];
+                if (st === 'CONFLICT') {
+                    const candSummary = Array.isArray(fd.candidates) && fd.candidates.length
+                        ? ' (' + fd.candidates.map(c => (c.names || []).join('/')).filter(Boolean).join(' vs ') + ')'
+                        : '';
+                    parts.push(`${escapeHtml(t(r.shortKey))}: <span class="credit-st st-CONFLICT">${escapeHtml(creditStatusLabel('CONFLICT'))}</span>${escapeHtml(candSummary)}`);
+                } else if (names.length) {
+                    const badge = (st === 'VERIFIED' || st === 'PROBABLE')
+                        ? `<span class="credit-st st-${escapeHtml(st)}">${escapeHtml(creditStatusLabel(st))}</span>`
+                        : '';
+                    parts.push(`${escapeHtml(t(r.shortKey))}: ${escapeHtml(names.join(' / '))}${badge}`);
+                } else if (fd.notes) {
+                    parts.push(`${escapeHtml(t(r.shortKey))}: <span class="credit-st st-NOT_FOUND">${escapeHtml(creditStatusLabel('NOT_FOUND'))}</span> (${escapeHtml(fd.notes)})`);
+                }
+            } else if (Array.isArray(x[r.key]) && x[r.key].length) {
+                parts.push(`${escapeHtml(t(r.shortKey))}: ${escapeHtml(x[r.key].join(' / '))}`);
+            }
+        }
         return parts.join(' · ');
     }
 
@@ -1547,9 +1601,9 @@
             const sub = [c.albumArtist || c.artist, c.releaseDate || t('review.date.unknown')].filter(Boolean).map(escapeHtml).join(' · ');
             const covCls = coverage >= 0.85 ? 'd-ok' : (coverage >= 0.6 ? 'd-warn' : 'd-bad');
             const trackRows = (c.tracks || []).filter(x => x.matchedFilePath).map(x => {
-                const creditText = formatOnlineTrackCredits(x);
+                const creditHtml = renderOnlineTrackCreditsHtml(x);
                 return `<div class="match-line"><span class="num">${x.discNo || 1}-${x.trackNo || '-'}</span>${escapeHtml(x.title || '')}
-                → ${escapeHtml(baseName(x.matchedFilePath))} · ${escapeHtml(tf('review.match', percent(x.matchConfidence)))}</div>${creditText ? `<div class="match-credits">${escapeHtml(creditText)}</div>` : ''}`;
+                → ${escapeHtml(baseName(x.matchedFilePath))} · ${escapeHtml(tf('review.match', percent(x.matchConfidence)))}</div>${creditHtml ? `<div class="match-credits">${creditHtml}</div>` : ''}`;
             }).join('');
             const sources = (c.sources || []).map(src => `<div class="src-line"><span class="src-rel">${escapeHtml(src.reliability || '?')}</span>${linkOrText(src.url, src.title || src.domain || src.url)}${src.snippet ? ' — ' + escapeHtml(src.snippet) : ''}</div>`).join('');
             const candidateArtists = (c.albumArtists && c.albumArtists.length)
@@ -2253,10 +2307,22 @@
         return true;
     }
 
-    function resolveInitialOnlineCreditRole(baseNames, baseSource, onlineNames, onlineConfident) {
+    function resolveInitialOnlineCreditRole(baseNames, baseSource, onlineNames, onlineConfident, fieldDetail, applyProbable) {
         const base = Array.isArray(baseNames) ? baseNames.filter(Boolean) : [];
         if (base.length && baseSource && baseSource !== 'NONE') {
             return { names: [...base], source: baseSource };
+        }
+        if (onlineConfident && fieldDetail && typeof fieldDetail === 'object') {
+            const st = fieldDetail.status || '';
+            const detailNames = Array.isArray(fieldDetail.names) ? fieldDetail.names.filter(Boolean) : [];
+            if (st === 'VERIFIED' && detailNames.length) {
+                return { names: [...detailNames], source: 'ONLINE_VERIFIED' };
+            }
+            if (st === 'PROBABLE' && applyProbable && detailNames.length) {
+                return { names: [...detailNames], source: 'ONLINE_PROBABLE' };
+            }
+            // CONFLICT / NOT_FOUND / NOT_SEARCHED 或关闭 applyProbable 时的 PROBABLE 绝不自动预填
+            return { names: [], source: 'NONE' };
         }
         const online = onlineConfident && Array.isArray(onlineNames) ? onlineNames.filter(Boolean) : [];
         if (online.length) {
@@ -2271,6 +2337,130 @@
         badgeEl.textContent = t('review.online.credits.source.' + code, code);
     }
 
+    function createSafeExternalLink(rawUrl, label) {
+        const url = String(rawUrl == null ? '' : rawUrl).trim();
+        if (/^https?:\/\//i.test(url)) {
+            const a = document.createElement('a');
+            a.href = url;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = label || url;
+            return a;
+        }
+        const span = document.createElement('span');
+        span.textContent = label || url;
+        return span;
+    }
+
+    function shortUrlHost(rawUrl) {
+        try {
+            return new URL(String(rawUrl)).hostname.replace(/^www\./i, '');
+        } catch (e) {
+            return String(rawUrl || '');
+        }
+    }
+
+    function buildRoleEvidenceMeta(fieldDetail, applyProbable, inputEl) {
+        if (!fieldDetail || typeof fieldDetail !== 'object') return null;
+        const st = fieldDetail.status || '';
+        const evidence = Array.isArray(fieldDetail.evidence) ? fieldDetail.evidence.filter(e => e && e.url) : [];
+        const candidates = Array.isArray(fieldDetail.candidates) ? fieldDetail.candidates.filter(c => c && Array.isArray(c.names) && c.names.length) : [];
+        const notes = fieldDetail.notes ? String(fieldDetail.notes).trim() : '';
+        const probableDisabledHint = st === 'PROBABLE' && !applyProbable && Array.isArray(fieldDetail.names) && fieldDetail.names.length;
+
+        if (!evidence.length && !candidates.length && !notes && st !== 'CONFLICT' && !probableDisabledHint) {
+            return null;
+        }
+
+        const wrap = document.createElement('div');
+        wrap.className = 'oc-credit-meta';
+
+        if (st === 'CONFLICT') {
+            const box = document.createElement('div');
+            box.className = 'oc-conflict-box';
+            const title = document.createElement('div');
+            title.className = 'oc-conflict-title';
+            title.textContent = t('review.online.credits.conflict.title');
+            box.append(title);
+            for (const cand of candidates) {
+                const opt = document.createElement('div');
+                opt.className = 'oc-conflict-opt';
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'oc-conflict-btn';
+                btn.textContent = `${t('review.online.credits.conflict.apply')}: ${cand.names.join('; ')}`;
+                btn.addEventListener('click', () => {
+                    inputEl.value = cand.names.join('; ');
+                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                });
+                opt.append(btn);
+                if (Array.isArray(cand.urls)) {
+                    for (const u of cand.urls.slice(0, 2)) {
+                        opt.append(createSafeExternalLink(u, shortUrlHost(u)));
+                    }
+                }
+                if (Array.isArray(cand.quotes) && cand.quotes[0]) {
+                    const q = document.createElement('span');
+                    q.className = 'oc-credit-quote';
+                    q.textContent = `“${cand.quotes[0]}”`;
+                    opt.append(q);
+                }
+                box.append(opt);
+            }
+            wrap.append(box);
+        }
+
+        if (probableDisabledHint) {
+            const pNote = document.createElement('div');
+            pNote.className = 'oc-credit-note';
+            pNote.textContent = `${t('review.online.credits.probable.disabled')} (${fieldDetail.names.join('; ')})`;
+            wrap.append(pNote);
+        }
+
+        if (notes) {
+            const noteEl = document.createElement('div');
+            noteEl.className = 'oc-credit-note';
+            noteEl.textContent = notes;
+            wrap.append(noteEl);
+        }
+
+        if (evidence.length) {
+            const det = document.createElement('details');
+            det.className = 'oc-credit-ev';
+            const sum = document.createElement('summary');
+            sum.textContent = tf('review.online.credits.evidence.toggle', evidence.length);
+            det.append(sum);
+            const evList = document.createElement('div');
+            evList.className = 'oc-credit-ev-list';
+            for (const ev of evidence) {
+                const itemEl = document.createElement('div');
+                itemEl.className = 'oc-credit-ev-item';
+                const typeTag = document.createElement('span');
+                typeTag.className = 'oc-credit-ev-type';
+                typeTag.textContent = creditSourceTypeLabel(ev.sourceType);
+                itemEl.append(typeTag);
+                itemEl.append(createSafeExternalLink(ev.url, shortUrlHost(ev.url)));
+                if (ev.syndicatedDuplicate) {
+                    const synTag = document.createElement('span');
+                    synTag.className = 'oc-credit-ev-type';
+                    synTag.style.marginLeft = '5px';
+                    synTag.textContent = t('review.online.credits.syndicated');
+                    itemEl.append(synTag);
+                }
+                if (ev.quote) {
+                    const qEl = document.createElement('div');
+                    qEl.className = 'oc-credit-quote';
+                    qEl.textContent = `“${ev.quote}”`;
+                    itemEl.append(qEl);
+                }
+                evList.append(itemEl);
+            }
+            det.append(evList);
+            wrap.append(det);
+        }
+        return wrap;
+    }
+
     function renderOnlineCreditsEditor(item, c) {
         const details = $('ocCreditsDetails');
         const list = $('ocCreditsList');
@@ -2282,7 +2472,8 @@
             return;
         }
         details.hidden = false;
-        details.open = false;
+        const applyProbable = item.onlineCreditsApplyProbable !== false;
+        let hasAnyConflict = false;
 
         const tracks = c.tracks || [];
         const rows = [];
@@ -2327,8 +2518,12 @@
 
             const rowRoles = [];
             for (const def of roleDefs) {
+                const fieldDetail = matchedTrack?.creditDetail?.[def.key] || null;
+                if (fieldDetail && fieldDetail.status === 'CONFLICT') {
+                    hasAnyConflict = true;
+                }
                 const init = resolveInitialOnlineCreditRole(
-                    f[def.baseKey], f[def.srcKey], matchedTrack?.[def.key], !!matchedTrack);
+                    f[def.baseKey], f[def.srcKey], matchedTrack?.[def.key], !!matchedTrack, fieldDetail, applyProbable);
                 const line = document.createElement('div');
                 line.className = 'oc-credit-row';
                 const label = document.createElement('span');
@@ -2349,11 +2544,16 @@
                 });
                 line.append(label, input, badge);
                 card.append(line);
+                if (fieldDetail) {
+                    const metaEl = buildRoleEvidenceMeta(fieldDetail, applyProbable, input);
+                    if (metaEl) card.append(metaEl);
+                }
                 rowRoles.push({ key: def.key, initial: init.names, input });
             }
             list.append(card);
             rows.push({ pathKey, roles: rowRoles });
         }
+        details.open = hasAnyConflict;
         pendingOnline.creditRows = rows;
         refreshSummary();
     }

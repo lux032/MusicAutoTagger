@@ -499,6 +499,7 @@ public class ReviewServlet extends HttpServlet {
         map.put("onlineSearchModel", item.getOnlineSearchModel());
         map.put("onlineClues", item.getOnlineClues());
         map.put("onlineCandidates", item.getOnlineCandidates());
+        map.put("onlineCreditsApplyProbable", resolutionService.getConfig().isOnlineCreditsApplyProbable());
         map.put("systemSuggestion", SystemSuggestionCalculator.evaluate(item,
             resolutionService.getConfig().getLlmAlbumAutoApplyMinConfidence()));
         return map;

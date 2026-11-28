@@ -150,6 +150,13 @@ public class ConfigServlet extends HttpServlet {
             Map.entry("llmWebSearchMaxTokens", "llm.webSearch.maxTokens"),
             Map.entry("llmWebSearchTimeoutSeconds", "llm.webSearch.timeoutSeconds"),
             Map.entry("llmWebSearchMaxConcurrency", "llm.webSearch.maxConcurrency"),
+            Map.entry("llmWebSearchNativeContextSize", "llm.webSearch.nativeContextSize"),
+            Map.entry("onlineCreditsEnrichEnabled", "online.credits.enrich.enabled"),
+            Map.entry("onlineCreditsMaxFollowUpRounds", "online.credits.maxFollowUpRounds"),
+            Map.entry("onlineCreditsMaxSearchCalls", "online.credits.maxSearchCalls"),
+            Map.entry("onlineCreditsMaxFetchPages", "online.credits.maxFetchPages"),
+            Map.entry("onlineCreditsAllowTavilyExtract", "online.credits.allowTavilyExtract"),
+            Map.entry("onlineCreditsApplyProbable", "online.credits.applyProbable"),
             Map.entry("webSearchProvider", "llm.webSearch.provider"),
             Map.entry("tavilyApiKey", "tavily.apiKey"),
             Map.entry("tavilyApiUrl", "tavily.apiUrl"),
@@ -320,6 +327,13 @@ public class ConfigServlet extends HttpServlet {
         handleInteger(safeBody, updates, propertyUpdates, "llmWebSearchMaxTokens");
         handleInteger(safeBody, updates, propertyUpdates, "llmWebSearchTimeoutSeconds");
         handleIntegerInRange(safeBody, updates, propertyUpdates, "llmWebSearchMaxConcurrency", 1, 3);
+        handleString(safeBody, updates, propertyUpdates, "llmWebSearchNativeContextSize", false);
+        handleBoolean(safeBody, updates, propertyUpdates, "onlineCreditsEnrichEnabled");
+        handleIntegerInRange(safeBody, updates, propertyUpdates, "onlineCreditsMaxFollowUpRounds", 0, 3);
+        handleIntegerInRange(safeBody, updates, propertyUpdates, "onlineCreditsMaxSearchCalls", 1, 12);
+        handleIntegerInRange(safeBody, updates, propertyUpdates, "onlineCreditsMaxFetchPages", 0, 12);
+        handleBoolean(safeBody, updates, propertyUpdates, "onlineCreditsAllowTavilyExtract");
+        handleBoolean(safeBody, updates, propertyUpdates, "onlineCreditsApplyProbable");
         handleString(safeBody, updates, propertyUpdates, "webSearchProvider", false);
         handleString(safeBody, updates, propertyUpdates, "tavilyApiKey", false);
         handleString(safeBody, updates, propertyUpdates, "tavilyApiUrl", false);
@@ -432,6 +446,13 @@ public class ConfigServlet extends HttpServlet {
         data.put("llmWebSearchMaxTokens", config.getLlmWebSearchMaxTokens());
         data.put("llmWebSearchTimeoutSeconds", config.getLlmWebSearchTimeoutSeconds());
         data.put("llmWebSearchMaxConcurrency", config.getLlmWebSearchMaxConcurrency());
+        data.put("llmWebSearchNativeContextSize", MusicConfig.normalizeNativeContextSize(config.getLlmWebSearchNativeContextSize()));
+        data.put("onlineCreditsEnrichEnabled", config.isOnlineCreditsEnrichEnabled());
+        data.put("onlineCreditsMaxFollowUpRounds", config.getOnlineCreditsMaxFollowUpRounds());
+        data.put("onlineCreditsMaxSearchCalls", config.getOnlineCreditsMaxSearchCalls());
+        data.put("onlineCreditsMaxFetchPages", config.getOnlineCreditsMaxFetchPages());
+        data.put("onlineCreditsAllowTavilyExtract", config.isOnlineCreditsAllowTavilyExtract());
+        data.put("onlineCreditsApplyProbable", config.isOnlineCreditsApplyProbable());
         data.put("webSearchProvider", config.getWebSearchProvider());
         data.put("tavilyApiKey", maskSecret(config.getTavilyApiKey()));
         data.put("tavilyApiUrl", config.getTavilyApiUrl());
@@ -792,6 +813,28 @@ public class ConfigServlet extends HttpServlet {
         }
         if (updates.containsKey("llmWebSearchMaxConcurrency")) {
             config.setLlmWebSearchMaxConcurrency(clamp((Integer) updates.get("llmWebSearchMaxConcurrency"), 1, 3));
+        }
+        if (updates.containsKey("llmWebSearchNativeContextSize")) {
+            config.setLlmWebSearchNativeContextSize(
+                MusicConfig.normalizeNativeContextSize((String) updates.get("llmWebSearchNativeContextSize")));
+        }
+        if (updates.containsKey("onlineCreditsEnrichEnabled")) {
+            config.setOnlineCreditsEnrichEnabled((Boolean) updates.get("onlineCreditsEnrichEnabled"));
+        }
+        if (updates.containsKey("onlineCreditsMaxFollowUpRounds")) {
+            config.setOnlineCreditsMaxFollowUpRounds(clamp((Integer) updates.get("onlineCreditsMaxFollowUpRounds"), 0, 3));
+        }
+        if (updates.containsKey("onlineCreditsMaxSearchCalls")) {
+            config.setOnlineCreditsMaxSearchCalls(clamp((Integer) updates.get("onlineCreditsMaxSearchCalls"), 1, 12));
+        }
+        if (updates.containsKey("onlineCreditsMaxFetchPages")) {
+            config.setOnlineCreditsMaxFetchPages(clamp((Integer) updates.get("onlineCreditsMaxFetchPages"), 0, 12));
+        }
+        if (updates.containsKey("onlineCreditsAllowTavilyExtract")) {
+            config.setOnlineCreditsAllowTavilyExtract((Boolean) updates.get("onlineCreditsAllowTavilyExtract"));
+        }
+        if (updates.containsKey("onlineCreditsApplyProbable")) {
+            config.setOnlineCreditsApplyProbable((Boolean) updates.get("onlineCreditsApplyProbable"));
         }
         // 联网搜索来源：未知值一律回落 native，避免拼错后静默停用联网搜索
         if (updates.containsKey("webSearchProvider")) {

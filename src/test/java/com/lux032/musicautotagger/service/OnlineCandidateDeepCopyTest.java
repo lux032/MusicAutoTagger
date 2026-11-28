@@ -23,6 +23,20 @@ class OnlineCandidateDeepCopyTest {
         track.setComposers(new ArrayList<>(List.of("梶浦由記")));
         track.setLyricists(new ArrayList<>(List.of("梶浦由記")));
         track.setArrangers(new ArrayList<>(List.of("梶浦由記", "森空青")));
+        ReviewItem.TrackCreditDetail detail = new ReviewItem.TrackCreditDetail();
+        detail.setVersionType("original");
+        ReviewItem.CreditFieldResult arrField = new ReviewItem.CreditFieldResult();
+        arrField.setStatus(ReviewItem.CreditStatus.VERIFIED);
+        arrField.setNames(new ArrayList<>(List.of("梶浦由記", "森空青")));
+        ReviewItem.CreditEvidenceItem ev = new ReviewItem.CreditEvidenceItem();
+        ev.setUrl("https://vgmdb.net/album/12345");
+        ev.setSourceType("music_database");
+        ev.setQuote("Arrangement: 梶浦由記, 森空青");
+        ev.setVersionMatch("exact_version");
+        ev.setFullPageVerified(true);
+        arrField.setEvidence(new ArrayList<>(List.of(ev)));
+        detail.setArrangers(arrField);
+        track.setCreditDetail(detail);
         track.setMatchedFilePath("/music/a/01.flac");
         track.setMatchConfidence(0.95);
         ReviewItem.OnlineCandidate candidate = new ReviewItem.OnlineCandidate();
@@ -34,12 +48,14 @@ class OnlineCandidateDeepCopyTest {
         List<ReviewItem.OnlineCandidate> published =
             OnlineIdentificationService.deepCopy(parsed, ReviewItem.OnlineCandidate[].class);
 
-        // 模拟第二轮 matchAll：先清空再重填逐曲匹配，以及篡改原曲目幕后人员列表
+        // 模拟第二轮 matchAll：先清空再重填逐曲匹配，以及篡改原曲目幕后人员列表与证据明细
         track.setMatchedFilePath(null);
         track.setMatchConfidence(0);
         track.getComposers().clear();
         track.getLyricists().add("Other");
         track.getArrangers().clear();
+        track.getCreditDetail().getArrangers().getNames().clear();
+        track.getCreditDetail().getArrangers().getEvidence().clear();
         candidate.setTrackCoverage(0);
         parsed.add(new ReviewItem.OnlineCandidate());
 
@@ -52,6 +68,12 @@ class OnlineCandidateDeepCopyTest {
         assertEquals(List.of("梶浦由記"), publishedTrack.getComposers());
         assertEquals(List.of("梶浦由記"), publishedTrack.getLyricists());
         assertEquals(List.of("梶浦由記", "森空青"), publishedTrack.getArrangers());
+        assertNotNull(publishedTrack.getCreditDetail());
+        assertEquals(ReviewItem.CreditStatus.VERIFIED, publishedTrack.getCreditDetail().getArrangers().getStatus());
+        assertEquals(List.of("梶浦由記", "森空青"), publishedTrack.getCreditDetail().getArrangers().getNames());
+        assertEquals(1, publishedTrack.getCreditDetail().getArrangers().getEvidence().size());
+        assertEquals("https://vgmdb.net/album/12345",
+            publishedTrack.getCreditDetail().getArrangers().getEvidence().get(0).getUrl());
     }
 
     @Test
@@ -85,6 +107,8 @@ class OnlineCandidateDeepCopyTest {
         assertTrue(legacyTrack.getLyricists().isEmpty());
         assertNotNull(legacyTrack.getArrangers());
         assertTrue(legacyTrack.getArrangers().isEmpty());
+        assertNull(legacyTrack.getCreditDetail());
+        legacy.ensureThreadSafeCollections();
         assertNotNull(legacy.getMissingCover().getOnlineTrackCredits());
         assertTrue(legacy.getMissingCover().getOnlineTrackCredits().isEmpty());
 

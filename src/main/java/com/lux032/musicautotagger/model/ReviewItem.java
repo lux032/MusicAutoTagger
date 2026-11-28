@@ -222,6 +222,11 @@ public class ReviewItem {
                 oc.artists = copyOnWrite(oc.artists);
                 oc.albumArtists = copyOnWrite(oc.albumArtists);
                 oc.tracks = copyOnWrite(oc.tracks);
+                for (OnlineTrack tr : oc.tracks) {
+                    if (tr != null && tr.creditDetail != null) {
+                        tr.creditDetail.ensureThreadSafeCollections();
+                    }
+                }
                 oc.sources = copyOnWrite(oc.sources);
                 oc.coverCandidates = copyOnWrite(oc.coverCandidates);
                 oc.manualTrackOverrides = copyOnWrite(oc.manualTrackOverrides);
@@ -455,6 +460,76 @@ public class ReviewItem {
         private List<String> arrangers;
     }
 
+    /** 曲目级联网幕后人员字段的确定性核验状态。 */
+    public enum CreditStatus {
+        VERIFIED,
+        PROBABLE,
+        CONFLICT,
+        NOT_FOUND,
+        NOT_SEARCHED
+    }
+
+    /** 单条支持某个幕后人员字段的网页原文证据（仅存短引文 ≤200 字，绝不存完整网页正文）。 */
+    @Data
+    public static class CreditEvidenceItem {
+        private String url;
+        private String sourceType;
+        private String quote;
+        private String versionMatch;
+        private boolean fullPageVerified;
+        private boolean syndicatedDuplicate;
+    }
+
+    /** 多源存在冲突时的单个候选署名集合。 */
+    @Data
+    public static class CreditConflictCandidate {
+        private List<String> names = new ArrayList<>();
+        private List<String> urls = new ArrayList<>();
+        private List<String> quotes = new ArrayList<>();
+
+        public void ensureThreadSafeCollections() {
+            this.names = copyOnWrite(this.names);
+            this.urls = copyOnWrite(this.urls);
+            this.quotes = copyOnWrite(this.quotes);
+        }
+    }
+
+    /** 单个角色（作词 / 作曲 / 编曲）的字段级联网核验结果。 */
+    @Data
+    public static class CreditFieldResult {
+        private CreditStatus status = CreditStatus.NOT_SEARCHED;
+        private List<String> names = new ArrayList<>();
+        private List<CreditEvidenceItem> evidence = new ArrayList<>();
+        private List<CreditConflictCandidate> candidates = new ArrayList<>();
+        private String notes;
+
+        public void ensureThreadSafeCollections() {
+            this.names = copyOnWrite(this.names);
+            this.evidence = copyOnWrite(this.evidence);
+            this.candidates = copyOnWrite(this.candidates);
+            for (CreditConflictCandidate candidate : this.candidates) {
+                if (candidate != null) {
+                    candidate.ensureThreadSafeCollections();
+                }
+            }
+        }
+    }
+
+    /** 单首曲目的字段级幕后人员证据明细（与 OnlineTrack.composers/lyricists/arrangers 共存，历史数据可为 null）。 */
+    @Data
+    public static class TrackCreditDetail {
+        private String versionType;
+        private CreditFieldResult lyricists;
+        private CreditFieldResult composers;
+        private CreditFieldResult arrangers;
+
+        public void ensureThreadSafeCollections() {
+            if (this.lyricists != null) this.lyricists.ensureThreadSafeCollections();
+            if (this.composers != null) this.composers.ensureThreadSafeCollections();
+            if (this.arrangers != null) this.arrangers.ensureThreadSafeCollections();
+        }
+    }
+
     @Data
     public static class OnlineTrack {
         private int discNo;
@@ -465,6 +540,7 @@ public class ReviewItem {
         private List<String> composers = new ArrayList<>();
         private List<String> lyricists = new ArrayList<>();
         private List<String> arrangers = new ArrayList<>();
+        private TrackCreditDetail creditDetail;
         private Integer duration;
         private String matchedFilePath;
         private double matchConfidence;

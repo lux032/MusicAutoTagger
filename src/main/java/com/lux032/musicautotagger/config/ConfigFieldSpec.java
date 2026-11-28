@@ -54,6 +54,13 @@ public final class ConfigFieldSpec {
         register(map, "llm.webSearch.maxTokens", "4000", false, false, 256.0, 32000.0);
         register(map, "llm.webSearch.timeoutSeconds", "180", false, false, 30.0, 900.0);
         register(map, "llm.webSearch.maxConcurrency", "1", false, false, 1.0, 3.0);
+        register(map, "llm.webSearch.nativeContextSize", "high", false, false, null, null);
+        register(map, "online.credits.enrich.enabled", "true", false, false, null, null);
+        register(map, "online.credits.maxFollowUpRounds", "2", false, false, 0.0, 3.0);
+        register(map, "online.credits.maxSearchCalls", "6", false, false, 1.0, 12.0);
+        register(map, "online.credits.maxFetchPages", "6", false, false, 0.0, 12.0);
+        register(map, "online.credits.allowTavilyExtract", "true", false, false, null, null);
+        register(map, "online.credits.applyProbable", "true", false, false, null, null);
         register(map, "llm.album.autoApplyMinConfidence", "0.85", false, false, 0.0, 1.0);
         register(map, "file.partial.minTagCoverage", "0.8", false, false, 0.0, 1.0);
         register(map, "review.queuePath", "data/review-queue.json", true, true, null, null);

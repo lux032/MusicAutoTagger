@@ -270,6 +270,80 @@ class ReviewServletOnlineCreditsTest {
         assertEquals("梶浦由記", out.getComposer());
     }
 
+    @Test
+    void detailSerializesStructuredCreditDetailConflictCandidatesAndApplyProbableFlag() throws Exception {
+        config.setOnlineCreditsApplyProbable(false);
+        Path albumDir = Files.createDirectory(monitorDir.resolve("StructuredEvidenceAlbum"));
+        File flac = createFlac(albumDir.resolve("01. VAMPY.flac"), "VAMPY", "HIMEHINA", "Old", "1",
+            null, null, null);
+        ReviewItem item = reviewQueue.enqueueRecoveryFolder(albumDir.toString(), null, List.of(flac), tagWriter, null);
+
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setId("cand-ev");
+        cand.setTitle("VAMPY");
+        cand.setArtist("HIMEHINA");
+        cand.setAlbumArtist("HIMEHINA");
+
+        ReviewItem.OnlineTrack track = new ReviewItem.OnlineTrack();
+        track.setDiscNo(1);
+        track.setTrackNo(1);
+        track.setTitle("VAMPY");
+        track.setArtist("HIMEHINA");
+        track.setComposers(List.of("Soma Genda"));
+        track.setDuration(120);
+
+        ReviewItem.TrackCreditDetail detail = new ReviewItem.TrackCreditDetail();
+        detail.setVersionType("original");
+        ReviewItem.CreditFieldResult comp = new ReviewItem.CreditFieldResult();
+        comp.setStatus(ReviewItem.CreditStatus.VERIFIED);
+        comp.setNames(List.of("Soma Genda"));
+        ReviewItem.CreditEvidenceItem ev = new ReviewItem.CreditEvidenceItem();
+        ev.setUrl("https://himehina.jp/discography/vampy");
+        ev.setSourceType("artist_official");
+        ev.setQuote("作曲：Soma Genda");
+        ev.setVersionMatch("exact_version");
+        ev.setFullPageVerified(true);
+        comp.setEvidence(List.of(ev));
+        detail.setComposers(comp);
+
+        ReviewItem.CreditFieldResult arr = new ReviewItem.CreditFieldResult();
+        arr.setStatus(ReviewItem.CreditStatus.CONFLICT);
+        arr.setNotes("两家媒体编曲署名不一致");
+        ReviewItem.CreditConflictCandidate cc1 = new ReviewItem.CreditConflictCandidate();
+        cc1.setNames(List.of("Soma Genda"));
+        cc1.setUrls(List.of("https://himehina.jp/discography/vampy"));
+        cc1.setQuotes(List.of("編曲：Soma Genda"));
+        ReviewItem.CreditConflictCandidate cc2 = new ReviewItem.CreditConflictCandidate();
+        cc2.setNames(List.of("南田健吾"));
+        cc2.setUrls(List.of("https://utaten.com/lyric/123/"));
+        cc2.setQuotes(List.of("編曲：南田健吾"));
+        arr.setCandidates(List.of(cc1, cc2));
+        detail.setArrangers(arr);
+        track.setCreditDetail(detail);
+
+        cand.setTracks(List.of(track));
+        item.setOnlineCandidates(List.of(cand));
+        reviewQueue.update(item);
+
+        HttpResponse<String> resp = get("/api/review/item?id=" + item.getId());
+        assertEquals(200, resp.statusCode());
+        JsonObject detailItem = gson.fromJson(resp.body(), JsonObject.class).getAsJsonObject("item");
+        assertFalse(detailItem.get("onlineCreditsApplyProbable").getAsBoolean());
+        JsonObject trackJson = detailItem.getAsJsonArray("onlineCandidates").get(0).getAsJsonObject()
+            .getAsJsonArray("tracks").get(0).getAsJsonObject();
+        JsonObject cd = trackJson.getAsJsonObject("creditDetail");
+        assertNotNull(cd);
+        assertEquals("original", cd.get("versionType").getAsString());
+        assertEquals("VERIFIED", cd.getAsJsonObject("composers").get("status").getAsString());
+        assertEquals("artist_official", cd.getAsJsonObject("composers").getAsJsonArray("evidence")
+            .get(0).getAsJsonObject().get("sourceType").getAsString());
+        assertEquals("作曲：Soma Genda", cd.getAsJsonObject("composers").getAsJsonArray("evidence")
+            .get(0).getAsJsonObject().get("quote").getAsString());
+        assertEquals("CONFLICT", cd.getAsJsonObject("arrangers").get("status").getAsString());
+        assertEquals("两家媒体编曲署名不一致", cd.getAsJsonObject("arrangers").get("notes").getAsString());
+        assertEquals(2, cd.getAsJsonObject("arrangers").getAsJsonArray("candidates").size());
+    }
+
     private static File createFlac(Path target, String title, String artist, String album, String trackNo,
                                    String composer, String lyricist, String arranger) throws Exception {
         Files.createDirectories(target.getParent());

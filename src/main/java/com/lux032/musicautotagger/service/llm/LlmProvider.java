@@ -40,6 +40,11 @@ public interface LlmProvider {
      */
     String extractText(JsonObject response);
 
+    /** 从响应体中解析可选 Token 消耗（未返回 usage 时返回全 0）。 */
+    default LlmClient.TokenUsage extractUsage(JsonObject response) {
+        return LlmClient.TokenUsage.empty();
+    }
+
     // ==================== 选择实现 ====================
 
     /**
@@ -139,6 +144,21 @@ public interface LlmProvider {
             String result = sb.toString().trim();
             return result.isEmpty() ? null : result;
         }
+
+        @Override
+        public LlmClient.TokenUsage extractUsage(JsonObject response) {
+            JsonObject usage = JsonUtils.object(response, "usage");
+            if (usage == null) {
+                return LlmClient.TokenUsage.empty();
+            }
+            int inputUncached = optNonNegativeInt(usage, "input_tokens");
+            int cacheCreation = optNonNegativeInt(usage, "cache_creation_input_tokens");
+            int cacheRead = optNonNegativeInt(usage, "cache_read_input_tokens");
+            int promptTotal = inputUncached + cacheCreation + cacheRead;
+            int output = optNonNegativeInt(usage, "output_tokens");
+            int total = promptTotal + output;
+            return new LlmClient.TokenUsage(promptTotal, output, cacheRead, 0, total);
+        }
     }
 
     // ==================== OpenAI 兼容 ====================
@@ -196,6 +216,48 @@ public interface LlmProvider {
             }
             // 少数兼容端点直接返回 text 字段
             return JsonUtils.trimmedString(first, "text");
+        }
+
+        @Override
+        public LlmClient.TokenUsage extractUsage(JsonObject response) {
+            JsonObject usage = JsonUtils.object(response, "usage");
+            if (usage == null) {
+                return LlmClient.TokenUsage.empty();
+            }
+            int prompt = optNonNegativeInt(usage, "prompt_tokens");
+            if (prompt == 0) {
+                prompt = optNonNegativeInt(usage, "input_tokens");
+            }
+            int completion = optNonNegativeInt(usage, "completion_tokens");
+            if (completion == 0) {
+                completion = optNonNegativeInt(usage, "output_tokens");
+            }
+            JsonObject promptDetails = JsonUtils.object(usage, "prompt_tokens_details");
+            if (promptDetails == null) {
+                promptDetails = JsonUtils.object(usage, "input_tokens_details");
+            }
+            int cached = optNonNegativeInt(promptDetails, "cached_tokens");
+            JsonObject completionDetails = JsonUtils.object(usage, "completion_tokens_details");
+            if (completionDetails == null) {
+                completionDetails = JsonUtils.object(usage, "output_tokens_details");
+            }
+            int reasoning = optNonNegativeInt(completionDetails, "reasoning_tokens");
+            int total = optNonNegativeInt(usage, "total_tokens");
+            if (total == 0) {
+                total = prompt + completion;
+            }
+            return new LlmClient.TokenUsage(prompt, completion, cached, reasoning, total);
+        }
+    }
+
+    private static int optNonNegativeInt(JsonObject obj, String key) {
+        if (obj == null || !obj.has(key) || !obj.get(key).isJsonPrimitive()) {
+            return 0;
+        }
+        try {
+            return Math.max(0, obj.get(key).getAsInt());
+        } catch (Exception e) {
+            return 0;
         }
     }
 }

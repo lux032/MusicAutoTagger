@@ -270,4 +270,53 @@ class MetadataUtilsTest {
         assertEquals(List.of("11111111-1111-4111-8111-111111111111"), extracted.getComposerIds());
         assertNull(extracted.getLyricist(), "Fallback copied from local must remain LOCAL, not MUSICBRAINZ");
     }
+
+    @Test
+    void resolveOnlineTrackCreditsRespectsCreditDetailStatusAndApplyProbableFlag() {
+        ReviewItem.OnlineTrack online = new ReviewItem.OnlineTrack();
+        online.setComposers(List.of("Soma Genda"));
+        online.setLyricists(List.of("Gohgo"));
+        online.setArrangers(List.of("Conflicting Arranger"));
+
+        ReviewItem.TrackCreditDetail detail = new ReviewItem.TrackCreditDetail();
+        ReviewItem.CreditFieldResult comp = new ReviewItem.CreditFieldResult();
+        comp.setStatus(ReviewItem.CreditStatus.VERIFIED);
+        comp.setNames(List.of("Soma Genda"));
+        detail.setComposers(comp);
+
+        ReviewItem.CreditFieldResult lyr = new ReviewItem.CreditFieldResult();
+        lyr.setStatus(ReviewItem.CreditStatus.PROBABLE);
+        lyr.setNames(List.of("Gohgo"));
+        detail.setLyricists(lyr);
+
+        ReviewItem.CreditFieldResult arr = new ReviewItem.CreditFieldResult();
+        arr.setStatus(ReviewItem.CreditStatus.CONFLICT);
+        arr.setNames(List.of("Conflicting Arranger")); // even if mistakenly populated, CONFLICT must be blocked!
+        detail.setArrangers(arr);
+        online.setCreditDetail(detail);
+
+        // applyProbable = true -> VERIFIED & PROBABLE admitted, CONFLICT blocked
+        MetadataUtils.ResolvedTrackCredits withProbable =
+            MetadataUtils.resolveOnlineTrackCredits(null, null, null, online, true, true);
+        assertEquals(MetadataUtils.CreditSource.ONLINE, withProbable.composer().source());
+        assertEquals("Soma Genda", withProbable.composer().display());
+        assertEquals(MetadataUtils.CreditSource.ONLINE, withProbable.lyricist().source());
+        assertEquals("Gohgo", withProbable.lyricist().display());
+        assertEquals(MetadataUtils.CreditSource.NONE, withProbable.arranger().source());
+
+        // applyProbable = false -> ONLY VERIFIED admitted; PROBABLE & CONFLICT blocked
+        MetadataUtils.ResolvedTrackCredits strictOnly =
+            MetadataUtils.resolveOnlineTrackCredits(null, null, null, online, true, false);
+        assertEquals(MetadataUtils.CreditSource.ONLINE, strictOnly.composer().source());
+        assertEquals(MetadataUtils.CreditSource.NONE, strictOnly.lyricist().source());
+        assertEquals(MetadataUtils.CreditSource.NONE, strictOnly.arranger().source());
+
+        // Manual override still beats CONFLICT / blocked PROBABLE
+        ReviewItem.TrackCreditsOverride manual = new ReviewItem.TrackCreditsOverride();
+        manual.setArrangers(List.of("Chosen Arranger"));
+        MetadataUtils.ResolvedTrackCredits manualWin =
+            MetadataUtils.resolveOnlineTrackCredits(manual, null, null, online, true, false);
+        assertEquals(MetadataUtils.CreditSource.MANUAL, manualWin.arranger().source());
+        assertEquals("Chosen Arranger", manualWin.arranger().display());
+    }
 }

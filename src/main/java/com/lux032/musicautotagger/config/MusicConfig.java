@@ -181,6 +181,22 @@ public class MusicConfig {
     private int llmWebSearchTimeoutSeconds;
     /** 联网搜索队列最大并发数（1..3，默认 1 串行，避免撞 LLM / Tavily 限流） */
     private int llmWebSearchMaxConcurrency;
+    /** OpenAI 原生 /v1/responses web_search_preview 上下文深度：low | medium | high */
+    private String llmWebSearchNativeContextSize;
+
+    // 联网幕后人员深度补全配置
+    /** 是否启用联网幕后人员（作词/作曲/编曲）深度补全（网页正文抓取与受控补漏） */
+    private boolean onlineCreditsEnrichEnabled;
+    /** Tavily 状态压缩补漏最大轮次（0..3，0 表示仅跑专辑级首轮） */
+    private int onlineCreditsMaxFollowUpRounds;
+    /** 单张专辑幕后人员补全最大搜索次数上限（1..12） */
+    private int onlineCreditsMaxSearchCalls;
+    /** 单张专辑幕后人员补全最大网页正文读取数上限（0..12） */
+    private int onlineCreditsMaxFetchPages;
+    /** 直连 HTTP 遭遇 403/429/空壳时是否允许批量降级调用 Tavily /extract */
+    private boolean onlineCreditsAllowTavilyExtract;
+    /** 联网自动合并时是否允许采用通过校验的 PROBABLE（推测级）幕后人员字段 */
+    private boolean onlineCreditsApplyProbable;
 
     // Tavily 外部检索（替代模型原生 Web Search）
     /**
@@ -301,6 +317,13 @@ public class MusicConfig {
         this.llmWebSearchMaxTokens = 4000;
         this.llmWebSearchTimeoutSeconds = 180;
         this.llmWebSearchMaxConcurrency = 1;
+        this.llmWebSearchNativeContextSize = "high";
+        this.onlineCreditsEnrichEnabled = true;
+        this.onlineCreditsMaxFollowUpRounds = 2;
+        this.onlineCreditsMaxSearchCalls = 6;
+        this.onlineCreditsMaxFetchPages = 6;
+        this.onlineCreditsAllowTavilyExtract = true;
+        this.onlineCreditsApplyProbable = true;
 
         // 默认仍为 native，保证已有部署升级后行为不变；切到 tavily 需显式配置 key
         this.webSearchProvider = "native";
@@ -717,6 +740,37 @@ public class MusicConfig {
                     props.getProperty("llm.webSearch.maxConcurrency"),
                     this.llmWebSearchMaxConcurrency, 1, 3, "llm.webSearch.maxConcurrency");
             }
+            if (props.containsKey("llm.webSearch.nativeContextSize")) {
+                this.llmWebSearchNativeContextSize = normalizeNativeContextSize(
+                    props.getProperty("llm.webSearch.nativeContextSize"));
+            }
+            if (props.containsKey("online.credits.enrich.enabled")) {
+                this.onlineCreditsEnrichEnabled = Boolean.parseBoolean(
+                    props.getProperty("online.credits.enrich.enabled").trim());
+            }
+            if (props.containsKey("online.credits.maxFollowUpRounds")) {
+                this.onlineCreditsMaxFollowUpRounds = parseIntInRange(
+                    props.getProperty("online.credits.maxFollowUpRounds"),
+                    this.onlineCreditsMaxFollowUpRounds, 0, 3, "online.credits.maxFollowUpRounds");
+            }
+            if (props.containsKey("online.credits.maxSearchCalls")) {
+                this.onlineCreditsMaxSearchCalls = parseIntInRange(
+                    props.getProperty("online.credits.maxSearchCalls"),
+                    this.onlineCreditsMaxSearchCalls, 1, 12, "online.credits.maxSearchCalls");
+            }
+            if (props.containsKey("online.credits.maxFetchPages")) {
+                this.onlineCreditsMaxFetchPages = parseIntInRange(
+                    props.getProperty("online.credits.maxFetchPages"),
+                    this.onlineCreditsMaxFetchPages, 0, 12, "online.credits.maxFetchPages");
+            }
+            if (props.containsKey("online.credits.allowTavilyExtract")) {
+                this.onlineCreditsAllowTavilyExtract = Boolean.parseBoolean(
+                    props.getProperty("online.credits.allowTavilyExtract").trim());
+            }
+            if (props.containsKey("online.credits.applyProbable")) {
+                this.onlineCreditsApplyProbable = Boolean.parseBoolean(
+                    props.getProperty("online.credits.applyProbable").trim());
+            }
 
             // 加载 Tavily 外部检索配置
             if (props.containsKey("llm.webSearch.provider")) {
@@ -1030,6 +1084,13 @@ public class MusicConfig {
         props.setProperty("llm.webSearch.maxTokens", String.valueOf(llmWebSearchMaxTokens));
         props.setProperty("llm.webSearch.timeoutSeconds", String.valueOf(llmWebSearchTimeoutSeconds));
         props.setProperty("llm.webSearch.maxConcurrency", String.valueOf(llmWebSearchMaxConcurrency));
+        props.setProperty("llm.webSearch.nativeContextSize", normalizeNativeContextSize(llmWebSearchNativeContextSize));
+        props.setProperty("online.credits.enrich.enabled", String.valueOf(onlineCreditsEnrichEnabled));
+        props.setProperty("online.credits.maxFollowUpRounds", String.valueOf(onlineCreditsMaxFollowUpRounds));
+        props.setProperty("online.credits.maxSearchCalls", String.valueOf(onlineCreditsMaxSearchCalls));
+        props.setProperty("online.credits.maxFetchPages", String.valueOf(onlineCreditsMaxFetchPages));
+        props.setProperty("online.credits.allowTavilyExtract", String.valueOf(onlineCreditsAllowTavilyExtract));
+        props.setProperty("online.credits.applyProbable", String.valueOf(onlineCreditsApplyProbable));
         props.setProperty("llm.webSearch.provider", webSearchProvider == null ? "native" : webSearchProvider);
         props.setProperty("tavily.apiKey", tavilyApiKey == null ? "" : tavilyApiKey);
         props.setProperty("tavily.apiUrl", tavilyApiUrl == null ? "https://api.tavily.com/search" : tavilyApiUrl);
@@ -1052,6 +1113,17 @@ public class MusicConfig {
         }
     }
     
+    public static String normalizeNativeContextSize(String value) {
+        if (value == null) {
+            return "high";
+        }
+        String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+        if ("low".equals(normalized) || "medium".equals(normalized) || "high".equals(normalized)) {
+            return normalized;
+        }
+        return "high";
+    }
+
     /**
      * 暴露声明式配置字段元数据（单一事实源，供 Web 配置接口与校验逻辑共享）。
      */

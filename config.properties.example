@@ -424,6 +424,21 @@ llm.webSearch.timeoutSeconds=180
 # Max concurrent LLM web search tasks in the unified queue. Default 1 (serial) avoids rate limits.
 # Range 1..3
 llm.webSearch.maxConcurrency=1
+# OpenAI /v1/responses native web search context size: low | medium | high (default high)
+llm.webSearch.nativeContextSize=high
+
+# Per-track creator credits deep enrichment (webpage body extraction + bounded follow-up gap filling)
+online.credits.enrich.enabled=true
+# Max compressed follow-up rounds on Tavily path (0..3; 0 = album-level round only)
+online.credits.maxFollowUpRounds=2
+# Max open-web search calls per album for credit enrichment (1..12)
+online.credits.maxSearchCalls=6
+# Max full webpages fetched per album for credit enrichment (0..12)
+online.credits.maxFetchPages=6
+# Fallback to batched Tavily /extract (5 URLs = 1 credit) when direct HTTP hits 403/429/JS shell
+online.credits.allowTavilyExtract=true
+# Whether verified PROBABLE online credit fields auto-populate in confirmation dialog (false = VERIFIED only)
+online.credits.applyProbable=true
 
 # ----------------------------------------
 # Web search backend: native | tavily

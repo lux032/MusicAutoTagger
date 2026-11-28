@@ -71,16 +71,48 @@ public class LlmClient {
         }
     }
 
+    /** LLM 单次调用的 Token 统计（可选，不返回 usage 的端点按 0 处理）。 */
+    public record TokenUsage(
+        int promptTokens,
+        int completionTokens,
+        int cachedTokens,
+        int reasoningTokens,
+        int totalTokens
+    ) {
+        public static TokenUsage empty() {
+            return new TokenUsage(0, 0, 0, 0, 0);
+        }
+
+        public TokenUsage plus(TokenUsage other) {
+            if (other == null) {
+                return this;
+            }
+            return new TokenUsage(
+                this.promptTokens + other.promptTokens,
+                this.completionTokens + other.completionTokens,
+                this.cachedTokens + other.cachedTokens,
+                this.reasoningTokens + other.reasoningTokens,
+                this.totalTokens + other.totalTokens
+            );
+        }
+    }
+
     /** 一次成功调用的结果 */
     public static class LlmResponse {
         private final String text;
         private final String model;
         private final String provider;
+        private final TokenUsage usage;
 
         public LlmResponse(String text, String model, String provider) {
+            this(text, model, provider, TokenUsage.empty());
+        }
+
+        public LlmResponse(String text, String model, String provider, TokenUsage usage) {
             this.text = text;
             this.model = model;
             this.provider = provider;
+            this.usage = usage == null ? TokenUsage.empty() : usage;
         }
 
         public String getText() {
@@ -93,6 +125,10 @@ public class LlmClient {
 
         public String getProvider() {
             return provider;
+        }
+
+        public TokenUsage getUsage() {
+            return usage;
         }
     }
 
@@ -133,8 +169,8 @@ public class LlmClient {
 
             for (int attempt = 0; attempt <= maxRetries; attempt++) {
                 try {
-                    String text = callOnce(provider, apiKey, apiUrl, model, systemPrompt, userPrompt, tokens);
-                    return new LlmResponse(text, model, provider.name());
+                    CallOutput output = callOnce(provider, apiKey, apiUrl, model, systemPrompt, userPrompt, tokens);
+                    return new LlmResponse(output.text(), model, provider.name(), output.usage());
                 } catch (RetryableException e) {
                     lastError = e;
                     if (attempt < maxRetries) {
@@ -186,8 +222,11 @@ public class LlmClient {
         }
     }
 
-    private String callOnce(LlmProvider provider, String apiKey, String apiUrl, String model,
-                            String systemPrompt, String userPrompt, int maxTokens)
+    private record CallOutput(String text, TokenUsage usage) {
+    }
+
+    private CallOutput callOnce(LlmProvider provider, String apiKey, String apiUrl, String model,
+                                String systemPrompt, String userPrompt, int maxTokens)
             throws RetryableException, LlmException {
 
         try {
@@ -243,7 +282,7 @@ public class LlmClient {
             throw new LlmException("响应中没有可用文本（协议可能不匹配，可用 llm.provider 显式指定）: "
                 + truncate(responseBody));
         }
-        return text;
+        return new CallOutput(text, provider.extractUsage(json));
     }
 
     /** 构造带有统一超时、代理及禁止重定向策略的 HttpClient.Builder（委托给共享 HttpClientFactory） */
