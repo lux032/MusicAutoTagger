@@ -209,6 +209,67 @@ public class MusicBrainzClient {
     }
 
     /**
+     * 单次 Lucene OR 合并检索多个姓名变体（如去括号所属后缀或双语分段），最多消耗 1 次外部 API 请求。
+     */
+    public List<ArtistMatch> searchArtistsAny(List<String> queryNames, int limit) throws IOException, InterruptedException {
+        if (queryNames == null || queryNames.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashSet<String> cleaned = new LinkedHashSet<>();
+        for (String raw : queryNames) {
+            if (raw == null || raw.isBlank()) continue;
+            String escaped = escapeLucenePhrase(raw);
+            if (!escaped.isEmpty()) {
+                cleaned.add(escaped);
+            }
+            if (cleaned.size() >= 4) {
+                break;
+            }
+        }
+        if (cleaned.isEmpty()) {
+            return List.of();
+        }
+        if (cleaned.size() == 1) {
+            for (String raw : queryNames) {
+                if (raw != null && !raw.isBlank() && !escapeLucenePhrase(raw).isEmpty()) {
+                    return searchArtists(raw, limit);
+                }
+            }
+        }
+        int clampedLimit = Math.max(1, Math.min(25, limit));
+        rateLimit();
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("cancelled");
+        }
+        StringBuilder query = new StringBuilder();
+        for (String escaped : cleaned) {
+            if (query.length() > 0) {
+                query.append(" OR ");
+            }
+            query.append("artist:\"").append(escaped).append("\" OR alias:\"").append(escaped).append('"');
+        }
+        String encodedQuery = URLEncoder.encode(query.toString(), StandardCharsets.UTF_8);
+        String url = String.format("%s/artist?query=%s&fmt=json&limit=%d",
+            config.getMusicBrainzApiUrl(), encodedQuery, clampedLimit);
+        try {
+            String response = executeRequest(url);
+            return parseArtistSearchResponse(response);
+        } catch (NonRetryableHttpException e) {
+            log.debug("MusicBrainz Artist 变体合并检索返回不可重试错误 ({}): {}", queryNames, e.getMessage());
+            return List.of();
+        } catch (IOException e) {
+            if (e.getCause() instanceof InterruptedException || Thread.currentThread().isInterrupted()) {
+                Thread.currentThread().interrupt();
+                throw new InterruptedException("cancelled");
+            }
+            throw e;
+        } catch (ParseException e) {
+            log.error("解析 MusicBrainz Artist 变体合并检索响应失败", e);
+            throw new IOException("解析响应失败", e);
+        }
+    }
+
+    /**
      * 按 Artist MBID 拉取单个实体（用于核验从网页外链提取的 UUID）。
      */
     public java.util.Optional<ArtistMatch> getArtistById(String rawMbid) throws IOException, InterruptedException {

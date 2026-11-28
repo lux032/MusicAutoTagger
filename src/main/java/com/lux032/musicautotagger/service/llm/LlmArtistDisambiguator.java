@@ -31,6 +31,7 @@ public class LlmArtistDisambiguator {
         "You disambiguate music artists and songwriters against a closed list of real MusicBrainz artist candidates.\n"
         + "Rules:\n"
         + "1. Choose the single candidate index (1..N) that refers to the EXACT same person/group in the album context.\n"
+        + "   Credits may include a studio/unit affiliation in parentheses (e.g. 'Name (Studio)') or bilingual native+romanized forms (e.g. '雨良 Amala'); match the underlying person entity when name, sort_name, aliases, disambiguation, and album context clearly align.\n"
         + "2. If evidence is insufficient, multiple candidates remain equally plausible, or none match, return choice_index=0.\n"
         + "3. NEVER invent IDs, names, or facts. Be conservative: a wrong match pollutes the music library.\n"
         + "4. Return ONLY one strict JSON object: {\"choice_index\":integer,\"confidence\":number,\"reason\":string}\n"

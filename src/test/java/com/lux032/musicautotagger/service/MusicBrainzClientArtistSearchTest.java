@@ -244,5 +244,28 @@ class MusicBrainzClientArtistSearchTest {
             assertThrows(MusicBrainzClient.BudgetExhaustedException.class,
                 () -> client.executeRequest("http://127.0.0.1:1/unreachable"));
         }
+
+        // searchArtistsAny 将多个变体合并为单次 Lucene OR 请求，只消耗 1 次外部调用
+        String amalaJson = """
+            {
+              "artists": [{
+                "id": "74b4d464-7b7c-48c4-b96d-c5adf7f8e1c9",
+                "score": 100,
+                "type": "Person",
+                "name": "雨良",
+                "sort-name": "Amala",
+                "country": "JP",
+                "disambiguation": "Amala, Vocaloid producer",
+                "tags": [{"name": "vocaloid"}]
+              }]
+            }
+            """;
+        StubMusicBrainzClient multiClient = new StubMusicBrainzClient(newConfig(), null, u -> amalaJson, false);
+        List<MusicBrainzClient.ArtistMatch> multiRes =
+            multiClient.searchArtistsAny(List.of("雨良 Amala", "雨良", "Amala", "雨良"), 8);
+        assertEquals(1, multiClient.requestedUrls.size(), "Multiple variants must be combined into a single MB request");
+        assertTrue(multiClient.requestedUrls.get(0).contains("+OR+"));
+        assertEquals(1, multiRes.size());
+        assertEquals("74b4d464-7b7c-48c4-b96d-c5adf7f8e1c9", multiRes.get(0).mbid());
     }
 }

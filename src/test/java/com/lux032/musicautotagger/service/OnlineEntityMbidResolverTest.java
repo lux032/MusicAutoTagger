@@ -390,4 +390,102 @@ class OnlineEntityMbidResolverTest {
         assertEquals(ReviewItem.EntityMbidStatus.AMBIGUOUS, rHighComp.getStatus(),
             "High-scoring competitor (score >= 90) must prevent blind MB_SEARCH_EXACT auto-accept");
     }
+
+    @Test
+    void fallbackVariantSearchResolvesAffiliatedAndBilingualCreditsWithoutBlindExactAutoAccept() throws Exception {
+        String mbidAmala = "74b4d464-7b7c-48c4-b96d-c5adf7f8e1c9";
+        String mbidOtherAmala = "aaaaaaaa-1111-2222-3333-444444444444";
+
+        // 1. 变体生成边界测试
+        assertEquals(List.of("雨良 Amala", "雨良", "Amala"),
+            OnlineEntityMbidResolver.buildFallbackSearchVariants("雨良 Amala (ninelive.)"));
+        assertEquals(List.of("神前暁"),
+            OnlineEntityMbidResolver.buildFallbackSearchVariants("神前暁（MONACA）"));
+        assertEquals(List.of("梶浦由記", "Yuki Kajiura"),
+            OnlineEntityMbidResolver.buildFallbackSearchVariants("梶浦由記 Yuki Kajiura"));
+        assertTrue(OnlineEntityMbidResolver.buildFallbackSearchVariants("DJ 太郎").isEmpty(),
+            "Common role prefixes like DJ must not be split");
+        assertTrue(OnlineEntityMbidResolver.buildFallbackSearchVariants("Soma Genda").isEmpty(),
+            "Pure Latin multi-word names must not produce split variants");
+
+        MusicConfig cfg = newConfig();
+        cfg.setOnlineMbidMaxLookupsPerAlbum(10);
+        MusicBrainzArtistCache cache = new MusicBrainzArtistCache(null);
+
+        AtomicInteger primaryCalls = new AtomicInteger();
+        AtomicInteger fallbackCalls = new AtomicInteger();
+        MusicBrainzClient mbStub = new MusicBrainzClient(cfg, cache) {
+            @Override
+            public List<ArtistMatch> searchArtists(String queryName, int limit) {
+                primaryCalls.incrementAndGet();
+                return List.of(); // 原串 "雨良 Amala (ninelive.)" 精确短语首查无结果
+            }
+
+            @Override
+            public List<ArtistMatch> searchArtistsAny(List<String> queryNames, int limit) {
+                fallbackCalls.incrementAndGet();
+                if (queryNames.contains("雨良") && queryNames.contains("Amala")) {
+                    // 故意把仅命中单一变体 "Amala" 的竞争者排在前面，验证多变体共现实体（雨良 / sortName=Amala）被排到首位
+                    return List.of(
+                        new ArtistMatch(mbidOtherAmala, "Amala", "Amala", "Indian singer",
+                            "IN", "India", "Person", null, null, 100, List.of(), List.of()),
+                        new ArtistMatch(mbidAmala, "雨良", "Amala", "Amala, Vocaloid producer",
+                            "JP", "Japan", "Person", "1998", null, 95,
+                            List.of(), List.of("vocaloid"))
+                    );
+                }
+                return List.of();
+            }
+        };
+
+        ReviewItem.OnlineCandidate cand = new ReviewItem.OnlineCandidate();
+        cand.setTitle("VAMPY");
+        cand.setAlbumArtists(new ArrayList<>(List.of("HIMEHINA")));
+        ReviewItem.OnlineTrack track = new ReviewItem.OnlineTrack();
+        track.setTitle("Drain Drain");
+        track.setComposers(new ArrayList<>(List.of("雨良 Amala (ninelive.)")));
+        track.setMatchedFilePath("/music/02. Drain Drain.flac");
+        track.setMatchConfidence(1.0);
+        cand.setTracks(List.of(track));
+
+        // 2. 关闭 LLM 消歧时：变体兜底绝不走 MB_SEARCH_EXACT 盲绑，必须落为 AMBIGUOUS 且多变体共现者排在首位
+        cfg.setOnlineMbidLlmDisambiguateEnabled(false);
+        OnlineEntityMbidResolver noLlmResolver = new OnlineEntityMbidResolver(cfg, mbStub, cache, null);
+        OnlineEntityMbidResolver.ResolutionSummary noLlmSum = noLlmResolver.resolveForCandidate(cand, Map.of(), Map.of(), null);
+        ReviewItem.EntityMbidResolution resNoLlm = noLlmSum.resolutions().get(
+            MusicBrainzArtistCache.normalizePersonKey("雨良 Amala (ninelive.)"));
+        assertNotNull(resNoLlm);
+        assertEquals(ReviewItem.EntityMbidStatus.AMBIGUOUS, resNoLlm.getStatus(),
+            "Fallback variant hit must NEVER blindly auto-accept as MB_SEARCH_EXACT");
+        assertNull(resNoLlm.getSelectedMbid());
+        assertEquals(2, resNoLlm.getCandidates().size());
+        assertEquals(mbidAmala, resNoLlm.getCandidates().get(0).getMbid(),
+            "Multi-variant match (name=雨良 & sortName=Amala) should rank ahead of single-variant homonym");
+        assertEquals(1, fallbackCalls.get());
+
+        // 3. 开启 LLM 消歧时：经封闭式 LLM 核验后高置信命中 MB_SEARCH_LLM_DISAMBIGUATED，且原带括号串不写入唯一缓存
+        cfg.setOnlineMbidLlmDisambiguateEnabled(true);
+        LlmClient stubLlm = new LlmClient(cfg) {
+            @Override public boolean isConfigured() { return true; }
+            @Override
+            public LlmResponse complete(String s, String u, int m) {
+                return new LlmResponse(
+                    "{\"choice_index\":1,\"confidence\":0.96,\"reason\":\"雨良 (Amala, Vocaloid producer) matches 雨良 Amala (ninelive.)\"}",
+                    "test-model", "stub");
+            }
+        };
+        OnlineEntityMbidResolver llmResolver = new OnlineEntityMbidResolver(
+            cfg, mbStub, cache, new LlmArtistDisambiguator(stubLlm));
+        OnlineEntityMbidResolver.ResolutionSummary llmSum = llmResolver.resolveForCandidate(cand, Map.of(), Map.of(), null);
+        ReviewItem.EntityMbidResolution resLlm = llmSum.resolutions().get(
+            MusicBrainzArtistCache.normalizePersonKey("雨良 Amala (ninelive.)"));
+        assertNotNull(resLlm);
+        assertEquals(ReviewItem.EntityMbidStatus.RESOLVED, resLlm.getStatus());
+        assertEquals(ReviewItem.EntityMbidSource.MB_SEARCH_LLM_DISAMBIGUATED, resLlm.getSource());
+        assertEquals(mbidAmala, resLlm.getSelectedMbid());
+        assertTrue(cache.lookupByName("雨良 Amala (ninelive.)").isEmpty(),
+            "Affiliated raw credit must not be inserted into Layer 1 shortcut cache");
+        assertTrue(cache.lookupByName("雨良").isUniqueHit(),
+            "Canonical MB artist name should be cached when no same-name competitor exists");
+    }
 }

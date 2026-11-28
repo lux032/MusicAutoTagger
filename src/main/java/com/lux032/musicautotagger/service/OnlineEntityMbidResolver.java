@@ -34,6 +34,7 @@ import java.util.Set;
 public class OnlineEntityMbidResolver {
 
     private static final int MAX_SEARCH_CANDIDATES = 8;
+    private static final int MAX_FALLBACK_SEARCH_LIMIT = 16;
     private static final int MAX_PERSISTED_CANDIDATES = 5;
     private static final int MAX_UNANCHORED_LINK_PROBES = 8;
     private static final int HIGH_SCORE_COMPETITOR_THRESHOLD = 90;
@@ -41,6 +42,15 @@ public class OnlineEntityMbidResolver {
     private static final Set<String> PLACEHOLDER_KEYS = Set.of(
         "various artists", "unknown artist", "unknown", "va", "v.a.", "v.a"
     );
+    private static final Set<String> NON_NAME_LATIN_PREFIXES = Set.of(
+        "dj", "mc", "cv", "vo", "gt", "ba", "dr", "feat", "ft", "the", "mr", "ms", "mrs", "st"
+    );
+    private static final java.util.regex.Pattern TRAILING_AFFILIATION_PATTERN = java.util.regex.Pattern.compile(
+        "\\s*(?:\\([^()]{1,64}\\)|（[^（）]{1,64}）|\\[[^\\[\\]]{1,64}\\]|【[^【】]{1,64}】)\\s*$");
+    private static final java.util.regex.Pattern CJK_THEN_LATIN_PATTERN = java.util.regex.Pattern.compile(
+        "^([\\p{IsHan}\\p{IsHiragana}\\p{IsKatakana}ー々・]+)\\s+([A-Za-z][A-Za-z0-9 ._'\\-]{1,48})$");
+    private static final java.util.regex.Pattern LATIN_THEN_CJK_PATTERN = java.util.regex.Pattern.compile(
+        "^([A-Za-z][A-Za-z0-9 ._'\\-]{1,48})\\s+([\\p{IsHan}\\p{IsHiragana}\\p{IsKatakana}ー々・]+)$");
 
     @FunctionalInterface
     public interface ProgressCallback {
@@ -282,9 +292,6 @@ public class OnlineEntityMbidResolver {
         }
 
         List<MusicBrainzClient.ArtistMatch> merged = mergeMatchesByMbid(searched, verifiedFromLinks, localHomonyms);
-        if (merged.isEmpty()) {
-            return buildNotFound(target, null);
-        }
 
         List<MusicBrainzClient.ArtistMatch> exactMatches = new ArrayList<>();
         List<MusicBrainzClient.ArtistMatch> nearMatches = new ArrayList<>();
@@ -296,10 +303,47 @@ public class OnlineEntityMbidResolver {
             }
         }
 
+        // 受控兜底：仅当原名首查既无精确命中也无高分候选（>=85）时，对括号所属后缀（如 (ninelive.)）
+        // 或双语连写署名（如 雨良 Amala）执行最多 1 次合并变体查询；兜底结果绝不盲目走 MB_SEARCH_EXACT 自动绑定。
+        boolean usedFallbackSearch = false;
+        List<MusicBrainzClient.ArtistMatch> fallbackCandidates = new ArrayList<>();
+        if (exactMatches.isEmpty() && nearMatches.isEmpty() && lookupBudgetUsed[0] < maxLookups) {
+            List<String> fallbackVariants = buildFallbackSearchVariants(target.displayName);
+            if (!fallbackVariants.isEmpty()) {
+                usedFallbackSearch = true;
+                try {
+                    List<MusicBrainzClient.ArtistMatch> rawFallback =
+                        searchArtistsAnyWithinBudget(fallbackVariants, lookupBudgetUsed, maxLookups);
+                    Set<String> variantKeys = new LinkedHashSet<>();
+                    for (String variant : fallbackVariants) {
+                        String vk = MusicBrainzArtistCache.normalizePersonKey(variant);
+                        if (!vk.isEmpty()) {
+                            variantKeys.add(vk);
+                        }
+                    }
+                    for (MusicBrainzClient.ArtistMatch match : mergeMatchesByMbid(rawFallback)) {
+                        if (countMatchedVariantKeys(match, variantKeys) > 0 || match.score() >= 85) {
+                            fallbackCandidates.add(match);
+                        }
+                    }
+                    // 同时匹配多个变体键（如 name="雨良" 且 sortName="Amala"）的实体排在最前，避免被同名竞争者挤出上限
+                    fallbackCandidates.sort(Comparator
+                        .comparingInt((MusicBrainzClient.ArtistMatch m) -> countMatchedVariantKeys(m, variantKeys)).reversed()
+                        .thenComparing(Comparator.comparingInt(MusicBrainzClient.ArtistMatch::score).reversed()));
+                } catch (InterruptedException ie) {
+                    throw ie;
+                } catch (MusicBrainzClient.BudgetExhaustedException exhausted) {
+                    log.debug("变体兜底查询触及预算上限 ({})", target.displayName);
+                } catch (IOException e) {
+                    log.debug("MusicBrainz Artist 变体兜底查询失败 ({}): {}", target.displayName, e.getMessage());
+                }
+            }
+        }
+
         boolean hasHighScoreCompetitor = nearMatches.stream()
             .anyMatch(m -> m.score() >= HIGH_SCORE_COMPETITOR_THRESHOLD);
 
-        // Case 3a: 唯一精确匹配、无本地同名冲突且无其他 score>=90 的竞争者
+        // Case 3a: 唯一精确匹配、无本地同名冲突且无其他 score>=90 的竞争者（仅限原名精确命中，不含兜底变体）
         if (exactMatches.size() == 1 && !localHomonymConflict && !hasHighScoreCompetitor) {
             MusicBrainzClient.ArtistMatch only = exactMatches.get(0);
             if (artistCache != null) {
@@ -311,7 +355,7 @@ public class OnlineEntityMbidResolver {
                 mergeMatchesByMbid(List.of(only), nearMatches));
         }
 
-        // Case 3b: 存在多实体精确同名、本地同名冲突或高分竞争者 -> 完整保留精确命中 + 本地同名 + 近似候选
+        // Case 3b: 存在多实体精确同名、本地同名冲突、高分竞争者或受控变体兜底候选 -> 交由封闭式 LLM 消歧或人工点选
         List<MusicBrainzClient.ArtistMatch> homonymGroup = mergeMatchesByMbid(exactMatches, localHomonyms);
         boolean isHomonymConflict = exactMatches.size() > 1 || localHomonymConflict || homonymGroup.size() > 1;
         if (isHomonymConflict && artistCache != null && homonymGroup.size() >= 2) {
@@ -323,7 +367,7 @@ public class OnlineEntityMbidResolver {
         }
 
         List<MusicBrainzClient.ArtistMatch> disambiguationPool = mergeMatchesByMbid(
-            exactMatches, localHomonyms, nearMatches);
+            exactMatches, localHomonyms, nearMatches, fallbackCandidates);
         if (disambiguationPool.isEmpty()) {
             return buildNotFound(target, null);
         }
@@ -345,21 +389,27 @@ public class OnlineEntityMbidResolver {
             LlmArtistDisambiguator.DisambiguationResult decision =
                 disambiguator.disambiguate(target.displayName, ctx, boundedPool);
             if (decision.isAccepted()) {
-                // 若存在同名多实体冲突，严禁将单个选中实体写入可单条短路的唯一索引
-                if (artistCache != null && !isHomonymConflict) {
-                    MusicBrainzClient.ArtistMatch picked = decision.chosen();
+                // 若存在同名多实体冲突或候选池内存在与所选实体同名竞争者，严禁写入单条短路唯一索引
+                MusicBrainzClient.ArtistMatch picked = decision.chosen();
+                String pickedNameKey = MusicBrainzArtistCache.normalizePersonKey(picked.name());
+                boolean pickedNameHasCompetitor = disambiguationPool.stream()
+                    .anyMatch(m -> !m.mbid().equals(picked.mbid())
+                        && MusicBrainzArtistCache.normalizePersonKey(m.name()).equals(pickedNameKey));
+                if (artistCache != null && !isHomonymConflict && !pickedNameHasCompetitor) {
                     artistCache.recordArtist(picked.mbid(), picked.name(), picked.sortName(), picked.disambiguation(),
                         picked.country(), picked.type(), picked.aliases(), List.of(), "MB_SEARCH_LLM");
                 }
-                return buildResolved(target, decision.chosen(),
+                return buildResolved(target, picked,
                     ReviewItem.EntityMbidSource.MB_SEARCH_LLM_DISAMBIGUATED,
                     decision.confidence(), decision.reason(), boundedPool);
             }
             return buildAmbiguous(target, boundedPool,
-                decision.reason() != null ? decision.reason() : "同名候选置信度不足，等待人工点选");
+                decision.reason() != null ? decision.reason() : "同名或近似候选置信度不足，等待人工点选");
         }
 
-        return buildAmbiguous(target, boundedPool, "存在多个同名或近似候选，等待人工点选");
+        return buildAmbiguous(target, boundedPool, usedFallbackSearch
+            ? "去括号/双语变体召回候选，等待人工点选"
+            : "存在多个同名或近似候选，等待人工点选");
     }
 
     private List<MusicBrainzClient.ArtistMatch> searchArtistsWithinBudget(
@@ -389,6 +439,129 @@ public class OnlineEntityMbidResolver {
         } finally {
             closeQuietly(scope);
         }
+    }
+
+    private List<MusicBrainzClient.ArtistMatch> searchArtistsAnyWithinBudget(
+            List<String> variants, int[] lookupBudgetUsed, int maxLookups)
+            throws IOException, InterruptedException {
+        if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException("cancelled");
+        }
+        if (lookupBudgetUsed[0] >= maxLookups) {
+            throw new MusicBrainzClient.BudgetExhaustedException();
+        }
+        int before = lookupBudgetUsed[0];
+        AutoCloseable scope = musicBrainzClient.withAttemptBudget(() -> {
+            if (lookupBudgetUsed[0] >= maxLookups) {
+                return false;
+            }
+            lookupBudgetUsed[0]++;
+            return true;
+        });
+        try {
+            List<MusicBrainzClient.ArtistMatch> result = musicBrainzClient.searchArtistsAny(variants, MAX_FALLBACK_SEARCH_LIMIT);
+            if (lookupBudgetUsed[0] == before) {
+                lookupBudgetUsed[0]++;
+            }
+            return result;
+        } finally {
+            closeQuietly(scope);
+        }
+    }
+
+    /**
+     * 为首查 0 命中的日系/多语署名生成受控简化变体：
+     *   1) 剥离末尾括号所属/社团后缀（如 "雨良 Amala (ninelive.)" -> "雨良 Amala"、"神前暁（MONACA）" -> "神前暁"）；
+     *   2) 拆分明显的「CJK/假名 + 拉丁字母」双语并排署名（如 "雨良 Amala" -> "雨良", "Amala"）。
+     * 绝不过度拆分普通英文多词名或 "DJ 太郎" 等常见前缀。
+     */
+    static List<String> buildFallbackSearchVariants(String displayName) {
+        if (displayName == null || displayName.isBlank()) {
+            return List.of();
+        }
+        String original = displayName.trim();
+        String originalKey = MusicBrainzArtistCache.normalizePersonKey(original);
+        LinkedHashMap<String, String> variantsByKey = new LinkedHashMap<>();
+
+        String stripped = original;
+        for (int i = 0; i < 3; i++) {
+            String next = TRAILING_AFFILIATION_PATTERN.matcher(stripped).replaceFirst("").trim();
+            if (next.equals(stripped) || next.isEmpty()) {
+                break;
+            }
+            stripped = next;
+        }
+        addFallbackVariant(variantsByKey, stripped, originalKey);
+
+        // 在去括号后的基底上检测双语并排署名（CJK/假名 <-> 拉丁字母）
+        String base = stripped.isEmpty() ? original : stripped;
+        java.util.regex.Matcher cjkFirst = CJK_THEN_LATIN_PATTERN.matcher(base);
+        java.util.regex.Matcher latinFirst = cjkFirst.matches() ? null : LATIN_THEN_CJK_PATTERN.matcher(base);
+        String cjkPart = null;
+        String latinPart = null;
+        if (cjkFirst.matches()) {
+            cjkPart = cjkFirst.group(1).trim();
+            latinPart = cjkFirst.group(2).trim();
+        } else if (latinFirst != null && latinFirst.matches()) {
+            latinPart = latinFirst.group(1).trim();
+            cjkPart = latinFirst.group(2).trim();
+        }
+        if (cjkPart != null && latinPart != null && isValidBilingualPair(cjkPart, latinPart)) {
+            addFallbackVariant(variantsByKey, cjkPart, originalKey);
+            addFallbackVariant(variantsByKey, latinPart, originalKey);
+        }
+        return variantsByKey.isEmpty() ? List.of() : List.copyOf(variantsByKey.values());
+    }
+
+    private static boolean isValidBilingualPair(String cjkPart, String latinPart) {
+        int cjkCount = cjkPart.codePointCount(0, cjkPart.length());
+        String latinKey = MusicBrainzArtistCache.normalizePersonKey(latinPart);
+        if (NON_NAME_LATIN_PREFIXES.contains(latinKey)) {
+            return false;
+        }
+        long latinLetters = latinPart.chars().filter(Character::isLetter).count();
+        if (latinLetters < 3) {
+            return false;
+        }
+        return cjkCount >= 2 || (cjkCount == 1 && latinLetters >= 4);
+    }
+
+    private static void addFallbackVariant(Map<String, String> target, String candidate, String originalKey) {
+        if (candidate == null || candidate.isBlank()) return;
+        String trimmed = candidate.trim();
+        String key = MusicBrainzArtistCache.normalizePersonKey(trimmed);
+        if (key.isEmpty() || key.equals(originalKey) || PLACEHOLDER_KEYS.contains(key)) {
+            return;
+        }
+        // 拒绝仅剩单个纯 ASCII 字符的过短变体
+        if (trimmed.codePointCount(0, trimmed.length()) < 2 && trimmed.chars().allMatch(ch -> ch < 128)) {
+            return;
+        }
+        target.putIfAbsent(key, trimmed);
+    }
+
+    private static int countMatchedVariantKeys(MusicBrainzClient.ArtistMatch artist, Set<String> variantKeys) {
+        if (artist == null || variantKeys == null || variantKeys.isEmpty()) {
+            return 0;
+        }
+        Set<String> matched = new LinkedHashSet<>();
+        String nameKey = MusicBrainzArtistCache.normalizePersonKey(artist.name());
+        if (variantKeys.contains(nameKey)) {
+            matched.add(nameKey);
+        }
+        if (artist.sortName() != null) {
+            String sortKey = MusicBrainzArtistCache.normalizePersonKey(artist.sortName());
+            if (variantKeys.contains(sortKey)) {
+                matched.add(sortKey);
+            }
+        }
+        for (String alias : artist.aliases()) {
+            String aliasKey = MusicBrainzArtistCache.normalizePersonKey(alias);
+            if (variantKeys.contains(aliasKey)) {
+                matched.add(aliasKey);
+            }
+        }
+        return matched.size();
     }
 
     private LinkProbeOutcome resolveLinkMbid(
